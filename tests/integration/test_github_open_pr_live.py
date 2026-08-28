@@ -247,9 +247,7 @@ def test_a_foreign_source_kind_does_not_compose_the_github_factory(
 def test_an_address_outside_the_owner_name_base_branch_grammar_is_refused(
     tmp_path: Path, address: str
 ) -> None:
-    with pytest.raises(
-        GitHubConnectionUncomposable, match="owner/name with one base ref"
-    ):
+    with pytest.raises(GitHubConnectionUncomposable, match="owner/name"):
         live_github_effect_adapter_factory(
             connection_revision(tmp_path, source_address=address, source_ref=None),
             ADAPTER_REVISION,
@@ -275,22 +273,19 @@ def test_a_base_branch_may_itself_carry_slashes_and_at_signs(
     assert composed.repository.base_branch == "release/v1@rc"
 
 
-def test_a_v44_address_with_an_embedded_branch_remains_composable(
+def test_a_v45_address_with_an_embedded_branch_is_durable_corruption(
     tmp_path: Path,
 ) -> None:
-    composed = live_github_effect_adapter_factory(
-        connection_revision(
-            tmp_path,
-            source_address=f"{OWNER}/{REPO}@release/v1@rc",
-            source_ref=None,
-        ),
-        ADAPTER_REVISION,
-        DESTINATION,
-    )
-
-    assert composed.repository.owner == OWNER
-    assert composed.repository.name == REPO
-    assert composed.repository.base_branch == "release/v1@rc"
+    with pytest.raises(GitHubConnectionUncomposable, match="owner/name"):
+        live_github_effect_adapter_factory(
+            connection_revision(
+                tmp_path,
+                source_address=f"{OWNER}/{REPO}@release/v1@rc",
+                source_ref=None,
+            ),
+            ADAPTER_REVISION,
+            DESTINATION,
+        )
 
 
 def effect_intent(payload: bytes = AGENT_OUTPUT, *, typed: bool = True) -> EffectIntent:

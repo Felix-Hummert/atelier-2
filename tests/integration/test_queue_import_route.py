@@ -41,6 +41,7 @@ from atelier2.contracts.host_configuration import (
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.runtime import exact_output_runtime
@@ -104,13 +105,13 @@ def issue_source(
             ProjectSourceId("11111111-1111-1111-1111-111111111111"),
             1,
             SourceKind("github"),
-            SourceAddress(f"{OWNER}/{REPO}@main"),
+            SourceAddress(f"{OWNER}/{REPO}"),
             credential_directory,
             SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
             ConnectionActor("felix"),
             ProjectSourceConnectionLifecycle.CONNECTED,
             None,
-            None,
+            SourceReference("main"),
         )
     )
     return replace(composed, transport=httpx.MockTransport(listing.handle))

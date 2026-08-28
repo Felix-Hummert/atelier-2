@@ -665,8 +665,8 @@ serve then composes the live `open-pr` adapter from that record whenever it
 serves the connected project, with no GitHub flag on the serve line. A serve
 started with the old flags is refused by argparse as unrecognized arguments.
 For GitHub, the CLI requires the separate ref and refuses the legacy
-`owner/name@branch` address; that embedded form remains read-only compatibility
-for rows preserved from V44 migration.
+`owner/name@branch` address; V44 migration relocates that embedded branch into
+the row's private source-ref detail before V45 readers accept it.
 The live composition still requires a loopback bind. An agent-authored
 `open-pr` grant now uses the same durable reconciliation path as an Action:
 an unknown GitHub readback pauses at the agent node for an operator decision,

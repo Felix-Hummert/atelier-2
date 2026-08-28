@@ -1046,7 +1046,9 @@ def _project_source_connection(
     try:
         initialize_schema(engine)
         channel = DbosHostConfigurationChannel(engine)
-        match get_project_source_connection(settings.project_id.value, channel):
+        match get_project_source_connection(
+            settings.project_id.value, channel, GitHubProjectSourceConnector()
+        ):
             case ProjectSourceConnectionRead(revision):
                 return revision
             case PlatformConnectionUnknown():

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import pytest
 
 from atelier2.adapters.github.composition import GITHUB_SOURCE_KIND
 from atelier2.adapters.github.live_effects import GITHUB_TOKEN_CREDENTIAL_ENTRY
@@ -40,9 +41,12 @@ def test_address_parser_owns_github_forms_and_public_projection() -> None:
         connector.parse_address("gitlab.com/acme/studio"), ProjectSourceAddressInvalid
     )
     assert connector.public_address(SourceAddress("acme/studio")) == "acme/studio"
-    assert connector.parse_stored_address(SourceAddress("acme/studio@main")) == (
-        ParsedProjectSourceAddress(GITHUB_SOURCE_KIND, "acme/studio")
+    assert isinstance(
+        connector.parse_stored_address(SourceAddress("acme/studio@main")),
+        ProjectSourceAddressInvalid,
     )
+    with pytest.raises(ValueError, match="owner/name"):
+        connector.public_address(SourceAddress("acme/studio@main"))
 
 
 def test_validation_reads_the_credential_reference_and_keeps_branch_opaque(

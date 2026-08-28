@@ -233,6 +233,7 @@ type ConnectProjectSourceResult = (
 def get_project_source_connection(
     project_id: str,
     connections: ProjectSourceConnectionChannel,
+    connector: ProjectSourceConnector,
 ) -> GetProjectSourceConnectionResult:
     try:
         project = ProjectId(project_id)
@@ -244,7 +245,11 @@ def get_project_source_connection(
                 lifecycle=ProjectSourceConnectionLifecycle.CONNECTED
             ) as revision
         ):
-            return ProjectSourceConnectionRead(revision, revision.source_address.value)
+            try:
+                public_address = connector.public_address(revision.source_address)
+            except ValueError:
+                return DurableStateCorrupt()
+            return ProjectSourceConnectionRead(revision, public_address)
         case ProjectSourceConnectionRevision():
             return PlatformConnectionUnknown()
         case None:
@@ -266,16 +271,9 @@ def get_served_project_source_connection(
 ) -> GetServedProjectSourceConnectionResult:
     match get_project(project_id, served_project_id, host_configuration):
         case ProjectRead():
-            match get_project_source_connection(project_id.value, connections):
-                case ProjectSourceConnectionRead(revision):
-                    try:
-                        return ProjectSourceConnectionRead(
-                            revision, connector.public_address(revision.source_address)
-                        )
-                    except ValueError:
-                        return DurableStateCorrupt()
-                case result:
-                    return result
+            return get_project_source_connection(
+                project_id.value, connections, connector
+            )
         case ServedProjectUnknown() as unknown:
             return unknown
         case ReadUnavailable() as unavailable:
@@ -512,7 +510,7 @@ def _managed_connect_candidate(
         revision_number,
         validated.source_kind,
         validated.source_address,
-        credential_directory,
+        credential_directory.expanduser().resolve(),
         SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
         ConnectionActor("http-api"),
         ProjectSourceConnectionLifecycle.CONNECTED,
@@ -532,7 +530,7 @@ def _rotated_source_candidate(
         latest.revision_number + 1,
         validated.source_kind,
         validated.source_address,
-        credential_directory,
+        credential_directory.expanduser().resolve(),
         latest.auth_method,
         latest.connected_by,
         ProjectSourceConnectionLifecycle.CONNECTED,
@@ -569,8 +567,12 @@ def _credential_directory_is_referenced(
     credential_directory: Path,
     connections: ProjectSourceConnectionChannel,
 ) -> bool | ReadUnavailable | DurableStateCorrupt:
+    try:
+        canonical_directory = credential_directory.expanduser().resolve()
+    except OSError:
+        return DurableStateCorrupt()
     match connections.project_source_credential_directory_reference(
-        project_id, credential_directory
+        project_id, canonical_directory
     ):
         case ProjectSourceCredentialDirectoryReferenced():
             return True
@@ -699,7 +701,7 @@ def connect_managed_project_source(
             credential_directory,
             clock(),
         )
-    except (TypeError, ValueError):
+    except (OSError, TypeError, ValueError):
         cleanup_failure = _discard_managed_token(staged)
         return cleanup_failure or DurableStateCorrupt()
     try:
@@ -717,17 +719,6 @@ def connect_managed_project_source(
         return ManagedProjectSourcePublished(
             _source_summary(result.revision, validated.public_address),
         )
-    referenced = _credential_directory_is_referenced(
-        project_id, credential_directory, connections
-    )
-    if isinstance(referenced, ReadUnavailable):
-        return WriteUnavailable(referenced.detail)
-    if isinstance(referenced, DurableStateCorrupt):
-        return referenced
-    if not referenced:
-        cleanup_failure = _discard_managed_token(staged)
-        if cleanup_failure is not None:
-            return cleanup_failure
     after_write = _latest_sources(project_id, connections)
     if isinstance(after_write, ReadUnavailable):
         return WriteUnavailable(after_write.detail)
@@ -740,8 +731,18 @@ def connect_managed_project_source(
         return ManagedProjectSourcePublished(
             _source_summary(durable_source, validated.public_address)
         )
+    referenced = _credential_directory_is_referenced(
+        project_id, candidate.credential_directory, connections
+    )
+    if isinstance(referenced, ReadUnavailable):
+        return WriteUnavailable(referenced.detail)
+    if isinstance(referenced, DurableStateCorrupt):
+        return referenced
     if referenced:
         return result if isinstance(result, DurableStateCorrupt) else WriteUnavailable()
+    cleanup_failure = _discard_managed_token(staged)
+    if cleanup_failure is not None:
+        return cleanup_failure
     if (
         durable_source is not None
         and durable_source.revision_number > candidate.revision_number
@@ -813,7 +814,13 @@ def disconnect_project_source(
     if isinstance(
         result, (ProjectSourceConnectionPublished, ProjectSourceConnectionUnchanged)
     ):
-        return ProjectSourceDisconnectedSuccessfully()
+        return (
+            ProjectSourceDisconnectedSuccessfully()
+            if result.revision == candidate
+            and result.revision.lifecycle
+            is ProjectSourceConnectionLifecycle.DISCONNECTED
+            else DurableStateCorrupt()
+        )
     if isinstance(result, WriteUnavailable):
         return result
     if isinstance(result, DurableStateCorrupt):
@@ -837,11 +844,18 @@ def disconnect_project_source(
             return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
-    retried = _connection_write_result(disconnected_after(refreshed), connections)
+    retried_candidate = disconnected_after(refreshed)
+    retried = _connection_write_result(retried_candidate, connections)
     if isinstance(
         retried, (ProjectSourceConnectionPublished, ProjectSourceConnectionUnchanged)
     ):
-        return ProjectSourceDisconnectedSuccessfully()
+        return (
+            ProjectSourceDisconnectedSuccessfully()
+            if retried.revision == retried_candidate
+            and retried.revision.lifecycle
+            is ProjectSourceConnectionLifecycle.DISCONNECTED
+            else DurableStateCorrupt()
+        )
     if isinstance(retried, WriteUnavailable):
         return retried
     if isinstance(retried, DurableStateCorrupt):
@@ -959,7 +973,7 @@ def rotate_project_source_token(
         return cleanup_failure or ProjectSourceUnavailable()
     try:
         candidate = _rotated_source_candidate(latest, validated, credential_directory)
-    except (TypeError, ValueError):
+    except (OSError, TypeError, ValueError):
         cleanup_failure = _discard_managed_token(staged)
         return cleanup_failure or DurableStateCorrupt()
     try:

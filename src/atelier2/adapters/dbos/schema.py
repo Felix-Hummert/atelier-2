@@ -16,6 +16,7 @@ from atelier2.adapters.dbos.published_schema_shapes import (
     PUBLISHED_TABLE_INDEXES,
     PUBLISHED_TABLE_SHAPES,
 )
+from atelier2.adapters.github.composition import migrate_v44_github_source_location
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -41,6 +42,7 @@ from atelier2.contracts.host_configuration import (
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ACTIVE_RUNS,
@@ -5663,6 +5665,9 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
     )
     current_source_kind_by_project: dict[str, str] = {}
     latest_revision_by_history: dict[tuple[str, str], int] = {}
+    migrated_location_by_revision: dict[
+        tuple[str, str, int], tuple[SourceAddress, SourceReference | None]
+    ] = {}
     for project_id in sorted({str(record["project_id"]) for record in records}):
         latest_by_kind: dict[str, int] = {}
         for record in records:
@@ -5690,11 +5695,15 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
             )
         current_source_kind_by_project[project_id] = current_kinds[0]
     for record in records:
+        project_id = str(record["project_id"])
+        source_kind = SourceKind(str(record["source_kind"]))
+        revision_number = int(record["revision_number"])
+        source_address = SourceAddress(str(record["source_address"]))
         expected_hash = _v44_project_source_connection_revision_hash(
-            ProjectId(str(record["project_id"])),
-            int(record["revision_number"]),
-            SourceKind(str(record["source_kind"])),
-            SourceAddress(str(record["source_address"])),
+            ProjectId(project_id),
+            revision_number,
+            source_kind,
+            source_address,
             str(record["credential_directory"]),
             SourceConnectionAuthMethod(str(record["auth_method"])),
             ConnectionActor(str(record["connected_by"])),
@@ -5704,6 +5713,19 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
                 "schema version 44 project-source connection hash does not "
                 "match its fields; this command will not alter it"
             )
+        try:
+            migrated_location_by_revision[
+                (
+                    project_id,
+                    source_kind.value,
+                    revision_number,
+                )
+            ] = migrate_v44_github_source_location(source_kind, source_address)
+        except (TypeError, ValueError) as error:
+            raise StoreMigrationRefused(
+                "schema version 44 has a malformed GitHub project-source "
+                "location; this command will not alter it"
+            ) from error
     trigger_names = (
         "host_project_source_connection_revisions_no_update",
         "host_project_source_connection_revisions_no_delete",
@@ -5730,23 +5752,30 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
         source_kind = str(record["source_kind"])
         source_latest_revision = latest_revision_by_history[(project_id, source_kind)]
         lifecycle = (
-            ProjectSourceConnectionLifecycle.DISCONNECTED
-            if source_kind != current_source_kind_by_project[project_id]
+            ProjectSourceConnectionLifecycle.CONNECTED
+            if source_kind == current_source_kind_by_project[project_id]
             and int(record["revision_number"]) == source_latest_revision
-            else ProjectSourceConnectionLifecycle.CONNECTED
+            else ProjectSourceConnectionLifecycle.DISCONNECTED
         )
+        source_address, source_ref = migrated_location_by_revision[
+            (
+                project_id,
+                source_kind,
+                int(record["revision_number"]),
+            )
+        ]
         revision = ProjectSourceConnectionRevision(
             ProjectId(project_id),
             _legacy_project_source_id(project_id, source_kind),
             int(record["revision_number"]),
             SourceKind(source_kind),
-            SourceAddress(str(record["source_address"])),
+            source_address,
             Path(str(record["credential_directory"])),
             SourceConnectionAuthMethod(str(record["auth_method"])),
             ConnectionActor(str(record["connected_by"])),
             lifecycle,
             None,
-            None,
+            source_ref,
         )
         connection.execute(
             "INSERT INTO host_project_source_connection_revisions "
@@ -5761,7 +5790,7 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
                 revision.source_kind.value,
                 revision.revision_number,
                 revision.source_address.value,
-                None,
+                None if revision.source_ref is None else revision.source_ref.value,
                 str(revision.credential_directory),
                 revision.auth_method.value,
                 revision.connected_by.value,

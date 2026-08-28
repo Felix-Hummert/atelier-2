@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import DatabaseError, OperationalError
+from sqlalchemy.exc import DatabaseError, NoSuchTableError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.schema import (
@@ -100,23 +100,25 @@ from atelier2.ports.host_configuration import (
     ProjectRootRevisionConflict as PortProjectRootRevisionConflict,
 )
 
-_PROJECT_SOURCE_SHAPE_NAMES = (
-    "host_project_source_connection_revisions",
-    "source_id",
-    "lifecycle",
-    "connected_at",
-    "source_ref",
-)
 
-
-def _project_source_shape_is_missing(error: OperationalError) -> bool:
-    detail = str(error).lower()
-    missing_shape = (
-        "no such column" in detail
-        or "has no column named" in detail
-        or "no such table" in detail
-    )
-    return missing_shape and any(name in detail for name in _PROJECT_SOURCE_SHAPE_NAMES)
+def _require_project_source_shape(connection: Connection) -> None:
+    try:
+        stored_columns = frozenset(
+            str(column["name"])
+            for column in sa.inspect(connection).get_columns(
+                host_project_source_connection_revisions.name
+            )
+        )
+    except NoSuchTableError as error:
+        raise ProjectSourceConnectionBytesDisagree(
+            "project-source connection bytes disagree: the V45 table is absent"
+        ) from error
+    declared_columns = frozenset(host_project_source_connection_revisions.c.keys())
+    if stored_columns != declared_columns:
+        raise ProjectSourceConnectionBytesDisagree(
+            "project-source connection bytes disagree: the V45 table shape is "
+            "incomplete"
+        )
 
 
 def project_root_revision_from_record(record: Mapping[Any, Any]) -> ProjectRootRevision:
@@ -678,19 +680,42 @@ def project_source_connection_revision_from_record(
 def _latest_project_source_connection_revision(
     connection: Connection, project_id: ProjectId
 ) -> ProjectSourceConnectionRevision | None:
-    active = tuple(
-        revision
-        for revision in _latest_project_source_connection_revisions(
-            connection, project_id
+    _require_project_source_shape(connection)
+    ranked = (
+        sa.select(
+            host_project_source_connection_revisions,
+            sa.func.row_number()
+            .over(
+                partition_by=host_project_source_connection_revisions.c.source_id,
+                order_by=host_project_source_connection_revisions.c.revision_number.desc(),
+            )
+            .label("source_rank"),
         )
-        if revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+        .where(
+            host_project_source_connection_revisions.c.project_id == project_id.value
+        )
+        .subquery()
     )
-    if len(active) > 1:
+    records = (
+        connection.execute(
+            sa.select(ranked).where(
+                ranked.c.source_rank == 1,
+                ranked.c.lifecycle == ProjectSourceConnectionLifecycle.CONNECTED.value,
+            )
+        )
+        .mappings()
+        .all()
+    )
+    if len(records) > 1:
         raise ProjectSourceConnectionBytesDisagree(
             "project-source connection bytes disagree: a project has more than "
             "one active source"
         )
-    return None if not active else active[0]
+    return (
+        None
+        if not records
+        else project_source_connection_revision_from_record(records[0])
+    )
 
 
 def latest_project_source_connection_revision(
@@ -700,11 +725,6 @@ def latest_project_source_connection_revision(
         with engine.connect() as connection:
             return _latest_project_source_connection_revision(connection, project_id)
     except OperationalError as error:
-        if _project_source_shape_is_missing(error):
-            raise ProjectSourceConnectionBytesDisagree(
-                "project-source connection bytes disagree: the V45 table shape "
-                "is incomplete"
-            ) from error
         raise HostConfigurationUnreadable(
             f"{HOST_CONFIGURATION_UNREADABLE}: the project-source connection "
             "channel could not be read"
@@ -719,6 +739,7 @@ def latest_project_source_connection_revision(
 def _latest_project_source_connection_revisions(
     connection: Connection, project_id: ProjectId
 ) -> tuple[ProjectSourceConnectionRevision, ...]:
+    _require_project_source_shape(connection)
     ranked = (
         sa.select(
             host_project_source_connection_revisions,
@@ -751,6 +772,7 @@ def _latest_project_source_connection_revisions(
 def _latest_project_source_connection_revision_by_source(
     connection: Connection, project_id: ProjectId, source_id: ProjectSourceId
 ) -> ProjectSourceConnectionRevision | None:
+    _require_project_source_shape(connection)
     record = (
         connection.execute(
             sa.select(host_project_source_connection_revisions)
@@ -777,6 +799,7 @@ def _project_source_credential_directory_reference(
     project_id: ProjectId,
     credential_directory: Path,
 ) -> ProjectSourceCredentialDirectoryReferenceResult:
+    _require_project_source_shape(connection)
     records = (
         connection.execute(
             sa.select(host_project_source_connection_revisions).where(
@@ -801,6 +824,7 @@ def _project_source_credential_directory_reference(
 def _write_project_source_connection_revision(
     connection: Connection, revision: ProjectSourceConnectionRevision
 ) -> ProjectSourceConnectionRevisionCreated | ProjectSourceConnectionRevisionExisting:
+    _require_project_source_shape(connection)
     if revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED:
         active_sources = tuple(
             stored
@@ -1033,9 +1057,7 @@ class DbosHostConfigurationChannel:
                 )
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
-        except OperationalError as error:
-            if _project_source_shape_is_missing(error):
-                return DurableStateCorrupt()
+        except OperationalError:
             return HostConfigurationReadUnavailable()
         except PoolTimeoutError:
             return HostConfigurationReadUnavailable()
@@ -1052,9 +1074,7 @@ class DbosHostConfigurationChannel:
                 )
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
-        except OperationalError as error:
-            if _project_source_shape_is_missing(error):
-                return DurableStateCorrupt()
+        except OperationalError:
             return HostConfigurationReadUnavailable()
         except PoolTimeoutError:
             return HostConfigurationReadUnavailable()
@@ -1071,9 +1091,7 @@ class DbosHostConfigurationChannel:
                 )
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
-        except OperationalError as error:
-            if _project_source_shape_is_missing(error):
-                return DurableStateCorrupt()
+        except OperationalError:
             return HostConfigurationReadUnavailable()
         except PoolTimeoutError:
             return HostConfigurationReadUnavailable()
@@ -1092,9 +1110,7 @@ class DbosHostConfigurationChannel:
             return ProjectSourceConnectionRevisionCollision()
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
-        except OperationalError as error:
-            if _project_source_shape_is_missing(error):
-                return DurableStateCorrupt()
+        except OperationalError:
             return DurableWriteUnavailable()
         except PoolTimeoutError:
             return DurableWriteUnavailable()

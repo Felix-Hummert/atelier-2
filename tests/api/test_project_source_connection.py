@@ -107,8 +107,8 @@ def test_get_reads_the_connection_without_credential_reference() -> None:
     assert "operator" not in response.text
 
 
-@pytest.mark.proves("legacy-connection-unknowns-stay-null-and-private")
-def test_get_never_projects_a_legacy_branch() -> None:
+@pytest.mark.proves("a-project-source-identity-never-includes-a-branch")
+def test_get_refuses_a_branch_stored_in_the_v45_identity() -> None:
     revision = connection()
     legacy = ProjectSourceConnectionRevision(
         revision.project_id,
@@ -126,9 +126,8 @@ def test_get_never_projects_a_legacy_branch() -> None:
 
     response = client(ConnectionChannel(legacy)).get(path())
 
-    assert response.status_code == 200
-    assert response.json()["source_address"] == "FlexOr2/atelier-2"
-    assert "legacy-main" not in response.text
+    assert response.status_code == 500
+    assert response.json()["type"].endswith("durable-state-corrupt")
 
 
 def test_get_names_an_absent_connection() -> None:

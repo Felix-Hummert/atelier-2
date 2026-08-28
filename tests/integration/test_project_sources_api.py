@@ -58,10 +58,15 @@ from atelier2.ports.host_configuration import (
     LatestProjectSourceConnectionsResult,
     ProjectSourceConnectionChannel,
     ProjectSourceConnectionRevisionConflict,
+    ProjectSourceConnectionRevisionExisting,
     ProjectSourceCredentialDirectoryReferenceResult,
+    ProjectSourceCredentialDirectoryUnreferenced,
     PublishProjectSourceConnectionResult,
 )
 from atelier2.ports.project_connections import (
+    CredentialDepositUnavailable,
+    ManagedCredentialDeposit,
+    ManagedProjectSourceCredentialStore,
     ParsedProjectSourceAddress,
     ParseProjectSourceAddressResult,
     ProjectSourceAddressInvalid,
@@ -134,10 +139,9 @@ class FakeGitHubProjectSourceConnector:
         return ParsedProjectSourceAddress(GITHUB_SOURCE_KIND, public_address)
 
     def public_address(self, source_address: SourceAddress) -> str:
-        public_address, separator, branch = source_address.value.partition("@")
-        if separator and not branch:
-            raise ValueError("the stored source address has an empty branch")
-        return public_address
+        if "@" in source_address.value:
+            raise ValueError("the stored source address contains a source ref")
+        return source_address.value
 
 
 def _sequence(values: tuple[str, ...]) -> Callable[[], str]:
@@ -158,6 +162,7 @@ def _client(
     clock_values: tuple[RecordedAt, ...] = (FIRST_CONNECTED_AT, RECONNECTED_AT),
     source_connector: ProjectSourceConnector | None = None,
     connection_channel: ProjectSourceConnectionChannel | None = None,
+    credential_store: ManagedProjectSourceCredentialStore | None = None,
 ) -> TestClient:
     channel = DbosHostConfigurationChannel(engine)
     return TestClient(
@@ -174,8 +179,12 @@ def _client(
                     if source_connector is None
                     else source_connector
                 ),
-                project_source_credential_store=FilesystemProjectSourceCredentialStore(
-                    managed_root, deposit_name=_sequence(deposit_names)
+                project_source_credential_store=(
+                    FilesystemProjectSourceCredentialStore(
+                        managed_root, deposit_name=_sequence(deposit_names)
+                    )
+                    if credential_store is None
+                    else credential_store
                 ),
             ),
             limits=api_limits(),
@@ -185,6 +194,115 @@ def _client(
             connection_clock=_clock(clock_values),
         )
     )
+
+
+@dataclass
+class DelegatingProjectSourceConnectionChannel:
+    delegate: DbosHostConfigurationChannel
+
+    def latest_project_source_connection_revision(
+        self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionResult:
+        return self.delegate.latest_project_source_connection_revision(project_id)
+
+    def latest_project_source_connection_revisions(
+        self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionsResult:
+        return self.delegate.latest_project_source_connection_revisions(project_id)
+
+    def latest_project_source_connection_revision_by_source(
+        self, project_id: ProjectId, source_id: ProjectSourceId
+    ) -> LatestProjectSourceConnectionResult:
+        return self.delegate.latest_project_source_connection_revision_by_source(
+            project_id, source_id
+        )
+
+    def project_source_credential_directory_reference(
+        self, project_id: ProjectId, credential_directory: Path
+    ) -> ProjectSourceCredentialDirectoryReferenceResult:
+        return self.delegate.project_source_credential_directory_reference(
+            project_id, credential_directory
+        )
+
+    def publish_project_source_connection_revision(
+        self, revision: ProjectSourceConnectionRevision
+    ) -> PublishProjectSourceConnectionResult:
+        return self.delegate.publish_project_source_connection_revision(revision)
+
+
+@dataclass
+class RelativePublishingCredentialDeposit:
+    delegate: ManagedCredentialDeposit
+
+    @property
+    def credential_directory(self) -> Path:
+        return self.delegate.credential_directory
+
+    def publish(self) -> Path:
+        return self.delegate.publish().relative_to(Path.cwd())
+
+    def discard(self) -> None:
+        self.delegate.discard()
+
+
+@dataclass(frozen=True)
+class RelativePublishingCredentialStore:
+    delegate: FilesystemProjectSourceCredentialStore
+
+    def stage(
+        self, source_id: ProjectSourceId, token: str
+    ) -> CredentialDepositUnavailable | ManagedCredentialDeposit:
+        staged = self.delegate.stage(source_id, token)
+        if isinstance(staged, CredentialDepositUnavailable):
+            return staged
+        return RelativePublishingCredentialDeposit(staged)
+
+
+@dataclass
+class LandedCandidateWithStaleReference(DelegatingProjectSourceConnectionChannel):
+    def project_source_credential_directory_reference(
+        self, project_id: ProjectId, credential_directory: Path
+    ) -> ProjectSourceCredentialDirectoryReferenceResult:
+        return ProjectSourceCredentialDirectoryUnreferenced()
+
+    def publish_project_source_connection_revision(
+        self, revision: ProjectSourceConnectionRevision
+    ) -> PublishProjectSourceConnectionResult:
+        self.delegate.publish_project_source_connection_revision(revision)
+        wrong_revision = ProjectSourceConnectionRevision(
+            revision.project_id,
+            revision.source_id,
+            revision.revision_number,
+            revision.source_kind,
+            revision.source_address,
+            revision.credential_directory,
+            revision.auth_method,
+            revision.connected_by,
+            revision.lifecycle,
+            revision.connected_at,
+            SourceReference("wrong-result-ref"),
+        )
+        return ProjectSourceConnectionRevisionExisting(wrong_revision)
+
+
+@dataclass
+class WrongDisconnectWriteResult(DelegatingProjectSourceConnectionChannel):
+    conflict_before_wrong_result: bool
+    disconnect_writes: int = 0
+
+    def publish_project_source_connection_revision(
+        self, revision: ProjectSourceConnectionRevision
+    ) -> PublishProjectSourceConnectionResult:
+        if revision.lifecycle is not ProjectSourceConnectionLifecycle.DISCONNECTED:
+            return self.delegate.publish_project_source_connection_revision(revision)
+        self.disconnect_writes += 1
+        if self.conflict_before_wrong_result and self.disconnect_writes == 1:
+            return ProjectSourceConnectionRevisionConflict()
+        connected = self.delegate.latest_project_source_connection_revision_by_source(
+            revision.project_id, revision.source_id
+        )
+        assert isinstance(connected, ProjectSourceConnectionRevision)
+        return ProjectSourceConnectionRevisionExisting(connected)
 
 
 @dataclass
@@ -600,6 +718,71 @@ def test_connect_duplicate_disconnect_reconnect_and_rotate_through_real_app(
         assert token not in durable_bytes
 
 
+@pytest.mark.proves("credential-publication-follows-the-durable-source-revision")
+def test_managed_connect_normalizes_the_published_credential_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    engine = _opened_project(tmp_path)
+    managed_root = tmp_path / "managed-credentials"
+    credential_store = RelativePublishingCredentialStore(
+        FilesystemProjectSourceCredentialStore(
+            managed_root, deposit_name=lambda: "relative"
+        )
+    )
+
+    response = _client(
+        engine,
+        managed_root,
+        deposit_names=(),
+        credential_store=credential_store,
+    ).post(
+        _source_paths()[0],
+        json={"address": "github.com/acme/studio", "token": "relative-token"},
+    )
+
+    assert response.status_code == 201
+    latest = DbosHostConfigurationChannel(
+        engine
+    ).latest_project_source_connection_revision_by_source(PROJECT, SOURCE)
+    assert isinstance(latest, ProjectSourceConnectionRevision)
+    assert latest.credential_directory == (managed_root / f"{SOURCE.value}-relative")
+    assert latest.credential_directory.is_absolute()
+    assert (latest.credential_directory / GITHUB_TOKEN_CREDENTIAL_ENTRY).read_text(
+        encoding="utf-8"
+    ) == "relative-token"
+    engine.dispose()
+
+
+@pytest.mark.proves("credential-publication-follows-the-durable-source-revision")
+def test_connect_rereads_the_candidate_before_discarding_its_deposit(
+    tmp_path: Path,
+) -> None:
+    engine = _opened_project(tmp_path)
+    managed_root = tmp_path / "managed-credentials"
+    channel = LandedCandidateWithStaleReference(DbosHostConfigurationChannel(engine))
+
+    response = _client(
+        engine,
+        managed_root,
+        deposit_names=("candidate",),
+        connection_channel=channel,
+    ).post(
+        _source_paths()[0],
+        json={"address": "github.com/acme/studio", "token": "candidate-token"},
+    )
+
+    assert response.status_code == 201
+    latest = channel.delegate.latest_project_source_connection_revision_by_source(
+        PROJECT, SOURCE
+    )
+    assert isinstance(latest, ProjectSourceConnectionRevision)
+    assert (latest.credential_directory / GITHUB_TOKEN_CREDENTIAL_ENTRY).read_text(
+        encoding="utf-8"
+    ) == "candidate-token"
+    engine.dispose()
+
+
 @pytest.mark.proves("legacy-connection-unknowns-stay-null-and-private")
 def test_a_migrated_v44_connection_keeps_its_unknown_instant_and_branch_private(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -793,6 +976,43 @@ def test_disconnect_reconciles_a_conflict_that_already_published_the_release(
     assert client.delete(_source_paths()[1]).status_code == 204
     assert client.delete(_source_paths()[1]).status_code == 204
     assert client.get(_source_paths()[0]).json() == {"items": []}
+    engine.dispose()
+
+
+@pytest.mark.parametrize("conflict_before_wrong_result", [False, True])
+@pytest.mark.proves("disconnect-is-idempotent-and-every-reader-follows-lifecycle")
+def test_disconnect_refuses_a_write_result_that_does_not_carry_its_candidate(
+    tmp_path: Path, conflict_before_wrong_result: bool
+) -> None:
+    engine = _opened_project(tmp_path)
+    managed_root = tmp_path / "managed-credentials"
+    assert (
+        _client(engine, managed_root, deposit_names=("first",))
+        .post(
+            _source_paths()[0],
+            json={"address": "github.com/acme/studio", "token": "first-token"},
+        )
+        .status_code
+        == 201
+    )
+    wrong_write = WrongDisconnectWriteResult(
+        DbosHostConfigurationChannel(engine), conflict_before_wrong_result
+    )
+
+    response = _client(
+        engine,
+        managed_root,
+        deposit_names=(),
+        connection_channel=wrong_write,
+    ).delete(_source_paths()[1])
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith("durable-state-corrupt")
+    latest = wrong_write.delegate.latest_project_source_connection_revision_by_source(
+        PROJECT, SOURCE
+    )
+    assert isinstance(latest, ProjectSourceConnectionRevision)
+    assert latest.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
     engine.dispose()
 
 

@@ -11,7 +11,10 @@ import githubkit
 import githubkit.exception
 import httpx
 
-from atelier2.adapters.github.composition import GITHUB_SOURCE_KIND
+from atelier2.adapters.github.composition import (
+    GITHUB_SOURCE_KIND,
+    github_public_source_address,
+)
 from atelier2.adapters.github.live_effects import (
     GitHubCredentialUnresolvable,
     GitHubTokenCredential,
@@ -143,10 +146,4 @@ class GitHubProjectSourceConnector:
         return ParsedProjectSourceAddress(GITHUB_SOURCE_KIND, public_address)
 
     def public_address(self, source_address: SourceAddress) -> str:
-        repository, separator, branch = source_address.value.partition("@")
-        owner, slash, name = repository.partition("/")
-        if not slash or not owner or not name or "/" in name:
-            raise ValueError("stored GitHub source address is malformed")
-        if separator and not branch:
-            raise ValueError("stored GitHub source address is malformed")
-        return repository
+        return github_public_source_address(source_address)

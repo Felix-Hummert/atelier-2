@@ -1093,17 +1093,17 @@ def test_v45_preserves_legacy_source_history_without_touching_queue_objects(
             (
                 "305615fd-f3be-c40f-22d4-7e8d53428878",
                 1,
-                "acme/studio@main",
-                None,
+                "acme/studio",
+                "main",
                 "/legacy/credential-one",
-                "CONNECTED",
+                "DISCONNECTED",
                 None,
             ),
             (
                 "305615fd-f3be-c40f-22d4-7e8d53428878",
                 2,
-                "acme/studio@trunk",
-                None,
+                "acme/studio",
+                "trunk",
                 "/legacy/credential-two",
                 "CONNECTED",
                 None,
@@ -1165,30 +1165,38 @@ def test_v44_connection_shape_is_frozen_apart_from_the_live_v45_declaration() ->
 
 
 @pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
-def test_v45_preserves_kind_histories_and_marks_only_the_noncurrent_head(
+def test_v45_marks_every_historical_revision_disconnected_across_source_kinds(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
     _create_populated_v44_source_store(database)
-    opaque_credential_reference = "~/opaque/../credential"
     with sqlite3.connect(database) as connection:
-        connection.execute(
+        legacy_gitlab_revisions = (
+            (1, "opaque:project@first-ref", "~/opaque/../credential-one"),
+            (3, "opaque:project@current-ref", "~/opaque/../credential-three"),
+        )
+        connection.executemany(
             "INSERT INTO host_project_source_connection_revisions "
             "(revision_hash, project_id, source_kind, revision_number, "
             "source_address, credential_directory, auth_method, connected_by) "
-            "VALUES (?, 'studio', 'gitlab', 1, 'opaque:project@ref', ?, "
+            "VALUES (?, 'studio', 'gitlab', ?, ?, ?, "
             "'personal-access-token', 'legacy-operator')",
-            (
-                schema_module._v44_project_source_connection_revision_hash(
-                    ProjectId("studio"),
-                    1,
-                    SourceKind("gitlab"),
-                    SourceAddress("opaque:project@ref"),
-                    opaque_credential_reference,
-                    SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
-                    ConnectionActor("legacy-operator"),
-                ),
-                opaque_credential_reference,
+            tuple(
+                (
+                    schema_module._v44_project_source_connection_revision_hash(
+                        ProjectId("studio"),
+                        revision_number,
+                        SourceKind("gitlab"),
+                        SourceAddress(source_address),
+                        credential_reference,
+                        SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                        ConnectionActor("legacy-operator"),
+                    ),
+                    revision_number,
+                    source_address,
+                    credential_reference,
+                )
+                for revision_number, source_address, credential_reference in legacy_gitlab_revisions
             ),
         )
         connection.commit()
@@ -1209,30 +1217,40 @@ def test_v45_preserves_kind_histories_and_marks_only_the_noncurrent_head(
             "305615fd-f3be-c40f-22d4-7e8d53428878",
             "github",
             1,
-            "acme/studio@main",
-            None,
+            "acme/studio",
+            "main",
             "/legacy/credential-one",
-            "CONNECTED",
+            "DISCONNECTED",
             None,
         ),
         (
             "305615fd-f3be-c40f-22d4-7e8d53428878",
             "github",
             2,
-            "acme/studio@trunk",
-            None,
+            "acme/studio",
+            "trunk",
             "/legacy/credential-two",
-            "CONNECTED",
+            "DISCONNECTED",
             None,
         ),
         (
             "75c2fcf6-d0f3-ae58-9936-c93792d856ea",
             "gitlab",
             1,
-            "opaque:project@ref",
+            "opaque:project@first-ref",
             None,
-            opaque_credential_reference,
+            "~/opaque/../credential-one",
             "DISCONNECTED",
+            None,
+        ),
+        (
+            "75c2fcf6-d0f3-ae58-9936-c93792d856ea",
+            "gitlab",
+            3,
+            "opaque:project@current-ref",
+            None,
+            "~/opaque/../credential-three",
+            "CONNECTED",
             None,
         ),
     )
