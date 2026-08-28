@@ -52,7 +52,11 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    SubmitWaitAnswerRequest,
+    WaitAnswerActor,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.runs import (
@@ -174,7 +178,14 @@ def _append_terminal_events(
             runtime.engine, runtime.settings.application_version
         )
         answerer.submit_result(
-            SubmitWaitAnswerRequest(run_id, revision.revision_hash, "wait", b"17")
+            SubmitWaitAnswerRequest(
+                run_id,
+                revision.revision_hash,
+                "wait",
+                NodeExecutionId.for_node(run_id, revision.revision_hash, "wait"),
+                WaitAnswerActor.OPERATOR,
+                b"17",
+            )
         )
         with canonical_write_transaction(runtime.engine) as connection:
             answer = load_wait_answer(

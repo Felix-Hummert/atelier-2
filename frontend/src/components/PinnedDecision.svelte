@@ -74,14 +74,20 @@
   // page guards its own: a run update that leaves this node
   // unchanged never re-reads, and a move to another node reloads honestly.
   let loadedNodeKey = "";
-  $: void loadForNode(run.public_run_reference, run.workflow_revision_hash, run.current_node_id);
+  $: void loadForNode(
+    run.public_run_reference,
+    run.workflow_revision_hash,
+    run.current_node_id,
+    run.current_node_execution_id
+  );
 
   async function loadForNode(
     publicRunReference: string,
     workflowRevisionHash: string,
-    nodeId: string
+    nodeId: string,
+    nodeExecutionId: string | null
   ): Promise<void> {
-    const key = `${publicRunReference}:${nodeId}`;
+    const key = `${publicRunReference}:${nodeExecutionId ?? "missing"}`;
     if (key === loadedNodeKey) return;
     loadedNodeKey = key;
     question = { state: "loading" };
@@ -89,10 +95,14 @@
     pendingWait = null;
     waitAccepted = false;
     waitFailureMessage = null;
+    if (nodeExecutionId === null) {
+      waitFailureMessage = "The waiting turn does not name its exact execution.";
+      return;
+    }
     await Promise.all([
       loadQuestion(publicRunReference, nodeId, key),
       loadGraph(workflowRevisionHash, nodeId, key),
-      loadPending(publicRunReference, workflowRevisionHash, nodeId, key)
+      loadPending(publicRunReference, workflowRevisionHash, nodeId, nodeExecutionId, key)
     ]);
   }
 
@@ -139,13 +149,15 @@
     publicRunReference: string,
     workflowRevisionHash: string,
     nodeId: string,
+    nodeExecutionId: string,
     key: string
   ): Promise<void> {
     const lookup = await loadPendingWaitAnswer(
       mutationJournal,
       publicRunReference,
       workflowRevisionHash,
-      nodeId
+      nodeId,
+      nodeExecutionId
     );
     if (key !== loadedNodeKey) return;
     if (lookup.kind === "corrupt") {
@@ -162,11 +174,13 @@
     waitFailureMessage = null;
     waitBusy = true;
     try {
+      const nodeExecutionId = run.current_node_execution_id;
       const mutation = await prepareWaitAnswer(
         mutationJournal,
         run.public_run_reference,
         run.workflow_revision_hash,
         run.current_node_id,
+        nodeExecutionId,
         answer
       );
       pendingWait = mutation;

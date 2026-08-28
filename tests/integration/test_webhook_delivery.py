@@ -34,7 +34,12 @@ from atelier2.application.deliver_attention_webhook import (
     NoAttentionEventsPending,
     deliver_attention_webhook,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventKind,
+    WaitAnswerActor,
+)
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -149,6 +154,9 @@ def _insert_attention_event(
         NodeExecutionId.for_node(run_id, revision.revision_hash, node_id),
         kind,
         b"",
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAITING_INPUT else None
+        ),
     )
     connection.execute(
         runs.insert().values(
@@ -178,6 +186,11 @@ def _insert_attention_event(
             node_execution_id=event.node_execution_id.value,
             round_ordinal=event.round_ordinal,
             event_kind=event.event_kind.value,
+            wait_answer_actor=(
+                None
+                if event.wait_answer_actor is None
+                else event.wait_answer_actor.value
+            ),
             payload=event.payload,
             payload_hash=event.payload_hash.value,
             receipt_logical_key=None,

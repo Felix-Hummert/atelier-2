@@ -7,6 +7,7 @@
   export let pendingAnswer: string | null;
   export let accepted = false;
   export let busy = false;
+  export let answerable = true;
   export let validationMessage: string | null = null;
   export let failureMessage: string | null = null;
   export let onAnswer: (answer: string) => void;
@@ -76,6 +77,7 @@
         autocomplete="off"
         spellcheck="false"
         bind:value={answer}
+        disabled={!answerable}
         aria-describedby={validationMessage === null ? undefined : "wait-validation"}
         aria-invalid={validationMessage === null ? undefined : "true"}
         bind:this={answerInput}
@@ -89,7 +91,7 @@
       {#if validationMessage !== null}
         <p id="wait-validation" class="field-error" role="alert">{validationMessage}</p>
       {/if}
-      <button class="primary" type="submit" disabled={busy}>{runPageCopy.answerSubmit}</button>
+      <button class="primary" type="submit" disabled={busy || !answerable}>{runPageCopy.answerSubmit}</button>
     </form>
   {/if}
 </section>

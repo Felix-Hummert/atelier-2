@@ -1597,6 +1597,7 @@ class RunResourceV3(ApiModel):
         "CANCELLED",
     ]
     current_node_id: str = Field(min_length=1)
+    current_node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     cancellation: RunCancellabilityResource
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)

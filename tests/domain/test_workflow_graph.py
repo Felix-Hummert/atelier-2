@@ -18,6 +18,7 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
     WaitAnswer,
+    WaitAnswerActor,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash, frame
@@ -57,7 +58,14 @@ def test_event_terminal_and_answer_hash_vectors_are_frozen() -> None:
         RunEventKind.WAIT_ANSWERED,
         b"5",
     )
-    answer = WaitAnswer(run_id, revision.revision_hash, node_id, execution, b"5")
+    answer = WaitAnswer(
+        run_id,
+        revision.revision_hash,
+        node_id,
+        execution,
+        WaitAnswerActor.OPERATOR,
+        b"5",
+    )
 
     assert event.payload_hash.value == (
         "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d"
@@ -252,6 +260,11 @@ def test_only_an_agent_completion_may_carry_a_receipt_hash(
                 else None
             ),
             agent_receipt_hash=AgentReceiptHash("c" * 64),
+            wait_answer_actor=(
+                WaitAnswerActor.OPERATOR
+                if event_kind is RunEventKind.WAITING_INPUT
+                else None
+            ),
         )
 
 
@@ -329,6 +342,11 @@ def test_receipt_events_reject_missing_or_different_receipt_bindings(
             b"result",
             receipt_logical_key=receipt_logical_key,
             receipt_result_hash=receipt_result_hash,
+            wait_answer_actor=(
+                WaitAnswerActor.OPERATOR
+                if event_kind is RunEventKind.WAITING_INPUT
+                else None
+            ),
         )
 
 
@@ -374,6 +392,11 @@ def test_nonreceipt_events_reject_receipt_bindings(
             b"result",
             receipt_logical_key=receipt_logical_key,
             receipt_result_hash=receipt_result_hash,
+            wait_answer_actor=(
+                WaitAnswerActor.OPERATOR
+                if event_kind is RunEventKind.WAITING_INPUT
+                else None
+            ),
         )
 
 
@@ -427,5 +450,6 @@ def test_answer_rejects_an_execution_identity_for_another_node() -> None:
             revision.revision_hash,
             "node",
             wrong_execution,
+            WaitAnswerActor.OPERATOR,
             b"5",
         )

@@ -30,12 +30,14 @@ export async function prepareWaitAnswer(
   publicRunReference: string,
   workflowRevisionHash: string,
   nodeId: string,
+  expectedNodeExecutionId: string,
   typedOrExactAnswer: string
 ): Promise<WaitMutation> {
   const mutation = await v3WaitMutation(
     publicRunReference,
     workflowRevisionHash,
     nodeId,
+    expectedNodeExecutionId,
     encodeWaitAnswer(typedOrExactAnswer)
   );
   const prepared = await mutationJournal.prepare(mutation);
@@ -127,8 +129,8 @@ export type PendingWaitLookup =
 
 /**
  * Reads whichever earlier wait answer the durable journal still holds for
- * this exact node, before this surface has sent one of its own -- the same
- * identity (`public_run_reference` + `node_id`) the run page and the Board
+ * this exact node execution, before this surface has sent one of its own -- the same
+ * identity (`public_run_reference` + `expected_node_execution_id`) the run page and the Board
  * both key their journal entry on, so an answer begun on one surface is seen
  * as pending on the other rather than offered twice.
  */
@@ -136,9 +138,12 @@ export async function loadPendingWaitAnswer(
   mutationJournal: MutationJournal,
   publicRunReference: string,
   workflowRevisionHash: string,
-  nodeId: string
+  nodeId: string,
+  expectedNodeExecutionId: string
 ): Promise<PendingWaitLookup> {
-  const entry = await mutationJournal.get(waitMutationId(publicRunReference, nodeId));
+  const entry = await mutationJournal.get(
+    waitMutationId(publicRunReference, expectedNodeExecutionId)
+  );
   if (entry === null) {
     return { kind: "none" };
   }
@@ -148,6 +153,7 @@ export async function loadPendingWaitAnswer(
   if (
     entry.workflow_revision_hash !== workflowRevisionHash ||
     entry.node_id !== nodeId ||
+    entry.expected_node_execution_id !== expectedNodeExecutionId ||
     entry.public_run_reference !== publicRunReference
   ) {
     return { kind: "corrupt", message: "The saved exact answer does not belong to this waiting node." };

@@ -12,6 +12,7 @@ import {
   MutationJournal,
   waitMutation,
   waitMutationId,
+  type JournalEntry,
   type WaitMutation
 } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
@@ -59,8 +60,10 @@ describe("Wait control", () => {
         mutationJournal: journal
       }
     });
+    await replayWaitingHead(feed);
 
     const field = await screen.findByLabelText(runPageCopy.integerAnswer);
+    await waitFor(() => expect(field.hasAttribute("disabled")).toBe(false));
     await fireEvent.input(field, { target: { value: "17" } });
     await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
 
@@ -70,7 +73,13 @@ describe("Wait control", () => {
     expect(answer).toHaveBeenCalledTimes(1);
     const firstRequest = answer.mock.calls[0]?.[0] as WaitMutation;
     expect(exactBody(firstRequest)).toBe(
-      JSON.stringify({ workflow_revision_hash: digest, node_id: "wait", answer_base64: "MTc=" })
+      JSON.stringify({
+        workflow_revision_hash: digest,
+        node_id: "wait",
+        expected_node_execution_id: digest,
+        actor: "operator",
+        answer_base64: "MTc="
+      })
     );
     expect(firstRequest.answer_hash).toBe(answerHash);
     expect(screen.getByRole("article", { name: nodeAriaName("wait", "working") })).toBeTruthy();
@@ -89,9 +98,6 @@ describe("Wait control", () => {
       delivery: "uncertain"
     });
 
-    feed.handlers?.event(JSON.stringify(agentCompleted(1)));
-    feed.handlers?.event(JSON.stringify(actionCompleted(2)));
-    feed.handlers?.event(JSON.stringify(waitingInput(3)));
     feed.handlers?.event(JSON.stringify(waitAnswered(4)));
 
     await waitFor(async () => expect(await journal.get(firstRequest.mutation_id)).toBeNull());
@@ -111,6 +117,7 @@ describe("Wait control", () => {
       });
 
       const field = await screen.findByLabelText(runPageCopy.integerAnswer);
+      await waitFor(() => expect(field.hasAttribute("disabled")).toBe(false));
       await fireEvent.input(field, { target: { value } });
       await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
 
@@ -122,7 +129,7 @@ describe("Wait control", () => {
 
   it("restores an uncertain exact answer after reload and lets the operator discard it", async () => {
     const journal = new MutationJournal(sessionStorage);
-    const mutation = await waitMutation(publicReference, digest, "wait", "17");
+    const mutation = await waitMutation(publicReference, digest, "wait", digest, "17");
     await journal.prepare(mutation);
     await journal.markUncertain(mutation.mutation_id);
 
@@ -136,7 +143,26 @@ describe("Wait control", () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText(runPageCopy.integerAnswer)));
     expect(screen.getByRole("region", { name: runPageCopy.answerNeeded }).querySelector(".human-action-shape-needs")).toBeTruthy();
     expect(screen.getByRole("article", { name: nodeAriaName("wait", "needs_you") })).toBeTruthy();
-    expect(await journal.get(waitMutationId(publicReference, "wait"))).toBeNull();
+    expect(await journal.get(waitMutationId(publicReference, digest))).toBeNull();
+  });
+
+  it("keeps a discarded answer discarded when an older reload finishes afterwards", async () => {
+    const journal = new DeferredReloadJournal(sessionStorage);
+    const mutation = await waitMutation(publicReference, digest, "wait", digest, "17");
+    await journal.prepare(mutation);
+    await journal.markUncertain(mutation.mutation_id);
+
+    render(App, { props: { cockpitApi: api(), mutationJournal: journal } });
+
+    expect(await screen.findByRole("heading", { name: "Answer uncertain" })).toBeTruthy();
+    await journal.waitForDeferredGet();
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.discard }));
+    await waitFor(async () => expect(await journal.entries()).toEqual([]));
+    await journal.releaseDeferredGet();
+
+    expect(screen.queryByRole("heading", { name: "Answer uncertain" })).toBeNull();
+    expect(screen.getByLabelText(runPageCopy.integerAnswer)).toBeTruthy();
+    expect(await journal.entries()).toEqual([]);
   });
 
   it("keeps a durable answer authoritative when its event arrives before the 202 response", async () => {
@@ -146,22 +172,27 @@ describe("Wait control", () => {
     const answer = vi.fn(
       () => new Promise<{ status: number; value: Run }>((resolve) => { acceptAnswer = resolve; })
     );
-    const getRun = vi.fn().mockResolvedValueOnce(waitingInputRun()).mockResolvedValue(answeredRun());
+    const getRun = vi
+      .fn()
+      .mockResolvedValueOnce(waitingInputRun())
+      .mockResolvedValueOnce(waitingInputRun())
+      .mockResolvedValue(answeredRun());
     render(App, {
       props: {
         cockpitApi: api({ answer, getRun, openRunEvents: feed.open }),
         mutationJournal: journal
       }
     });
+    await replayWaitingHead(feed);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: runPageCopy.answerSubmit }).hasAttribute("disabled")).toBe(false)
+    );
     await fireEvent.input(await screen.findByLabelText(runPageCopy.integerAnswer), {
       target: { value: "17" }
     });
     await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
     expect(await screen.findByRole("heading", { name: "Sending answer" })).toBeTruthy();
 
-    feed.handlers?.event(JSON.stringify(agentCompleted(1)));
-    feed.handlers?.event(JSON.stringify(actionCompleted(2)));
-    feed.handlers?.event(JSON.stringify(waitingInput(3)));
     feed.handlers?.event(JSON.stringify(waitAnswered(4)));
     acceptAnswer({ status: 202, value: waitingInputRun() });
 
@@ -183,7 +214,9 @@ describe("Wait control", () => {
     );
     render(App, { props: { cockpitApi: api({ answer }), mutationJournal: journal } });
 
-    await fireEvent.input(await screen.findByLabelText(runPageCopy.integerAnswer), {
+    const field = await screen.findByLabelText(runPageCopy.integerAnswer);
+    await waitFor(() => expect(field.hasAttribute("disabled")).toBe(false));
+    await fireEvent.input(field, {
       target: { value: "17" }
     });
     await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
@@ -196,6 +229,50 @@ describe("Wait control", () => {
     expect(await journal.entries()).toEqual([]);
   });
 
+  it.each([
+    ["answer-execution-stale", "Answer execution is stale", 409, true],
+    ["durable-state-corrupt", "Durable state is corrupt", 500, true],
+    ["temporarily-unavailable", "Temporarily unavailable", 503, false]
+  ] as const)(
+    "treats %s (%s) at HTTP %i as a definitive discard only when the answer cannot have landed",
+    async (code, title, status, definitive) => {
+      const journal = new MutationJournal(sessionStorage);
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            type: `urn:atelier2:problem:v1:${code}`,
+            title,
+            status,
+            detail: "The durable answer door names this outcome."
+          }),
+          { status, headers: { "content-type": "application/problem+json" } }
+        )
+      );
+      const publishedApi = createCockpitApi(fetcher);
+      render(App, {
+        props: {
+          cockpitApi: api({ answer: publishedApi.answer }),
+          mutationJournal: journal
+        }
+      });
+
+      const field = await screen.findByLabelText(runPageCopy.integerAnswer);
+      await waitFor(() => expect(field.hasAttribute("disabled")).toBe(false));
+      await fireEvent.input(field, { target: { value: "17" } });
+      await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
+
+      if (definitive) {
+        expect(await screen.findByRole("alert", { name: "Send failed" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
+        expect(await journal.entries()).toEqual([]);
+      } else {
+        expect(await screen.findByRole("heading", { name: "Answer uncertain" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: runPageCopy.retry })).toBeTruthy();
+        expect(await journal.entries()).toMatchObject([{ delivery: "uncertain" }]);
+      }
+    }
+  );
+
   it("shows no Wait action unless the authoritative run is WAITING_INPUT", async () => {
     render(App, { props: { cockpitApi: api({ getRun: vi.fn(async () => startedRun()) }) } });
 
@@ -205,7 +282,7 @@ describe("Wait control", () => {
   });
 
   it("sends the saved exact JSON bytes to the R2 answer endpoint", async () => {
-    const mutation = await waitMutation(publicReference, digest, "wait", "17");
+    const mutation = await waitMutation(publicReference, digest, "wait", digest, "17");
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify(waitingInputRun()), {
         status: 202,
@@ -228,6 +305,54 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
     getRun: vi.fn(async () => waitingInputRun()),
     getWorkflowRevision: vi.fn(async () => revision()),
+    openRunEvents: vi.fn((_reference, handlers) => {
+      queueMicrotask(() => {
+        handlers.event(JSON.stringify(agentCompleted(1)));
+        handlers.event(JSON.stringify(actionCompleted(2)));
+        handlers.event(JSON.stringify(waitingInput(3)));
+      });
+      return { close: vi.fn() };
+    }),
     ...overrides
   });
+}
+
+async function replayWaitingHead(feed: FakeRunEventFeed): Promise<void> {
+  await waitFor(() => expect(feed.handlers).not.toBeNull());
+  feed.handlers?.event(JSON.stringify(agentCompleted(1)));
+  feed.handlers?.event(JSON.stringify(actionCompleted(2)));
+  feed.handlers?.event(JSON.stringify(waitingInput(3)));
+}
+
+class DeferredReloadJournal extends MutationJournal {
+  private getCount = 0;
+  private readonly deferredGetStarted: Promise<void>;
+  private startDeferredGet!: () => void;
+  private readonly deferredGetRelease: Promise<void>;
+  private releaseGet!: () => void;
+
+  constructor(storage: Storage) {
+    super(storage);
+    this.deferredGetStarted = new Promise((resolve) => { this.startDeferredGet = resolve; });
+    this.deferredGetRelease = new Promise((resolve) => { this.releaseGet = resolve; });
+  }
+
+  override async get(mutationId: string): Promise<JournalEntry | null> {
+    const entry = await super.get(mutationId);
+    this.getCount += 1;
+    if (this.getCount === 2) {
+      this.startDeferredGet();
+      await this.deferredGetRelease;
+    }
+    return entry;
+  }
+
+  async waitForDeferredGet(): Promise<void> {
+    await this.deferredGetStarted;
+  }
+
+  async releaseDeferredGet(): Promise<void> {
+    this.releaseGet();
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+  }
 }

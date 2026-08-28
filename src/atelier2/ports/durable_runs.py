@@ -5,7 +5,11 @@ from enum import StrEnum
 from typing import Protocol
 
 from atelier2.contracts.agents import AgentBindingSet
-from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
+from atelier2.contracts.executions import (
+    SubmitWaitAnswerRequest,
+    WaitAnswerActor,
+    WaitAnswerSnapshot,
+)
 from atelier2.contracts.host_configuration import UncastRole
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import (
@@ -244,7 +248,14 @@ class DurableAnswerCreated:
 
 @dataclass(frozen=True)
 class DurableAnswerExisting:
+    """The exact answer an idempotent retry found, pending or already applied."""
+
     snapshot: WaitAnswerSnapshot
+
+
+@dataclass(frozen=True)
+class DurableAnswerActorMismatch:
+    expected_actor: WaitAnswerActor
 
 
 @dataclass(frozen=True)
@@ -268,7 +279,7 @@ class DurableAnswerStateConflict:
 
 
 @dataclass(frozen=True)
-class DurableAnswerBytesConflict:
+class DurableAnswerStale:
     pass
 
 
@@ -289,11 +300,12 @@ class DurableAnswerNotAdmitted:
 type DurableAnswerResult = (
     DurableAnswerCreated
     | DurableAnswerExisting
+    | DurableAnswerActorMismatch
     | DurableAnswerRunMissing
     | DurableAnswerNodeMissing
     | DurableAnswerRevisionConflict
     | DurableAnswerStateConflict
-    | DurableAnswerBytesConflict
+    | DurableAnswerStale
     | DurableAnswerNotAdmitted
     | DurableWriteUnavailable
     | DurableStateCorrupt

@@ -931,7 +931,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
     payloads_v3 = {
         **payloads,
         "WAITING_INPUT": set(),
-        "WAIT_ANSWERED": {"answer_base64", "answer_hash"},
+        "WAIT_ANSWERED": {"actor", "answer_base64", "answer_hash"},
         "WAIT_CANCELLED": {"command_id"},
     }
     for event, component_name in {

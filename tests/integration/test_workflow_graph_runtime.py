@@ -22,10 +22,10 @@ from atelier2.adapters.dbos.workflow_ids import (
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerBytesConflict,
     AnswerExistingApplied,
     AnswerExistingPending,
     AnswerWaitResult,
+    DurableStateCorrupt,
     UnanswerableWait,
     answer_wait_result,
 )
@@ -49,6 +49,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     NodeExecutionId,
     SubmitWaitAnswerRequest,
+    WaitAnswerActor,
     logical_effect_key_for,
     terminal_hash_for,
 )
@@ -221,7 +222,12 @@ def submit_answer(lease: DbosRuntime, revision: WorkflowRevision) -> None:
         lease.engine,
         lease.settings.application_version,
         SubmitWaitAnswerRequest(
-            RunId("run-1"), revision.revision_hash, "waiting", b"5"
+            RunId("run-1"),
+            revision.revision_hash,
+            "waiting",
+            NodeExecutionId.for_node(RunId("run-1"), revision.revision_hash, "waiting"),
+            WaitAnswerActor.OPERATOR,
+            b"5",
         ),
     )
 
@@ -440,6 +446,10 @@ def test_answer_submission_is_exact_and_concurrent(
                 RunId("run-1"),
                 revision.revision_hash,
                 "waiting",
+                NodeExecutionId.for_node(
+                    RunId("run-1"), revision.revision_hash, "waiting"
+                ),
+                WaitAnswerActor.OPERATOR,
                 answer_bytes,
                 DbosWaitAnswerer(lease.engine, lease.settings.application_version),
             )
@@ -452,18 +462,22 @@ def test_answer_submission_is_exact_and_concurrent(
             for result in results
             if isinstance(
                 result,
-                (AnswerAcceptedPending, AnswerExistingPending, AnswerExistingApplied),
+                (
+                    AnswerAcceptedPending,
+                    AnswerExistingPending,
+                    AnswerExistingApplied,
+                ),
             )
         ]
-        conflicts = [
-            result for result in results if isinstance(result, AnswerBytesConflict)
+        corruptions = [
+            result for result in results if isinstance(result, DurableStateCorrupt)
         ]
         if answers[0] == answers[1]:
             assert len(snapshots) == 2
-            assert len(conflicts) == 0
+            assert len(corruptions) == 0
         else:
             assert len(snapshots) == 1
-            assert len(conflicts) == 1
+            assert len(corruptions) == 1
         accepted_answers = {snapshot.answer.answer_bytes for snapshot in snapshots}
         assert len(accepted_answers) == 1
         assert accepted_answers.issubset(set(answers))
@@ -511,6 +525,10 @@ def test_invalid_integer_answer_writes_no_product_or_dbos_state(
                 RunId("run-1"),
                 revision.revision_hash,
                 "waiting",
+                NodeExecutionId.for_node(
+                    RunId("run-1"), revision.revision_hash, "waiting"
+                ),
+                WaitAnswerActor.OPERATOR,
                 answer_bytes,
                 answerer,
             )
@@ -523,7 +541,14 @@ def test_invalid_integer_answer_writes_no_product_or_dbos_state(
         # use-case -- and it leaves nothing durable behind either way.
         refusal = answerer.submit_result(
             SubmitWaitAnswerRequest(
-                RunId("run-1"), revision.revision_hash, "waiting", answer_bytes
+                RunId("run-1"),
+                revision.revision_hash,
+                "waiting",
+                NodeExecutionId.for_node(
+                    RunId("run-1"), revision.revision_hash, "waiting"
+                ),
+                WaitAnswerActor.OPERATOR,
+                answer_bytes,
             )
         )
         assert isinstance(refusal, DurableAnswerNotAdmitted)
@@ -532,7 +557,7 @@ def test_invalid_integer_answer_writes_no_product_or_dbos_state(
         idle.close()
 
 
-def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
+def test_pending_retry_converges_but_an_applied_execution_is_stale_without_reenqueue(
     tmp_path: Path,
 ) -> None:
     running = runtime(tmp_path)
@@ -557,12 +582,19 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
             pending.engine, pending.settings.application_version
         )
         request = SubmitWaitAnswerRequest(
-            RunId("run-1"), revision.revision_hash, "waiting", b"5"
+            RunId("run-1"),
+            revision.revision_hash,
+            "waiting",
+            wait_execution,
+            WaitAnswerActor.OPERATOR,
+            b"5",
         )
         first = answer_wait_result(
             request.run_id,
             request.revision_hash,
             request.node_id,
+            request.expected_node_execution_id,
+            request.actor,
             request.answer_bytes,
             answerer,
         )
@@ -580,6 +612,8 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
             request.run_id,
             request.revision_hash,
             request.node_id,
+            request.expected_node_execution_id,
+            request.actor,
             request.answer_bytes,
             answerer,
         ) == AnswerExistingPending(first.snapshot)
@@ -588,10 +622,12 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
                 RunId("run-1"),
                 revision.revision_hash,
                 "waiting",
+                wait_execution,
+                WaitAnswerActor.OPERATOR,
                 b"6",
                 answerer,
             )
-            == AnswerBytesConflict()
+            == DurableStateCorrupt()
         )
         assert all_durable_rows(tmp_path) == pending_rows
         assert answer_counts(tmp_path) == (1, 1, 0)
@@ -615,20 +651,23 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
             request.run_id,
             request.revision_hash,
             request.node_id,
+            request.expected_node_execution_id,
+            request.actor,
             request.answer_bytes,
             answerer,
         )
         assert isinstance(retried, AnswerExistingApplied)
-        assert retried.snapshot.state.value == "APPLIED"
         assert (
             answer_wait_result(
                 RunId("run-1"),
                 revision.revision_hash,
                 "waiting",
+                wait_execution,
+                WaitAnswerActor.OPERATOR,
                 b"6",
                 answerer,
             )
-            == AnswerBytesConflict()
+            == DurableStateCorrupt()
         )
         assert all_durable_rows(tmp_path) == applied_rows
         assert answer_counts(tmp_path) == (1, 1, 1)

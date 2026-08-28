@@ -55,7 +55,7 @@ ROUND_TRIPS = (
     RoundTrip(
         "AnswerWaitRequestResource",
         ("RunResourceV3", "NodeRailResource"),
-        frozenset({"answer_base64"}),
+        frozenset({"answer_base64", "actor", "expected_node_execution_id"}),
     ),
     RoundTrip(
         "ArtifactOrderResource",

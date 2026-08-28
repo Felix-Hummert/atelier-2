@@ -37,6 +37,7 @@ function baseRun(): RunV3 {
     state_version: 2,
     state: "STARTED",
     current_node_id: "review",
+    current_node_execution_id: targetNodeExecutionId,
     node_rail: [
       { node_id: "implement", state: "succeeded", attempt: null },
       { node_id: "review", state: "working", attempt: null }

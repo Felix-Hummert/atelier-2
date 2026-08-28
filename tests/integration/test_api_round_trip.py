@@ -471,13 +471,18 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
     waiting = read_until(client, reference, RunState.WAITING_INPUT)
 
     # Round-trip 2: the waiting run answers the revision it runs and the node
-    # that owes a person a move, and the answer writes both back.
+    # that owes a person a move. Its cancellation block publishes the exact
+    # execution fence the answer writes back; the operator owns the attribution.
+    target_execution = waiting["cancellation"]["target_node_execution_id"]
+    assert isinstance(target_execution, str)
     accepted = answered(
         client.post(
             f"{RUN_PATH}/{reference}/answers",
             json={
                 **carried(waiting, "workflow_revision_hash"),
                 **carried(node_owing_a_move(waiting), "node_id"),
+                "expected_node_execution_id": target_execution,
+                "actor": "operator",
                 "answer_base64": encode_canonical_base64(APPROVAL),
             },
         ),
