@@ -1,6 +1,6 @@
 import { isRunV3, type AnyRun } from "../api/client";
 import { newestActivityFirst, resolveWorkflowName, runActivityAt } from "./runList";
-import { readableResult } from "./runProjection";
+import { trackerItemLabel } from "./trackerItem";
 import { parseUtc } from "./when";
 
 /** The window the silent period chip names by default (mockup v5 §05: "7 days"). */
@@ -8,8 +8,15 @@ export const HISTORY_PERIOD_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+export type HistoryWorkItem = {
+  reference: string;
+  /** Tracker enrichment title only. Null when enrichment is unavailable. */
+  title: string | null;
+  href: string | null;
+};
+
 export type HistoryRowExtras = {
-  workItem: string | null;
+  workItem: HistoryWorkItem | null;
   resultSentence: string | null;
 };
 
@@ -44,8 +51,12 @@ export type HistoryRow = {
    * owner). This is that slice's honest first step, not the finished shape.
    */
   purpose: string | null;
-  /** Only a nonempty `extras.workItem`. Never derived from orders, job, or node reads. */
-  workItem: string | null;
+  /**
+   * The run's work item: reference plus enrichment title when the extras
+   * supply one. Never derived from order names, job prose, or a guessed
+   * title. Null when no work item hangs on the run.
+   */
+  workItem: HistoryWorkItem | null;
   result: HistoryRowResult;
   /** Only ever a real V3 pair with both stamps present -- never guessed for V1/V2 or a partial V3 row. */
   span: { startedAt: string; endedAt: string } | null;
@@ -89,14 +100,21 @@ export function presentHistoryRow(
   };
 }
 
+/** Reference as a link label: grammar, plus title only when extras supplied one. */
+export function historyWorkItemLabel(item: HistoryWorkItem): string {
+  const grammar = trackerItemLabel(item.reference);
+  if (item.title !== null && item.title.length > 0) return `${grammar} ${item.title}`;
+  return grammar;
+}
+
 function historyPurpose(run: AnyRun): string | null {
   if (!isRunV3(run) || run.orders.length === 0) return null;
   return run.orders.map((order) => order.name).join(", ");
 }
 
-function historyWorkItem(extras?: HistoryRowExtras | null): string | null {
+function historyWorkItem(extras?: HistoryRowExtras | null): HistoryWorkItem | null {
   const workItem = extras?.workItem;
-  if (workItem == null || workItem.length === 0) return null;
+  if (workItem == null || workItem.reference.length === 0) return null;
   return workItem;
 }
 
@@ -165,18 +183,6 @@ function localDayOffset(at: Date, now: Date): number {
   const atDay = Date.UTC(at.getFullYear(), at.getMonth(), at.getDate());
   const nowDay = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
   return Math.round((nowDay - atDay) / DAY_MS);
-}
-
-/**
- * The node's declared output as one Result-cell sentence. `[redacted]` is
- * preserved; this never reads job bytes.
- */
-export function historyResultSentence(decodedAnswer: string): string {
-  const result = readableResult(decodedAnswer);
-  if (result.kind === "text") return result.text;
-  if (result.kind === "items") return result.items.join("; ");
-  if (result.sentence !== null) return result.sentence;
-  return result.fields.map((field) => `${field.label}: ${field.value}`).join("; ");
 }
 
 /**

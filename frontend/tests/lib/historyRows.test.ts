@@ -5,8 +5,8 @@ import {
   HISTORY_PERIOD_DAYS,
   hasTimestamplessRows,
   historyResultNodeId,
-  historyResultSentence,
   historyWhenLabel,
+  historyWorkItemLabel,
   presentHistoryRow,
   projectHistoryRows,
   withinHistoryPeriod
@@ -111,15 +111,33 @@ describe("projecting History's finished-run rows", () => {
   });
 
   it.each([
-    ["nonempty extras.workItem", { workItem: "#510", resultSentence: null as string | null }, "#510"],
-    ["empty extras.workItem", { workItem: "", resultSentence: null }, null],
+    [
+      "nonempty extras.workItem",
+      {
+        workItem: { reference: "gh:510", title: null, href: null },
+        resultSentence: null as string | null
+      },
+      { reference: "gh:510", title: null, href: null }
+    ],
+    ["empty extras.workItem reference", { workItem: { reference: "", title: null, href: null }, resultSentence: null }, null],
     ["no extras", undefined, null]
   ] as const)("workItem is %s", (_name, extras, expected) => {
     const row =
       extras === undefined
         ? presentHistoryRow(v3Run(), null)
         : presentHistoryRow(v3Run(), null, extras);
-    expect(row.workItem).toBe(expected);
+    expect(row.workItem).toEqual(expected);
+  });
+
+  it("labels a work item as the adapter grammar, plus title only when extras supplied one", () => {
+    expect(historyWorkItemLabel({ reference: "gh:567", title: null, href: null })).toBe("#567");
+    expect(
+      historyWorkItemLabel({
+        reference: "gh:567",
+        title: "Verbinden/Lösen/Token-Türen",
+        href: "https://github.com/FlexOr2/atelier-2/issues/567"
+      })
+    ).toBe("#567 Verbinden/Lösen/Token-Türen");
   });
 
   it("never derives workItem from order names", () => {
@@ -211,19 +229,6 @@ describe("historyWhenLabel names local calendar-clock fragments", () => {
       day: { kind: "weekday", weekday: at.toLocaleDateString(undefined, { weekday: "short" }) },
       clock: "08:00:01"
     });
-  });
-});
-
-describe("historyResultSentence reads a node answer as one line", () => {
-  it.each([
-    ["plain text", "hello", "hello"],
-    ["a declared answer sentence", '{"answer":"PR merged"}', "PR merged"],
-    ["object fields without a sentence", '{"verdict":"green","findings":2}', "verdict: green; findings: 2"],
-    ["items", '["one","two"]', "one; two"],
-    ["redacted in plain text", "token [redacted] kept", "token [redacted] kept"],
-    ["redacted in a declared sentence", '{"answer":"secret [redacted] ok"}', "secret [redacted] ok"]
-  ])("%s", (_name, raw, expected) => {
-    expect(historyResultSentence(raw)).toBe(expected);
   });
 });
 

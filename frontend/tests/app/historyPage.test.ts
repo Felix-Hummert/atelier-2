@@ -11,6 +11,7 @@ import {
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
+import { historyOutcome } from "../../src/lib/historyOutcome";
 import { historyWhenLabel } from "../../src/lib/historyRows";
 import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
@@ -111,6 +112,53 @@ function failedNodeDetail(raw = '{"answer":"could not merge"}'): NodeDetail {
   });
 }
 
+
+function workItemOrderDocument(reference: string, body = "SECRET TITLE FROM BODY"): string {
+  return JSON.stringify({
+    body,
+    change_marker: "etag",
+    digest: "a".repeat(64),
+    kind: "issue",
+    observed_at: "2026-08-26T09:15:00Z",
+    reference
+  });
+}
+
+function jobWithWorkItem(reference: string, body = "SECRET TITLE FROM BODY"): string {
+  return ["Do the one thing.", "--- order: work_item ---", workItemOrderDocument(reference, body)].join(
+    "\n\n"
+  );
+}
+
+function codeReviewAnswer(
+  verdict: "approve" | "revise" | "cannot-judge",
+  findings: readonly ("high" | "medium" | "low")[]
+): string {
+  return JSON.stringify({
+    verdict,
+    findings: findings.map((severity, index) => ({
+      file: "secret.ts",
+      line: index + 1,
+      severity,
+      text: "sk-live-should-never-appear"
+    }))
+  });
+}
+
+async function findHistoryCard(name: RegExp): Promise<HTMLElement> {
+  const link = await screen.findByRole("link", { name });
+  const card = link.closest(".history-row");
+  if (!(card instanceof HTMLElement)) throw new Error("history row");
+  return card;
+}
+
+function historyCardByRun(publicReference: string): HTMLElement {
+  const link = document.querySelector(`a.history-row-open[href="/atelier/runs/${publicReference}"]`);
+  const card = link?.closest(".history-row");
+  if (!(card instanceof HTMLElement)) throw new Error(`history row ${publicReference}`);
+  return card;
+}
+
 function openHistory(
   runsByState: { completed?: AnyRun[]; failed?: AnyRun[] },
   overrides: Partial<CockpitApi> = {}
@@ -207,7 +255,7 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByText("History unavailable")).toBeNull();
   });
 
-  it("names the resolved workflow, when it ran, and the node result sentence", async () => {
+  it("names the resolved workflow, when it ran, and a derived result that is not the raw answer", async () => {
     const run = v3Run();
     const getNodeDetail = vi.fn(async () => completedNodeDetail());
     openHistory({ completed: [run] }, {
@@ -215,10 +263,12 @@ describe("History shows only what has finished", () => {
       getNodeDetail
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const row = await findHistoryCard(/Two agents in a line/);
     await waitFor(() => {
       expect(getNodeDetail).toHaveBeenCalledWith(publicReference, "final");
-      expect(row.textContent).toContain("PR merged");
+      expect(row.querySelector(".row-result")?.textContent).toContain(
+        historyOutcome("Two agents in a line", '{"answer":"PR merged"}')
+      );
     });
     const expectedWhen = historyWhenLabel(run.ended_at ?? "", new Date(NOW_MS));
     expect(row.querySelector("time")?.getAttribute("datetime")).toBe(run.ended_at);
@@ -226,6 +276,7 @@ describe("History shows only what has finished", () => {
     expect(row.querySelector("time")?.textContent).toContain(expectedWhen.clock);
     expect(row.textContent).not.toContain("just now");
     expect(row.textContent).not.toContain(standingWords.done);
+    expect(row.textContent).not.toContain("PR merged");
     expect(row.textContent).not.toContain("job bytes must never become the result");
     expect(row.textContent).toContain("38 min");
   });
@@ -237,7 +288,7 @@ describe("History shows only what has finished", () => {
       getNodeDetail
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const row = await findHistoryCard(/Two agents in a line/);
     const result = row.querySelector(".row-result");
     expect(result?.textContent).not.toContain(standingWords.done);
     expect(result?.textContent).not.toContain(historyPageCopy.notRecorded);
@@ -251,7 +302,7 @@ describe("History shows only what has finished", () => {
       getNodeDetail
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const row = await findHistoryCard(/Two agents in a line/);
     await waitFor(() => {
       expect(row.querySelector(".row-result")?.textContent).toContain(
         wrapDisplayCopy(historyPageCopy.notRecorded)
@@ -270,7 +321,7 @@ describe("History shows only what has finished", () => {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
-    const row = await screen.findByRole("link", { name: /diff/ });
+    const row = await findHistoryCard(/diff/);
     expect(within(row).getByText("diff").isConnected).toBe(true);
     expect(within(row).getByText("Two agents in a line").isConnected).toBe(true);
   });
@@ -280,30 +331,68 @@ describe("History shows only what has finished", () => {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    expect(within(row).getAllByText("Two agents in a line")).toHaveLength(1);
+    const row = await findHistoryCard(/Two agents in a line/);
+    const purpose = row.querySelector(".row-name");
+    expect(purpose).not.toBeNull();
+    expect(within(purpose as HTMLElement).getAllByText("Two agents in a line")).toHaveLength(1);
   });
 
-  it("shows the honest placeholder in the Work item column, deriving nothing", async () => {
+  it("shows the honest placeholder in the Work item column when no work item hangs on the run", async () => {
     openHistory({ completed: [v3Run()] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const row = await findHistoryCard(/Two agents in a line/);
     const label = within(row).getByText("Work item:", { exact: false });
     expect(label.closest(".row-work-item")?.textContent).toContain("—");
+  });
+
+  it("names the work item as a link from the order document, never a guessed title from the body", async () => {
+    const getNodeDetail = vi.fn(async () =>
+      nodeDetail({
+        job_base64: btoa(jobWithWorkItem("gh:567")),
+        answer: { value_base64: btoa(codeReviewAnswer("approve", [])), value_hash: "f".repeat(64) }
+      })
+    );
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail,
+      getProjectSourceConnection: vi.fn(async () => ({
+        public_project_reference: "project1.YQ",
+        revision_number: 1,
+        source_kind: "github",
+        source_address: "FlexOr2/atelier-2@main",
+        auth_method: "personal-access-token" as const,
+        project_source_connection_revision_hash: "d".repeat(64)
+      })),
+      listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.YQ" }] }))
+    });
+
+    const row = await findHistoryCard(/code-review/);
+    await waitFor(() => {
+      expect(row.querySelector(".row-work-item")?.textContent).toContain("#567");
+    });
+    expect(row.textContent).not.toContain("SECRET TITLE FROM BODY");
+    const itemLink = within(row).getByRole("link", { name: "#567" });
+    expect(itemLink.getAttribute("href")).toBe("https://github.com/FlexOr2/atelier-2/issues/567");
+    await waitFor(() => {
+      expect(row.querySelector(".row-result")?.textContent).toContain(historyPageCopy.outcome.approved);
+    });
   });
 
   it("names a failed run from extras, and shows no duration when no V3 stamp exists", async () => {
     const getNodeDetail = vi.fn(async () => failedNodeDetail());
     openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
 
-    const row = await screen.findByRole("link", { name: /broke/ });
+    const row = await findHistoryCard(/broke/);
     await waitFor(() => {
       expect(getNodeDetail).toHaveBeenCalled();
-      expect(row.textContent).toContain("could not merge");
+      expect(row.querySelector(".row-result")?.textContent).toContain(
+        historyOutcome("broke", '{"answer":"could not merge"}')
+      );
     });
     expect(row.textContent).toContain(standingWords.failed);
+    expect(row.textContent).not.toContain("could not merge");
     expect(row.textContent).not.toContain(`${standingWords.failed} ·`);
     const durationLabel = within(row).getByText("Duration:", { exact: false });
     expect(durationLabel.closest(".row-duration")?.textContent).toContain("Not recorded");
@@ -313,7 +402,7 @@ describe("History shows only what has finished", () => {
     const getNodeDetail = vi.fn(async () => nodeDetail({ state: "failed" }));
     openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
 
-    const row = await screen.findByRole("link", { name: /broke/ });
+    const row = await findHistoryCard(/broke/);
     await waitFor(() => {
       expect(row.textContent).toContain(`${standingWords.failed} · final`);
     });
@@ -334,7 +423,7 @@ describe("History shows only what has finished", () => {
   it("never hides a timestampless V1 row behind the period chip, and names why", async () => {
     openHistory({ completed: [completedRun({ run_id: "old-format" })] });
 
-    const row = await screen.findByRole("link", { name: /old-format/ });
+    const row = await findHistoryCard(/old-format/);
     expect(row.isConnected).toBe(true);
     expect(
       screen.getByText(/Runs with no recorded time always show here/).isConnected
@@ -348,6 +437,121 @@ describe("History shows only what has finished", () => {
     await screen.findByRole("link", { name: /Two agents in a line/ });
 
     expect(screen.queryByText(/Runs with no recorded time/)).toBeNull();
+  });
+
+
+  it("renders two same-workflow runs on the same day differently when work item and outcome differ", async () => {
+    const ended = minutesAgo(5);
+    const started = minutesAgo(10);
+    const first = v3Run({
+      public_run_reference: "run1.YQ",
+      run_id: "first",
+      started_at: started,
+      ended_at: ended
+    });
+    const second = v3Run({
+      public_run_reference: "run1.Yg",
+      run_id: "second",
+      started_at: started,
+      ended_at: ended
+    });
+    const getNodeDetail = vi.fn(async (reference: string) => {
+      if (reference === "run1.YQ") {
+        return nodeDetail({
+          public_run_reference: "run1.YQ",
+          job_base64: btoa(jobWithWorkItem("gh:567")),
+          answer: {
+            value_base64: btoa(codeReviewAnswer("revise", ["high", "medium", "low"])),
+            value_hash: "f".repeat(64)
+          }
+        });
+      }
+      return nodeDetail({
+        public_run_reference: "run1.Yg",
+        job_base64: btoa(jobWithWorkItem("gh:840")),
+        answer: {
+          value_base64: btoa(codeReviewAnswer("approve", [])),
+          value_hash: "f".repeat(64)
+        }
+      });
+    });
+    openHistory({ completed: [first, second] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    await waitFor(() => {
+      expect(historyCardByRun("run1.YQ").textContent).toContain("#567");
+      expect(historyCardByRun("run1.Yg").textContent).toContain("#840");
+    });
+    const firstRow = historyCardByRun("run1.YQ");
+    const secondRow = historyCardByRun("run1.Yg");
+    expect(firstRow.textContent).not.toBe(secondRow.textContent);
+    expect(firstRow.querySelector(".row-result")?.textContent).not.toBe(
+      secondRow.querySelector(".row-result")?.textContent
+    );
+  });
+
+  it("renders two runs that differ only in their result as different rows", async () => {
+    const ended = minutesAgo(5);
+    const started = minutesAgo(10);
+    const first = v3Run({
+      public_run_reference: "run1.YQ",
+      run_id: "alpha",
+      started_at: started,
+      ended_at: ended
+    });
+    const second = v3Run({
+      public_run_reference: "run1.Yg",
+      run_id: "beta",
+      started_at: started,
+      ended_at: ended
+    });
+    const getNodeDetail = vi.fn(async (reference: string) => {
+      const raw =
+        reference === "run1.YQ"
+          ? codeReviewAnswer("revise", ["high"])
+          : codeReviewAnswer("approve", []);
+      return nodeDetail({
+        public_run_reference: reference,
+        job_base64: btoa(jobWithWorkItem("gh:567")),
+        answer: { value_base64: btoa(raw), value_hash: "f".repeat(64) }
+      });
+    });
+    openHistory({ completed: [first, second] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    await waitFor(() => {
+      expect(historyCardByRun("run1.YQ").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.revise
+      );
+      expect(historyCardByRun("run1.Yg").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.approved
+      );
+    });
+    const firstRow = historyCardByRun("run1.YQ");
+    const secondRow = historyCardByRun("run1.Yg");
+    expect(firstRow.textContent).not.toBe(secondRow.textContent);
+  });
+
+  it("never renders raw result bytes, including a secret in an unknown payload", async () => {
+    const secret = "sk-live-should-never-appear";
+    const getNodeDetail = vi.fn(async () =>
+      completedNodeDetail(JSON.stringify({ token: secret, note: "keep out" }))
+    );
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("hello-atelier")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/hello-atelier/);
+    await waitFor(() => {
+      expect(row.querySelector(".row-result")?.textContent).toContain("2 fields");
+    });
+    expect(row.textContent).not.toContain(secret);
+    expect(row.textContent).not.toContain("keep out");
   });
 
   it("keeps a run outside the 7 day window off the list, honestly reporting nothing recent", async () => {

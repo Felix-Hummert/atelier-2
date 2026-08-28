@@ -9,14 +9,16 @@
     HISTORY_PERIOD_DAYS,
     hasTimestamplessRows,
     historyResultNodeId,
-    historyResultSentence,
     historyWhenLabel,
+    historyWorkItemLabel,
     projectHistoryRows,
     withinHistoryPeriod,
     type HistoryRow,
     type HistoryRowExtras,
-    type HistoryWhenDay
+    type HistoryWhenDay,
+    type HistoryWorkItem
   } from "../lib/historyRows";
+  import { historyOutcome } from "../lib/historyOutcome";
   import { historyPageCopy, periodChipLabel } from "../lib/historyPageCopy";
   import {
     beginRead,
@@ -29,6 +31,11 @@
   import { standingWords } from "../lib/runState";
   import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
+  import {
+    trackerItemHref,
+    workItemReferenceFromJob,
+    type TrackerSourceConnection
+  } from "../lib/trackerItem";
   import { ageLabel, exactLocal } from "../lib/when";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
 
@@ -55,6 +62,7 @@
   const now = new Date();
   let extrasLoadByReference: Map<string, ExtrasLoad> = new Map();
   let extrasToken = 0;
+  let sourceConnection: TrackerSourceConnection | null = null;
 
   onMount(() => {
     void load();
@@ -67,6 +75,7 @@
     const begun = beginRead(history);
     history = begun.read;
     try {
+      const sourcePromise = loadSource();
       const [completed, failed] = await Promise.all([
         readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED")),
         readEveryRun((after) => cockpitApi.listRuns(after, "FAILED"))
@@ -82,6 +91,8 @@
       const workflowNames = await workflowNamesOf(runs, (hash) =>
         cockpitApi.getWorkflowRevision(hash)
       );
+      sourceConnection = await sourcePromise;
+      if (history.generation !== begun.generation) return;
       history = confirmRead(history, begun.generation, { runs, workflowNames });
       if (history.generation !== begun.generation) return;
       const visible = projectHistoryRows(runs, workflowNames).filter((row) =>
@@ -93,6 +104,21 @@
         kind: "unavailable",
         title: historyPageCopy.listUnavailable
       });
+    }
+  }
+
+  async function loadSource(): Promise<TrackerSourceConnection | null> {
+    try {
+      const projects = await cockpitApi.listProjects();
+      const reference = projects.items[0]?.public_project_reference;
+      if (reference === undefined) return null;
+      const connection = await cockpitApi.getProjectSourceConnection(reference);
+      return {
+        source_kind: connection.source_kind,
+        source_address: connection.source_address
+      };
+    } catch {
+      return null;
     }
   }
 
@@ -123,40 +149,41 @@
         historyResultNodeId(row.run)
       );
       return {
-        workItem: null,
-        resultSentence: resultSentenceFromDetail(row.result.kind, detail)
+        workItem: workItemFromDetail(detail),
+        resultSentence: resultSentenceFromDetail(row.workflowName, row.result.kind, detail)
       };
     } catch {
       return { workItem: null, resultSentence: null };
     }
   }
 
+  function workItemFromDetail(detail: NodeDetail | null | undefined): HistoryWorkItem | null {
+    if (detail == null || detail.job_base64 == null || detail.job_base64.length === 0) {
+      return null;
+    }
+    const job = decodeUtf8Base64(detail.job_base64);
+    if (job == null) return null;
+    const reference = workItemReferenceFromJob(job);
+    if (reference === null) return null;
+    return {
+      reference,
+      title: null,
+      href: trackerItemHref(reference, sourceConnection)
+    };
+  }
+
   function resultSentenceFromDetail(
+    workflowName: string,
     kind: HistoryRow["result"]["kind"],
     detail: NodeDetail | null | undefined
   ): string | null {
     if (detail == null) return null;
-    if (kind === "failed") {
-      const output = detail.refusal_output?.value_base64;
-      if (output != null && output.length > 0) {
-        const decoded = decodeUtf8Base64(output);
-        if (decoded != null) {
-          const sentence = historyResultSentence(decoded);
-          if (sentence.length > 0) return sentence;
-        }
-      }
-      if (detail.refusal != null && detail.refusal.length > 0) {
-        const sentence = historyResultSentence(detail.refusal);
-        return sentence.length === 0 ? null : sentence;
-      }
-      return null;
-    }
-    const value = detail.answer?.value_base64;
-    if (value == null || value.length === 0) return null;
-    const decoded = decodeUtf8Base64(value);
-    if (decoded == null) return null;
-    const sentence = historyResultSentence(decoded);
-    return sentence.length === 0 ? null : sentence;
+    const encoded =
+      kind === "failed" ? detail.refusal_output?.value_base64 : detail.answer?.value_base64;
+    if (encoded == null || encoded.length === 0) return null;
+    const decoded = decodeUtf8Base64(encoded);
+    if (decoded == null || decoded.length === 0) return null;
+    return historyOutcome(workflowName, decoded);
   }
 
   function settledExtrasByReference(
@@ -178,7 +205,7 @@
   function failedResultCopy(nodeId: string, sentence: string | null, settled: boolean): string {
     const standing = wrapDisplayCopy(standingWords.failed);
     if (!settled) return standing;
-    if (sentence !== null) return `${standing} — ${sentence}`;
+    if (sentence !== null) return `${standing} — ${wrapDisplayCopy(sentence)}`;
     return `${standing} · ${nodeId}`;
   }
 
@@ -187,6 +214,10 @@
       event.preventDefault();
       navigate(runPath(publicReference));
     };
+  }
+
+  function runLinkName(row: HistoryRow): string {
+    return row.purpose !== null ? `${row.purpose} ${row.workflowName}` : row.workflowName;
   }
 
   $: extrasByReference = settledExtrasByReference(extrasLoadByReference);
@@ -244,12 +275,18 @@
         {#each visibleRows as row (row.run.public_run_reference)}
           {@const extras = extrasLoadByReference.get(row.run.public_run_reference)}
           <li>
-            <a
+            <div
               class="history-row history-row-{row.result.kind}"
               class:history-row-no-work-item={row.workItem === null}
-              href={runPath(row.run.public_run_reference)}
-              onclick={open(row.run.public_run_reference)}
             >
+              <a
+                class="history-row-open"
+                href={runPath(row.run.public_run_reference)}
+                onclick={open(row.run.public_run_reference)}
+                title={row.activityAt === null ? undefined : exactLocal(row.activityAt)}
+              >
+                <span class="visually-hidden">{runLinkName(row)}</span>
+              </a>
               <span class="row-when">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWhen)}: </span>
                 {#if row.activityAt !== null}
@@ -271,7 +308,15 @@
               <span class="row-work-item">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}: </span>
                 {#if row.workItem !== null}
-                  {row.workItem}
+                  {#if row.workItem.href !== null}
+                    <a
+                      class="row-work-item-link"
+                      href={row.workItem.href}
+                      onclick={(event) => event.stopPropagation()}
+                    >{historyWorkItemLabel(row.workItem)}</a>
+                  {:else}
+                    {historyWorkItemLabel(row.workItem)}
+                  {/if}
                 {:else}
                   {wrapDisplayCopy(historyPageCopy.workItemPlaceholder)}
                 {/if}
@@ -282,7 +327,7 @@
                   {failedResultCopy(row.result.nodeId, row.result.sentence, extras?.status === "settled")}
                 {:else if extras?.status === "settled"}
                   {#if row.result.sentence !== null}
-                    {row.result.sentence}
+                    {wrapDisplayCopy(row.result.sentence)}
                   {:else}
                     {wrapDisplayCopy(historyPageCopy.notRecorded)}
                   {/if}
@@ -296,7 +341,7 @@
                   {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
-            </a>
+            </div>
           </li>
         {/each}
       </ul>
@@ -390,6 +435,7 @@
   }
 
   .history-row {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -401,16 +447,25 @@
     border-radius: var(--r-lg);
     background: var(--panel2);
     color: inherit;
-    text-decoration: none;
     box-shadow: var(--shadow);
   }
 
+  .history-row-open {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+  }
+
   .row-name {
+    position: relative;
+    z-index: 0;
     display: flex;
     flex: none;
     flex-direction: column;
     width: var(--name-column);
     min-width: 0;
+    pointer-events: none;
   }
 
   /* The purpose line (mockup v8 §05: "Purpose (the order sentence)"); it can
@@ -436,9 +491,12 @@
 
   /* Calendar-clock fragments, exact local time on hover/title. */
   .row-when {
+    position: relative;
+    z-index: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
+    pointer-events: none;
     white-space: nowrap;
   }
 
@@ -447,11 +505,14 @@
      run page shows the sentence in full. */
   .row-result {
     display: -webkit-box;
+    position: relative;
+    z-index: 0;
     flex: 1;
     min-width: 0;
     overflow: hidden;
     color: var(--ink-dim);
     font-size: var(--text-sm);
+    pointer-events: none;
     overflow-wrap: anywhere;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
@@ -463,20 +524,37 @@
   }
 
   .row-work-item {
+    position: relative;
+    z-index: 2;
     flex: none;
     width: var(--work-item-column);
     overflow: hidden;
     color: var(--ink-dim);
     font-size: var(--text-xs);
+    pointer-events: none;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .row-work-item-link {
+    pointer-events: auto;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .row-work-item-link:hover,
+  .row-work-item-link:focus-visible {
+    text-decoration: underline;
+  }
+
   .row-duration {
+    position: relative;
+    z-index: 0;
     flex: none;
     width: var(--duration-column);
     color: var(--ink-dim);
     font-size: var(--text-xs);
+    pointer-events: none;
     font-variant-numeric: tabular-nums;
   }
 
