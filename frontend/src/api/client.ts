@@ -2038,18 +2038,6 @@ export const problemDefinitions = {
     status: 422,
     title: "Document matches more than one library kind",
   },
-  "library-document-unrecognized": {
-    status: 422,
-    title: "Document matches no library kind",
-  },
-  "library-kind-not-held": {
-    status: 422,
-    title: "Library recognises this kind but holds none",
-  },
-  "library-name-unusable": {
-    status: 422,
-    title: "Document authors no name the library can file it under",
-  },
   "unsupported-media-type": { status: 415, title: "Unsupported media type" },
   "not-acceptable": { status: 406, title: "Not acceptable" },
   "catalog-revision-unpublished": {
@@ -2562,18 +2550,6 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "library-document-ambiguous",
     problemDefinitions["library-document-ambiguous"],
-  ),
-  problemVariant(
-    "library-document-unrecognized",
-    problemDefinitions["library-document-unrecognized"],
-  ),
-  problemVariant(
-    "library-kind-not-held",
-    problemDefinitions["library-kind-not-held"],
-  ),
-  problemVariant(
-    "library-name-unusable",
-    problemDefinitions["library-name-unusable"],
   ),
   problemVariant(
     "unsupported-media-type",

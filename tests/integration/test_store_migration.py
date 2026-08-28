@@ -497,6 +497,10 @@ def _restore_v45_answer_attribution_predecessors(
 ) -> None:
     """Restore the exact event and answer tables published through V45."""
 
+    for trigger in ("catalog_intakes_no_update", "catalog_intakes_no_delete"):
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    connection.execute("DROP TABLE IF EXISTS catalog_intakes")
+
     schema_module._rebuild_product_table(
         connection,
         schema_module.run_events,
@@ -4114,6 +4118,43 @@ def test_v46_failure_after_version_cas_restores_the_exact_v45_store(
         migrate_store(database_path)
 
     assert _logical_dump(database_path) == before
+
+
+def test_v46_store_migrates_to_v47_with_immutable_catalog_intakes(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(revision_hash="a" * 64, document=b"kept")
+        )
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v45_answer_attribution_predecessors(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 45")
+        schema_module._apply_v45_to_v46(connection)
+        connection.commit()
+        _require_product_shape(connection, 46)
+
+    report = migrate_store(database_path)
+
+    assert (report.source_version, report.target_version) == (46, 47)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT document FROM workflow_revisions"
+        ).fetchone() == (b"kept",)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_intakes'"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name='catalog_intakes_no_update'"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name='catalog_intakes_no_delete'"
+        ).fetchone()
+        _require_product_shape(connection, 47)
 
 
 def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
