@@ -27,9 +27,12 @@
 
   let route = cockpitRoute(window.location.pathname + window.location.search);
   let workshopShell: WorkshopShell;
+  let inAppFromPath: string | null = null;
 
   onMount(() => {
     const readRoute = () => {
+      // Origin is for navigate() clicks only; a history-stack run uses its own state.
+      inAppFromPath = null;
       route = cockpitRoute(window.location.pathname + window.location.search);
     };
     window.addEventListener("popstate", readRoute);
@@ -43,6 +46,7 @@
   });
 
   async function navigate(path: string): Promise<void> {
+    inAppFromPath = window.location.pathname;
     window.history.pushState(null, "", path);
     route = cockpitRoute(path);
     await tick();
@@ -77,6 +81,7 @@
       publicReference={route.publicReference}
       {navigate}
       {createReconcileCommandId}
+      {inAppFromPath}
     />
   {:else}
     <section class="surface">
