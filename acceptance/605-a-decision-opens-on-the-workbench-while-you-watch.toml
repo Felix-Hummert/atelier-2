@@ -1,0 +1,11 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/605"
+
+# Live attention stream on the Workbench: a decision that opens while the
+# operator watches appears in Needs-you without a reload. The first Workbench
+# slice (#580) pinned on mount; this sentence is the live arrival.
+
+[[sentence]]
+id = "a-decision-opens-on-the-workbench-while-you-watch"
+requirement = "REQ-UI-24"
+text = "A decision that opens while the operator watches the Workbench appears in the Needs-you region without a reload, at 1280px and 390px."

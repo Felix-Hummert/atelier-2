@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+
   import type { AnyRun, CockpitApi, RunV3 } from "../api/client";
   import { decisionStatusCopy } from "../lib/decisionStatusCopy";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -7,6 +9,7 @@
   import { waitAnswerText, type MutationJournal, type WaitMutation } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
+  import { runHasEnded } from "../lib/runState";
   import {
     deliverWaitAnswer,
     loadPendingWaitAnswer,
@@ -39,6 +42,9 @@
   export let compact = false;
   export let onExpand: () => void;
 
+  /** One house beat (`--beat` in styles.css): long enough to read the landed sentence. */
+  const ANSWER_LANDED_HOLD_MS = 1600;
+
   type QuestionLookup =
     | { state: "loading" }
     | { state: "present"; text: string }
@@ -61,6 +67,11 @@
   let waitAccepted = false;
   let waitBusy = false;
   let waitFailureMessage: string | null = null;
+  let landedAnswer: string | null = null;
+  let landedRun: RunV3 | null = null;
+  let landedHold: number | null = null;
+  let landedDelivered = false;
+  let answeredNodeId: string | null = null;
 
   $: pendingAnswer = pendingWait === null ? null : waitAnswerText(pendingWait);
   $: confirmedDecision =
@@ -212,6 +223,75 @@
     waitFailureMessage = null;
   }
 
+  function hasLeftWait(candidate: RunV3, nodeId: string): boolean {
+    return runHasEnded(candidate.state) || candidate.current_node_id !== nodeId;
+  }
+
+  function clearLandedVisual(): void {
+    landedDelivered = true;
+    landedRun = null;
+    landedAnswer = null;
+    answeredNodeId = null;
+    if (landedHold !== null) {
+      window.clearTimeout(landedHold);
+      landedHold = null;
+    }
+  }
+
+  function deliverLandedRun(): void {
+    if (landedDelivered || landedRun === null || answeredNodeId === null) return;
+    // Live run already left this wait. Re-absorbing the frozen 202 would
+    // restore the answered node over the stream's next wait.
+    if (hasLeftWait(run, answeredNodeId)) {
+      clearLandedVisual();
+      return;
+    }
+    if (hasLeftWait(landedRun, answeredNodeId)) {
+      const read = landedRun;
+      clearLandedVisual();
+      onRunRead(read);
+      return;
+    }
+  }
+
+  onDestroy(() => {
+    if (landedHold !== null) {
+      window.clearTimeout(landedHold);
+      landedHold = null;
+    }
+    // Walking away is not an undo: the answer is already journaled.
+    if (landedRun !== null) {
+      deliverLandedRun();
+    }
+  });
+
+  function holdLandedAnswer(answered: RunV3): void {
+    // Capture the stamp before clearing the pending wait; confirmedDecision
+    // reads that wait. The pin stays for one beat so the landed sentence can
+    // be read; deliverLandedRun then retires it only when this wait has left.
+    landedAnswer = confirmedDecision ?? pendingAnswer ?? "";
+    pendingWait = null;
+    waitAccepted = false;
+    landedDelivered = false;
+    landedRun = answered;
+    answeredNodeId = run.current_node_id;
+    landedHold = window.setTimeout(() => {
+      landedHold = null;
+      deliverLandedRun();
+    }, ANSWER_LANDED_HOLD_MS);
+  }
+
+  // After the beat, a later leave only drops the sentence; the stream owns
+  // the live run. Do not clear while the hold is still counting.
+  $: if (
+    landedHold === null &&
+    landedAnswer !== null &&
+    answeredNodeId !== null &&
+    hasLeftWait(run, answeredNodeId)
+  ) {
+    clearLandedVisual();
+  }
+
   async function settle(mutation: WaitMutation): Promise<void> {
     const outcome = await deliverWaitAnswer(
       cockpitApi,
@@ -219,16 +299,11 @@
       mutation,
       runPageCopy.exactRetryUnconfirmed
     );
-    if (outcome.kind === "confirmed") {
-      pendingWait = null;
-      waitAccepted = false;
-      onRunRead(outcome.run);
-      return;
-    }
-    if (outcome.kind === "uncertain") {
-      pendingWait = outcome.pending;
-      waitAccepted = true;
-      onRunRead(outcome.run);
+    // 200 is an idempotent replay (`confirmed`). The live first answer is 202
+    // (`uncertain`). Both hold the landed sentence; the beat retires the pin
+    // only when this wait has left.
+    if (outcome.kind === "confirmed" || outcome.kind === "uncertain") {
+      holdLandedAnswer(outcome.run);
       return;
     }
     pendingWait = outcome.pending;
@@ -258,10 +333,11 @@
 <section
   class="pinned-decision"
   class:pinned-decision-sent={pendingWait !== null}
-  class:pinned-decision-compact={compact}
+  class:pinned-decision-compact={compact && landedAnswer === null}
+  class:pinned-decision-landed={landedAnswer !== null}
   aria-labelledby="pinned-decision-title-{run.public_run_reference}"
 >
-  {#if compact && pendingWait === null}
+  {#if compact && pendingWait === null && landedAnswer === null}
     <button
       class="compact-answer"
       type="button"
@@ -295,7 +371,17 @@
       {/if}
     </p>
 
-  {#if pendingWait !== null}
+  {#if landedAnswer !== null}
+    <p
+      id="pinned-decision-title-{run.public_run_reference}"
+      class="landed-sentence"
+      role="status"
+      aria-label={wrapDisplayCopy(workbenchPageCopy.answerLanded)}
+    >
+      <span class="landed-stamp" aria-hidden="true">✓ {wrapDisplayCopy(landedAnswer)} —</span>
+      {wrapDisplayCopy(workbenchPageCopy.answerLanded)}
+    </p>
+  {:else if pendingWait !== null}
     <h3 id="pinned-decision-title-{run.public_run_reference}" class="question">
       {waitBusy ? decisionStatusCopy.sending : waitAccepted ? decisionStatusCopy.pending : decisionStatusCopy.uncertain}
     </h3>
@@ -344,6 +430,7 @@
     {/if}
   {/if}
 
+    {#if landedAnswer === null}
     <!-- The one quiet door to the whole run: the story behind the question,
          kept as the stage's aside rather than a second decision control. -->
     <div class="pinned-acts">
@@ -365,6 +452,7 @@
         >{wrapDisplayCopy(workbenchPageCopy.openTheRun)}</a
       >
     </div>
+    {/if}
   {/if}
 </section>
 
@@ -380,6 +468,10 @@
 
   .pinned-decision-sent {
     border-color: var(--signal-live);
+  }
+
+  .pinned-decision-landed {
+    border-color: var(--line);
   }
 
   .pinned-decision-compact {
@@ -441,6 +533,17 @@
 
   .question.looking {
     color: var(--ink-dim);
+  }
+
+  .landed-sentence {
+    margin: 0;
+    font-size: var(--text-lg);
+    line-height: var(--leading-tight);
+    overflow-wrap: anywhere;
+  }
+
+  .landed-stamp {
+    font-weight: var(--weight-strong);
   }
 
   .pinned-status {
