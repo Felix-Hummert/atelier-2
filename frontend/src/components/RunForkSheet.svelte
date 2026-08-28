@@ -31,9 +31,7 @@
   async function openDialog(): Promise<void> {
     await tick();
     if (dialogElement == null) return;
-    if (typeof dialogElement.showModal === "function" && !dialogElement.open) {
-      dialogElement.showModal();
-    }
+    dialogElement.showModal();
     dismissButton?.focus();
   }
 
@@ -67,14 +65,12 @@
 
 <dialog
   class="dialog"
-  open
-  aria-labelledby="run-fork-question"
   aria-label={wrapDisplayCopy(copy.sheetLabel)}
   bind:this={dialogElement}
   oncancel={handleDialogCancel}
   onkeydown={containDialogFocus}
 >
-  <h2 id="run-fork-question">{wrapDisplayCopy(copy.confirmTitle(plan.restartFrom))}</h2>
+  <h2>{wrapDisplayCopy(copy.confirmTitle(plan.restartFrom))}</h2>
   <p>
     <strong>{wrapDisplayCopy(copy.carriedOver)}</strong>
     {carried === "" ? wrapDisplayCopy(runPageCopy.none) : carried}
@@ -87,6 +83,7 @@
     <strong>{wrapDisplayCopy(copy.origin)}</strong>
     {wrapDisplayCopy(originName)}
   </p>
+  <p>{wrapDisplayCopy(copy.deferralSentence)}</p>
   {#if failureMessage !== null}
     <ProblemNotice title={wrapDisplayCopy(copy.unconfirmed)} message={failureMessage} />
   {/if}

@@ -107,6 +107,24 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
+/** jsdom has no modal dialog; the same seam RunCancelCard's staged decision uses. */
+function stubDialogMethods(): void {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: {
+      configurable: true,
+      value(this: HTMLDialogElement): void {
+        this.open = true;
+      }
+    },
+    close: {
+      configurable: true,
+      value(this: HTMLDialogElement): void {
+        this.open = false;
+      }
+    }
+  });
+}
+
 describe("a version 3 run in the cockpit", () => {
   it("proves(a-v3-run-is-visible-in-the-cockpit): shows the line, which node is running, and no proof plumbing on the way", async () => {
     const feed = new FakeRunEventFeed();
@@ -829,20 +847,7 @@ describe("cancelling a version 3 run from the cockpit", () => {
   const targetNodeExecutionId = "d".repeat(64);
 
   beforeEach(() => {
-    Object.defineProperties(HTMLDialogElement.prototype, {
-      showModal: {
-        configurable: true,
-        value(this: HTMLDialogElement): void {
-          this.open = true;
-        }
-      },
-      close: {
-        configurable: true,
-        value(this: HTMLDialogElement): void {
-          this.open = false;
-        }
-      }
-    });
+    stubDialogMethods();
     sessionStorage.clear();
     window.history.replaceState(null, "", `/atelier/runs/${publicReference}`);
   });
@@ -1713,6 +1718,10 @@ describe("retry from a node on a finished run", () => {
   const successorReference = "run1.Zm9yaw";
   const orderName = "work_item";
 
+  beforeEach(() => {
+    stubDialogMethods();
+  });
+
   function finishedOrigin(overrides: Partial<RunV3> = {}): RunV3 {
     return v3Run({
       state: "COMPLETED",
@@ -1756,8 +1765,18 @@ describe("retry from a node on a finished run", () => {
     });
   }
 
+  const carriedSecret = "secret-token";
+
   function detailFor(nodeId: string) {
-    return finishedNodeDetail({ node_id: nodeId, state: "succeeded" });
+    return finishedNodeDetail({
+      node_id: nodeId,
+      state: "succeeded",
+      job_base64: btoa(`Check what came before, and keep ${carriedSecret} out of the confirmation.`),
+      answer: {
+        value_base64: btoa(`Looks good; the ${carriedSecret} must not leave this panel.`),
+        value_hash: "f".repeat(64)
+      }
+    });
   }
 
   async function openRetry(
@@ -1797,7 +1816,7 @@ describe("retry from a node on a finished run", () => {
     expect(await screen.findByRole("button", { name: fork.retryHere })).toBeTruthy();
   });
 
-  it("hides the door on a running, waiting, or reconciling run", async () => {
+  it("says why the door is absent on a running, waiting, or reconciling run", async () => {
     for (const state of ["STARTED", "WAITING_INPUT", "WAITING_RECONCILIATION"] as const) {
       cleanup();
       window.history.replaceState(null, "", `/atelier/runs/${publicReference}`);
@@ -1823,18 +1842,85 @@ describe("retry from a node on a finished run", () => {
       });
       await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
       await fireEvent.click(await screen.findByRole("button", { name: /implement/ }));
+      expect(await screen.findByText(fork.unavailableRunning)).toBeTruthy();
       expect(screen.queryByRole("button", { name: fork.retryHere })).toBeNull();
     }
   });
 
-  it("names what is carried over and what will run again before the child starts", async () => {
+  it("says the node is not on the run's line when a preview has no rail entry", async () => {
+    const origin = finishedOrigin({
+      node_rail: [{ node_id: "implement", state: "succeeded", attempt: null }]
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(origin, {
+          getNodeDetail: vi.fn(async (_reference: string, nodeId: string) =>
+            (nodeId === "review" ? detailFor("review") : detailFor("implement")) as never
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
+    await fireEvent.click(within(graph).getByRole("button", { name: "review" }));
+    expect(await screen.findByText(fork.unavailableUnknownNode)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: fork.retryHere })).toBeNull();
+  });
+
+  it("says a step before this one did not succeed when the restart is not reusable", async () => {
+    const origin = finishedOrigin({
+      state: "FAILED",
+      current_node_id: "review",
+      node_rail: [
+        { node_id: "implement", state: "failed", attempt: null },
+        { node_id: "review", state: "queued", attempt: null }
+      ]
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(origin, {
+          getNodeDetail: vi.fn(async () =>
+            ({
+              run_id: "v3/two-agents",
+              public_run_reference: publicReference,
+              node_id: "review",
+              state: "queued",
+              job_base64: null,
+              job_hash: null,
+              answer: null,
+              provenance: null,
+              refusal: null
+            }) as never
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    // A failed run opens the node that stopped it (`review`).
+    const panel = await screen.findByRole("complementary");
+    expect(within(panel).getByRole("heading", { name: "review" }).isConnected).toBe(true);
+    expect(await screen.findByText(fork.unavailablePrefix)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: fork.retryHere })).toBeNull();
+  });
+
+  it("names what is carried over and what will run again, and keeps the carried node's bytes out of the sheet", async () => {
     await openRetry(finishedOrigin(), nodeAriaName("review", "succeeded"));
 
     expect(await screen.findByRole("heading", { name: fork.confirmTitle("review") })).toBeTruthy();
     expect(screen.getByText(fork.carriedOver).closest("p")?.textContent).toContain("implement");
     expect(screen.getByText(fork.carriedOver).closest("p")?.textContent).toContain(orderName);
     expect(screen.getByText(fork.runsAgain).closest("p")?.textContent).toContain("review");
-    expect(document.body.textContent).not.toContain("secret-token");
+    expect(screen.getByText(fork.deferralSentence)).toBeTruthy();
+
+    const sheet = screen.getByRole("dialog", { name: fork.sheetLabel });
+    expect(sheet.textContent).not.toContain(carriedSecret);
+    expect(sheet.textContent).not.toContain("Check what came before");
+    expect(sheet.textContent).not.toContain("Looks good");
+    // The node panel behind the sheet still shows those exact bytes, so this
+    // is a scoped proof rather than a body-wide sweep that could never see them.
+    expect(screen.getByRole("complementary").textContent).toContain(carriedSecret);
   });
 
   it("posts a fork and opens the successor as a distinct run", async () => {

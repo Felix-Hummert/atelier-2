@@ -1,5 +1,6 @@
 import type { RunNotCancellableReason, RunStateV3 } from "../api/client";
 import type { NodeState } from "./runProjection";
+import type { ForkPlan } from "./runFork";
 
 /**
  * Words the V3 run page speaks. One owner, the #333 ruling: Prompt / Output / Log.
@@ -248,7 +249,15 @@ export const runPageCopy = {
     again: "again",
     successorLineage: (name: string, nodeId: string) => `Fork of ${name} from ${nodeId}`,
     originSuccessor: (name: string, nodeId: string) => `${name} from ${nodeId}`,
-    unconfirmed: "The retry could not be confirmed."
+    unconfirmed: "The retry could not be confirmed.",
+    /** Why the door is absent when a node panel is open and the plan is not ok (#105). */
+    unavailableRunning: "This run is still going. Retry here waits until it has ended.",
+    unavailableUnknownNode: "This step is not on this run's line.",
+    unavailablePrefix:
+      "A step before this one did not succeed, so this run cannot be started again from here.",
+    /** The ruled deferral: this door does not change any size (#105 line 2). */
+    deferralSentence:
+      "Starting again from here changes no size: the model, the workflow, and the check budget stay as they were."
   }
 } as const;
 
@@ -289,6 +298,25 @@ export function cancelReasonSentence(
       return "This run has already ended.";
     case "answer-in-flight":
       return "Your answer to this run is still being applied. Once it has landed, the cancel returns here.";
+  }
+}
+
+/**
+ * The sentence the cockpit shows when a node panel is open but retry-from-node
+ * is not available -- the same visible-sentence shape as `cancelReasonSentence`,
+ * never a grey disabled button. `planRunFork` owns *whether*; this owns *how it
+ * reads* (#105).
+ */
+export function forkUnavailableSentence(plan: ForkPlan): string | null {
+  switch (plan.kind) {
+    case "running":
+      return runPageCopy.fork.unavailableRunning;
+    case "unknown-node":
+      return runPageCopy.fork.unavailableUnknownNode;
+    case "prefix-not-reusable":
+      return runPageCopy.fork.unavailablePrefix;
+    case "ok":
+      return null;
   }
 }
 

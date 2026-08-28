@@ -18,9 +18,9 @@
   import { whenFacts, type StreamProjection } from "../lib/runProjection";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { planRunFork, type ForkPlan } from "../lib/runFork";
-  import { runPageCopy } from "../lib/runPageCopy";
+  import { forkUnavailableSentence, runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
-  import { runHasEnded, runStanding, standingMarks, standingWords } from "../lib/runState";
+  import { runStanding, standingMarks, standingWords } from "../lib/runState";
   import { protocolDetail, protocolTitle } from "../lib/streamStatus";
   import {
     deliverWaitAnswer,
@@ -179,10 +179,6 @@
 
   $: successors = run.fork_successors ?? [];
   $: forkOrigin = run.fork_origin ?? null;
-  $: openForkPlan =
-    openNodeId === null || !runHasEnded(run.state)
-      ? null
-      : planRunFork(run, openNodeId);
 
   let openedFailedFor = "";
   $: void autoOpenFailed(run);
@@ -205,10 +201,12 @@
   let forkKey: string | null = null;
 
   function openFork(): void {
-    if (openForkPlan === null || openForkPlan.kind !== "ok") return;
+    if (openNodeId === null) return;
+    const plan = planRunFork(run, openNodeId);
+    if (plan.kind !== "ok") return;
     forkFailure = null;
     forkKey = globalThis.crypto.randomUUID();
-    forkPlan = openForkPlan;
+    forkPlan = plan;
   }
 
   function dismissFork(): void {
@@ -654,6 +652,8 @@
   <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} />
 
   {#if openNodeId !== null}
+    {@const openForkPlan = planRunFork(run, openNodeId)}
+    {@const forkUnavailable = forkUnavailableSentence(openForkPlan)}
     {#if failure !== null}
       <ProblemNotice title={runPageCopy.nodeUnreadable} message={failure} />
     {:else}
@@ -664,9 +664,8 @@
         onClose={closeNode}
         readsFrom={readsFrom(openNodeId)}
         railAttempt={rail.find((entry) => entry.node_id === openNodeId)?.attempt ?? null}
-        showFork={openNodeId !== null &&
-          runHasEnded(run.state) &&
-          planRunFork(run, openNodeId).kind === "ok"}
+        showFork={openForkPlan.kind === "ok"}
+        {forkUnavailable}
         onFork={openFork}
         runEvidence={{
           runId: run.run_id,
