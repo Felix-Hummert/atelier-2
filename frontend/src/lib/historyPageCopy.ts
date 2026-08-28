@@ -38,6 +38,11 @@ export const historyPageCopy = {
    */
   notRecorded: "Not recorded",
   /**
+   * Completed Result when the node extra could not be loaded. Distinct from
+   * `notRecorded`, which is a successful load with nothing readable to say.
+   */
+  couldNotLoad: "Could not load",
+  /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):
    * names why such a row still shows under a period chip that cannot measure
    * it, rather than leaving the chip's own honesty unexplained.
