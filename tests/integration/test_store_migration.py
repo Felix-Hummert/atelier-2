@@ -1351,6 +1351,53 @@ def test_v45_refuses_a_corrupt_v44_connection_hash_without_mutation(
     assert _logical_dump(database) == before
 
 
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_refuses_a_legacy_github_location_without_a_base_ref(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    empty_ref_location = SourceAddress("acme/studio@")
+    credential_directory = "/legacy/credential-two"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "DROP TRIGGER host_project_source_connection_revisions_no_update"
+        )
+        connection.execute(
+            "UPDATE host_project_source_connection_revisions "
+            "SET source_address = ?, revision_hash = ? "
+            "WHERE project_id = 'studio' AND source_kind = 'github' "
+            "AND revision_number = 2",
+            (
+                empty_ref_location.value,
+                schema_module._v44_project_source_connection_revision_hash(
+                    ProjectId("studio"),
+                    2,
+                    SourceKind("github"),
+                    empty_ref_location,
+                    credential_directory,
+                    SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                    ConnectionActor("operator"),
+                ),
+            ),
+        )
+        connection.execute(
+            schema_module._PRODUCT_TRIGGERS[
+                "host_project_source_connection_revisions_no_update"
+            ]
+        )
+        connection.commit()
+    before = _logical_dump(database)
+
+    with pytest.raises(
+        StoreMigrationRefused,
+        match="malformed GitHub project-source location",
+    ):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
+
+
 def test_migrate_refuses_a_hand_corrupted_partial_v44_queue_row(
     tmp_path: Path,
 ) -> None:

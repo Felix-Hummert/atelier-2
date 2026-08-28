@@ -72,6 +72,10 @@ def migrate_v44_github_source_location(
     if not separator:
         github_public_source_address(source_address)
         return source_address, None
+    if not source_ref:
+        raise GitHubConnectionUncomposable(
+            "a legacy github source location requires a nonempty base ref"
+        )
     migrated_address = SourceAddress(public_address)
     github_public_source_address(migrated_address)
     return migrated_address, SourceReference(source_ref)
@@ -152,7 +156,7 @@ def _repository(
 ) -> GitHubRepository:
     repository = github_public_source_address(address)
     owner, _slash, name = repository.partition("/")
-    if source_ref is None:
+    if source_ref is None or not source_ref.value:
         raise GitHubConnectionUncomposable(
             "a github source reads owner/name with one base ref, "
             f"not {address.value!r}; reconnect the project with that address"

@@ -24,7 +24,10 @@ from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
 )
 from atelier2.adapters.dbos.schema import host_project_source_connection_revisions
-from atelier2.adapters.github.composition import live_github_issue_source
+from atelier2.adapters.github.composition import (
+    GitHubConnectionUncomposable,
+    live_github_issue_source,
+)
 from atelier2.adapters.github.project_connections import GitHubProjectSourceConnector
 from atelier2.application.project_connections import (
     ConnectionProjectUnknown,
@@ -33,8 +36,10 @@ from atelier2.application.project_connections import (
     ProjectSourceConnectionPublished,
     ProjectSourceConnectionRead,
     ProjectSourceConnectionUnchanged,
+    ProjectSourceDisconnectedSuccessfully,
     UnpublishableConnection,
     connect_project_source,
+    disconnect_project_source,
     get_project_source_connection,
 )
 from atelier2.application.project_connections import (
@@ -55,6 +60,7 @@ from atelier2.contracts.host_configuration import (
 from atelier2.host import main
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.host_configuration import (
+    HostConfigurationReadUnavailable,
     ProjectSourceConnectionRevisionConflict,
     ProjectSourceConnectionRevisionCreated,
 )
@@ -149,6 +155,53 @@ def test_singular_read_uses_the_connectors_public_address_owner(
     )
 
     assert read == ProjectSourceConnectionRead(published.revision, "acme/studio")
+
+
+def test_an_empty_stored_github_ref_is_refused_by_composition(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    empty_ref = object.__new__(SourceReference)
+    object.__setattr__(empty_ref, "value", "")
+    revision = ProjectSourceConnectionRevision(
+        ProjectId("studio"),
+        ProjectSourceId("11111111-1111-4111-8111-111111111111"),
+        1,
+        SourceKind("github"),
+        SourceAddress("acme/studio"),
+        credential_directory,
+        SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+        ConnectionActor("felix"),
+        ProjectSourceConnectionLifecycle.CONNECTED,
+        None,
+        empty_ref,
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            host_project_source_connection_revisions.insert().values(
+                revision_hash=revision.revision_hash.value,
+                project_id=revision.project_id.value,
+                source_id=revision.source_id.value,
+                source_kind=revision.source_kind.value,
+                revision_number=revision.revision_number,
+                source_address=revision.source_address.value,
+                source_ref=empty_ref.value,
+                credential_directory=str(revision.credential_directory),
+                auth_method=revision.auth_method.value,
+                connected_by=revision.connected_by.value,
+                lifecycle=revision.lifecycle.value,
+                connected_at=None,
+            )
+        )
+        assert (
+            connection.scalar(
+                sa.select(host_project_source_connection_revisions.c.source_ref)
+            )
+            == ""
+        )
+    with pytest.raises(GitHubConnectionUncomposable, match="one base ref"):
+        live_github_issue_source(revision)
 
 
 def test_an_unconnected_project_answers_platform_connection_unknown(
@@ -331,26 +384,39 @@ def test_singular_channel_read_returns_none_after_the_current_head_disconnects(
     channel = DbosHostConfigurationChannel(engine)
     connected = _connect(engine, credential_directory)
     assert isinstance(connected, ProjectSourceConnectionPublished)
-    disconnected = ProjectSourceConnectionRevision(
-        connected.revision.project_id,
-        connected.revision.source_id,
-        connected.revision.revision_number + 1,
-        connected.revision.source_kind,
-        connected.revision.source_address,
-        connected.revision.credential_directory,
-        connected.revision.auth_method,
-        connected.revision.connected_by,
-        ProjectSourceConnectionLifecycle.DISCONNECTED,
-        connected.revision.connected_at,
-        connected.revision.source_ref,
+    assert channel.latest_project_source_connection_revision(ProjectId("studio")) == (
+        connected.revision
     )
-    assert channel.publish_project_source_connection_revision(disconnected) == (
-        ProjectSourceConnectionRevisionCreated(disconnected)
+    assert (
+        disconnect_project_source(
+            ProjectId("studio"),
+            ProjectId("studio"),
+            connected.revision.source_id,
+            channel,
+            channel,
+        )
+        == ProjectSourceDisconnectedSuccessfully()
     )
 
     assert (
         channel.latest_project_source_connection_revision(ProjectId("studio")) is None
     )
+
+
+def test_an_unreadable_project_source_store_returns_read_unavailable(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    engine = opened_channel(tmp_path)
+    engine.dispose()
+    database.rename(tmp_path / "unavailable.sqlite")
+    database.mkdir()
+
+    result = DbosHostConfigurationChannel(
+        engine
+    ).latest_project_source_connection_revision(ProjectId("studio"))
+
+    assert isinstance(result, HostConfigurationReadUnavailable)
 
 
 def test_reading_more_than_one_active_source_is_typed_durable_corruption(
