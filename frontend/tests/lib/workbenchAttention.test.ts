@@ -2,17 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { RunV3 } from "../../src/api/client";
 import {
-  applyAttentionFrame,
-  markAttentionConnecting,
-  markAttentionLive,
-  startAttentionHold
-} from "../../src/lib/attentionHold";
-import {
   absorbAttentionRun,
   workbenchDecisionPins
 } from "../../src/lib/workbenchAttention";
-import { notCancellableBlock } from "../support/runV3";
-import { publicReference, revisionHash, waitingInput } from "../support/workflowV1";
+import { cancellableBlock } from "../support/runV3";
+import { publicReference, revisionHash } from "../support/workflowV1";
 
 function waitingRun(changes: Partial<RunV3> = {}): RunV3 {
   return {
@@ -28,12 +22,14 @@ function waitingRun(changes: Partial<RunV3> = {}): RunV3 {
     state: "WAITING_INPUT",
     current_node_id: "approve",
     node_rail: [{ node_id: "approve", state: "needs_you", attempt: null }],
-    cancellation: notCancellableBlock("between-nodes"),
+    // A resting Wait is operator-cancellable (#668).
+    cancellation: cancellableBlock(),
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",
     ended_at: null,
-    ...changes
+    ...changes,
+    current_node_execution_id: changes.current_node_execution_id ?? revisionHash
   };
 }
 
@@ -71,23 +67,4 @@ describe("the Workbench's live attention projection", () => {
     expect(workbenchDecisionPins(runs)).toEqual([again]);
   });
 
-  it("keeps the open decision through a drop and still takes the next one after recover", () => {
-    const first = waitingRun({ public_run_reference: "run1.YQ" });
-    let runs = absorbAttentionRun([], first);
-    let hold = markAttentionLive(startAttentionHold());
-
-    hold = markAttentionConnecting(hold, true);
-    expect(hold.connection).toBe("reconnecting");
-    expect(workbenchDecisionPins(runs)).toEqual([first]);
-
-    hold = markAttentionLive(hold);
-    expect(hold.connection).toBe("live");
-    const applied = applyAttentionFrame(hold, JSON.stringify(waitingInput(1)));
-    expect(applied.hold.protocol_problem).toBeNull();
-    expect(applied.event?.event).toBe("WAITING_INPUT");
-
-    const recovered = waitingRun({ public_run_reference: "run1.Yg", run_id: "after recover" });
-    runs = absorbAttentionRun(runs, recovered);
-    expect(workbenchDecisionPins(runs)).toEqual([first, recovered]);
-  });
 });

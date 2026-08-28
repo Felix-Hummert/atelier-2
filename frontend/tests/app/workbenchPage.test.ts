@@ -1,7 +1,7 @@
 import type * as SvelteTestingLibrary from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AnyRun, CockpitApi } from "../../src/api/client";
+import type { AnyRun, CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { railCopy } from "../../src/lib/railCopy";
 import { retryLabel } from "../../src/lib/readStateCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
@@ -14,6 +14,7 @@ import {
   unansweredWorkbenchControls
 } from "../../src/lib/workbenchQuestions";
 import { FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
+import { cancellableBlock } from "../support/runV3";
 import {
   startedRun,
   waitingInput,
@@ -365,6 +366,85 @@ describe("the workbench is the room the workshop opens on", () => {
    * that opens while the operator is sitting here arrives where it belongs.
    * The frame is only a nudge: what the room shows is the canonical read.
    */
+  const waitingDecisionQuestion = "Ship it, or hold it back?";
+  const waitingDecisionRevisionHash = "a".repeat(64);
+
+  function waitingV3Run(overrides: Partial<RunV3> = {}): RunV3 {
+    return {
+      workflow_format_version: 3,
+      run_id: "v3/decide",
+      public_run_reference: "run1.YQ",
+      workflow_revision_hash: waitingDecisionRevisionHash,
+      agent_binding_set_hash: "b".repeat(64),
+      run_configuration_revision_hash: "c".repeat(64),
+      agent_bindings: [],
+      orders: [],
+      state_version: 1,
+      state: "WAITING_INPUT",
+      current_node_id: "approve",
+      node_rail: [{ node_id: "approve", state: "needs_you", attempt: null }],
+      // A resting Wait is operator-cancellable (#668).
+      cancellation: cancellableBlock(),
+      terminal_hash: null,
+      latest_event_cursor: null,
+      started_at: "2026-08-18T15:00:00Z",
+      ended_at: null,
+      ...overrides,
+      current_node_execution_id: overrides.current_node_execution_id ?? waitingDecisionRevisionHash
+    };
+  }
+
+  function waitingV3Revision(): WorkflowRevisionDetail {
+    return {
+      workflow_revision_hash: waitingDecisionRevisionHash,
+      document_base64: "YQ==",
+      graph: {
+        workflow_format_version: 3,
+        executable: true,
+        not_executable_reason: null,
+        node_count: 1,
+        agent_roles: [],
+        orders: [],
+        wait_answer_schemas: [
+          {
+            node_id: "approve",
+            schema: { ref: "decision", revision: "e".repeat(64) },
+            kind: "boolean",
+            values: null
+          }
+        ],
+        node_previews: [
+          { id: "approve", kind: "wait", role: null, instruction_start: null, depends_on: [] }
+        ],
+        loops: [],
+        name: "Approve once",
+        description: null
+      }
+    } as WorkflowRevisionDetail;
+  }
+
+  function waitingV3QuestionDetail() {
+    return {
+      run_id: "v3/decide",
+      public_run_reference: "run1.YQ",
+      node_id: "approve",
+      state: "needs_you",
+      job_base64: btoa(waitingDecisionQuestion),
+      job_hash: "e".repeat(64),
+      answer: null,
+      provenance: null,
+      refusal: null
+    };
+  }
+
+  function openWaitingCard(runs: readonly RunV3[], overrides: Partial<CockpitApi> = {}): void {
+    openRoom(runs, {
+      getNodeDetail: vi.fn(async () => waitingV3QuestionDetail() as never),
+      getWorkflowRevision: vi.fn(async () => waitingV3Revision()),
+      ...overrides
+    });
+  }
+
   it("shows a decision that opens while the operator is looking, without a reload", async () => {
     const feed = new FakeRunEventFeed();
     const opened = waitingInputRun({ public_run_reference: "run1.YQ", run_id: "opened while here" });
@@ -385,6 +465,60 @@ describe("the workbench is the room the workshop opens on", () => {
       true
     );
     expect(window.location.pathname).toBe("/atelier");
+  });
+
+  it("keeps an open decision card through a stream drop and takes the next one after recover, without a reload", async () => {
+    const feed = new FakeRunEventFeed();
+    const first = waitingV3Run({
+      public_run_reference: "run1.YQ",
+      run_id: "still waiting"
+    });
+    const recovered = waitingV3Run({
+      public_run_reference: "run1.Yg",
+      run_id: "after recover"
+    });
+    const getRun = vi.fn(async (reference: string) =>
+      reference === recovered.public_run_reference ? recovered : first
+    );
+    openWaitingCard([first], { openAttentionEvents: feed.openAttention, getRun });
+    const { screen, waitFor } = testingLibrary;
+
+    expect(
+      (await screen.findByRole("region", { name: waitingDecisionQuestion })).isConnected
+    ).toBe(true);
+    feed.handlers?.opened();
+
+    await say("keep this conversation");
+    expect(
+      screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel }).isConnected
+    ).toBe(true);
+    const pathname = window.location.pathname;
+
+    feed.handlers?.disconnected();
+    expect(screen.getByRole("region", { name: waitingDecisionQuestion }).isConnected).toBe(true);
+    expect(screen.queryByText("Reconnecting")).toBeNull();
+    expect(
+      screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel }).isConnected
+    ).toBe(true);
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel).isConnected).toBe(true);
+
+    feed.handlers?.opened();
+    feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, {
+          public_run_reference: recovered.public_run_reference,
+          cursor: "event1.Yg.1"
+        })
+      )
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/still waiting/).isConnected).toBe(true);
+      expect(screen.getByText(/after recover/).isConnected).toBe(true);
+      expect(screen.getAllByRole("region", { name: waitingDecisionQuestion })).toHaveLength(2);
+    });
+    expect(getRun).toHaveBeenCalledWith(recovered.public_run_reference);
+    expect(window.location.pathname).toBe(pathname);
   });
 
   it("says plainly when the run behind an event could not be read, and offers one move", async () => {
