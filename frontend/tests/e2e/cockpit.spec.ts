@@ -4,7 +4,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import {
   catalogPageCopy,
+  observedSourceHeading,
   startConfigurationLabel,
+  workItemFor,
   workflowStartCopy
 } from "../../src/lib/catalogPageCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
@@ -1109,14 +1111,40 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
   const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", { headers: { "content-type": "application/yaml" }, data: ["format_version: 3", `name: ${name}`, "graph_inputs:", "  - name: work_item", "    schema:", "      ref: work-item", `      revision: ${workItem}`, "nodes:", "  - id: build", "    type: agent", "    role: builder", "    mode: headless", "    instruction: Use the selected work item.", "    inputs:", "      - name: work_item", "        from:", "          graph_input: work_item", ...declaredOutput(output), ""].join("\n") });
   expect(workflow.status()).toBe(201);
   expect((await page.request.post("/atelier/api/v1/workflow-lineages", { data: { workflow_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
-  await page.route("**/atelier/api/v1/observed-queue-items?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], next_after: null }) }));
+  await page.route("**/atelier/api/v1/queue-items*", async (route) => await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      items: [{
+        project_id: "atelier",
+        tracker_item_reference: "gh:450",
+        item_id: "a".repeat(64),
+        state: "OBSERVED",
+        revision: 0,
+        proposal: null,
+        admission: null,
+        launch_binding: null,
+        blockers: [],
+        tracker_enrichment: "ENRICHMENT_UNAVAILABLE",
+        title: null
+      }],
+      next_after: null
+    })
+  }));
   await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], next_after_revision_hash: null }) }));
   await routeStartSheetModelContract(page, []);
   await page.goto(`/atelier/catalog/${name}`); await page.getByRole("button", { name: "Start" }).click();
   const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(name) });
-  await expect(sheet).toContainText(workflowStartCopy.noSource);
-  await sheet.getByRole("button", { name: workflowStartCopy.connectSource }).click();
-  await expect(page).toHaveURL(/\/atelier\/settings$/);
+  const picker = sheet.getByRole("combobox", { name: workItemFor("work_item") });
+  await expect(picker).toBeVisible();
+  await expect(sheet.getByText(workflowStartCopy.noSource)).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: workflowStartCopy.connectSource })).toHaveCount(0);
+  await picker.click();
+  const listbox = sheet.getByRole("listbox", { name: workItemFor("work_item") });
+  await expect(sheet.getByText(observedSourceHeading("atelier", workflowStartCopy.github))).toBeVisible();
+  await expect(listbox.getByRole("option", { name: "#450", exact: true })).toBeVisible();
+  await expect(listbox.getByRole("option")).toHaveCount(1);
+  await expect(page).not.toHaveURL(/\/atelier\/settings$/);
 });
 test("Settings keeps the project context available to the Catalog", async ({ page }) => {
   await page.goto("/atelier/settings");

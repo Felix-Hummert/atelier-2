@@ -177,32 +177,40 @@ V28 removes the writerless receipt-Access table and triggers. Its offline V27
 hop drops only an empty table and refuses any row without mutation; the
 published V3 receipt hash retains its literal empty Access subframe as frozen
 byte identity, not as a public input or writable store.
-V29 gives the queue projection ([ADR 0016](../decisions/0016-queue-projection-identity.md))
-its durable admission row: one item identified by a project id and an opaque
-tracker reference, whose id a caller never supplies -- it is a SHA-256 digest
-framed from both fields, exactly as a catalog lineage id is framed from its
-kind and founding revision. An admission names an exact, already-founded
-`CatalogLineageId` and a durable rationale; the one CAS-guarded transition an
-item's row admits is OBSERVED to ADMITTED: a stale revision or an admission
-that would replace a different one already recorded is refused with the row
-provably unchanged, and repeating the exact same admission again succeeds
-without a second write. The first admission attempt for one derived identity
-also establishes that identity's row, and OBSERVED rows also enter through the
+V29 established the queue projection's derived item identity. V44 extends that
+owner for Phase D1 ([ADR 0016](../decisions/0016-queue-projection-identity.md)):
+an observed item first receives an append-only proposal revision carrying a
+typed priority rank, exact workflow lineage, project-local prerequisites,
+automation disposition, and optional project-policy revision. The operator
+then confirms the exact inspected proposal under the row's CAS revision. The
+confirmation records typed `OPERATOR` authority; it does not choose or replace
+the proposal's workflow. OBSERVED rows enter through the
 operator's issue import: `POST /atelier/api/v1/project-sources/import` on a
 served instance whose project-source connection record names a GitHub
 repository observes every open issue as one OBSERVED row (reference grammar
 `gh:<n>`, owned by the GitHub adapter), idempotent through the derived
 identity and insert-or-ignore -- a repeated import adds nothing and never
-rewinds an admission. Observed items are listable at
-`GET /atelier/api/v1/observed-queue-items`, admitted ones at
-`GET /atelier/api/v1/queue-items`, and admission runs through
-`POST /atelier/api/v1/queue-admissions`; choosing a workflow per item stays
-the operator's manual decision at that door. A poll loop, a durable cursor
+rewinds a proposal or admission.
+
+`GET /atelier/api/v1/queue-items` is the one typed read across OBSERVED,
+PROPOSED, and ADMITTED rows. Project policy is written with an expected
+revision, proposals through `PUT /atelier/api/v1/queue-proposals`, and
+`POST /atelier/api/v1/queue-admissions` remains the confirmation door. The
+projection always retains the durable row when tracker enrichment is
+unavailable and says so explicitly. A poll loop, a durable cursor
 with conditional reads, rate-limit projection, and closed/label semantics are
-named deferrals of the import's first slice. No dependency edge, no
-readiness, and no priority exist for this projection yet, and nothing in it
-holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
-those with the tracker.
+named deferrals of the import's first slice. Nothing durable holds a tracker
+item's title, description, or comments -- REQ-QUEUE-14 keeps those with the
+tracker.
+
+V44 also appends project policy revisions, proposal revisions, exact-proposal
+dependency edges, and immutable launch bindings. Dependencies are project-local
+and only a prerequisite run in `COMPLETED` satisfies one. Capacity inspection
+and launch reservation share one immediate transaction. The binding pins one
+derived run id and exact workflow revision, so restart and catalog-head movement
+cannot launch a second run. The V43→V44 migration preserves every earlier row,
+invents none of these decisions, and exposes any old admitted row without a
+provable binding as `LEGACY_REVIEW_REQUIRED`.
 
 A run reads one of those items as its own material through the start door: a V3
 start order may name a work item (`{"name": ..., "work_item": "gh:<n>"}` on

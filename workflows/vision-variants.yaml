@@ -1,15 +1,19 @@
 format_version: 3
 name: vision-variants
 description: >-
-  One headless agent turns operator fragments into deliberately divergent,
-  concrete variants, checks them against the supplied owners, and makes the
-  real choices easy to answer with proposed defaults.
+  A visioner produces variants, a Wait holds for the operator's acknowledged
+  reaction, and a requirement_writer returns candidate sentences that trace
+  to that answer and writes nothing to the repository.
 graph_inputs:
   - name: fragments
     schema:
       ref: nonempty_string
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
   - name: owner_documents
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: context
     schema:
       ref: nonempty_string
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
@@ -26,7 +30,14 @@ nodes:
       not questions, and they must not contradict the supplied owners. Ask
       decision questions only for genuine choices or contradictions, and give
       every such question a proposed default answer. Record each contradiction
-      you find against an existing owner.
+      you find against an existing owner. Judge the fragments against the
+      contract carried under "context"; when the context contradicts the
+      fragments or the owners, say which one wins and why. Context is
+      required; the head passes the explicit word "none" when it is truly
+      absent. You cannot read files, run anything, or use tools in this
+      headless call; the fragments, owners, and context are your only
+      evidence. Every variant and every decision must carry a nonempty id.
+      Ids must be unique within variants and within decisions.
     inputs:
       - name: fragments
         from:
@@ -34,8 +45,72 @@ nodes:
       - name: owner_documents
         from:
           graph_input: owner_documents
+      - name: context
+        from:
+          graph_input: context
     outputs:
       - name: result
         schema:
           ref: vision_variants_result
-          revision: "9a5980608b31482957002cd7b869243536adf1999bb76f433ec95901e80b5eb5"
+          revision: "13861a75ffd77caf70eaa0b7930e2bb15fcccb988c3cd2a6c31b0025abd66f1d"
+  - id: operator_reaction
+    type: wait
+    prompt: >-
+      Read the variants, decisions, and contradictions bound below from the
+      visioner result. Type one JSON object with these fields:
+      chosen_variant_ids (an array of at least one variant id you choose),
+      decision_answers (an array of objects with decision_id and answer; it
+      may be empty if the visioner asked none), and reaction (your free
+      text, which may be empty). This answer is the acknowledged reaction
+      requirement sentences will trace to.
+    depends_on: [develop_variants]
+    inputs:
+      - name: variants
+        from:
+          node: develop_variants
+          output: result
+    outputs:
+      - name: answer
+        schema:
+          ref: vision_operator_answer
+          revision: "ee70584757487bc0cd4f66b211937fb615eac64b1b288aed69cbea663360703d"
+  - id: write_requirements
+    type: agent
+    role: requirement_writer
+    mode: headless
+    depends_on: [operator_reaction]
+    instruction: >-
+      Turn the acknowledged operator answer carried under the
+      operator_reaction answer into candidate requirement sentences bound to
+      that answer. Every sentence has text, derives_from with kind variant
+      or decision plus id, owner_document naming the owner document the
+      sentence would extend, and traceable_to set to the wait node id the
+      answer was announced under (operator_reaction). Copy that id from the
+      result heading; do not hash the answer. Derive each
+      sentence from a chosen variant or a decision answer. Write nothing to
+      the repository. Judge the answer against the contract carried under
+      "context"; when the context contradicts the answer, say which one
+      wins and why. Context is required; the head passes the explicit word
+      "none" when it is truly absent. You cannot read files, run anything,
+      or use tools in this headless call; the operator answer, the visioner
+      result, the owner documents, and the context are your only evidence.
+    inputs:
+      - name: answer
+        from:
+          node: operator_reaction
+          output: answer
+      - name: result
+        from:
+          node: develop_variants
+          output: result
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+      - name: context
+        from:
+          graph_input: context
+    outputs:
+      - name: result
+        schema:
+          ref: vision_requirement_sentences
+          revision: "938429730fa35e083f5c88f40920af8d8492f9ea78107064345fd1003cb0baf0"

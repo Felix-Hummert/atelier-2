@@ -530,6 +530,30 @@ def _output_format_arguments(
     return (_OUTPUT_FORMAT_FLAG, _JSON_OUTPUT_FORMAT, _JSON_SCHEMA_FLAG, schema)
 
 
+def _tool_free_output_format_arguments(
+    declared_output_schema_bytes: bytes | None,
+) -> tuple[str, ...]:
+    """Choose the tool-free output mode and its CLI-compatible constraint."""
+
+    if declared_output_schema_bytes is None:
+        return _output_format_arguments(None)
+    try:
+        schema = json.loads(declared_output_schema_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("declared output schema bytes must be JSON") from error
+    if not isinstance(schema, dict):
+        return _output_format_arguments(declared_output_schema_bytes)
+    # Claude's external CLI validator does not resolve the 2020-12 meta-schema
+    # URI; the flag carries the constraint, not that provenance annotation.
+    constraint = {key: value for key, value in schema.items() if key != "$schema"}
+    return (
+        _OUTPUT_FORMAT_FLAG,
+        _JSON_OUTPUT_FORMAT,
+        _JSON_SCHEMA_FLAG,
+        json.dumps(constraint, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
 def _tools_for_schema(
     permitted_tools: tuple[str, ...], declared_output_schema_bytes: bytes | None
 ) -> str:
@@ -881,7 +905,9 @@ class ClaudeSubscriptionExecutor:
             (
                 str(settings.executable),
                 _PRINT_FLAG,
-                *_output_format_arguments(request.declared_output_schema_bytes),
+                *_tool_free_output_format_arguments(
+                    request.declared_output_schema_bytes
+                ),
                 _MODEL_FLAG,
                 binding.configuration.model,
                 _tool_free_tools_argument(request.declared_output_schema_bytes),

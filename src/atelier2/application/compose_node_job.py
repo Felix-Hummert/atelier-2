@@ -1,18 +1,16 @@
-"""What an agent is actually handed for a node that reads an order.
+"""The exact text composed for an Agent job or a Wait question.
 
-**Why this exists.** An agent receives exactly one thing: the job bytes of its
-execution request. Until now those bytes were the authored instruction and
-nothing else, which is why a distinct input meant a distinct published revision --
-the only way to tell an agent something new was to write it into the document.
-An order is the material that ends that, so this is where the order joins the
-instruction.
+**Why this exists.** A node presents one authored opening followed by the exact
+material it declared. For an Agent those bytes become the execution request; for
+a Wait the text becomes the question a person reads. An order or predecessor
+result joins that authored opening here so both kinds use one durable composition.
 
-**Why it is its own owner.** The composition decides what an agent is asked to
-do, and the request hash is taken over the result, so it is durable identity
-rather than formatting. Two callers spelling it slightly differently would give
-one node two identities across a retry. It lives outside the adapter for the same
-reason it is small: the decision is the product's, and the adapter's job is only
-to carry it.
+**Why it is its own owner.** The composition decides what a node asks its reader
+to do, and a request hash or pause digest is taken over the result, so it is
+durable identity rather than formatting. Two callers spelling it slightly
+differently would give one node two identities across a retry or restart. It
+lives outside the adapter for the same reason it is small: the decision is the
+product's, and the adapter's job is only to carry it.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ from atelier2.contracts.node_records_v3 import (
 )
 
 ORDER_HEADING = "--- order: {name} ---"
-"""How one order announces itself inside the job, so the agent can tell them apart."""
+"""How one order announces itself, so the reader can tell them apart."""
 
 RESULT_HEADING = "--- result of {node}: {name} ---"
 """How the work of an earlier node announces itself, named by the node that did it."""
@@ -57,10 +55,10 @@ def node_job(
     composition_version: NodeJobCompositionVersion = NodeJobCompositionVersion.CURRENT,
     output_schema_repair: OutputSchemaRepair | None = None,
 ) -> str:
-    """The instruction its author wrote, then what this node was given to read.
+    """The authored opening, then what this node was given to read.
 
     Two kinds of material meet here and they stay distinguishable, because they
-    answer different questions for the agent: an **order** is what the run was
+    answer different questions for the reader: an **order** is what the run was
     started with, and a **result** is what an earlier node produced. Each
     announces itself under the name its author declared, and a result also names
     the node that did the work, so a reader can tell whose sentence it is looking
@@ -109,7 +107,7 @@ def _render_order(
 
     The legacy composition wrote every order's stored JSON bytes. The current
     composition decodes only declared root strings. Both preserve the stored
-    bytes and their hash; only the text an agent reads differs.
+    bytes and their hash; only the text the node's reader sees differs.
     """
     value = order.value.decode("utf-8")
     if (

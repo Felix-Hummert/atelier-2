@@ -72,6 +72,7 @@ from atelier2.adapters.runner_tls import (
     encode_core_peer_document,
     pin_tls_13,
 )
+from atelier2.application.advance_queue import advance_queue
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,
 )
@@ -87,9 +88,6 @@ from atelier2.application.execute_agent_attempt_on_runner import (
     ExecuteAgentAttemptOnRunnerOutcome,
     RunnerAttemptLeaseMaterial,
     execute_agent_attempt_on_runner,
-)
-from atelier2.application.start_admitted_queue_items import (
-    start_admitted_queue_items,
 )
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agent_attempts import (
@@ -1263,7 +1261,7 @@ class _DbosProcessOwner:
             self._converge_driverless_attempts(bound)
             self._converge_driverless_effect_intents(bound)
             self._converge_uncontinuable_runs(bound)
-            self._start_admitted_queue_items(bound)
+            self._advance_queue(bound)
             self._converge_driverless_runner_lease_attempts(bound)
 
     @staticmethod
@@ -1376,23 +1374,14 @@ class _DbosProcessOwner:
         )
 
     @staticmethod
-    def _start_admitted_queue_items(bound: _BoundRuntime) -> None:
-        """Start the bound workflow of every admitted queue item, idempotently.
-
-        After the convergence sweeps, and once DBOS is launched: starting a run
-        enqueues its driver, so this belongs with the launch that arms the
-        queue, not before it. The sweep derives each run's identity from the
-        item and its resolved head, so a relaunch re-derives the same id and the
-        starter answers `RunExisting` -- no admitted item is started twice.
-        Surfaced per-item refusals are the queue's own view a later slice wires
-        to the operator; a durable lie or an unreadable queue raises here.
-        """
+    def _advance_queue(bound: _BoundRuntime) -> None:
+        """Recover reservations and start each exact queue launch once."""
 
         # Local import: `starter` imports `DbosRuntimeSettings` from this module,
         # so importing it at module scope would close a cycle.
         from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 
-        start_admitted_queue_items(
+        advance_queue(
             DbosQueueProjectionStore(bound.engine),
             DbosCatalogStore(bound.engine),
             DbosDurableRunStarter(

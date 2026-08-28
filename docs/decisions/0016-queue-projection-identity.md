@@ -1,149 +1,106 @@
-# ADR 0016: The queue projection owns one item's derived identity and its CAS-guarded admission
+# ADR 0016: The queue projection owns proposal, admission, and launch identity
 
-- Status: ACCEPTED 2026-08-23 — a derived item identity, the OBSERVED-to-ADMITTED
-  transition, its typed refusals, and the durable V29 row are implemented; every
-  later capability this record names is explicitly not built
-- Depends on: [ADR 0007](0007-catalog-identity.md) (the named workflow lineage a
-  queue admission binds to)
+- Status: ACCEPTED 2026-08-27 — Phase D1 replaces the direct admission model
+  with a durable proposal, its explicit confirmation, and one immutable launch
+  binding
+- Depends on: [ADR 0007](0007-catalog-identity.md) for catalog lineage identity
 - Requirement authority: [Issue #79](https://github.com/FlexOr2/atelier-2/issues/79),
-  REQ-QUEUE-14 ("kein Tracker-Nachbau; Items leben im angebundenen Tracker")
-- Decision authority: the operator's two-claim-invariant clarification of 23.08.
-  on #79 ("Item-Claim ... und Write-Set-Ausschluss ... sind getrennte
-  Invarianten"), and the Desk plan-measurement precision of 23.08. that named this
-  slice ("die typisierte Admission allein")
+  REQ-QUEUE-01, REQ-QUEUE-05, and REQ-QUEUE-14
+- Decision authority: the Phase-D operator rulings of 27.08.2026
 
 ## Context
 
-The atelier's Core/Tracker boundary was sharpened on 21.08.: the tracker owns
-CRUD, status, comments, and parent; Core owns a versioned, idempotent, durable
-orchestration projection over what the tracker reports. This record is the first
-slice of that projection -- narrow on purpose. A dependency graph, readiness, and
-priority are later slices; this one proves only that one observed item can be
-identified, and admitted into the queue once, durably.
+The tracker owns item content and lifecycle facts. Core owns only the durable
+orchestration decision keyed by a project and opaque tracker reference. The
+earlier queue row jumped directly from `OBSERVED` to `ADMITTED`, named no
+priority or prerequisites, held no project capacity policy, and resolved the
+catalog head again after every restart. That made an admission impossible to
+inspect as a separate decision and allowed a moved head to select different
+workflow bytes before a delayed launch.
 
-REQ-QUEUE-14 draws the line this record must not cross: the tracker (GitHub
-first, others behind the same door) is the source of truth for the item itself.
-Core never reconstructs a title, a description, or a comment thread. What Core
-owns is orchestration state keyed by a reference into that tracker -- workflow
-binding, admission, and later the graph and its claims.
+The live predecessor is published schema V43. Its fingerprint is
+`f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782` and is
+immutable; Phase D therefore occupies the next free hop, V44.
 
 ## Decision
 
-### Identity is derived, never accepted
+### One derived item, three durable states
 
-A `WorkItemReference` pairs a project id (the existing host-configuration
-`ProjectId`) with an opaque `TrackerItemReference` -- a string whose meaning is
-the connected platform adapter's contract (ADR 0010), never reinterpreted here.
-The pair's `QueueItemId` is a SHA-256 digest framed from both fields, exactly as
-`CatalogLineageId` is framed from a lineage's kind and founding revision (ADR
-0007). No constructor accepts an identity; every reader recomputes it from the
-fields a durable row actually carries and refuses a row whose stored id
-disagrees. Two references naming the same project and the same tracker item are
-therefore the same queue row by construction -- REQ-QUEUE-14's dedupe half of
-"a work item ... is deduplicated ... exactly once" holds by derivation, not by a
-lookup that could disagree with itself.
+`WorkItemReference(project, tracker_item_reference)` still derives one
+`QueueItemId`; callers never supply it. `QueueItemState` is now `OBSERVED`,
+`PROPOSED`, or `ADMITTED`. A proposal is a separate CAS transition and carries
+one typed `QueuePriorityRank` (`{"rank": n}` on the wire), a catalog workflow
+lineage, project-local prerequisite item ids, an automation disposition, and
+the policy revision it was evaluated against. Duplicate prerequisites are
+canonicalized by item id.
 
-### The lifecycle this slice proves is two states and one transition
+`POST /queue-admissions` is the confirmation door. It confirms the exact
+proposal revision the operator inspected, records `QueueDecisionAuthority`,
+and never accepts a replacement workflow. D1 admits manually with `OPERATOR`;
+`AUTOMATION_RULE` is a typed authority for the later automation slice, not an
+implicit permission.
 
-`QueueItemState` is `OBSERVED` or `ADMITTED`. `QueueItemSnapshot.admit` is the
-one pure, CAS-guarded transition: it takes an `AdmitQueueItem` command carrying
-the revision the caller inspected, and returns one of four typed outcomes --
-`QueueItemAdmitted`, `QueueAdmissionAlreadyCurrent` (an idempotent repeat of the
-exact same admission), `QueueAdmissionRevisionConflict` (the caller inspected a
-revision the item has since moved past), or `QueueAdmissionAlreadyDecided` (the
-item already carries a different admission). The pattern mirrors
-`EffectIntent.resolve_reconciliation` for the pure CAS decision and the
-`catalog_v3` admission family for typed, exhaustive refusals rather than a
-caught exception -- a caller must read what happened, not guess from a raised
-message.
+### Priority, dependencies, and capacity have one owner
 
-### An admission names a workflow lineage, never a fixed revision
+Each project has append-only queue-policy revisions. The active-run cap is read
+from the current revision. Proposal revisions and their dependency edges are
+append-only, and every edge names the exact proposal revision that declared it.
+Dependencies are project-local. A prerequisite is satisfied only when its
+launch-bound run is `COMPLETED`; any other run state remains a blocker. Ready
+items order by priority rank, then item id, so equal ranks are deterministic.
 
-`QueueAdmission` carries a `CatalogLineageId` and a durable
-`QueueAdmissionRationale`. Binding to a lineage rather than one revision lets
-the workflow a lineage names keep publishing later members without re-admitting
-every already-queued item -- the same reasoning that lets a catalog name resolve
-to `head`. Resolving *which* lineage a workflow query names is deliberately not
-this slice's job: it is an application-layer read through the existing
-`CatalogResolver`, and it lands together with the platform door that first
-gives it a production caller (see "Named and not built"). The projection
-itself accepts only an already-resolved `CatalogLineageId` and never
-interprets a query.
+The projection names blockers with `QueueBlockerKind`. `GET /queue-items`
+reports only facts the durable read can prove without making a reservation or
+starting a run: unset priority, human confirmation, open or failed
+prerequisites, and legacy review. An empty blocker list therefore means no
+read-time blocker was proved; it is not a start-readiness claim. Capacity,
+binding resolution, required-order availability, and start refusal are checked
+at advance or reservation time and returned by that decision. All blocker
+names are contract values, not free-form row states.
 
-### The store: one table, a derived-identity CAS row, immutable history
+### Launch reservation is the exactly-once boundary
 
-`queue_items` follows the `effect_intents` shape: identity columns
-(`item_id`, `project_id`, `tracker_item_reference`) that a trigger refuses to
-update, `state` and `state_version` that a CAS `UPDATE ... WHERE
-state_version = :expected` may advance, and a CHECK binding `state = 'ADMITTED'`
-to its required payload (`workflow_lineage_id`, `admission_rationale`) exactly
-as `state = 'RECONCILING'` binds to its owner command. No row is ever deleted.
-A caller's first admission request for one derived identity also establishes
-that identity's row, `OBSERVED` at revision 0 -- there is no separate durable
-"observed" write in this slice, because nothing yet reads an item before its
-first admission attempt.
+An admitted proposal may receive one immutable `QueueLaunchBinding` from
+item/proposal revision to one `RunId` and one exact `WorkflowRevisionHash`.
+Capacity inspection and insertion of that binding happen in one
+`BEGIN IMMEDIATE` decision. The run id derives from item id and proposal
+revision. A crash after reservation reuses the recorded binding; a crash after
+run creation finds the same run. Once bound, a later catalog-head movement is
+irrelevant.
 
-### Core mirrors tracker facts; it never writes them back
+Project model defaults and agent configuration revisions are resolved by the
+canonical run starter after reservation. The queue does not duplicate
+`AgentConfigurationRevisionHash` or `ModelResolutionSource`; the run binding
+owners record those exact values.
 
-Nothing in this table is authored here. `project_id` and
-`tracker_item_reference` are read verbatim from wherever the caller resolved
-them (a future ingestion slice behind ADR 0010); the workflow binding and its
-rationale are Core's own orchestration decision. No field in `queue_items`
-holds a title, a description, or a comment -- REQ-QUEUE-14's other half. Nothing
-here writes back to the tracker; that remains the platform adapter's authorized-
-action contract (Koordinationsakzeptanz Regel 6).
+### V43→V44 preserves decisions and invents none
 
-## The two-claim-invariant separation
+V44 appends policy, proposal, dependency, and launch-binding tables and adds
+the proposal pointer and decision authority to the current queue row. The
+migration preserves every V43 queue row and leaves all new decision columns
+and tables empty. In particular it invents no priority, authorization,
+dependency, policy, or run binding. A pre-V44 admitted row cannot prove which
+workflow revision ran, so the typed projection retains it and reports
+`LEGACY_REVIEW_REQUIRED`; the advancer does not spend it again.
 
-The operator's 23.08. clarification names two invariants this record must not
-conflate: **item-claim** (dedupe -- one item, one run) and **write-set
-exclusion** (no two concurrent runs on the same surface). Item-claim is what
-`QueueItemId`'s derivation and the admission CAS give this slice. Write-set
-exclusion is explicitly **not** this record's subject: it hangs off a run, not
-an item, so an item-less mutating run can declare a write-set and share the
-same exclusion table a claimed run would use, while a read-only run holds no
-write-set at all. This record's admission row carries no write-set field and
-makes no claim about one. Generalizing a write-set beyond repository files to
-an external surface (the same pull request, ADR 0010's receipt world) is a
-named, later edge.
+All new history tables reject updates and deletes. Runtime refuses a V43 store;
+only the offline migration command performs the atomic hop. A collision or
+failpoint rolls the complete hop back to the exact predecessor.
 
-## Named and not built
+### One projection serves every state
 
-- **The application layer that resolves a workflow query.** A first `admit_queue_item`
-  use case (resolve a workflow query to its head `CatalogLineageId` through the
-  existing `CatalogResolver`, then hand the projection an admission) was
-  written for this slice and removed before landing: it named the two
-  application-level refusals for an unknown or retired lineage, but it had no
-  production caller, and a caller-less application module is deadweight this
-  slice does not need to carry. Its code stays in this PR's history; the same
-  use case lands with the platform door that gives it its first real caller,
-  in a later slice.
-- **Observation as its own durable write.** This slice's `OBSERVED` row is
-  established only as a side effect of the first admission attempt. A real
-  ingestion pipeline that observes a tracker item before anyone tries to admit
-  it, and writes that fact durably on its own, is later work behind ADR 0010.
-- **Dependency edges, readiness, and priority.** REQ-QUEUE-06's cross-project DAG,
-  Kahn-ordered readiness, and weighted priority are the next slice's subject and
-  name no type here.
-- **The HTTP door.** No route projects this table yet; it follows the #566 wire
-  collision this record deliberately stays behind.
-- **Write-set exclusion.** Named above -- a distinct invariant with its own
-  later table, not a field squeezed into this one.
-- **A caller-error refusal for an unfounded workflow lineage.** The store's
-  foreign key on `workflow_lineage_id` refuses an admission naming a lineage
-  no founding ever created, and today that refusal surfaces as
-  `DurableStateCorrupt` -- honest for state a sequence of writes could not have
-  produced, dishonest for a caller's bad reference. A typed refusal that tells
-  the two apart is later work; `ports/queue_projection.py` names the gap.
+`GET /atelier/api/v1/queue-items` is the only queue read. Every row carries its
+typed state, revision, optional proposal, admission, launch binding, and
+blockers. The former observed/admitted split reads are removed. Tracker display
+enrichment is explicitly separate: if it cannot be read, the durable row still
+appears with `tracker_enrichment: ENRICHMENT_UNAVAILABLE` and no invented title.
 
 ## Consequences
 
-- `queue_items` is schema V29; the migration is a pure additive table hop
-  (`_added_table_step`), so every store below V28 gains the table with zero
-  rows and no reinterpretation of anything it already held.
-- A queue item's identity can never drift from its project and tracker
-  reference: nothing durable stores an identity the fields it was built from do
-  not reproduce.
-- An admission is either accepted once, repeated for free, or refused by name
-  with the row provably unchanged -- there is no path that leaves a queue item
-  partially admitted.
+- Proposal and confirmation are independently stale-safe and idempotent.
+- The durable binding, rather than a repeated catalog lookup, is the authority
+  for which exact workflow revision starts.
+- Capacity is not a best-effort count outside the write transaction.
+- V43 remains a published predecessor object; V44 is the Phase-D schema.
+- Automatic authorization, cross-project dependencies, and tracker write-back
+  remain outside D1.

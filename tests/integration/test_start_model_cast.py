@@ -65,11 +65,16 @@ from atelier2.contracts.host_configuration import (
     ProviderModelCheck,
 )
 from atelier2.contracts.queue_projection import (
-    AdmitQueueItem,
-    QueueAdmission,
+    ConfirmQueueProposal,
+    PlanQueueItem,
     QueueAdmissionRationale,
+    QueueAutomationDisposition,
     QueueItemAdmitted,
+    QueueItemProposed,
+    QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyRevision,
+    QueueProposal,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -309,14 +314,30 @@ def configure_defaults(
 
 
 def admit_queue_item(runtime: DbosRuntime, lineage_id: CatalogLineageId) -> None:
-    """Bind one tracker item to this workflow and admit it, as the queue does."""
-    admitted = DbosQueueProjectionStore(runtime.engine).admit(
-        AdmitQueueItem(
-            WorkItemReference(SERVED_PROJECT, TrackerItemReference("gh:680")),
-            QueueAdmission(
-                lineage_id, QueueAdmissionRationale("the triage rule matched")
+    """Plan and manually confirm one queue item through the Phase-D contract."""
+    store = DbosQueueProjectionStore(runtime.engine)
+    reference = WorkItemReference(SERVED_PROJECT, TrackerItemReference("gh:680"))
+    store.observe((reference,))
+    store.put_policy(QueueProjectPolicyRevision(SERVED_PROJECT, 1, 1, None), 0)
+    proposed = store.plan(
+        PlanQueueItem(
+            reference,
+            QueueProposal(
+                QueuePriorityRank(1),
+                lineage_id,
+                (),
+                QueueAutomationDisposition.HUMAN_REQUIRED,
+                1,
             ),
             QueueProjectionRevision(0),
+        )
+    )
+    assert isinstance(proposed, QueueItemProposed), proposed
+    admitted = store.confirm(
+        ConfirmQueueProposal(
+            reference,
+            proposed.revision,
+            QueueAdmissionRationale("the triage rule matched"),
         )
     )
     assert isinstance(admitted, QueueItemAdmitted), admitted

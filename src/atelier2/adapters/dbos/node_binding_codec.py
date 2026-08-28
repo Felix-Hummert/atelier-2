@@ -18,6 +18,11 @@ codec accepts; a form carrying an unknown key, a missing key, an unknown value
 or a hash its own fields do not produce is refused by name rather than read as
 a legacy one. Each legacy arm may be deleted once no `operation_outputs` row of
 its shape can exist.
+
+A Wait binding's optional `question` is different: absence is both the current
+no-input form and the form every earlier row wrote. Presence carries the exact
+question composed for one bound-input pause. Neither meaning depends on a schema
+hop because this codec is the DBOS step-output owner, not a product table.
 """
 
 from __future__ import annotations
@@ -89,6 +94,7 @@ class EncodedActionBinding(TypedDict):
 class EncodedWaitBinding(TypedDict):
     type: Literal["wait"]
     round_ordinal: NotRequired[int]
+    question: NotRequired[str]
 
 
 class EncodedSubworkflowBinding(TypedDict):
@@ -106,7 +112,7 @@ type EncodedNodeBinding = (
 )
 
 _FORM_ONLY_KEYS = frozenset({"type"})
-_WAIT_OPTIONAL_KEYS = frozenset({"round_ordinal"})
+_WAIT_OPTIONAL_KEYS = frozenset({"round_ordinal", "question"})
 _AGENT_KEYS = frozenset({"type", "job", "output"})
 _SUBWORKFLOW_KEYS = frozenset({"type", "left", "right"})
 _AGENT_V2_KEYS = frozenset(
@@ -148,8 +154,14 @@ def encode_node_binding(binding: NodeBinding) -> EncodedNodeBinding:
             return _encode_agent_v2(binding)
         case ActionNodeBinding():
             return {"type": "action"}
-        case WaitNodeBinding(round_ordinal=round_ordinal):
-            return {"type": "wait", "round_ordinal": round_ordinal}
+        case WaitNodeBinding(round_ordinal=round_ordinal, question=question):
+            encoded: EncodedWaitBinding = {
+                "type": "wait",
+                "round_ordinal": round_ordinal,
+            }
+            if question is not None:
+                encoded["question"] = question
+            return encoded
         case SubworkflowNodeBinding(operands=(left, right)):
             return {"type": "subworkflow", "left": left, "right": right}
         case _ as unreachable:
@@ -345,8 +357,11 @@ def _decode_wait(encoded: Mapping[str, object]) -> WaitNodeBinding:
         else _whole_number(encoded, "round_ordinal")
     )
     try:
-        return WaitNodeBinding(round_ordinal)
-    except ValueError as error:
+        return WaitNodeBinding(
+            round_ordinal,
+            None if "question" not in encoded else _text(encoded, "question"),
+        )
+    except (TypeError, ValueError) as error:
         raise RunBindingConflict(
             "a durable wait binding carries a round no run can stand in"
         ) from error

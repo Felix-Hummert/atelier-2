@@ -97,6 +97,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     AgentExecutionRefusal,
     NodeExecutionId,
+    RunEvent,
     RunEventKind,
     logical_effect_key_for_node,
 )
@@ -122,6 +123,7 @@ from atelier2.contracts.run_projections import (
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
+    NodeState,
     ReusedNodeProjection,
     RunForkOriginProjection,
     RunForkSuccessorProjection,
@@ -265,12 +267,24 @@ def _bounded_projection_select(
     selected_columns = tuple(table.c) if columns is None else columns
     projected: list[Any] = []
     for column in selected_columns:
+        limit_exemption: sa.ColumnElement[bool] | None = None
+        response_length = None
         if column.name in document_columns:
             maximum = projection_limit.maximum_document_bytes
             length = sa.func.length(column)
         elif column.name in payload_columns:
             maximum = projection_limit.maximum_payload_bytes
             length = sa.func.length(column)
+            if table is run_events and column.name == run_events.c.payload.name:
+                limit_exemption = (
+                    run_events.c.event_kind == RunEventKind.WAITING_INPUT.value
+                )
+                # WAITING_INPUT's payload is private durable question identity:
+                # all three public WAITING_INPUT event families omit it. Keep
+                # selecting the exact bytes so event_from_record verifies
+                # payload_hash and event_hash, while marking their
+                # response-projected length as inapplicable.
+                response_length = sa.case((limit_exemption, None), else_=length)
         elif column.name in field_columns:
             maximum = (
                 _MAXIMUM_UTF8_BYTES_PER_CHARACTER
@@ -280,10 +294,15 @@ def _bounded_projection_select(
         else:
             projected.append(column)
             continue
+        admitted = length <= maximum
+        if limit_exemption is not None:
+            admitted = sa.or_(limit_exemption, admitted)
+        projected.append(sa.case((admitted, column), else_=None).label(column.name))
         projected.append(
-            sa.case((length <= maximum, column), else_=None).label(column.name)
+            (length if response_length is None else response_length).label(
+                _LENGTH_LABEL_PREFIX + column.name
+            )
         )
-        projected.append(length.label(_LENGTH_LABEL_PREFIX + column.name))
     return sa.select(*projected)
 
 
@@ -810,27 +829,69 @@ def _node_job_and_refusal(
     projection: RunProjection,
     node: object,
     round_ordinal: int,
+    node_state: NodeState,
 ) -> tuple[bytes | None, str | None, str | None]:
     """What this node was handed, and what stops it if something does.
 
     A V1 or V2 node's job is the text its author wrote and nothing else, so there
-    is nothing to refuse. A V3 agent node is composed from its instruction, the
-    orders the run carries and the work earlier nodes handed on -- and composing
-    it is exactly where a refusal surfaces, because reading an earlier node's
-    value against the schema its author pinned happens there. The composer's
-    refusal is caught rather than raised: an operator asking about a stuck node
-    wants to be told the reason, not to be refused the question.
+    is nothing to refuse. A no-input V3 Wait has the same answer: its authored
+    prompt. An input-bearing V3 Wait that has paused reads the exact question
+    from that execution's durable event; composition is only a preview before
+    the pause or a diagnostic when a corrupt nonlive execution lacks its pause.
+    A V3 Agent job is composed from its authored opening and declared inputs.
+
+    Composition is exactly where a refusal surfaces, because reading an earlier
+    node's value against the schema its author pinned happens there. The
+    composer's refusal is caught rather than raised: an operator asking about a
+    stuck node wants to be told the reason, not to be refused the question.
     """
 
     if isinstance(node, AgentNodeV2):
         job = node.job.encode("utf-8")
         return job, Sha256Hash.of(job).value, None
     if isinstance(node, WaitNodeV3):
-        # The published document already names what the person is asked. This
-        # read uses that parse, not the executable one, so a wait that holds a
-        # run still answers with its authored question.
-        job = node.prompt.encode("utf-8")
-        return job, Sha256Hash.of(job).value, None
+        if not node.inputs:
+            question_bytes = node.prompt.encode("utf-8")
+            return question_bytes, Sha256Hash.of(question_bytes).value, None
+        run = projection.run
+        waiting_event = _waiting_input_event(
+            connection,
+            NodeExecutionId.for_node(
+                run.run_id, run.revision_hash, node.id, round_ordinal
+            ),
+        )
+        if waiting_event is not None:
+            return (
+                waiting_event.payload,
+                waiting_event.payload_hash.value,
+                None,
+            )
+        try:
+            question = node_job(
+                node.prompt,
+                load_run_inputs(connection, run.run_id, node),
+                load_node_outputs(
+                    connection,
+                    run.run_id,
+                    run.revision_hash,
+                    projection.graph,
+                    node,
+                    round_ordinal,
+                ),
+            )
+            question_bytes = question.encode("utf-8")
+        except NodeOutputNotWritten as not_written:
+            if node_state in (NodeState.QUEUED, NodeState.WORKING):
+                return None, None, None
+            return None, None, str(not_written)
+        except NodeOutputSchemaRefused as refused:
+            return None, None, str(refused)
+        if node_state not in (NodeState.QUEUED, NodeState.WORKING):
+            raise RunTransitionConflict(
+                "an input-bearing Wait that already paused carries no "
+                "WAITING_INPUT event"
+            )
+        return question_bytes, Sha256Hash.of(question_bytes).value, None
     if not isinstance(node, AgentNodeV3):
         return None, None, None
     run = projection.run
@@ -855,6 +916,87 @@ def _node_job_and_refusal(
     except NodeOutputSchemaRefused as refused:
         return None, None, str(refused)
     return composed, Sha256Hash.of(composed).value, None
+
+
+def _waiting_input_event(
+    connection: Connection, execution_id: NodeExecutionId
+) -> RunEvent | None:
+    """The exact durable pause for this Wait execution, integrity-checked."""
+    record = (
+        connection.execute(
+            sa.select(run_events).where(
+                run_events.c.node_execution_id == execution_id.value,
+                run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return None if record is None else event_from_record(record)
+
+
+def _node_detail_execution(
+    connection: Connection,
+    projection: RunProjection,
+    node_id: str,
+    node: object,
+    node_state: NodeState,
+) -> tuple[int, NodeExecutionId]:
+    """The execution the node rail is displaying.
+
+    A queued or working node belongs to the round the run is turning, even when
+    no execution event exists yet. An input-bearing Wait displayed as paused,
+    answered or cancelled instead takes its execution from its own latest pause
+    event. This distinction matters after another loop advances the run's round:
+    the run head then no longer names the round in which an earlier bound Wait
+    actually ran. A no-input Wait keeps its earlier current-round read path.
+    """
+
+    run = projection.run
+    current_round = round_of(
+        projection.graph,
+        node_id,
+        run.current_round_ordinal,
+    )
+    current_execution = NodeExecutionId.for_node(
+        run.run_id,
+        run.revision_hash,
+        node_id,
+        current_round,
+    )
+    if (
+        not isinstance(node, WaitNodeV3)
+        or not node.inputs
+        or node_state
+        not in (
+            NodeState.NEEDS_YOU,
+            NodeState.SUCCEEDED,
+            NodeState.CANCELLED,
+        )
+    ):
+        return current_round, current_execution
+
+    record = (
+        connection.execute(
+            sa.select(run_events)
+            .where(
+                run_events.c.run_id == run.run_id.value,
+                run_events.c.revision_hash == run.revision_hash.value,
+                run_events.c.node_id == node_id,
+                run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+            )
+            .order_by(run_events.c.event_sequence.desc())
+            .limit(1)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        return current_round, current_execution
+    event = event_from_record(record)
+    if node_state is NodeState.NEEDS_YOU and event.round_ordinal != current_round:
+        return current_round, current_execution
+    return event.round_ordinal, event.node_execution_id
 
 
 def _node_instants(
@@ -1198,13 +1340,14 @@ class DbosQueries:
     def get_node_detail(self, run_id: RunId, node_id: str) -> GetNodeDetailResult:
         """One node of one run, answered from what the run really kept.
 
-        Three of the four answers are read; the fourth is recomputed. The job is
-        not stored anywhere, so it is composed again through the one owner that
-        composed it for the provider. Its plain byte hash travels as job_hash;
-        the hash a reader holds against the receipt is provenance.request_hash,
-        which frames execution identity, revision, binding and operational
-        identity around those bytes. Doing it any other way would mean keeping
-        a second copy of a value that already has an identity.
+        An Agent job is composed again through the one owner that composed it
+        for the provider. A no-input Wait reads its authored prompt, preserving
+        its published-parse behavior. An input-bearing Wait that has paused
+        reads the exact question from its immutable WAITING_INPUT event; only a
+        live preview is composed. In each case the plain byte hash travels as
+        job_hash. For an Agent, the hash a reader holds against the receipt is
+        provenance.request_hash, which frames execution identity, revision,
+        binding and operational identity around those bytes.
 
         A refusal has two durable voices. Every refused attempt writes its own
         immutable Attempt receipt; ordinal one also records a nonterminal event
@@ -1233,16 +1376,15 @@ class DbosQueries:
                 }
                 if node_id not in rail:
                     return NodeQueryMissing()
-                round_ordinal = round_of(
-                    projection.graph,
+                round_ordinal, execution_id = _node_detail_execution(
+                    connection,
+                    projection,
                     node_id,
-                    projection.run.current_round_ordinal,
-                )
-                execution_id = _node_execution_id(
-                    projection.run, projection.graph, node_id
+                    node,
+                    rail[node_id],
                 )
                 job, job_hash, refusal = _node_job_and_refusal(
-                    connection, projection, node, round_ordinal
+                    connection, projection, node, round_ordinal, rail[node_id]
                 )
                 durable_refusal = _node_receipt_refusal(
                     connection, execution_id

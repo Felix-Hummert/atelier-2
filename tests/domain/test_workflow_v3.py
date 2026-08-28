@@ -1765,15 +1765,7 @@ def test_a_line_carrying_a_wait_node_is_executable(document: bytes, sink: str) -
     assert parsed.sink_node_ids == (sink,)
 
 
-@pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
-def test_a_wait_node_reading_an_earlier_value_is_refused_by_the_form_it_wrote() -> None:
-    """Nothing composes a question out of what an earlier node produced.
-
-    The refusal names `inputs` rather than the wait kind, because the kind runs:
-    what has no owner is folding another node's value into the sentence a person
-    is shown, and a run that dropped it would judge an answer against a question
-    the operator never saw.
-    """
+def test_a_wait_node_may_read_a_named_predecessor_output_into_its_question() -> None:
     document = AGENT_WAIT_AGENT_CHAIN.replace(
         b"    prompt: Is this good enough to review?\n",
         b"""    prompt: Is this good enough to review?
@@ -1783,8 +1775,79 @@ def test_a_wait_node_reading_an_earlier_value_is_refused_by_the_form_it_wrote() 
 """,
     )
 
-    with pytest.raises(InvalidWorkflowDocument, match="inputs on wait node 'approve'"):
+    parsed = parse_executable_workflow_document(document)
+
+    assert isinstance(parsed, WorkflowGraphV3)
+    assert parsed.node("approve").inputs[0].name == "candidate"
+
+
+def test_a_wait_node_may_read_a_graph_input_into_its_question() -> None:
+    document = AGENT_THEN_WAIT_CHAIN.replace(
+        b"name: A person answers last\n",
+        b"""name: A person answers last
+graph_inputs:
+  - name: operator_context
+    schema: {ref: any-json, revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+""",
+    ).replace(
+        b"    prompt: Is this good enough to land?\n",
+        b"""    prompt: Is this good enough to land?
+    inputs:
+      - name: context
+        from: {graph_input: operator_context}
+""",
+    )
+
+    parsed = parse_executable_workflow_document(document)
+
+    assert isinstance(parsed, WorkflowGraphV3)
+    assert parsed.node("approve").inputs[0].name == "context"
+
+
+@pytest.mark.parametrize(
+    ("source", "named"),
+    [
+        pytest.param(b'        value: "yes"\n', "value", id="authored value"),
+        pytest.param(
+            b"        from: {node: implement, receipt: terminal}\n",
+            "receipt",
+            id="node receipt",
+        ),
+    ],
+)
+def test_a_wait_input_source_nothing_composes_is_refused_by_its_form(
+    source: bytes, named: str
+) -> None:
+    document = AGENT_WAIT_AGENT_CHAIN.replace(
+        b"    prompt: Is this good enough to review?\n",
+        b"    prompt: Is this good enough to review?\n"
+        b"    inputs:\n"
+        b"      - name: candidate\n" + source,
+    )
+
+    with pytest.raises(
+        InvalidWorkflowDocument,
+        match=f"input sources on wait node 'approve'.*{named}",
+    ):
         parse_executable_workflow_document(document)
+
+
+def test_a_wait_context_input_without_a_declared_context_is_refused_by_name() -> None:
+    document = AGENT_WAIT_AGENT_CHAIN.replace(
+        b"    prompt: Is this good enough to review?\n",
+        b"""    prompt: Is this good enough to review?
+    inputs:
+      - name: candidate
+        from: {context: operator_context}
+""",
+    )
+
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_executable_workflow_document(document)
+
+    assert raised.value.refusal is not None
+    assert raised.value.refusal.reason is WorkflowRefusalReason.UNDECLARED_CONTEXT
+    assert "operator_context" in raised.value.refusal.detail
 
 
 # The other side of the same boundary. `depends_on` is the one authored form

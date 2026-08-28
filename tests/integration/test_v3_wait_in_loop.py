@@ -55,6 +55,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId, RunEventKind
+from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -65,12 +66,14 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
+from atelier2.ports.run_queries import NodeDetailFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     answering_each_execution,
     publish_checked_model_registry,
 )
+from tests.scenarios.api import durable_queries
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/wait-in-loop")
@@ -83,6 +86,10 @@ ANSWER_ROUND_1 = b'"do the first thing"'
 ANSWER_ROUND_2 = b'"do the second thing"'
 REPORT_ROUND_1 = b'"the first thing is done"'
 REPORT_ROUND_2 = b'"the second thing is done"'
+SOURCE_NODE = "source"
+LATER_FIRST_NODE = "later-first"
+LATER_LAST_NODE = "later-last"
+SOURCE_OUTPUT = b'"the durable source value"'
 
 WAIT_IN_LOOP_DOCUMENT = (
     b"""format_version: 3
@@ -131,6 +138,80 @@ the run that has never been started before, because every earlier Wait test put 
 Agent in front of it.
 """
 
+WAIT_BEFORE_A_LATER_LOOP_DOCUMENT = (
+    b"""format_version: 3
+name: A bound wait remains readable after a later loop advances the round
+nodes:
+  - id: """
+    + SOURCE_NODE.encode()
+    + b"""
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Produce the source value.
+"""
+    + declared_output(ANY_JSON_SCHEMA, "report")
+    + b"""  - id: """
+    + WAIT_NODE.encode()
+    + b"""
+    type: wait
+    prompt: What should happen to this source?
+    depends_on: ["""
+    + SOURCE_NODE.encode()
+    + b"""]
+    inputs:
+      - name: source
+        from: {node: """
+    + SOURCE_NODE.encode()
+    + b""", output: report}
+"""
+    + declared_output(ANY_JSON_SCHEMA, "answer")
+    + b"""  - id: """
+    + AGENT_NODE.encode()
+    + b"""
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Apply the person's answer.
+    depends_on: ["""
+    + WAIT_NODE.encode()
+    + b"""]
+"""
+    + declared_output(ANY_JSON_SCHEMA, "report")
+    + b"""  - id: """
+    + LATER_FIRST_NODE.encode()
+    + b"""
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Begin the later loop round.
+    depends_on: ["""
+    + AGENT_NODE.encode()
+    + b"""]
+"""
+    + declared_output(ANY_JSON_SCHEMA, "report")
+    + b"""  - id: """
+    + LATER_LAST_NODE.encode()
+    + b"""
+    type: agent
+    role: builder
+    mode: headless
+    instruction: End the later loop round.
+    depends_on: ["""
+    + LATER_FIRST_NODE.encode()
+    + b"""]
+"""
+    + declared_output(ANY_JSON_SCHEMA, "report")
+    + f"""loops:
+  - id: {LOOP_ID}
+    body: [{WAIT_NODE}, {AGENT_NODE}]
+    maximum_rounds: 2
+  - id: later
+    body: [{LATER_FIRST_NODE}, {LATER_LAST_NODE}]
+    maximum_rounds: 3
+""".encode()
+)
+
 
 def provider() -> RecordingAgentExecutorFactoryV2:
     """The agent executor, answering each round of `work` with its own report."""
@@ -172,7 +253,9 @@ def recording() -> RecordingAgentExecutorFactoryV2:
 
 
 def publish_and_start(
-    runtime: DbosRuntime, recording: RecordingAgentExecutorFactoryV2
+    runtime: DbosRuntime,
+    recording: RecordingAgentExecutorFactoryV2,
+    document: bytes = WAIT_IN_LOOP_DOCUMENT,
 ) -> WorkflowRevision:
     """Publish the document and its bindings, then start the run through the
     public start seam -- nothing here reaches into the engine."""
@@ -202,7 +285,7 @@ def publish_and_start(
     publish_checked_model_registry(
         runtime.engine, ProviderId("exact"), (configuration,)
     )
-    workflow = WorkflowRevision(WAIT_IN_LOOP_DOCUMENT)
+    workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     started = DbosDurableRunStarter(
         runtime.engine,
@@ -365,3 +448,62 @@ def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
         ) != NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE, 2)
     finally:
         recovered.close()
+
+
+def test_a_bound_wait_keeps_its_execution_after_a_later_loop_turns(
+    tmp_path: Path, recording: RecordingAgentExecutorFactoryV2
+) -> None:
+    """A later loop's round cannot change which durable pause detail displays."""
+    recording.command = answering_each_execution(
+        {
+            (SOURCE_NODE, 1): SOURCE_OUTPUT,
+            (AGENT_NODE, 1): REPORT_ROUND_1,
+            (AGENT_NODE, 2): REPORT_ROUND_2,
+            (LATER_FIRST_NODE, 2): REPORT_ROUND_1,
+            (LATER_LAST_NODE, 2): REPORT_ROUND_1,
+            (LATER_FIRST_NODE, 3): REPORT_ROUND_2,
+            (LATER_LAST_NODE, 3): REPORT_ROUND_2,
+        }
+    )
+    runtime = runtime_over(tmp_path, recording)
+    runtime.initialize_storage()
+    try:
+        workflow = publish_and_start(
+            runtime, recording, WAIT_BEFORE_A_LATER_LOOP_DOCUMENT
+        )
+        runtime.launch()
+        wait_for_waiting_round(runtime, 1)
+        assert isinstance(
+            answer(runtime, workflow, ANSWER_ROUND_1), AnswerAcceptedPending
+        )
+        wait_for_waiting_round(runtime, 2)
+
+        paused = durable_queries(runtime.engine).get_node_detail(RUN, WAIT_NODE)
+        assert isinstance(paused, NodeDetailFound), paused
+        assert paused.detail.job is not None
+        assert SOURCE_OUTPUT.decode("utf-8") in paused.detail.job.decode("utf-8")
+
+        assert isinstance(
+            answer(runtime, workflow, ANSWER_ROUND_2), AnswerAcceptedPending
+        )
+        wait_for_state(runtime, RunState.COMPLETED)
+
+        found = durable_queries(runtime.engine).get_node_detail(RUN, WAIT_NODE)
+        assert isinstance(found, NodeDetailFound), found
+        assert found.detail.state is NodeState.SUCCEEDED
+        assert found.detail.job == paused.detail.job
+        assert found.detail.job_hash == paused.detail.job_hash
+        assert found.detail.answer is not None
+        assert found.detail.answer.value == ANSWER_ROUND_2
+        assert found.detail.started_at is not None
+        assert found.detail.ended_at == found.detail.started_at
+        with runtime.engine.connect() as connection:
+            current_round = connection.scalar(
+                sa.select(runs.c.current_round_ordinal).where(
+                    runs.c.run_id == RUN.value
+                )
+            )
+        assert current_round is not None
+        assert int(current_round) == 3
+    finally:
+        runtime.close()

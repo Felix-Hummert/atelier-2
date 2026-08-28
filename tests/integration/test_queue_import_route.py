@@ -1,9 +1,9 @@
 """The operator's import door, driven through the composed server over a real store.
 
 The acceptance of #652: after one import every open issue of the connected
-repository is exactly one OBSERVED row, listable; a repeated import adds
-nothing; and admitting an observed item through the existing admission door
-works unchanged. GitHub is the same `httpx.MockTransport` stand-in the
+repository is exactly one OBSERVED row in the unified projection; a repeated
+import adds nothing; and an imported item can be proposed and confirmed.
+GitHub is the same `httpx.MockTransport` stand-in the
 observation source's own tests use -- no test reaches the real network.
 """
 
@@ -23,11 +23,14 @@ from atelier2.adapters.github.composition import live_github_issue_source
 from atelier2.adapters.github.observation import LiveGitHubIssueSource
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import (
-    OBSERVED_QUEUE_ITEMS_PATH,
+    API_PREFIX,
+    PROJECT_QUEUE_POLICY_PATH,
     PROJECT_SOURCE_IMPORT_PATH,
     QUEUE_ADMISSIONS_PATH,
     QUEUE_ITEMS_PATH,
+    QUEUE_PROPOSALS_PATH,
 )
+from atelier2.api.references import encode_public_project_reference
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
@@ -37,13 +40,21 @@ from atelier2.contracts.host_configuration import (
     SourceConnectionAuthMethod,
     SourceKind,
 )
-from tests.integration.test_queue_admission_route import founded_workflow_lineage
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.runtime import exact_output_runtime
 
 PROJECT = ProjectId("studio")
 OWNER = "atelier2-operator"
 REPO = "atelier2-target"
+WORKFLOW_DOCUMENT = b"""format_version: 3
+name: triage-backlog
+nodes:
+  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Review one bounded diff.
+"""
 
 
 class _FakeGitHubIssueListing:
@@ -109,6 +120,25 @@ def connected_api(
     )
 
 
+def founded_workflow_lineage(api: TestClient) -> str:
+    published = api.post(
+        API_PREFIX + "/workflow-revisions",
+        content=WORKFLOW_DOCUMENT,
+        headers={"content-type": "application/yaml"},
+    )
+    assert published.status_code == 201, published.text
+    founded = api.post(
+        API_PREFIX + "/workflow-lineages",
+        json={
+            "workflow_revision_hash": published.json()["workflow_revision_hash"],
+            "actor": "operator",
+            "activated_at": "2026-08-27T00:00:00Z",
+        },
+    )
+    assert founded.status_code == 201, founded.text
+    return str(founded.json()["lineage_id"])
+
+
 def test_importing_turns_every_open_issue_into_exactly_one_listable_observed_row(
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:
@@ -120,7 +150,7 @@ def test_importing_turns_every_open_issue_into_exactly_one_listable_observed_row
 
     assert imported.status_code == 200, imported.text
     assert imported.json() == {"observed": 2, "newly_observed": 2}
-    listed = api.get(OBSERVED_QUEUE_ITEMS_PATH)
+    listed = api.get(QUEUE_ITEMS_PATH)
     assert listed.status_code == 200, listed.text
     page = listed.json()
     assert page["next_after"] is None
@@ -141,40 +171,66 @@ def test_a_repeated_import_adds_nothing(runtime: DbosRuntime, tmp_path: Path) ->
         runtime, tmp_path, _FakeGitHubIssueListing([{"number": 79}, {"number": 652}])
     )
     assert api.post(PROJECT_SOURCE_IMPORT_PATH).status_code == 200
-    first_list = api.get(OBSERVED_QUEUE_ITEMS_PATH).json()
+    first_list = api.get(QUEUE_ITEMS_PATH).json()
 
     repeated = api.post(PROJECT_SOURCE_IMPORT_PATH)
 
     assert repeated.status_code == 200, repeated.text
     assert repeated.json() == {"observed": 2, "newly_observed": 0}
-    assert api.get(OBSERVED_QUEUE_ITEMS_PATH).json() == first_list
+    assert api.get(QUEUE_ITEMS_PATH).json() == first_list
 
 
-def test_an_imported_item_admits_through_the_existing_door_unchanged(
+def test_an_imported_item_is_proposed_then_confirmed(
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:
     api = connected_api(runtime, tmp_path, _FakeGitHubIssueListing([{"number": 79}]))
     assert api.post(PROJECT_SOURCE_IMPORT_PATH).status_code == 200
-    (observed,) = api.get(OBSERVED_QUEUE_ITEMS_PATH).json()["items"]
+    (observed,) = api.get(QUEUE_ITEMS_PATH).json()["items"]
     lineage_id = founded_workflow_lineage(api)
+
+    policy_path = PROJECT_QUEUE_POLICY_PATH.replace(
+        "{public_project_reference}", encode_public_project_reference(PROJECT)
+    )
+    policy = api.put(
+        policy_path,
+        json={
+            "revision_number": 1,
+            "expected_revision": 0,
+            "maximum_active_runs": 1,
+            "automation_label": None,
+        },
+    )
+    assert policy.status_code == 201, policy.text
+    proposal = api.put(
+        QUEUE_PROPOSALS_PATH,
+        json={
+            "project_id": observed["project_id"],
+            "tracker_item_reference": observed["tracker_item_reference"],
+            "expected_revision": observed["revision"],
+            "priority": {"rank": 1},
+            "workflow_lineage_id": lineage_id,
+            "prerequisite_item_ids": [],
+            "automation_disposition": "HUMAN_REQUIRED",
+            "policy_revision": 1,
+        },
+    )
+    assert proposal.status_code == 201, proposal.text
 
     admitted = api.post(
         QUEUE_ADMISSIONS_PATH,
         json={
             "project_id": observed["project_id"],
             "tracker_item_reference": observed["tracker_item_reference"],
-            "workflow_lineage_id": lineage_id,
             "rationale": "matches the triage rule",
-            "expected_revision": observed["revision"],
+            "expected_revision": proposal.json()["revision"],
         },
     )
 
     assert admitted.status_code == 201, admitted.text
     assert admitted.json()["item_id"] == observed["item_id"]
-    # The item moved out of the observed list and into the admitted one.
-    assert api.get(OBSERVED_QUEUE_ITEMS_PATH).json()["items"] == []
     (admitted_item,) = api.get(QUEUE_ITEMS_PATH).json()["items"]
     assert admitted_item["item_id"] == observed["item_id"]
+    assert admitted_item["state"] == "ADMITTED"
 
 
 def test_importing_on_an_unconnected_instance_is_refused_by_name(
@@ -197,7 +253,7 @@ def test_an_unanswering_platform_is_a_named_unavailability_writing_nothing(
 
     assert refused.status_code == 503, refused.text
     assert refused.json()["type"].endswith(":project-source-unavailable")
-    assert api.get(OBSERVED_QUEUE_ITEMS_PATH).json()["items"] == []
+    assert api.get(QUEUE_ITEMS_PATH).json()["items"] == []
 
 
 def test_a_malformed_platform_payload_is_a_named_refusal_writing_nothing(
@@ -211,13 +267,13 @@ def test_a_malformed_platform_payload_is_a_named_refusal_writing_nothing(
 
     assert refused.status_code == 502, refused.text
     assert refused.json()["type"].endswith(":project-source-payload-malformed")
-    assert api.get(OBSERVED_QUEUE_ITEMS_PATH).json()["items"] == []
+    assert api.get(QUEUE_ITEMS_PATH).json()["items"] == []
 
 
-def test_listing_observed_items_on_an_empty_queue_is_an_empty_page(
+def test_listing_queue_items_on_an_empty_queue_is_an_empty_page(
     runtime: DbosRuntime,
 ) -> None:
-    listed = durable_api_client(runtime).get(OBSERVED_QUEUE_ITEMS_PATH)
+    listed = durable_api_client(runtime).get(QUEUE_ITEMS_PATH)
 
     assert listed.status_code == 200, listed.text
     assert listed.json() == {"items": [], "next_after": None}

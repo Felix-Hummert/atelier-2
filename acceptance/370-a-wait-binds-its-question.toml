@@ -1,0 +1,6 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/370"
+
+[[sentence]]
+id = "a-wait-binds-the-value-into-the-question-it-asks"
+text = "A Wait binds each declared graph input or named predecessor output into the durable question the operator reads, refuses an unknown named source before a run exists, and hands the admitted answer to its successor."

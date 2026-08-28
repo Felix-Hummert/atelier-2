@@ -13,8 +13,8 @@ from atelier2.application.admit_catalog_member import (
 )
 from atelier2.application.admit_library_addition import AdmitLibraryAdditionResult
 from atelier2.application.admit_queue_item import (
-    AdmitQueueItemOutcome,
-    ListAdmittedQueueItemsOutcome,
+    ConfirmQueueProposalOutcome,
+    ListQueueItemsOutcome,
 )
 from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
@@ -25,7 +25,6 @@ from atelier2.application.classify_definition_document import (
 from atelier2.application.fork_run import ForkRunResult
 from atelier2.application.import_project_source_issues import (
     ImportProjectSourceIssuesOutcome,
-    ListObservedQueueItemsOutcome,
 )
 from atelier2.application.model_configuration import (
     GetModelRegistryResult,
@@ -33,6 +32,10 @@ from atelier2.application.model_configuration import (
     GetProjectModelResolutionResult,
     PublishModelRegistryUseCaseResult,
     PublishProjectModelDefaultsUseCaseResult,
+)
+from atelier2.application.plan_queue_item import (
+    PlanQueueItemOutcome,
+    PutQueueProjectPolicyOutcome,
 )
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
 from atelier2.application.project_connections import (
@@ -116,7 +119,12 @@ from atelier2.contracts.catalog_v3 import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.queue_projection import AdmitQueueItem, QueueItemId
+from atelier2.contracts.queue_projection import (
+    ConfirmQueueProposal,
+    PlanQueueItem,
+    QueueItemId,
+    QueueProjectPolicyRevision,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
@@ -318,14 +326,15 @@ class ApiUseCases:
     get_project_source_connection: Callable[
         [ProjectId], GetServedProjectSourceConnectionResult
     ]
-    admit_queue_item: Callable[[AdmitQueueItem], AdmitQueueItemOutcome]
-    list_admitted_queue_items: Callable[
-        [QueueItemId | None, int], ListAdmittedQueueItemsOutcome
+    confirm_queue_proposal: Callable[
+        [ConfirmQueueProposal], ConfirmQueueProposalOutcome
     ]
+    plan_queue_item: Callable[[PlanQueueItem], PlanQueueItemOutcome]
+    put_queue_project_policy: Callable[
+        [QueueProjectPolicyRevision, int], PutQueueProjectPolicyOutcome
+    ]
+    list_queue_items: Callable[[QueueItemId | None, int], ListQueueItemsOutcome]
     import_project_source_issues: Callable[[], ImportProjectSourceIssuesOutcome]
-    list_observed_queue_items: Callable[
-        [QueueItemId | None, int], ListObservedQueueItemsOutcome
-    ]
 
 
 @dataclass(frozen=True)
