@@ -234,6 +234,21 @@ export const runPageCopy = {
     unconfirmed: "The cancel could not be confirmed.",
     retry,
     discard
+  },
+  fork: {
+    retryHere: "Retry here",
+    fromNode: (nodeId: string) => `from ${nodeId}`,
+    confirmTitle: (nodeId: string) => `Retry from ${nodeId}?`,
+    sheetLabel: "Confirm retry from this node",
+    carriedOver: "Carried over",
+    runsAgain: "Runs again",
+    origin: "Origin",
+    startAgain: "Start again",
+    back: "Back",
+    again: "again",
+    successorLineage: (name: string, nodeId: string) => `Fork of ${name} from ${nodeId}`,
+    originSuccessor: (name: string, nodeId: string) => `${name} from ${nodeId}`,
+    unconfirmed: "The retry could not be confirmed."
   }
 } as const;
 

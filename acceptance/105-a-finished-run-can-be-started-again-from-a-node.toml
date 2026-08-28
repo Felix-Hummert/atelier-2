@@ -1,0 +1,6 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/105"
+
+[[sentence]]
+id = "a-finished-run-can-be-started-again-from-a-node"
+text = "From a finished run, the operator chooses a node, sees what is carried over and what will run again, and starts a distinct new run from that node; a running run offers no such door."

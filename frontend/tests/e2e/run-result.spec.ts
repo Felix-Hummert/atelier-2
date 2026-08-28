@@ -137,3 +137,53 @@ test("the Result tab carries the decoded result; the run head is only the standi
     }
   }
 });
+
+test("proves(a-finished-run-can-be-started-again-from-a-node): from a finished run the operator starts a distinct new run from a node after seeing what is carried over", async ({
+  page
+}) => {
+  test.setTimeout(180_000);
+  const fork = runPageCopy.fork;
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const originUrl = await completedConductorRun(page);
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.done, {
+    timeout: 30_000
+  });
+  const originReference = new URL(originUrl).pathname.split("/").pop() ?? "";
+  expect(originReference.startsWith("run1.")).toBe(true);
+
+  await page.getByRole("button", { name: nodeAriaName("conduct", "succeeded") }).click();
+  const panel = page.getByRole("complementary");
+  await expect(panel.getByRole("heading", { name: "conduct" })).toBeVisible();
+
+  for (const viewport of widths) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await expect(panel.getByRole("button", { name: fork.retryHere })).toBeVisible();
+    await panel.getByRole("button", { name: fork.retryHere }).click();
+    await expect(page.getByRole("heading", { name: fork.confirmTitle("conduct") })).toBeVisible();
+    await expect(page.getByText(fork.carriedOver)).toBeVisible();
+    await expect(page.getByText(fork.runsAgain)).toBeVisible();
+    await expect(page.getByText(fork.runsAgain).locator("..")).toContainText("conduct");
+    if (viewport.width === 390) {
+      await page.getByRole("button", { name: fork.startAgain }).click();
+    } else {
+      await page.getByRole("button", { name: fork.back }).click();
+    }
+  }
+
+  await expect(page).not.toHaveURL(new RegExp(`${originReference}$`));
+  const successorReference = new URL(page.url()).pathname.split("/").pop() ?? "";
+  expect(successorReference.startsWith("run1.")).toBe(true);
+  expect(successorReference).not.toBe(originReference);
+  await expect(page.getByText(/Fork of /)).toBeVisible();
+
+  const origin = await page.request.get(`/atelier/api/v1/runs/${originReference}`);
+  expect(origin.ok()).toBeTruthy();
+  const originBody = (await origin.json()) as {
+    public_run_reference: string;
+    fork_successors?: Array<{ public_run_reference: string }>;
+  };
+  expect(originBody.public_run_reference).toBe(originReference);
+  expect(originBody.fork_successors?.some((row) => row.public_run_reference === successorReference)).toBe(
+    true
+  );
+});

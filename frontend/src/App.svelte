@@ -71,6 +71,7 @@
   {:else if route.page === "history"}
     <HistoryPage {cockpitApi} {navigate} />
   {:else if route.page === "run"}
+    {#key route.publicReference}
     <RunCockpitPage
       {cockpitApi}
       {mutationJournal}
@@ -78,6 +79,7 @@
       {navigate}
       {createReconcileCommandId}
     />
+    {/key}
   {:else}
     <section class="surface">
       <header class="surface-head">
