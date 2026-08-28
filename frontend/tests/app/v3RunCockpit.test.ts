@@ -1216,6 +1216,48 @@ describe("a failed node on the run page", () => {
     expect(within(panel).queryByText(/yet/)).toBeNull();
   });
 
+  it("keeps the auto-opened failed node open when it is selected again", async () => {
+    const getNodeDetail = vi.fn(async () =>
+      finishedNodeDetail({
+        state: "failed",
+        answer: null,
+        refusal: "output-schema-refused: instance-not-json: Expecting value",
+        started_at: "2026-08-18T15:00:00Z",
+        ended_at: "2026-08-18T15:00:12Z"
+      }) as never
+    );
+    render(App, {
+      props: {
+        cockpitApi: api(
+          v3Run({
+            state: "FAILED",
+            current_node_id: "implement",
+            terminal_hash: terminalHash,
+            ended_at: "2026-08-18T15:00:12Z",
+            node_rail: [
+              { node_id: "implement", state: "failed", attempt: { ordinal: 1, state: "FAILED" } },
+              { node_id: "review", state: "queued", attempt: null }
+            ]
+          }),
+          { getNodeDetail }
+        ),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+    const panel = await screen.findByRole("complementary");
+    expect(within(panel).getByRole("heading", { name: "implement" }).isConnected).toBe(true);
+    await within(panel).findByText("Nothing written.");
+
+    await fireEvent.click(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }));
+
+    const stillOpen = screen.getByRole("complementary");
+    expect(within(stillOpen).getByRole("heading", { name: "implement" }).isConnected).toBe(true);
+    expect(within(stillOpen).getByRole("tabpanel").textContent).toContain("Nothing written.");
+    expect(within(stillOpen).getByRole("tabpanel").textContent).not.toContain("yet");
+  });
+
   it("proves(a-failed-node-shows-the-stored-reason-on-the-run-page): shows the stored reason beside the state that says the run failed", async () => {
     const feed = new FakeRunEventFeed();
     const reason = "output-schema-refused: instance-not-json: Expecting value";

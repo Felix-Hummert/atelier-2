@@ -149,7 +149,6 @@
    */
   async function openNode(nodeId: string): Promise<void> {
     if (openNodeId === nodeId) {
-      closeNode();
       return;
     }
     openNodeId = nodeId;
