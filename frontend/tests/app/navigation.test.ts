@@ -1,10 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { completedRun, publicReference, workflowRevision as revision } from "../support/workflowV1";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -63,6 +65,42 @@ describe("cockpit navigation", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
     expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Catalog" })).toBeNull();
+  });
+
+  it("leads an ended run restored by Back to History, not a leftover Catalog origin", async () => {
+    window.history.replaceState(null, "", `/atelier/runs/${publicReference}`);
+    render(App, {
+      props: {
+        cockpitApi: cockpitApiStub({
+          getRun: vi.fn(async () => completedRun()),
+          getWorkflowRevision: vi.fn(async () => revision())
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    expect((await screen.findByRole("heading", { name: "Unnamed workflow" })).isConnected).toBe(true);
+
+    await fireEvent.click(within(rail()).getByRole("link", { name: "Catalog" }));
+    expect((await screen.findByRole("heading", { name: "Catalog" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/catalog");
+
+    await fireEvent.click(within(rail()).getByRole("link", { name: "History" }));
+    expect((await screen.findByRole("heading", { name: "History" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/history");
+
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe("/atelier/catalog"));
+    expect((await screen.findByRole("heading", { name: "Catalog" })).isConnected).toBe(true);
+
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`));
+    expect((await screen.findByRole("heading", { name: "Unnamed workflow" })).isConnected).toBe(true);
+
+    const trail = screen.getByRole("navigation", { name: backLinkCopy.whereYouAre });
+    const link = within(trail).getByRole("link");
+    expect(link.textContent).toContain(backLinkCopy.history);
+    expect(link.textContent).not.toContain(backLinkCopy.catalog);
   });
 
   it("carries the project name under Settings at the rail's foot, as the context over the rooms", async () => {

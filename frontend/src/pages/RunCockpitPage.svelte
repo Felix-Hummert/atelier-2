@@ -43,9 +43,11 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
+  import { inAppRoomOrigin, runBackLink } from "../lib/backLinkCopy";
+  import { cockpitRoute } from "../lib/route";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runHeaderCopy, runHeaderTitle } from "../lib/runPages";
-  import { WORKSHOP_DESTINATION } from "../lib/workshop";
+  import { runHasEnded } from "../lib/runState";
   import {
     decodeAndApplyDurableEvent,
     markComplete,
@@ -68,13 +70,7 @@
   export let publicReference: string;
   export let navigate: (path: string) => void;
   export let createReconcileCommandId: () => string;
-
-  /**
-   * The trail leads to the Workbench: living work lives there now that the
-   * Board is gone. Deriving it from the run's own state -- alive to the
-   * Workbench, ended to History (ADR 0019 §1) -- is a successor gap.
-   */
-  const cameFrom = WORKSHOP_DESTINATION.workbench;
+  export let inAppFromPath: string | null = null;
 
   interface RunSnapshot {
     run: Run;
@@ -109,6 +105,12 @@
   let disposed = false;
   let eventQueue: Promise<void> = Promise.resolve();
   $: pendingAnswer = pendingWait === null ? null : waitAnswer(pendingWait);
+  $: origin = inAppFromPath === null ? null : inAppRoomOrigin(cockpitRoute(inAppFromPath));
+  $: knownRun = v3Run ?? snapshot.confirmed?.run ?? null;
+  $: trail =
+    origin !== null || knownRun !== null
+      ? runBackLink(knownRun !== null && runHasEnded(knownRun.state), origin)
+      : null;
   $: openFormNodeIds = new Set(
     [pendingWait?.node_id, pendingReconciliation?.node_id].filter(
       (nodeId): nodeId is string => nodeId !== undefined
@@ -853,7 +855,9 @@
 </script>
 
 <section aria-labelledby={v3Run !== null ? "v3-run-title" : "run-title"}>
-  <BackLink label={cameFrom.label} path={cameFrom.path} {navigate} />
+  {#if trail !== null}
+    <BackLink label={trail.label} path={trail.path} {navigate} />
+  {/if}
 
   {#if v3Run !== null}
     <V3RunView
