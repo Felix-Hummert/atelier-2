@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { shortPublicRunReference } from "../../src/lib/fingerprint";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { historyWhenLabel } from "../../src/lib/historyRows";
@@ -438,4 +439,51 @@ test("a finished code-review row at 1280 shows a visible derived Result, never D
   expect(resultRendered).toContain(historyPageCopy.outcome.text);
   expect(resultRendered).not.toBe(standingWords.done);
   expect(resultRendered).not.toContain(RAW_PROVIDER_BYTES);
+});
+
+test("opening a finished run from History, the trail leads back to History", async ({
+  page
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const token = `${testInfo.repeatEachIndex}-${testInfo.retry}`;
+  const workflowName = `history-back-link-${token}`;
+  const schemaHash = await anyJsonSchema(page);
+
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: {
+      profile_id: `history-back-link-${token}`,
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect([200, 201]).toContain(auth.status());
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: `history-back-link-model-${token}`,
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect([200, 201]).toContain(configuration.status());
+  const agentHash = (await configuration.json()).agent_configuration_revision_hash as string;
+  await publishCheckedModelRegistry(page, "e2e-v3", `history-back-link-model-${token}`, agentHash);
+
+  const revisionHash = await publishWorkflow(page, workflowName, schemaHash);
+  await startCompletedRun(page, `history-back-link/${token}`, revisionHash, agentHash);
+
+  await page.goto("/atelier/history");
+  const row = historyCards(page, workflowName).first();
+  await expect(row).toBeVisible();
+  await row.click();
+
+  await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible();
+  const trail = page.getByRole("navigation", { name: backLinkCopy.whereYouAre });
+  await expect(trail.getByRole("link", { name: backLinkCopy.history })).toBeVisible();
+  await expect(trail.getByRole("link", { name: backLinkCopy.workbench })).toHaveCount(0);
+  await trail.getByRole("link", { name: backLinkCopy.history }).click();
+
+  await expect(page).toHaveURL(/\/atelier\/history$/);
+  await expect(page.getByRole("heading", { name: historyPageCopy.title })).toBeVisible();
 });

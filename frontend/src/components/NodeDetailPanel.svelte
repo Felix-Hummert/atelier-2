@@ -57,6 +57,15 @@
    * the run, never a second count this panel keeps for itself.
    */
   export let railAttempt: RunV3["node_rail"][number]["attempt"] = null;
+  /** Retry-from-node when the plan is ok; otherwise the panel prints why not. */
+  export let showFork: boolean = false;
+  export let onFork: (() => void) | null = null;
+  /**
+   * Why the door is absent, or null where no sentence belongs. The owner is
+   * `runPageCopy.forkUnavailableSentence`; the panel only prints it, never
+   * decides it (#105).
+   */
+  export let forkUnavailable: string | null = null;
   /**
    * The facts line that replaces the "Done" chip (operator ruling 23.08.):
    * state word, then started/ended/duration exactly as the run head already
@@ -457,6 +466,16 @@
     {/if}
     {/if}
   </div>
+  {#if showFork && onFork !== null}
+    <div class="fork-actions">
+      <button class="primary" type="button" on:click={onFork}>
+        {wrapDisplayCopy(runPageCopy.fork.retryHere)}
+      </button>
+      <span class="fork-from">{wrapDisplayCopy(runPageCopy.fork.fromNode(panelNodeId))}</span>
+    </div>
+  {:else if forkUnavailable !== null}
+    <p class="fork-unavailable" role="status">{wrapDisplayCopy(forkUnavailable)}</p>
+  {/if}
 </aside>
 
 <style>
@@ -544,6 +563,29 @@
     background: color-mix(in srgb, var(--signal-attention-mark) var(--wash), var(--panel2));
     color: var(--signal-attention);
     font-weight: var(--weight-medium);
+  }
+
+  .fork-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin: 0;
+    padding-top: var(--space-3);
+    border-top: var(--edge) solid var(--line);
+  }
+
+  .fork-from {
+    color: var(--ink-dim);
+    font-size: var(--text-sm);
+  }
+
+  .fork-unavailable {
+    margin: 0;
+    padding-top: var(--space-3);
+    border-top: var(--edge) solid var(--line);
+    color: var(--ink-dim);
+    font-size: var(--text-sm);
   }
 
   .waiting {

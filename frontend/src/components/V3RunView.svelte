@@ -17,7 +17,9 @@
   } from "../lib/mutationJournal";
   import { whenFacts, type StreamProjection } from "../lib/runProjection";
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { runPageCopy } from "../lib/runPageCopy";
+  import { planRunFork, type ForkPlan } from "../lib/runFork";
+  import { forkUnavailableSentence, runPageCopy } from "../lib/runPageCopy";
+  import { runPath } from "../lib/route";
   import { runStanding, standingMarks, standingWords } from "../lib/runState";
   import { protocolDetail, protocolTitle } from "../lib/streamStatus";
   import {
@@ -29,6 +31,7 @@
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
   import RunCancelCard from "./RunCancelCard.svelte";
+  import RunForkSheet from "./RunForkSheet.svelte";
   import V3AnswerCard, { type WaitContextSource } from "./V3AnswerCard.svelte";
   import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
 
@@ -51,6 +54,7 @@
   export let projection: StreamProjection | null = null;
   export let onRunRead: (run: RunV3) => void = () => {};
   export let onRetryStream: () => void = () => {};
+  export let navigate: (path: string) => void | Promise<void> = () => {};
 
   /**
    * The reason the run stopped, in the words of the owner that refused.
@@ -145,7 +149,6 @@
    */
   async function openNode(nodeId: string): Promise<void> {
     if (openNodeId === nodeId) {
-      closeNode();
       return;
     }
     openNodeId = nodeId;
@@ -154,6 +157,10 @@
     try {
       const answered = await cockpitApi.getNodeDetail(run.public_run_reference, nodeId);
       if (openNodeId === nodeId) {
+        if (answered == null) {
+          failure = runPageCopy.nodeUnreadable;
+          return;
+        }
         detail = answered;
       }
     } catch (error) {
@@ -167,6 +174,70 @@
     openNodeId = null;
     detail = null;
     failure = null;
+  }
+
+  $: successors = run.fork_successors ?? [];
+  $: forkOrigin = run.fork_origin ?? null;
+
+  let openedFailedFor = "";
+  $: void autoOpenFailed(run);
+
+  async function autoOpenFailed(current: RunV3): Promise<void> {
+    if (current.state !== "FAILED") {
+      openedFailedFor = "";
+      return;
+    }
+    if (openedFailedFor === current.public_run_reference) return;
+    openedFailedFor = current.public_run_reference;
+    if (openNodeId !== null) return;
+    await openNode(current.current_node_id);
+    if (failure !== null) closeNode();
+  }
+
+  let forkPlan: Extract<ForkPlan, { kind: "ok" }> | null = null;
+  let forkBusy = false;
+  let forkFailure: string | null = null;
+  let forkKey: string | null = null;
+
+  function openFork(): void {
+    if (openNodeId === null) return;
+    const plan = planRunFork(run, openNodeId);
+    if (plan.kind !== "ok") return;
+    forkFailure = null;
+    forkKey = globalThis.crypto.randomUUID();
+    forkPlan = plan;
+  }
+
+  function dismissFork(): void {
+    if (forkBusy) return;
+    forkPlan = null;
+    forkFailure = null;
+    forkKey = null;
+  }
+
+  async function confirmFork(): Promise<void> {
+    if (forkPlan === null || forkBusy || forkKey === null) return;
+    forkBusy = true;
+    forkFailure = null;
+    try {
+      const result = await cockpitApi.forkRun({
+        publicRunReference: run.public_run_reference,
+        idempotencyKey: forkKey,
+        restartFromNodeId: forkPlan.restartFrom
+      });
+      forkPlan = null;
+      forkKey = null;
+      await navigate(runPath(result.value.public_run_reference));
+    } catch (error) {
+      forkFailure = humanErrorMessage(error, runPageCopy.fork.unconfirmed);
+    } finally {
+      forkBusy = false;
+    }
+  }
+
+  function openSuccessor(event: Event, path: string): void {
+    event.preventDefault();
+    void navigate(path);
   }
 
   /**
@@ -482,6 +553,29 @@
     </p>
   </header>
 
+  {#if forkOrigin !== null}
+    <p class="run-lineage">
+      {wrapDisplayCopy(runPageCopy.fork.successorLineage(headerTitle, forkOrigin.restart_from_node_id))}
+    </p>
+  {/if}
+  {#if successors.length > 0}
+    <p class="run-lineage">
+      {#each successors as successor (successor.fork_hash)}
+        {@const path = runPath(successor.public_run_reference)}
+        <span>
+          <span class="fork-mark" aria-hidden="true">↳</span>
+          {wrapDisplayCopy(runPageCopy.fork.again)}
+          <span aria-hidden="true"> → </span>
+          <a href={path} onclick={(event) => openSuccessor(event, path)}>
+            {wrapDisplayCopy(
+              runPageCopy.fork.originSuccessor(headerTitle, successor.restart_from_node_id)
+            )}
+          </a>
+        </span>
+      {/each}
+    </p>
+  {/if}
+
   {#if stopped !== null}
     <p class="stopped" role="alert"><strong>{stopped[0]}:</strong> {stopped[1]}</p>
   {/if}
@@ -561,6 +655,8 @@
   <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} />
 
   {#if openNodeId !== null}
+    {@const openForkPlan = planRunFork(run, openNodeId)}
+    {@const forkUnavailable = forkUnavailableSentence(openForkPlan)}
     {#if failure !== null}
       <ProblemNotice title={runPageCopy.nodeUnreadable} message={failure} />
     {:else}
@@ -571,6 +667,9 @@
         onClose={closeNode}
         readsFrom={readsFrom(openNodeId)}
         railAttempt={rail.find((entry) => entry.node_id === openNodeId)?.attempt ?? null}
+        showFork={openForkPlan.kind === "ok"}
+        {forkUnavailable}
+        onFork={openFork}
         runEvidence={{
           runId: run.run_id,
           workflowRevisionHash: run.workflow_revision_hash,
@@ -579,6 +678,17 @@
         }}
       />
     {/if}
+  {/if}
+
+  {#if forkPlan !== null}
+    <RunForkSheet
+      plan={forkPlan}
+      originName={headerTitle}
+      busy={forkBusy}
+      failureMessage={forkFailure}
+      onConfirm={() => { void confirmFork(); }}
+      onDismiss={dismissFork}
+    />
   {/if}
 </section>
 
@@ -608,6 +718,25 @@
     max-width: var(--reading-width);
     color: var(--ink-dim);
     font-style: italic;
+  }
+
+  .run-lineage {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: var(--text-sm);
+  }
+
+  .run-lineage a {
+    color: var(--accent);
+    font-weight: var(--weight-strong);
+    text-decoration: none;
+  }
+
+  .fork-mark {
+    color: var(--ink-dim);
   }
 
   .run-standing {

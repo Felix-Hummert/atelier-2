@@ -124,7 +124,13 @@ nodes:
   - {id: agent, type: agent, job: prove-reconciliation, output: exact-request, next: action}
 """
 RUN_IDS = ("found-run", "absent-run")
-TIMEOUT_SECONDS = 10.0
+# Deadlock brake for in-process Event and thread waits. Not a latency
+# contract: the work is a local thread rendezvous, a fake decode, or a
+# short DBOS seed. pytest -n auto still advances the wall clock while
+# those threads are unscheduled, so a short bound flakes under CI CPU
+# pressure (issue #747) while the same tests pass alone. Generation
+# drain of live git capture owns GENERATION_DRAIN_SECONDS separately.
+TIMEOUT_SECONDS = 60.0
 E2E_OBSERVED_WORK_ITEM_BODY = "e2e observed work item gh:450 — Grüße 東京"
 _E2E_TRACKER_ITEM = TrackerItemReference("gh:450")
 _E2E_WORK_ITEM = WorkItemReference(ProjectId("e2e-workshop"), _E2E_TRACKER_ITEM)
@@ -151,8 +157,9 @@ class FixtureTracker:
         return WorkItemRevisionObserved(_E2E_OBSERVED_REVISION)
 
 
-# Deadlock brake for generation drain. Fake decode waits are short; git capture
-# of the pinned project under CI CPU pressure is not (issue #747 c2).
+# Deadlock brake for generation drain. In-process Event waits own
+# TIMEOUT_SECONDS; git capture of the pinned project under CI CPU
+# pressure owns this bound (issue #747 c2).
 GENERATION_DRAIN_SECONDS = 60.0
 # The fake conductor's fixed episode report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
@@ -171,6 +178,62 @@ HELD_ATTEMPT_SECONDS = 30.0
 # by the generation that opened it so a recompose does not wait this bound out.
 DELAYED_ATTEMPT_SECONDS = 3.0
 MODEL_VALIDATION_RUN_ID = "provider-model-validation"
+
+
+def wait_for(
+    event: threading.Event,
+    waiting_for: str,
+    *,
+    timeout: float = TIMEOUT_SECONDS,
+    thread: threading.Thread | None = None,
+) -> None:
+    """Wait for an Event, or fail naming what was waited for.
+
+    A wall-clock bound is a deadlock brake, not a speed assertion. If a
+    worker thread is still alive, the wait keeps going until the bound
+    because pytest-xdist can leave a ready thread unscheduled while the
+    clock still advances (issue #747). A dead worker fails immediately so
+    a crashed decode is not reported as a timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while not event.is_set():
+        if thread is not None and not thread.is_alive():
+            raise RuntimeError(f"thread died before {waiting_for}")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"timed out after {timeout:g}s waiting for {waiting_for}"
+            )
+        event.wait(timeout=min(0.05, remaining))
+
+
+def join_thread(
+    thread: threading.Thread,
+    waiting_for: str,
+    *,
+    timeout: float = TIMEOUT_SECONDS,
+) -> None:
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout:g}s waiting for {waiting_for}")
+
+
+def wait_until(
+    ready: Callable[[], bool],
+    waiting_for: str,
+    *,
+    timeout: float = TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        if ready():
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"timed out after {timeout:g}s waiting for {waiting_for}"
+            )
+        time.sleep(min(0.025, remaining))
 
 
 class RuntimeCloser(Protocol):
@@ -293,8 +356,9 @@ class FakeProviderHolds:
             while self._inflight > 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RuntimeError(
-                        f"{self._inflight} in-flight fake decode(s) did not finish"
+                    raise TimeoutError(
+                        f"timed out after {timeout:g}s waiting for "
+                        f"{self._inflight} in-flight fake decode(s) to finish"
                     )
                 self._idle.wait(remaining)
 
@@ -369,8 +433,7 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         )
         with tracking:
             self.observed.set()
-            if not self.release.wait(TIMEOUT_SECONDS):
-                raise RuntimeError("browser did not observe the working attempt")
+            wait_for(self.release, "the browser to observe the working attempt")
             return super().decode_process_completion(invocation, completion)
 
     def close(self) -> None:
@@ -499,8 +562,9 @@ class NotifyingActiveWorkflows:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     remaining_ids = self._active_ids()
-                    raise RuntimeError(
-                        f"{len(remaining_ids)} DBOS workflow(s) did not finish: "
+                    raise TimeoutError(
+                        f"timed out after {timeout:g}s waiting for "
+                        f"{len(remaining_ids)} DBOS workflow(s) to finish: "
                         f"{remaining_ids!r}"
                     )
                 self._idle.wait(remaining)
@@ -655,6 +719,7 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
         self._holds = holds
         self._generation, self._released = holds.bind_decode()
         self.holding = threading.Event()
+        self.released_before_bound = False
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -663,7 +728,7 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
             return super().decode_process_completion(invocation, completion)
         with self._holds.in_flight(self._generation):
             self.holding.set()
-            self._released.wait(HELD_ATTEMPT_SECONDS)
+            self.released_before_bound = self._released.wait(HELD_ATTEMPT_SECONDS)
             return super().decode_process_completion(invocation, completion)
 
 
@@ -1266,21 +1331,26 @@ def main() -> None:
 def wait_for_reconciliation(
     runtime: DbosRuntime, run_ids: tuple[str, ...] = RUN_IDS
 ) -> None:
-    deadline = time.monotonic() + TIMEOUT_SECONDS
     observed: dict[str, str] = {}
-    while time.monotonic() < deadline:
+
+    def reached() -> bool:
+        nonlocal observed
         with runtime.engine.connect() as connection:
             observed = {
                 str(row.run_id): str(row.state)
                 for row in connection.execute(sa.select(runs.c.run_id, runs.c.state))
             }
-        if all(
+        return all(
             observed.get(run_id) == RunState.WAITING_RECONCILIATION.value
             for run_id in run_ids
-        ):
-            return
-        time.sleep(0.025)
-    raise RuntimeError(f"e2e runs did not reach reconciliation: {observed!r}")
+        )
+
+    try:
+        wait_until(reached, "e2e runs to reach reconciliation")
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"e2e runs did not reach reconciliation: {observed!r}"
+        ) from error
 
 
 if __name__ == "__main__":

@@ -396,6 +396,30 @@ export const projectSourceConnectionRevisionSchema = z
   })
   .strict();
 
+const publicSourceReference = z
+  .string()
+  .regex(/^source1\.[A-Za-z0-9_-]+$/)
+  .max(56);
+const connectedAtStamp = z
+  .string()
+  .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
+
+export const projectSourceResourceSchema = z
+  .object({
+    public_source_reference: publicSourceReference,
+    kind: z.string().min(1).max(64),
+    address: z.string().min(1).max(1_024),
+    scope: z.literal("issues").default("issues"),
+    connected_at: z.union([connectedAtStamp, z.null()]).default(null),
+    revision: positiveSafeInteger,
+    auth_method: z.literal("personal-access-token"),
+  })
+  .strict();
+
+export const projectSourceListSchema = z
+  .object({ items: z.array(projectSourceResourceSchema) })
+  .strict();
+
 /** The wire shape `GET /health` answers -- reused as #700's own recovery
  * probe, an existing cheap read rather than a purpose-built endpoint. */
 export const healthResourceSchema = z
@@ -2843,6 +2867,8 @@ export type ProjectList = z.infer<typeof projectListSchema>;
 export type ProjectSourceConnectionRevision = z.infer<
   typeof projectSourceConnectionRevisionSchema
 >;
+export type ProjectSourceResource = z.infer<typeof projectSourceResourceSchema>;
+export type ProjectSourceList = z.infer<typeof projectSourceListSchema>;
 export type ModelRegistryRevision = z.infer<typeof modelRegistryRevisionSchema>;
 export type ProjectModelDefaultsRevision = z.infer<
   typeof projectModelDefaultsRevisionSchema
@@ -2950,6 +2976,20 @@ export interface CockpitApi {
   getProjectSourceConnection(
     publicProjectReference: string,
   ): Promise<ProjectSourceConnectionRevision>;
+  listProjectSources(publicProjectReference: string): Promise<ProjectSourceList>;
+  connectProjectSource(
+    publicProjectReference: string,
+    request: { address: string; token: string },
+  ): Promise<ProjectSourceResource>;
+  disconnectProjectSource(
+    publicProjectReference: string,
+    publicSourceReference: string,
+  ): Promise<void>;
+  rotateProjectSourceToken(
+    publicProjectReference: string,
+    publicSourceReference: string,
+    request: { token: string },
+  ): Promise<ProjectSourceResource>;
   getModelRegistry(providerId: string): Promise<ModelRegistryRevision>;
   putModelRegistry(
     providerId: string,
@@ -3017,6 +3057,11 @@ export interface CockpitApi {
   answer(mutation: WaitMutation): Promise<HttpResult<AnyRun>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
   cancelRun(mutation: CancelMutation): Promise<HttpResult<RunV3>>;
+  forkRun(request: {
+    publicRunReference: string;
+    idempotencyKey: string;
+    restartFromNodeId: string;
+  }): Promise<HttpResult<RunV3>>;
   getRun(publicReference: string): Promise<AnyRun>;
   getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
@@ -3111,6 +3156,57 @@ export function createCockpitApi(
       }
       return connection;
     },
+    listProjectSources: (publicProjectReference) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/projects/${encodeURIComponent(publicProjectReference)}/sources`,
+        {},
+        [200],
+        projectSourceListSchema,
+      ),
+    connectProjectSource: (publicProjectReference, request) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/projects/${encodeURIComponent(publicProjectReference)}/sources`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            address: request.address,
+            token: request.token,
+          }),
+        },
+        [201],
+        projectSourceResourceSchema,
+      ),
+    disconnectProjectSource: async (
+      publicProjectReference,
+      publicSourceReference,
+    ) => {
+      await requestJson(
+        fetcher,
+        `/atelier/api/v1/projects/${encodeURIComponent(publicProjectReference)}/sources/${encodeURIComponent(publicSourceReference)}`,
+        { method: "DELETE" },
+        [204],
+        z.undefined(),
+      );
+    },
+    rotateProjectSourceToken: (
+      publicProjectReference,
+      publicSourceReference,
+      request,
+    ) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/projects/${encodeURIComponent(publicProjectReference)}/sources/${encodeURIComponent(publicSourceReference)}/token`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token: request.token }),
+        },
+        [200],
+        projectSourceResourceSchema,
+      ),
     getModelRegistry: async (providerId) => {
       const exactProviderId = providerIdSchema.parse(providerId);
       const registry = await requestJson(
@@ -3517,6 +3613,28 @@ export function createCockpitApi(
       }
       return { status: result.status, value: result.value };
     },
+    forkRun: async ({ publicRunReference, idempotencyKey, restartFromNodeId }) => {
+      const result = await requestJsonResult(
+        fetcher,
+        `/atelier/api/v1/runs/${encodeURIComponent(publicRunReference)}/forks`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            idempotency_key: idempotencyKey,
+            restart_from_node_id: restartFromNodeId,
+          }),
+        },
+        [200, 201],
+        anyRunSchema,
+      );
+      if (!isRunV3(result.value)) {
+        throw new CockpitRequestError(
+          "The fork response answered with a run this page cannot read.",
+        );
+      }
+      return { status: result.status, value: result.value };
+    },
     getRun: (publicReference) =>
       requestJson(
         fetcher,
@@ -3685,6 +3803,21 @@ async function requestJsonResult<T>(
     throw new CockpitRequestError(errorMessage(error), null, false, true);
   }
   reportConnectionRestored();
+  // Disconnect answers 204 with an empty body; JSON parsing would invent a failure.
+  if (response.status === 204) {
+    if (!acceptedStatuses.includes(204)) {
+      throw new CockpitRequestError(
+        `The API returned undocumented HTTP ${response.status}.`,
+      );
+    }
+    try {
+      return { status: 204, value: schema.parse(undefined) };
+    } catch {
+      throw new CockpitRequestError(
+        "The API response did not match the durable wire contract.",
+      );
+    }
+  }
   let value: unknown;
   try {
     value = await response.json();

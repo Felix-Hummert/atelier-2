@@ -76,6 +76,37 @@ describe("the V3 graph drawing", () => {
     expect(review.classList.contains("live-work")).toBe(false);
   });
 
+  it("marks a rail node reused from an origin as carried over, and leaves an unreused node unmarked", () => {
+    render(WorkflowGraphDrawing, {
+      props: {
+        previews: chain,
+        rail: [
+          {
+            node_id: "implement",
+            state: "succeeded" as const,
+            reused_from_run_reference: "run1.cnVu"
+          },
+          { node_id: "review", state: "working" as const }
+        ],
+        currentNodeId: "review",
+        onSelect: () => undefined
+      }
+    });
+
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
+    const implement = within(graph).getByRole("button", {
+      name: `${nodeAriaName("implement", "succeeded")} ${workflowGraphCopy.carriedOver}`
+    });
+    const review = within(graph).getByRole("button", { name: nodeAriaName("review", "working") });
+
+    expect(implement.getAttribute("data-reused")).toBe("true");
+    expect(implement.classList.contains("reused")).toBe(true);
+    expect(implement.textContent).toContain(workflowGraphCopy.carriedOver);
+    expect(review.getAttribute("data-reused")).toBeNull();
+    expect(review.classList.contains("reused")).toBe(false);
+    expect(review.textContent).not.toContain(workflowGraphCopy.carriedOver);
+  });
+
   it("carries each node's kind in its shape, and shows no type token beside its name", () => {
     render(WorkflowGraphDrawing, {
       props: {

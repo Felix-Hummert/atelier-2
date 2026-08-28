@@ -8,6 +8,9 @@ import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { runResultCopy } from "../../src/lib/runResultCopy";
 import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
+import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
+
+const api = "/atelier/api/v1";
 
 /**
  * #666 Result tab against the ruling that the run head is the one standing
@@ -97,6 +100,155 @@ async function completedConductorRun(page: Page): Promise<string> {
   return page.url();
 }
 
+async function resetToKnownStore(page: Page): Promise<void> {
+  // This suite shares one server across every spec file (#742): reset to the
+  // cold-boot baseline before starting a run whose rail this test must own.
+  const reset = await page.request.post("/__e2e/recompose?reset=true");
+  expect(reset.status()).toBe(202);
+  const expectedGeneration = await reset.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
+}
+
+// Every executable V3 agent node declares one output and the schema it must
+// satisfy, so the test pins the schema that admits any JSON value unless it
+// needs a node to refuse the provider's string output.
+async function publishSchema(page: Page, document: string): Promise<string> {
+  const published = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: document
+  });
+  expect([200, 201]).toContain(published.status());
+  return (await published.json()).schema_revision_hash as string;
+}
+
+function anyJsonSchema(page: Page): Promise<string> {
+  return publishSchema(page, "true");
+}
+
+function declaredOutput(schemaHash: string, name = "result"): string[] {
+  return [
+    "    outputs:",
+    `      - name: ${name}`,
+    "        schema:",
+    `          ref: ${name}-schema`,
+    `          revision: ${schemaHash}`
+  ];
+}
+
+async function publishCheckedRegistryEntry(
+  page: Page,
+  providerId: string,
+  modelId: string,
+  configurationHash: string
+): Promise<void> {
+  const current = await page.request.get(`/atelier/api/v1/model-registries/${providerId}`);
+  const currentRegistry = current.status() === 200
+    ? await current.json() as {
+        revision_number: number;
+        entries: Array<{ model_id: string; agent_configuration_revision_hash: string }>;
+      }
+    : null;
+  if (currentRegistry === null) expect(current.status()).toBe(404);
+  const existingEntries = (currentRegistry?.entries ?? [])
+    .filter((entry) =>
+      entry.agent_configuration_revision_hash !== configurationHash && entry.model_id !== modelId
+    )
+    .map((entry) => ({
+      model_id: entry.model_id,
+      agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+    }));
+  const registry = await page.request.put(`/atelier/api/v1/model-registries/${providerId}`, {
+    data: {
+      revision_number: (currentRegistry?.revision_number ?? 0) + 1,
+      entries: [...existingEntries, {
+        model_id: modelId,
+        agent_configuration_revision_hash: configurationHash
+      }]
+    }
+  });
+  expect([200, 201]).toContain(registry.status());
+  const checked = await page.request.post(`/atelier/api/v1/model-registries/${providerId}/validations`, {
+    data: { agent_configuration_revision_hash: configurationHash }
+  });
+  expect([200, 201]).toContain(checked.status());
+}
+
+async function startV3Line(
+  page: Page,
+  runId: string,
+  name: string,
+  implementSchemaHash: string,
+  reviewSchemaHash: string
+): Promise<{ public_run_reference: string }> {
+  const workflowYaml = [
+    "format_version: 3",
+    `name: ${name}`,
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Do the one thing this chain is for.",
+    ...declaredOutput(implementSchemaHash),
+    "  - id: review",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Check what the node before you did.",
+    "    depends_on: [implement]",
+    ...declaredOutput(reviewSchemaHash),
+    ""
+  ].join("\n");
+
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: { profile_id: "v3-local", revision_number: 1, provider_id: "e2e-v3", auth_mode: "subscription" }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3",
+    "v3-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 2,
+      run_id: runId,
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [
+        {
+          role: "builder",
+          agent_configuration_revision_hash: (await configuration.json())
+            .agent_configuration_revision_hash
+        }
+      ]
+    }
+  });
+  expect(started.status(), await started.text()).toBe(201);
+  const createdRun = await started.json();
+  expect(createdRun.workflow_format_version).toBe(3);
+  return { public_run_reference: createdRun.public_run_reference as string };
+}
+
 test("the Result tab carries the decoded result; the run head is only the standing sentence", async ({
   page
 }) => {
@@ -136,4 +288,134 @@ test("the Result tab carries the decoded result; the run head is only the standi
       }
     }
   }
+});
+
+test("proves(a-finished-run-can-be-started-again-from-a-node): forks a finished V3 run from a later node and shows what is carried over", async ({
+  page
+}) => {
+  test.setTimeout(180_000);
+  const fork = runPageCopy.fork;
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await resetToKnownStore(page);
+
+  const schemaHash = await anyJsonSchema(page);
+  const started = await startV3Line(
+    page,
+    "v3/fork-completed",
+    "Two agents in a line",
+    schemaHash,
+    schemaHash
+  );
+  const originReference = started.public_run_reference;
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${originReference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    expect(body.state).toBe("COMPLETED");
+    expect(body.node_rail.map((entry: { node_id: string }) => entry.node_id)).toEqual([
+      "implement",
+      "review"
+    ]);
+  }).toPass({ timeout: 15_000 });
+
+  await page.goto(`/atelier/runs/${originReference}`);
+  const graph = page.getByRole("region", { name: workflowGraphCopy.label });
+  await graph.getByRole("button", { name: nodeAriaName("review", "succeeded") }).click();
+  const panel = page.getByRole("complementary");
+  await expect(panel.getByRole("heading", { name: "review" })).toBeVisible();
+
+  await panel.getByRole("button", { name: fork.retryHere }).click();
+  const sheet = page.getByRole("dialog", { name: fork.sheetLabel });
+  await expect(sheet).toBeVisible();
+  expect(await sheet.evaluate((element) => (element as HTMLDialogElement).matches(":modal"))).toBe(
+    true
+  );
+  await expect(sheet.getByRole("heading", { name: fork.confirmTitle("review") })).toBeVisible();
+  await expect(sheet.getByText(fork.carriedOver).locator("..")).toContainText("implement");
+  await expect(sheet.getByText(fork.runsAgain).locator("..")).toContainText("review");
+  await expect(sheet.getByText(fork.deferralSentence)).toBeVisible();
+
+  await sheet.getByRole("button", { name: fork.startAgain }).click();
+  await expect(page).not.toHaveURL(new RegExp(`${originReference}$`));
+  const successorReference = new URL(page.url()).pathname.split("/").pop() ?? "";
+  expect(successorReference.startsWith("run1.")).toBe(true);
+  expect(successorReference).not.toBe(originReference);
+  await expect(page.getByText(/Fork of /)).toBeVisible();
+
+  const origin = await page.request.get(`${api}/runs/${originReference}`);
+  expect(origin.ok()).toBeTruthy();
+  const originBody = (await origin.json()) as {
+    public_run_reference: string;
+    fork_successors?: Array<{ public_run_reference: string }>;
+  };
+  expect(originBody.public_run_reference).toBe(originReference);
+  expect(
+    originBody.fork_successors?.some(
+      (row) => row.public_run_reference === successorReference
+    )
+  ).toBe(true);
+});
+
+test("proves(a-failed-run-can-be-started-again-from-the-failed-node): the failed step restarts the run and reuses only the prefix before it", async ({
+  page
+}) => {
+  test.setTimeout(180_000);
+  const fork = runPageCopy.fork;
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await resetToKnownStore(page);
+
+  const implementSchemaHash = await anyJsonSchema(page);
+  const reviewSchemaHash = await publishSchema(page, '{"type":"object"}');
+  const started = await startV3Line(
+    page,
+    "v3/fork-failed",
+    "A line that fails review",
+    implementSchemaHash,
+    reviewSchemaHash
+  );
+  const originReference = started.public_run_reference;
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${originReference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    expect(body.state).toBe("FAILED");
+    expect(
+      body.node_rail.map((entry: { node_id: string; state: string }) => ({
+        node_id: entry.node_id,
+        state: entry.state
+      }))
+    ).toEqual([
+      { node_id: "implement", state: "succeeded" },
+      { node_id: "review", state: "failed" }
+    ]);
+  }).toPass({ timeout: 15_000 });
+
+  await page.goto(`/atelier/runs/${originReference}`);
+  const panel = page.getByRole("complementary");
+  await expect(panel.getByRole("heading", { name: "review" })).toBeVisible();
+
+  await panel.getByRole("button", { name: fork.retryHere }).click();
+  const sheet = page.getByRole("dialog", { name: fork.sheetLabel });
+  await expect(sheet).toBeVisible();
+  expect(await sheet.evaluate((element) => (element as HTMLDialogElement).matches(":modal"))).toBe(
+    true
+  );
+  await sheet.getByRole("button", { name: fork.startAgain }).click();
+
+  await expect(page).not.toHaveURL(new RegExp(`${originReference}$`));
+  const successorReference = new URL(page.url()).pathname.split("/").pop() ?? "";
+  expect(successorReference.startsWith("run1.")).toBe(true);
+  expect(successorReference).not.toBe(originReference);
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${successorReference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    const implement = body.node_rail.find((entry: { node_id: string }) => entry.node_id === "implement");
+    expect(implement?.reused_from_run_reference ?? null).toBe(originReference);
+    const review = body.node_rail.find((entry: { node_id: string }) => entry.node_id === "review");
+    expect(review?.reused_from_run_reference ?? null).toBeNull();
+  }).toPass({ timeout: 15_000 });
 });
