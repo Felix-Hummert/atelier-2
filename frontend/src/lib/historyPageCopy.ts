@@ -7,9 +7,10 @@
  * (`wrapDisplayCopy`) can prove every string here has a source instead of a
  * second hardcoded copy inline in the page.
  *
- * The word for a run's state is not owned here: `standingWords` in
- * `runState.ts` owns it for every surface, so "Done" reads the same on the
- * Workbench, on the run and in this table (operator ruling 23.08.).
+ * A failed row still borrows the standing word from `standingWords` in
+ * `runState.ts` so "Failed" reads the same on every surface. The completed
+ * result cell is the derived half-sentence `historyOutcome.ts` maps, not the
+ * standing word "Done" and not the raw result bytes.
  */
 export const historyPageCopy = {
   title: "History",
@@ -20,26 +21,81 @@ export const historyPageCopy = {
   emptyTitle: "No finished runs yet",
   emptyDescription: "Runs land here once they finish — start one from the Catalog.",
   emptyNext: "Open the Catalog",
-  /** Mockup v8 §05: "Purpose (the order sentence), workflow small beneath". */
+  /** The purpose column names the workflow. */
   columnName: "Purpose",
   columnWhen: "When",
-  /** ADR 0019 §4; PR #766 projects the first work item onto a run -- until then every row reads `workItemPlaceholder`. */
+  /** ADR 0019 §4. Honest dash when no work item hangs on the run. */
   columnWorkItem: "Work item",
   columnResult: "Result",
   columnDuration: "Duration",
-  /** "—" where a run names none (mockup v8 §05); also every row's honest answer until PR #766 lands a work item to show. */
+  today: "today",
+  yesterday: "yesterday",
+  /** "—" where a run names none. */
   workItemPlaceholder: "—",
-  /** Only a V1/V2 row, or a V3 row with neither stamp, ever reaches this -- the same gap in both When and Duration. */
+  /**
+   * A V1/V2 row (or a V3 row with neither stamp) in When/Duration, and a
+   * completed row whose node extras settled with no readable sentence.
+   */
   notRecorded: "Not recorded",
+  /**
+   * Completed Result when the node extra could not be loaded. Distinct from
+   * `notRecorded`, which is a successful load with nothing readable to say.
+   */
+  couldNotLoad: "Could not load",
   /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):
    * names why such a row still shows under a period chip that cannot measure
    * it, rather than leaving the chip's own honesty unexplained.
    */
   timestamplessHint:
-    "Runs with no recorded time always show here — the period only filters what it can measure."
+    "Runs with no recorded time always show here — the period only filters what it can measure.",
+  outcome: {
+    approved: "approved",
+    revise: "revise",
+    cannotJudge: "cannot judge",
+    pass: "pass",
+    buildable: "buildable",
+    needsDecision: "needs a decision",
+    high: "high",
+    medium: "medium",
+    low: "low",
+    text: "text"
+  }
 } as const;
 
 export function periodChipLabel(days: number): string {
   return `${days} days`;
+}
+
+export function historyFindingsHighest(count: number, severity: string): string {
+  const findings = count === 1 ? "1 finding" : `${count} findings`;
+  return `${findings}, highest ${severity}`;
+}
+
+export function historyCodeReviewOutcome(
+  verdict: string,
+  findingCount: number,
+  highest: string | null
+): string {
+  if (highest === null || findingCount === 0) return verdict;
+  return `${verdict} · ${historyFindingsHighest(findingCount, highest)}`;
+}
+
+export function historyRefineOutcome(expectationCount: number, lensCount: number): string {
+  const expectations = expectationCount === 1 ? "1 expectation" : `${expectationCount} expectations`;
+  const lenses = lensCount === 1 ? "1 lens" : `${lensCount} lenses`;
+  return `${expectations}, ${lenses}`;
+}
+
+export function historyBreakdownOutcome(sliceCount: number, verdict: string): string {
+  const slices = sliceCount === 1 ? "1 slice" : `${sliceCount} slices`;
+  return `${slices}, ${verdict}`;
+}
+
+export function historyFieldsShape(count: number): string {
+  return count === 1 ? "1 field" : `${count} fields`;
+}
+
+export function historyItemsShape(count: number): string {
+  return count === 1 ? "1 item" : `${count} items`;
 }

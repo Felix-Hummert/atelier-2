@@ -31,6 +31,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
@@ -51,6 +52,7 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
 from atelier2.contracts.host_configuration import (
+    MAXIMUM_ACTIVE_PROJECT_SOURCES,
     MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
     MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
@@ -59,6 +61,7 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_SERVED_PROJECTS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
+    MAXIMUM_SOURCE_TOKEN_CHARACTERS,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
@@ -208,6 +211,15 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "ProjectSourceConnectionRevisionResource.source_address": (
         MAXIMUM_SOURCE_ADDRESS_CHARACTERS
     ),
+    "ConnectProjectSourceRequestResource.address": MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    "ConnectProjectSourceRequestResource.token": MAXIMUM_SOURCE_TOKEN_CHARACTERS,
+    "RotateProjectSourceTokenRequestResource.token": MAXIMUM_SOURCE_TOKEN_CHARACTERS,
+    "ProjectSourceResource.public_source_reference": (
+        MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS
+    ),
+    "ProjectSourceResource.kind": MAXIMUM_SOURCE_KIND_CHARACTERS,
+    "ProjectSourceResource.address": MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    "ProjectSourceListResource.items": MAXIMUM_ACTIVE_PROJECT_SOURCES,
     "ProjectRootRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "ProjectRootRevisionResource.public_project_reference": (
         MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS

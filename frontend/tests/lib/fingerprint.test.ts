@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { shortFingerprint } from "../../src/lib/fingerprint";
+import { shortFingerprint, shortPublicRunReference } from "../../src/lib/fingerprint";
 
 describe("how a long machine value is written where a person reads it", () => {
   it("keeps both ends of a digest, which is what a reader compares", () => {
@@ -19,5 +19,17 @@ describe("how a long machine value is written where a person reads it", () => {
     expect(shortFingerprint("v3/seen-in-the-browser")).toBe("v3/seen-in-the-browser");
     expect(shortFingerprint("v3/two-agents")).toBe("v3/two-agents");
     expect(shortFingerprint("")).toBe("");
+  });
+});
+
+describe("how a public run reference is written on a History row", () => {
+  it("shortens a long reference at both ends, the way a hash is shortened", () => {
+    const reference = "run1.R3LDvMOfZS3mnbHkuqw";
+    expect(shortPublicRunReference(reference)).toBe("run1.R3L…kuqw");
+  });
+
+  it("leaves a short reference whole, so two short refs stay distinct", () => {
+    expect(shortPublicRunReference("run1.YQ")).toBe("run1.YQ");
+    expect(shortPublicRunReference("run1.Yg")).toBe("run1.Yg");
   });
 });

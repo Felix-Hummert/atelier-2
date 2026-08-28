@@ -1801,6 +1801,10 @@ export const problemDefinitions = {
     status: 400,
     title: "Invalid public project reference",
   },
+  "invalid-public-source-reference": {
+    status: 400,
+    title: "Invalid public source reference",
+  },
   "invalid-event-cursor": { status: 400, title: "Invalid event cursor" },
   "invalid-revision-hash": { status: 400, title: "Invalid revision hash" },
   "event-cursor-run-mismatch": {
@@ -2142,6 +2146,26 @@ export const problemDefinitions = {
     status: 409,
     title: "Project source not connected",
   },
+  "project-source-already-connected": {
+    status: 409,
+    title: "Project source already connected",
+  },
+  "project-source-unknown": {
+    status: 404,
+    title: "Project source unknown",
+  },
+  "project-source-disconnected": {
+    status: 409,
+    title: "Project source disconnected",
+  },
+  "project-source-invalid": {
+    status: 422,
+    title: "Project source invalid",
+  },
+  "project-source-token-refused": {
+    status: 422,
+    title: "Project source token refused",
+  },
   "project-source-unavailable": {
     status: 503,
     title: "Project source unavailable",
@@ -2265,6 +2289,10 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "invalid-public-project-reference",
     problemDefinitions["invalid-public-project-reference"],
+  ),
+  problemVariant(
+    "invalid-public-source-reference",
+    problemDefinitions["invalid-public-source-reference"],
   ),
   problemVariant(
     "invalid-event-cursor",
@@ -2678,6 +2706,26 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "project-source-not-connected",
     problemDefinitions["project-source-not-connected"],
+  ),
+  problemVariant(
+    "project-source-already-connected",
+    problemDefinitions["project-source-already-connected"],
+  ),
+  problemVariant(
+    "project-source-unknown",
+    problemDefinitions["project-source-unknown"],
+  ),
+  problemVariant(
+    "project-source-disconnected",
+    problemDefinitions["project-source-disconnected"],
+  ),
+  problemVariant(
+    "project-source-invalid",
+    problemDefinitions["project-source-invalid"],
+  ),
+  problemVariant(
+    "project-source-token-refused",
+    problemDefinitions["project-source-token-refused"],
   ),
   problemVariant(
     "project-source-unavailable",

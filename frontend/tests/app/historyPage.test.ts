@@ -2,14 +2,18 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { AnyRun, CockpitApi, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import type { AnyRun, CockpitApi, NodeDetail, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import {
   reportConnectionLost,
   reportConnectionRestored,
   restartNoticeCopy
 } from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { wrapDisplayCopy } from "../../src/lib/displayCopy";
+import { shortPublicRunReference } from "../../src/lib/fingerprint";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
+import { historyOutcome } from "../../src/lib/historyOutcome";
+import { historyWhenLabel } from "../../src/lib/historyRows";
 import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
@@ -77,6 +81,94 @@ function v3Revision(name = "Two agents in a line", hash = revisionHash): Workflo
       description: null
     }
   };
+}
+
+function nodeDetail(changes: Partial<NodeDetail> = {}): NodeDetail {
+  return {
+    run_id: "v3/run",
+    public_run_reference: publicReference,
+    node_id: "final",
+    state: "succeeded",
+    job_base64: btoa("job bytes must never become the result"),
+    job_hash: "e".repeat(64),
+    answer: null,
+    provenance: null,
+    refusal: null,
+    refusal_output: null,
+    ...changes
+  };
+}
+
+function completedNodeDetail(raw = '{"answer":"PR merged"}'): NodeDetail {
+  return nodeDetail({
+    answer: { value_base64: btoa(raw), value_hash: "f".repeat(64) }
+  });
+}
+
+function failedNodeDetail(raw = '{"answer":"could not merge"}'): NodeDetail {
+  return nodeDetail({
+    state: "failed",
+    refusal: "schema refused",
+    refusal_output: { value_base64: btoa(raw), value_hash: "a".repeat(64) }
+  });
+}
+
+
+function workItemOrderDocument(reference: string, body = "SECRET TITLE FROM BODY"): string {
+  return JSON.stringify({
+    body,
+    change_marker: "etag",
+    digest: "a".repeat(64),
+    kind: "issue",
+    observed_at: "2026-08-26T09:15:00Z",
+    reference
+  });
+}
+
+function jobWithWorkItem(reference: string, body = "SECRET TITLE FROM BODY"): string {
+  return ["Do the one thing.", "--- order: work_item ---", workItemOrderDocument(reference, body)].join(
+    "\n\n"
+  );
+}
+
+function codeReviewAnswer(
+  verdict: "approve" | "revise" | "cannot-judge",
+  findings: readonly ("high" | "medium" | "low")[]
+): string {
+  return JSON.stringify({
+    verdict,
+    findings: findings.map((severity, index) => ({
+      file: "secret.ts",
+      line: index + 1,
+      severity,
+      text: "sk-live-should-never-appear"
+    }))
+  });
+}
+
+async function findHistoryCard(name: RegExp): Promise<HTMLElement> {
+  const link = await screen.findByRole("link", { name });
+  const card = link.closest(".history-row");
+  if (!(card instanceof HTMLElement)) throw new Error("history row");
+  return card;
+}
+
+function historyCardByRun(publicReference: string): HTMLElement {
+  const link = document.querySelector(`a.history-row-open[href="/atelier/runs/${publicReference}"]`);
+  const card = link?.closest(".history-row");
+  if (!(card instanceof HTMLElement)) throw new Error(`history row ${publicReference}`);
+  return card;
+}
+
+function visibleResultText(row: HTMLElement): string {
+  const cell = row.querySelector(".row-result");
+  if (!(cell instanceof HTMLElement)) return "";
+  const clone = cell.cloneNode(true);
+  if (!(clone instanceof HTMLElement)) return "";
+  for (const hidden of clone.querySelectorAll(".visually-hidden")) {
+    hidden.remove();
+  }
+  return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
 function openHistory(
@@ -175,27 +267,115 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByText("History unavailable")).toBeNull();
   });
 
-  it("names the resolved workflow, when it ran, and the real duration, without a per-row node read", async () => {
+  it("names the resolved workflow, when it ran, and a derived result that is not the raw answer", async () => {
     const run = v3Run();
-    const getNodeDetail = vi.fn();
+    const getNodeDetail = vi.fn(async () => completedNodeDetail());
     openHistory({ completed: [run] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
       getNodeDetail
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    // "when" it ran, relative -- with the exact local stamp anchored for hover.
-    expect(within(row).getByText("just now").getAttribute("title")).toEqual(
-      expect.stringContaining(new Date(run.ended_at ?? "").getFullYear().toString())
+    const row = await findHistoryCard(/Two agents in a line/);
+    await waitFor(() => {
+      expect(getNodeDetail).toHaveBeenCalledWith(publicReference, "final");
+      expect(row.querySelector(".row-result")?.textContent).toContain(
+        historyOutcome("Two agents in a line", '{"answer":"PR merged"}')
+      );
+    });
+    const expectedWhen = historyWhenLabel(run.ended_at ?? "", new Date(NOW_MS));
+    expect(row.querySelector("time")?.getAttribute("datetime")).toBe(run.ended_at);
+    expect(row.querySelector("time")?.textContent).toContain(historyPageCopy.today);
+    expect(row.querySelector("time")?.textContent).toContain(expectedWhen.clock);
+    expect(row.textContent).not.toContain("just now");
+    expect(row.querySelector(".row-run")?.textContent).toContain(
+      shortPublicRunReference(publicReference)
     );
-    // "result": the honest standing word, never a guessed sentence.
-    expect(row.textContent).toContain(standingWords.done);
+    expect(row.textContent).not.toContain(standingWords.done);
+    expect(row.textContent).not.toContain("PR merged");
+    expect(row.textContent).not.toContain("job bytes must never become the result");
     expect(row.textContent).toContain("38 min");
-    // Never one node read per row -- the list is built from the run resources alone.
-    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
-  it("names the run's purpose from its own orders, with the workflow named beneath it", async () => {
+  it("says Looking in a completed Result until extras settle, never Done or empty", async () => {
+    const getNodeDetail = vi.fn(() => new Promise<NodeDetail>(() => undefined));
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/Two agents in a line/);
+    const visible = visibleResultText(row);
+    expect(visible).toBe(wrapDisplayCopy(historyPageCopy.looking));
+    expect(visible).not.toBe("");
+    expect(visible).not.toContain(standingWords.done);
+    expect(visible).not.toContain(historyPageCopy.notRecorded);
+    expect(getNodeDetail).toHaveBeenCalled();
+  });
+
+  it("names a completed code-review Result as the derived half-sentence, never Done or finding text", async () => {
+    const raw = codeReviewAnswer("revise", ["high", "medium"]);
+    const getNodeDetail = vi.fn(async () =>
+      nodeDetail({
+        answer: { value_base64: btoa(raw), value_hash: "f".repeat(64) }
+      })
+    );
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/code-review/);
+    const expected = historyOutcome("code-review", raw);
+    await waitFor(() => {
+      expect(visibleResultText(row)).toBe(wrapDisplayCopy(expected));
+    });
+    const visible = visibleResultText(row);
+    expect(visible).not.toContain(standingWords.done);
+    expect(visible).not.toContain("sk-live-should-never-appear");
+    expect(visible).not.toContain("secret.ts");
+    expect(row.textContent).not.toContain("sk-live-should-never-appear");
+  });
+
+  it("names a completed Result could not load when the node detail rejects, never Done or Not recorded", async () => {
+    const getNodeDetail = vi.fn(async () => {
+      throw new Error("private transport detail");
+    });
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/Two agents in a line/);
+    await waitFor(() => {
+      expect(visibleResultText(row)).toBe(wrapDisplayCopy(historyPageCopy.couldNotLoad));
+    });
+    const visible = visibleResultText(row);
+    expect(visible).not.toBe("");
+    expect(visible).not.toContain(standingWords.done);
+    expect(visible).not.toContain(historyPageCopy.notRecorded);
+    expect(row.textContent).not.toContain("private transport detail");
+    expect(row.textContent).not.toContain("job bytes must never become the result");
+  });
+
+  it("names a completed Result not recorded once extras settle with no readable answer, never Done", async () => {
+    const getNodeDetail = vi.fn(async () => nodeDetail());
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/Two agents in a line/);
+    await waitFor(() => {
+      expect(row.querySelector(".row-result")?.textContent).toContain(
+        wrapDisplayCopy(historyPageCopy.notRecorded)
+      );
+    });
+    const result = row.querySelector(".row-result");
+    expect(result?.textContent).not.toContain(standingWords.done);
+    expect(row.textContent).not.toContain("job bytes must never become the result");
+  });
+
+  it("names the run's purpose as the workflow, never the order names", async () => {
     const run = v3Run({
       orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]
     });
@@ -203,9 +383,30 @@ describe("History shows only what has finished", () => {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
-    const row = await screen.findByRole("link", { name: /diff/ });
-    expect(within(row).getByText("diff").isConnected).toBe(true);
-    expect(within(row).getByText("Two agents in a line").isConnected).toBe(true);
+    const row = await findHistoryCard(/Two agents in a line/);
+    expect(row.querySelector(".row-purpose")?.textContent).toBe("Two agents in a line");
+    expect(row.querySelector(".row-name")?.textContent).not.toContain("diff");
+    expect(row.querySelector(".row-workflow")).toBeNull();
+  });
+
+  it("does not put typical code-review order names in the purpose cell", async () => {
+    const run = v3Run({
+      orders: [
+        { name: "context", bytes: 12, schema_revision_hash: "d".repeat(64) },
+        { name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) },
+        { name: "review_questions", bytes: 12, schema_revision_hash: "d".repeat(64) }
+      ]
+    });
+    openHistory({ completed: [run] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review"))
+    });
+
+    const row = await findHistoryCard(/code-review/);
+    const purpose = row.querySelector(".row-purpose")?.textContent ?? "";
+    expect(purpose).toBe("code-review");
+    expect(purpose).not.toContain("context");
+    expect(purpose).not.toContain("diff");
+    expect(purpose).not.toContain("review_questions");
   });
 
   it("names only the workflow, once, for a run started with no orders -- nothing repeats it", async () => {
@@ -213,29 +414,81 @@ describe("History shows only what has finished", () => {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    expect(within(row).getAllByText("Two agents in a line")).toHaveLength(1);
+    const row = await findHistoryCard(/Two agents in a line/);
+    const purpose = row.querySelector(".row-name");
+    expect(purpose).not.toBeNull();
+    expect(within(purpose as HTMLElement).getAllByText("Two agents in a line")).toHaveLength(1);
   });
 
-  it("shows the honest placeholder in the Work item column, deriving nothing", async () => {
+  it("shows the honest placeholder in the Work item column when no work item hangs on the run", async () => {
     openHistory({ completed: [v3Run()] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const row = await findHistoryCard(/Two agents in a line/);
     const label = within(row).getByText("Work item:", { exact: false });
     expect(label.closest(".row-work-item")?.textContent).toContain("—");
   });
 
-  it("names a failed run's node, without reading it, and shows no duration when no V3 stamp exists", async () => {
-    const getNodeDetail = vi.fn();
+  it("names the work item as a link from the order document, never a guessed title from the body", async () => {
+    const getNodeDetail = vi.fn(async () =>
+      nodeDetail({
+        job_base64: btoa(jobWithWorkItem("gh:567")),
+        answer: { value_base64: btoa(codeReviewAnswer("approve", [])), value_hash: "f".repeat(64) }
+      })
+    );
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail,
+      getProjectSourceConnection: vi.fn(async () => ({
+        public_project_reference: "project1.YQ",
+        revision_number: 1,
+        source_kind: "github",
+        source_address: "FlexOr2/atelier-2@main",
+        auth_method: "personal-access-token" as const,
+        project_source_connection_revision_hash: "d".repeat(64)
+      })),
+      listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.YQ" }] }))
+    });
+
+    const row = await findHistoryCard(/code-review/);
+    await waitFor(() => {
+      expect(row.querySelector(".row-work-item")?.textContent).toContain("#567");
+    });
+    expect(row.textContent).not.toContain("SECRET TITLE FROM BODY");
+    const itemLink = within(row).getByRole("link", { name: "#567" });
+    expect(itemLink.getAttribute("href")).toBe("https://github.com/FlexOr2/atelier-2/issues/567");
+    await waitFor(() => {
+      expect(row.querySelector(".row-result")?.textContent).toContain(historyPageCopy.outcome.approved);
+    });
+  });
+
+  it("names a failed run from extras, and shows no duration when no V3 stamp exists", async () => {
+    const getNodeDetail = vi.fn(async () => failedNodeDetail());
     openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
 
-    const row = await screen.findByRole("link", { name: /broke/ });
-    expect(row.textContent).toContain(`${standingWords.failed} · final`);
+    const row = await findHistoryCard(/broke/);
+    await waitFor(() => {
+      expect(getNodeDetail).toHaveBeenCalled();
+      expect(row.querySelector(".row-result")?.textContent).toContain(
+        historyOutcome("broke", '{"answer":"could not merge"}')
+      );
+    });
+    expect(row.textContent).toContain(standingWords.failed);
+    expect(row.textContent).not.toContain("could not merge");
+    expect(row.textContent).not.toContain(`${standingWords.failed} ·`);
     const durationLabel = within(row).getByText("Duration:", { exact: false });
     expect(durationLabel.closest(".row-duration")?.textContent).toContain("Not recorded");
-    expect(getNodeDetail).not.toHaveBeenCalled();
+  });
+
+  it("names a failed run's node when extras settle with no sentence", async () => {
+    const getNodeDetail = vi.fn(async () => nodeDetail({ state: "failed" }));
+    openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
+
+    const row = await findHistoryCard(/broke/);
+    await waitFor(() => {
+      expect(row.textContent).toContain(`${standingWords.failed} · final`);
+    });
   });
 
   it("leads down into the same run page a live run would open, already frozen", async () => {
@@ -253,7 +506,7 @@ describe("History shows only what has finished", () => {
   it("never hides a timestampless V1 row behind the period chip, and names why", async () => {
     openHistory({ completed: [completedRun({ run_id: "old-format" })] });
 
-    const row = await screen.findByRole("link", { name: /old-format/ });
+    const row = await findHistoryCard(/old-format/);
     expect(row.isConnected).toBe(true);
     expect(
       screen.getByText(/Runs with no recorded time always show here/).isConnected
@@ -269,14 +522,190 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByText(/Runs with no recorded time/)).toBeNull();
   });
 
+
+  it("renders two same-workflow runs on the same day differently when work item and outcome differ", async () => {
+    const ended = minutesAgo(5);
+    const started = minutesAgo(10);
+    const first = v3Run({
+      public_run_reference: "run1.YQ",
+      run_id: "first",
+      started_at: started,
+      ended_at: ended
+    });
+    const second = v3Run({
+      public_run_reference: "run1.Yg",
+      run_id: "second",
+      started_at: started,
+      ended_at: ended
+    });
+    const getNodeDetail = vi.fn(async (reference: string) => {
+      if (reference === "run1.YQ") {
+        return nodeDetail({
+          public_run_reference: "run1.YQ",
+          job_base64: btoa(jobWithWorkItem("gh:567")),
+          answer: {
+            value_base64: btoa(codeReviewAnswer("revise", ["high", "medium", "low"])),
+            value_hash: "f".repeat(64)
+          }
+        });
+      }
+      return nodeDetail({
+        public_run_reference: "run1.Yg",
+        job_base64: btoa(jobWithWorkItem("gh:840")),
+        answer: {
+          value_base64: btoa(codeReviewAnswer("approve", [])),
+          value_hash: "f".repeat(64)
+        }
+      });
+    });
+    openHistory({ completed: [first, second] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    await waitFor(() => {
+      expect(historyCardByRun("run1.YQ").textContent).toContain("#567");
+      expect(historyCardByRun("run1.Yg").textContent).toContain("#840");
+    });
+    const firstRow = historyCardByRun("run1.YQ");
+    const secondRow = historyCardByRun("run1.Yg");
+    expect(firstRow.textContent).not.toBe(secondRow.textContent);
+    expect(firstRow.querySelector(".row-result")?.textContent).not.toBe(
+      secondRow.querySelector(".row-result")?.textContent
+    );
+  });
+
+  it("renders two runs that differ only in their result as different rows", async () => {
+    const ended = minutesAgo(5);
+    const started = minutesAgo(10);
+    const first = v3Run({
+      public_run_reference: "run1.YQ",
+      run_id: "alpha",
+      started_at: started,
+      ended_at: ended
+    });
+    const second = v3Run({
+      public_run_reference: "run1.Yg",
+      run_id: "beta",
+      started_at: started,
+      ended_at: ended
+    });
+    const getNodeDetail = vi.fn(async (reference: string) => {
+      const raw =
+        reference === "run1.YQ"
+          ? codeReviewAnswer("revise", ["high"])
+          : codeReviewAnswer("approve", []);
+      return nodeDetail({
+        public_run_reference: reference,
+        job_base64: btoa(jobWithWorkItem("gh:567")),
+        answer: { value_base64: btoa(raw), value_hash: "f".repeat(64) }
+      });
+    });
+    openHistory({ completed: [first, second] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    await waitFor(() => {
+      expect(historyCardByRun("run1.YQ").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.revise
+      );
+      expect(historyCardByRun("run1.Yg").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.approved
+      );
+    });
+    const firstRow = historyCardByRun("run1.YQ");
+    const secondRow = historyCardByRun("run1.Yg");
+    expect(firstRow.textContent).not.toBe(secondRow.textContent);
+  });
+
+  it("renders two runs identical in time, work item and outcome as different rows", async () => {
+    const ended = minutesAgo(5);
+    const started = minutesAgo(10);
+    const first = v3Run({
+      public_run_reference: "run1.YQ",
+      run_id: "alpha",
+      started_at: started,
+      ended_at: ended
+    });
+    const second = v3Run({
+      public_run_reference: "run1.Yg",
+      run_id: "beta",
+      started_at: started,
+      ended_at: ended
+    });
+    const getNodeDetail = vi.fn(async (reference: string) =>
+      nodeDetail({
+        public_run_reference: reference,
+        job_base64: btoa(jobWithWorkItem("gh:567")),
+        answer: {
+          value_base64: btoa(codeReviewAnswer("approve", [])),
+          value_hash: "f".repeat(64)
+        }
+      })
+    );
+    openHistory({ completed: [first, second] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    await waitFor(() => {
+      expect(historyCardByRun("run1.YQ").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.approved
+      );
+      expect(historyCardByRun("run1.Yg").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.approved
+      );
+    });
+    const firstRow = historyCardByRun("run1.YQ");
+    const secondRow = historyCardByRun("run1.Yg");
+    expect(firstRow.querySelector(".row-when")?.textContent).toBe(
+      secondRow.querySelector(".row-when")?.textContent
+    );
+    expect(firstRow.querySelector(".row-work-item")?.textContent).toBe(
+      secondRow.querySelector(".row-work-item")?.textContent
+    );
+    expect(firstRow.querySelector(".row-result")?.textContent).toBe(
+      secondRow.querySelector(".row-result")?.textContent
+    );
+    expect(firstRow.querySelector(".row-run")?.textContent).toContain(
+      shortPublicRunReference("run1.YQ")
+    );
+    expect(secondRow.querySelector(".row-run")?.textContent).toContain(
+      shortPublicRunReference("run1.Yg")
+    );
+    expect(firstRow.textContent).not.toBe(secondRow.textContent);
+  });
+
+  it("never renders raw result bytes, including a secret in an unknown payload", async () => {
+    const secret = "sk-live-should-never-appear";
+    const getNodeDetail = vi.fn(async () =>
+      completedNodeDetail(JSON.stringify({ token: secret, note: "keep out" }))
+    );
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("hello-atelier")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/hello-atelier/);
+    await waitFor(() => {
+      expect(row.querySelector(".row-result")?.textContent).toContain("2 fields");
+    });
+    expect(row.textContent).not.toContain(secret);
+    expect(row.textContent).not.toContain("keep out");
+  });
+
   it("keeps a run outside the 7 day window off the list, honestly reporting nothing recent", async () => {
     const old = v3Run({ run_id: "ancient", ended_at: "2020-01-01T00:00:00Z" });
+    const getNodeDetail = vi.fn();
     openHistory({ completed: [old] }, {
-      getWorkflowRevision: vi.fn(async () => v3Revision())
+      getWorkflowRevision: vi.fn(async () => v3Revision()),
+      getNodeDetail
     });
 
     await screen.findByText(historyPageCopy.emptyTitle);
     expect(screen.queryByText("ancient")).toBeNull();
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 });
 

@@ -20,11 +20,13 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
+    PUBLIC_SOURCE_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
@@ -51,6 +53,7 @@ from atelier2.contracts.catalog_v3 import (
 )
 from atelier2.contracts.host_configuration import (
     EXACT_MODEL_ID_PATTERN,
+    MAXIMUM_ACTIVE_PROJECT_SOURCES,
     MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
     MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
@@ -73,6 +76,7 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
+from atelier2.contracts.when import RECORDED_AT_PATTERN
 
 
 class ApiModel(BaseModel):
@@ -297,6 +301,25 @@ class ProjectSourceConnectionRevisionResource(ApiModel):
     )
     auth_method: SourceConnectionAuthMethod
     project_source_connection_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ProjectSourceResource(ApiModel):
+    public_source_reference: str = Field(
+        pattern=PUBLIC_SOURCE_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
+    )
+    kind: str = Field(min_length=1, max_length=MAXIMUM_SOURCE_KIND_CHARACTERS)
+    address: str = Field(min_length=1, max_length=MAXIMUM_SOURCE_ADDRESS_CHARACTERS)
+    scope: Literal["issues"] = "issues"
+    connected_at: str | None = Field(default=None, pattern=RECORDED_AT_PATTERN)
+    revision: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    auth_method: SourceConnectionAuthMethod
+
+
+class ProjectSourceListResource(ApiModel):
+    items: tuple[ProjectSourceResource, ...] = Field(
+        max_length=MAXIMUM_ACTIVE_PROJECT_SOURCES, strict=False
+    )
 
 
 class ModelRegistryEntryResource(ApiModel):

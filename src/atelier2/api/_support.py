@@ -19,9 +19,11 @@ from atelier2.api.references import (
     MAX_SIGNED_INT64,
     InvalidPublicProjectReference,
     InvalidPublicRunReference,
+    InvalidPublicSourceReference,
     decode_canonical_base64,
     decode_public_project_reference,
     decode_public_run_reference,
+    decode_public_source_reference,
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
 from atelier2.api.wire.requests import RevisionListingView
@@ -36,7 +38,7 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.host_configuration import ProjectId, ProjectSourceId
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunProjection,
@@ -139,6 +141,18 @@ def decode_public_project_reference_value(value: str, limits: ApiLimits) -> Proj
         raise ApiProblem("invalid-public-project-reference") from error
     except InvalidPublicProjectReference as error:
         raise ApiProblem("invalid-public-project-reference") from error
+
+
+def decode_public_source_reference_value(
+    value: str, limits: ApiLimits
+) -> ProjectSourceId:
+    try:
+        limits.require_field(value)
+        return decode_public_source_reference(value)
+    except ApiLimitExceeded as error:
+        raise ApiProblem("invalid-public-source-reference") from error
+    except InvalidPublicSourceReference as error:
+        raise ApiProblem("invalid-public-source-reference") from error
 
 
 def decode_base64(value: str, limits: ApiLimits) -> bytes:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from atelier2.contracts.agents import (
@@ -15,6 +16,7 @@ from atelier2.contracts.host_configuration import (
     ProjectModelDefaultsRevision,
     ProjectRootRevision,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     ProviderModelCheck,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -204,9 +206,32 @@ class ProjectSourceConnectionRevisionCollision:
     pass
 
 
+@dataclass(frozen=True)
+class ProjectSourceCredentialDirectoryReferenced:
+    pass
+
+
+@dataclass(frozen=True)
+class ProjectSourceCredentialDirectoryUnreferenced:
+    pass
+
+
 type LatestProjectSourceConnectionResult = (
     ProjectSourceConnectionRevision
     | None
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
+type LatestProjectSourceConnectionsResult = (
+    tuple[ProjectSourceConnectionRevision, ...]
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
+type ProjectSourceCredentialDirectoryReferenceResult = (
+    ProjectSourceCredentialDirectoryReferenced
+    | ProjectSourceCredentialDirectoryUnreferenced
     | HostConfigurationReadUnavailable
     | DurableStateCorrupt
 )
@@ -259,14 +284,25 @@ class HostConfigurationChannel(Protocol):
 class ProjectSourceConnectionChannel(Protocol):
     """The channel's third family, as its own narrow protocol.
 
-    A caller composing only the connection record depends on these two answers
-    alone, so a fake or adapter serving another family does not have to grow
-    with this one.
+    A caller composing only the connection record depends on this family alone,
+    so a fake or adapter serving another family does not have to grow with it.
     """
 
     def latest_project_source_connection_revision(
         self, project_id: ProjectId
     ) -> LatestProjectSourceConnectionResult: ...
+
+    def latest_project_source_connection_revisions(
+        self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionsResult: ...
+
+    def latest_project_source_connection_revision_by_source(
+        self, project_id: ProjectId, source_id: ProjectSourceId
+    ) -> LatestProjectSourceConnectionResult: ...
+
+    def project_source_credential_directory_reference(
+        self, project_id: ProjectId, credential_directory: Path
+    ) -> ProjectSourceCredentialDirectoryReferenceResult: ...
 
     def publish_project_source_connection_revision(
         self, revision: ProjectSourceConnectionRevision

@@ -47,10 +47,13 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
+    ProjectSourceConnectionLifecycle,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 
@@ -170,16 +173,21 @@ def server() -> _FakeGitHubServer:
 def connection_revision(
     credential_directory: Path,
     source_kind: str = "github",
-    source_address: str = f"{OWNER}/{REPO}@{BASE_BRANCH}",
+    source_address: str = f"{OWNER}/{REPO}",
+    source_ref: str | None = BASE_BRANCH,
 ) -> ProjectSourceConnectionRevision:
     return ProjectSourceConnectionRevision(
         ProjectId("studio"),
+        ProjectSourceId("11111111-1111-1111-1111-111111111111"),
         1,
         SourceKind(source_kind),
         SourceAddress(source_address),
         credential_directory,
         SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
         ConnectionActor("felix"),
+        ProjectSourceConnectionLifecycle.CONNECTED,
+        None,
+        None if source_ref is None else SourceReference(source_ref),
     )
 
 
@@ -239,9 +247,9 @@ def test_a_foreign_source_kind_does_not_compose_the_github_factory(
 def test_an_address_outside_the_owner_name_base_branch_grammar_is_refused(
     tmp_path: Path, address: str
 ) -> None:
-    with pytest.raises(GitHubConnectionUncomposable, match="owner/name@base-branch"):
+    with pytest.raises(GitHubConnectionUncomposable, match="owner/name"):
         live_github_effect_adapter_factory(
-            connection_revision(tmp_path, source_address=address),
+            connection_revision(tmp_path, source_address=address, source_ref=None),
             ADAPTER_REVISION,
             DESTINATION,
         )
@@ -250,16 +258,34 @@ def test_an_address_outside_the_owner_name_base_branch_grammar_is_refused(
 def test_a_base_branch_may_itself_carry_slashes_and_at_signs(
     tmp_path: Path,
 ) -> None:
-    # Git allows both in branch names, and owner/name allow neither, so the
-    # first `@` after the repository part starts the branch and the rest of
-    # the address belongs to it verbatim.
+    # Git allows both in branch names while the repository identity does not,
+    # so the adapter-owned ref detail carries the branch verbatim.
     composed = live_github_effect_adapter_factory(
-        connection_revision(tmp_path, source_address="acme/studio@release/v1@rc"),
+        connection_revision(
+            tmp_path,
+            source_address="acme/studio",
+            source_ref="release/v1@rc",
+        ),
         ADAPTER_REVISION,
         DESTINATION,
     )
 
     assert composed.repository.base_branch == "release/v1@rc"
+
+
+def test_a_v45_address_with_an_embedded_branch_is_durable_corruption(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(GitHubConnectionUncomposable, match="owner/name"):
+        live_github_effect_adapter_factory(
+            connection_revision(
+                tmp_path,
+                source_address=f"{OWNER}/{REPO}@release/v1@rc",
+                source_ref=None,
+            ),
+            ADAPTER_REVISION,
+            DESTINATION,
+        )
 
 
 def effect_intent(payload: bytes = AGENT_OUTPUT, *, typed: bool = True) -> EffectIntent:

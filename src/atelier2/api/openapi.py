@@ -25,8 +25,10 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
+    PUBLIC_SOURCE_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
@@ -99,6 +101,9 @@ PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
 PROJECT_SOURCE_CONNECTION_PATH = PROJECT_PATH + "/source-connection"
+PROJECT_SOURCES_PATH = PROJECT_PATH + "/sources"
+PROJECT_SOURCE_PATH = PROJECT_SOURCES_PATH + "/{public_source_reference}"
+PROJECT_SOURCE_TOKEN_PATH = PROJECT_SOURCE_PATH + "/token"
 MODEL_REGISTRY_PATH = API_PREFIX + "/model-registries/{provider_id}"
 MODEL_REGISTRY_VALIDATIONS_PATH = MODEL_REGISTRY_PATH + "/validations"
 PROJECT_MODEL_DEFAULTS_PATH = PROJECT_PATH + "/model-defaults"
@@ -427,6 +432,48 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "project-unknown",
         "project-source-not-connected",
         "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_SOURCES_PATH, "get"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_SOURCES_PATH, "post"): (
+        "invalid-public-project-reference",
+        "invalid-request",
+        "unsupported-media-type",
+        "project-unknown",
+        "project-source-already-connected",
+        "project-source-invalid",
+        "project-source-token-refused",
+        "project-source-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_SOURCE_PATH, "delete"): (
+        "invalid-public-project-reference",
+        "invalid-public-source-reference",
+        "project-unknown",
+        "project-source-unknown",
+        "project-source-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_SOURCE_TOKEN_PATH, "put"): (
+        "invalid-public-project-reference",
+        "invalid-public-source-reference",
+        "invalid-request",
+        "unsupported-media-type",
+        "project-unknown",
+        "project-source-unknown",
+        "project-source-disconnected",
+        "project-source-invalid",
+        "project-source-token-refused",
+        "project-source-unavailable",
         "durable-state-corrupt",
         "internal-error",
     ),
@@ -1039,6 +1086,11 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
         "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     }
+    components["PublicSourceReference"] = {
+        "type": "string",
+        "pattern": PUBLIC_SOURCE_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
+    }
     components["CatalogLineageId"] = {
         "type": "string",
         "pattern": CATALOG_LINEAGE_ID_PATTERN,
@@ -1081,6 +1133,24 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 PROJECT_SOURCE_CONNECTION_PATH,
                 "get",
                 "public_project_reference",
+                "path",
+            ),
+            (PROJECT_SOURCES_PATH, "get", "public_project_reference", "path"),
+            (PROJECT_SOURCES_PATH, "post", "public_project_reference", "path"),
+            (PROJECT_SOURCE_PATH, "delete", "public_project_reference", "path"),
+            (
+                PROJECT_SOURCE_TOKEN_PATH,
+                "put",
+                "public_project_reference",
+                "path",
+            ),
+        ),
+        "PublicSourceReference": (
+            (PROJECT_SOURCE_PATH, "delete", "public_source_reference", "path"),
+            (
+                PROJECT_SOURCE_TOKEN_PATH,
+                "put",
+                "public_source_reference",
                 "path",
             ),
         ),
@@ -1154,6 +1224,9 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
     schema["components"]["schemas"]["ProjectResource"]["properties"][
         "public_project_reference"
     ] = {"$ref": "#/components/schemas/PublicProjectReference"}
+    schema["components"]["schemas"]["ProjectSourceResource"]["properties"][
+        "public_source_reference"
+    ] = {"$ref": "#/components/schemas/PublicSourceReference"}
     _replace_parameter_schema(
         schema["paths"][CANCELLATION_PATH]["post"],
         "attempt_id",

@@ -31,6 +31,9 @@ from sqlalchemy.engine import Connection
 
 from atelier2.adapters.dbos import schema as schema_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.host_configuration import (
+    project_source_connection_revision_from_record,
+)
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
 from atelier2.adapters.dbos.run_store import (
@@ -89,6 +92,7 @@ from atelier2.adapters.dbos.schema import (
     V41_SCHEMA_HANDOFF,
     V42_SCHEMA_HANDOFF,
     V43_SCHEMA_HANDOFF,
+    V44_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     _rebuild_product_table,
@@ -190,7 +194,14 @@ from atelier2.contracts.executions import (
     WaitAnswerState,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.host_configuration import ProjectId, ProjectRootRevision
+from atelier2.contracts.host_configuration import (
+    ConnectionActor,
+    ProjectId,
+    ProjectRootRevision,
+    SourceAddress,
+    SourceConnectionAuthMethod,
+    SourceKind,
+)
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -444,6 +455,7 @@ def _crash_v44_migration_after_queue_copy(database_path: str) -> None:
 def _restore_v43_queue_predecessor(connection: sqlite3.Connection) -> None:
     """Remove Phase D and restore the admission-only row every V29–V43 held."""
 
+    _restore_v44_connection_predecessor(connection)
     schema_module._rebuild_product_table(
         connection,
         schema_module.queue_items,
@@ -454,6 +466,22 @@ def _restore_v43_queue_predecessor(connection: sqlite3.Connection) -> None:
     )
     for table in reversed(schema_module._PHASE_D_QUEUE_TABLES):
         connection.execute(f"DROP TABLE {table.name}")
+
+
+def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
+    """Restore the project-source table shape published by V44."""
+
+    schema_module._rebuild_product_table(
+        connection,
+        schema_module.host_project_source_connection_revisions,
+        "project_source_connections_v45",
+        (
+            "host_project_source_connection_revisions_no_update",
+            "host_project_source_connection_revisions_no_delete",
+        ),
+        45,
+        44,
+    )
 
 
 def _restore_v39_configuration_tables(connection: sqlite3.Connection) -> None:
@@ -774,7 +802,7 @@ def test_v41_effect_rows_cross_v42_with_open_pr_backfilled(tmp_path: Path) -> No
 
     report = migrate_store(database)
 
-    assert (report.source_version, report.target_version) == (41, 44)
+    assert (report.source_version, report.target_version) == (41, 45)
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT operation_name FROM effect_intents"
@@ -874,7 +902,7 @@ def test_every_populated_v42_product_row_crosses_v43_and_v44_unchanged(
     assert V43_SCHEMA_HANDOFF.fingerprint_sha256 == (
         "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 == (
+    assert V44_SCHEMA_HANDOFF.fingerprint_sha256 == (
         "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b"
     )
     database = tmp_path / "atelier.sqlite"
@@ -883,10 +911,10 @@ def test_every_populated_v42_product_row_crosses_v43_and_v44_unchanged(
 
     report = migrate_store(database)
 
-    assert (report.source_version, report.target_version) == (42, 44)
+    assert (report.source_version, report.target_version) == (42, 45)
     assert _v42_product_rows(database) == before
     with sqlite3.connect(database) as connection:
-        assert schema_module._fingerprint_for_version(connection, 44) == (
+        assert schema_module._fingerprint_for_version(connection, 45) == (
             PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         )
 
@@ -970,11 +998,410 @@ def test_v44_process_loss_after_queue_copy_rolls_back_then_reruns_cleanly(
 
     report = migrate_store(database)
 
-    assert (report.source_version, report.target_version) == (43, 44)
+    assert (report.source_version, report.target_version) == (43, 45)
     with sqlite3.connect(database) as connection:
-        assert schema_module._fingerprint_for_version(connection, 44) == (
+        assert schema_module._fingerprint_for_version(connection, 45) == (
             PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         )
+
+
+def _create_populated_v44_source_store(database: Path) -> None:
+    engine = create_canonical_engine(database)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database) as connection:
+        _restore_v44_connection_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 44")
+        predecessor_rows = (
+            (1, "acme/studio@main", Path("/legacy/credential-one")),
+            (2, "acme/studio@trunk", Path("/legacy/credential-two")),
+        )
+        connection.executemany(
+            "INSERT INTO host_project_source_connection_revisions "
+            "(revision_hash, project_id, source_kind, revision_number, "
+            "source_address, credential_directory, auth_method, connected_by) "
+            "VALUES (?, 'studio', 'github', ?, ?, ?, 'personal-access-token', "
+            "'operator')",
+            tuple(
+                (
+                    schema_module._v44_project_source_connection_revision_hash(
+                        ProjectId("studio"),
+                        revision_number,
+                        SourceKind("github"),
+                        SourceAddress(source_address),
+                        credential_directory,
+                        SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                        ConnectionActor("operator"),
+                    ),
+                    revision_number,
+                    source_address,
+                    str(credential_directory),
+                )
+                for revision_number, source_address, credential_directory in predecessor_rows
+            ),
+        )
+        connection.execute(
+            "INSERT INTO queue_items "
+            "(item_id, project_id, tracker_item_reference, state, state_version) "
+            "VALUES (?, 'studio', 'gh:567', 'OBSERVED', 0)",
+            ("c" * 64,),
+        )
+        connection.commit()
+        _require_product_shape(connection, 44)
+
+
+def _queue_schema_and_rows(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[tuple[object, ...], ...], tuple[tuple[str, tuple[object, ...]], ...]]:
+    objects = tuple(
+        connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE name LIKE 'queue_%' OR tbl_name LIKE 'queue_%' "
+            "ORDER BY type, name"
+        )
+    )
+    table_names = tuple(str(record[1]) for record in objects if record[0] == "table")
+    rows = tuple(
+        (table_name, tuple(connection.execute(f"SELECT * FROM {table_name}")))
+        for table_name in table_names
+    )
+    return objects, rows
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_preserves_legacy_source_history_without_touching_queue_objects(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    with sqlite3.connect(database) as connection:
+        queue_before = _queue_schema_and_rows(connection)
+
+    assert main(["migrate", "--database", str(database)]) == 0
+
+    assert "step 44 -> 45" in capsys.readouterr().out
+    with sqlite3.connect(database) as connection:
+        rows = tuple(
+            connection.execute(
+                "SELECT revision_hash, source_id, revision_number, source_address, "
+                "source_ref, credential_directory, lifecycle, connected_at "
+                "FROM host_project_source_connection_revisions "
+                "ORDER BY revision_number"
+            )
+        )
+        assert tuple(row[1:] for row in rows) == (
+            (
+                "305615fd-f3be-c40f-22d4-7e8d53428878",
+                1,
+                "acme/studio",
+                "main",
+                "/legacy/credential-one",
+                "DISCONNECTED",
+                None,
+            ),
+            (
+                "305615fd-f3be-c40f-22d4-7e8d53428878",
+                2,
+                "acme/studio",
+                "trunk",
+                "/legacy/credential-two",
+                "CONNECTED",
+                None,
+            ),
+        )
+        assert tuple(row[0] for row in rows) != ("a" * 64, "b" * 64)
+        assert all(
+            len(str(row[0])) == 64
+            and not set(str(row[0])).difference("0123456789abcdef")
+            for row in rows
+        )
+        assert _queue_schema_and_rows(connection) == queue_before
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "UPDATE host_project_source_connection_revisions "
+                "SET source_address = 'changed'"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute("DELETE FROM host_project_source_connection_revisions")
+    engine = create_canonical_engine(database)
+    try:
+        with engine.connect() as connection:
+            records = connection.execute(
+                sa.select(host_project_source_connection_revisions).order_by(
+                    host_project_source_connection_revisions.c.revision_number
+                )
+            ).mappings()
+            assert (
+                len(
+                    tuple(
+                        project_source_connection_revision_from_record(row)
+                        for row in records
+                    )
+                )
+                == 2
+            )
+    finally:
+        engine.dispose()
+
+    before_replay = _logical_dump(database)
+    assert main(["migrate", "--database", str(database)]) == 0
+    assert "already current" in capsys.readouterr().out
+    assert _logical_dump(database) == before_replay
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v44_connection_shape_is_frozen_apart_from_the_live_v45_declaration() -> None:
+    frozen = PUBLISHED_TABLE_SHAPES[(44, host_project_source_connection_revisions.name)]
+
+    assert (
+        schema_module._table_shape_at(44, host_project_source_connection_revisions)
+        == frozen
+    )
+    assert "source_id" not in frozen
+    assert "source_ref" not in frozen
+    assert "source_ref" in schema_module._table_shape_at(
+        SCHEMA_VERSION, host_project_source_connection_revisions
+    )
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_marks_every_historical_revision_disconnected_across_source_kinds(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    with sqlite3.connect(database) as connection:
+        legacy_gitlab_revisions = (
+            (1, "opaque:project@first-ref", "~/opaque/../credential-one"),
+            (3, "opaque:project@current-ref", "~/opaque/../credential-three"),
+        )
+        connection.executemany(
+            "INSERT INTO host_project_source_connection_revisions "
+            "(revision_hash, project_id, source_kind, revision_number, "
+            "source_address, credential_directory, auth_method, connected_by) "
+            "VALUES (?, 'studio', 'gitlab', ?, ?, ?, "
+            "'personal-access-token', 'legacy-operator')",
+            tuple(
+                (
+                    schema_module._v44_project_source_connection_revision_hash(
+                        ProjectId("studio"),
+                        revision_number,
+                        SourceKind("gitlab"),
+                        SourceAddress(source_address),
+                        credential_reference,
+                        SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                        ConnectionActor("legacy-operator"),
+                    ),
+                    revision_number,
+                    source_address,
+                    credential_reference,
+                )
+                for revision_number, source_address, credential_reference in legacy_gitlab_revisions
+            ),
+        )
+        connection.commit()
+
+    migrate_store(database)
+
+    with sqlite3.connect(database) as connection:
+        rows = tuple(
+            connection.execute(
+                "SELECT source_id, source_kind, revision_number, source_address, "
+                "source_ref, credential_directory, lifecycle, connected_at "
+                "FROM host_project_source_connection_revisions "
+                "ORDER BY source_kind, revision_number"
+            )
+        )
+    assert rows == (
+        (
+            "305615fd-f3be-c40f-22d4-7e8d53428878",
+            "github",
+            1,
+            "acme/studio",
+            "main",
+            "/legacy/credential-one",
+            "DISCONNECTED",
+            None,
+        ),
+        (
+            "305615fd-f3be-c40f-22d4-7e8d53428878",
+            "github",
+            2,
+            "acme/studio",
+            "trunk",
+            "/legacy/credential-two",
+            "DISCONNECTED",
+            None,
+        ),
+        (
+            "75c2fcf6-d0f3-ae58-9936-c93792d856ea",
+            "gitlab",
+            1,
+            "opaque:project@first-ref",
+            None,
+            "~/opaque/../credential-one",
+            "DISCONNECTED",
+            None,
+        ),
+        (
+            "75c2fcf6-d0f3-ae58-9936-c93792d856ea",
+            "gitlab",
+            3,
+            "opaque:project@current-ref",
+            None,
+            "~/opaque/../credential-three",
+            "CONNECTED",
+            None,
+        ),
+    )
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_refuses_a_project_with_an_ambiguous_current_kind_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    with sqlite3.connect(database) as connection:
+        credential_reference = "/legacy/gitlab-credential"
+        connection.execute(
+            "INSERT INTO host_project_source_connection_revisions "
+            "(revision_hash, project_id, source_kind, revision_number, "
+            "source_address, credential_directory, auth_method, connected_by) "
+            "VALUES (?, 'studio', 'gitlab', 2, 'group/project', ?, "
+            "'personal-access-token', 'legacy-operator')",
+            (
+                schema_module._v44_project_source_connection_revision_hash(
+                    ProjectId("studio"),
+                    2,
+                    SourceKind("gitlab"),
+                    SourceAddress("group/project"),
+                    credential_reference,
+                    SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                    ConnectionActor("legacy-operator"),
+                ),
+                credential_reference,
+            ),
+        )
+        connection.commit()
+    before = _logical_dump(database)
+
+    with pytest.raises(
+        StoreMigrationRefused,
+        match=(
+            "durable project-source corruption: project 'studio' has 2 current "
+            "kinds; expected exactly one"
+        ),
+    ):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_failure_after_version_cas_restores_exact_v44_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    before = _logical_dump(database)
+    raise_declared_version = schema_module._raise_declared_version
+
+    def fail_after_v45_cas(
+        connection: sqlite3.Connection, expected_version: int, target_version: int
+    ) -> None:
+        raise_declared_version(connection, expected_version, target_version)
+        if expected_version == V44_SCHEMA_HANDOFF.version:
+            raise sqlite3.OperationalError("v45-after-version-cas-failpoint")
+
+    monkeypatch.setattr(schema_module, "_raise_declared_version", fail_after_v45_cas)
+
+    with pytest.raises(StoreMigrationRefused, match="v45-after-version-cas-failpoint"):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
+    with sqlite3.connect(database) as connection:
+        assert schema_module._fingerprint_for_version(connection, 44) == (
+            V44_SCHEMA_HANDOFF.fingerprint_sha256
+        )
+
+
+def test_v45_refuses_a_corrupt_v44_connection_hash_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "DROP TRIGGER host_project_source_connection_revisions_no_update"
+        )
+        connection.execute(
+            "UPDATE host_project_source_connection_revisions "
+            "SET revision_hash = ? WHERE revision_number = 2",
+            ("f" * 64,),
+        )
+        connection.execute(
+            schema_module._PRODUCT_TRIGGERS[
+                "host_project_source_connection_revisions_no_update"
+            ]
+        )
+        connection.commit()
+    before = _logical_dump(database)
+
+    with pytest.raises(
+        StoreMigrationRefused,
+        match="schema version 44 project-source connection hash does not match",
+    ):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_refuses_a_legacy_github_location_without_a_base_ref(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    empty_ref_location = SourceAddress("acme/studio@")
+    credential_directory = "/legacy/credential-two"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "DROP TRIGGER host_project_source_connection_revisions_no_update"
+        )
+        connection.execute(
+            "UPDATE host_project_source_connection_revisions "
+            "SET source_address = ?, revision_hash = ? "
+            "WHERE project_id = 'studio' AND source_kind = 'github' "
+            "AND revision_number = 2",
+            (
+                empty_ref_location.value,
+                schema_module._v44_project_source_connection_revision_hash(
+                    ProjectId("studio"),
+                    2,
+                    SourceKind("github"),
+                    empty_ref_location,
+                    credential_directory,
+                    SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                    ConnectionActor("operator"),
+                ),
+            ),
+        )
+        connection.execute(
+            schema_module._PRODUCT_TRIGGERS[
+                "host_project_source_connection_revisions_no_update"
+            ]
+        )
+        connection.commit()
+    before = _logical_dump(database)
+
+    with pytest.raises(
+        StoreMigrationRefused,
+        match="malformed GitHub project-source location",
+    ):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
 
 
 def test_migrate_refuses_a_hand_corrupted_partial_v44_queue_row(
