@@ -19,6 +19,8 @@ import { retryLabel } from "../../src/lib/readStateCopy";
 import {
   accountChoice,
   difficultyLabel,
+  noSuchModel,
+  providerAccount,
   retainedAccountChoice,
   settingsPageCopy
 } from "../../src/lib/settingsPageCopy";
@@ -178,6 +180,59 @@ function modelRegistryMissing(): CockpitRequestError {
   } as Problem, true);
 }
 
+function modelRegistryRevisionConflict(): CockpitRequestError {
+  return new CockpitRequestError("conflict", {
+    type: "urn:atelier2:problem:v1:model-registry-revision-conflict",
+    title: "Model registry revision conflict",
+    status: 409,
+    detail: "The stored revision number does not match."
+  } as Problem, true);
+}
+
+function projectSourceNotConnected(): CockpitRequestError {
+  return new CockpitRequestError("missing", {
+    type: "urn:atelier2:problem:v1:project-source-not-connected",
+    title: "Project source not connected",
+    status: 409,
+    detail: "Connect a source for this project."
+  } as Problem, true);
+}
+
+function echoDefaultsPut() {
+  return vi.fn(async (
+    _reference: string,
+    write: { input: { defaults: ProjectModelDefaultsRevision["defaults"]; revision_number: number }; body: string }
+  ) => ({
+    status: 200,
+    value: { ...defaults(write.input.defaults), revision_number: write.input.revision_number }
+  }));
+}
+
+function echoRegistryPut() {
+  return vi.fn(async (
+    _providerId: string,
+    write: {
+      input: {
+        revision_number: number;
+        entries: Array<{ model_id: string; agent_configuration_revision_hash: string }>;
+      };
+      body: string;
+    }
+  ) => ({
+    status: 200,
+    value: {
+      provider_id: "anthropic",
+      revision_number: write.input.revision_number,
+      model_registry_revision_hash: registryHash,
+      entries: write.input.entries.map((entry) => ({
+        ...entry,
+        source: "operator" as const,
+        provider_check: "checked" as const
+      }))
+    }
+  }));
+}
+
 function openSettings(overrides: Partial<CockpitApi> = {}) {
   return render(App, {
     props: {
@@ -208,6 +263,53 @@ function openSettings(overrides: Partial<CockpitApi> = {}) {
   });
 }
 
+
+const addedModelId = "new-model-id";
+const addedConfigurationHash = "1".repeat(64);
+
+function publishedConfiguration(modelId = addedModelId, hash = addedConfigurationHash) {
+  return {
+    model: modelId,
+    auth_profile_revision_hash: profileHash,
+    executor_revision: configuration.executor_revision,
+    requested_capability: configuration.requested_capability,
+    provider_id: configuration.provider_id,
+    auth_mode: configuration.auth_mode,
+    agent_configuration_revision_hash: hash
+  };
+}
+
+function operatorEntry(
+  modelId: string,
+  hash: string,
+  providerCheck: ModelRegistryRevision["entries"][number]["provider_check"]
+): ModelRegistryRevision["entries"][number] {
+  return {
+    model_id: modelId,
+    agent_configuration_revision_hash: hash,
+    source: "operator",
+    provider_check: providerCheck
+  };
+}
+
+async function fillAddSheet(modelId: string): Promise<HTMLElement> {
+  await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.addModel }));
+  const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.addModel });
+  const provider = within(dialog).getByRole("combobox", { name: settingsPageCopy.provider });
+  await fireEvent.change(provider, { target: { value: profileHash } });
+  await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.model }), {
+    target: { value: modelId }
+  });
+  return dialog;
+}
+
+async function submitAddSheet(modelId: string): Promise<void> {
+  const dialog = await fillAddSheet(modelId);
+  const add = within(dialog).getByRole("button", { name: settingsPageCopy.add });
+  await waitFor(() => expect((add as HTMLButtonElement).disabled).toBe(false));
+  await fireEvent.click(add);
+}
+
 describe("Settings owns project sources, models, and defaults", () => {
   it("renders the v8 order, exact registry evidence, and no run counts", async () => {
     openSettings();
@@ -215,6 +317,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     const sources = await screen.findByRole("heading", { name: settingsPageCopy.sourcesTitle });
     const models = screen.getByRole("heading", { name: settingsPageCopy.modelsTitle });
+    expect(screen.getByRole("button", { name: settingsPageCopy.addModel }).closest("table")).not.toBeNull();
     const modelDefaults = screen.getByRole("heading", { name: settingsPageCopy.defaultsTitle });
     expect(sources.compareDocumentPosition(models) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(models.compareDocumentPosition(modelDefaults) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -232,30 +335,52 @@ describe("Settings owns project sources, models, and defaults", () => {
   });
 
   it("writes registry membership immediately with frozen exact bytes", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
     const putModelRegistry = vi.fn(async (_providerId, write) => ({
       status: 200,
       value: { ...registry(write.input.entries), revision_number: write.input.revision_number }
     }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    }));
     openSettings({
       getModelRegistry: vi.fn(async () => registry([])),
       getProjectModelDefaults: vi.fn(async () => defaults([])),
-      putModelRegistry
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
     });
 
-    await fireEvent.change(await screen.findByRole("combobox", { name: settingsPageCopy.addModel }), {
-      target: { value: configurationHash }
-    });
+    await submitAddSheet(addedModelId);
 
+    await waitFor(() => expect(publishAgentConfiguration).toHaveBeenCalledTimes(1));
+    expect(publishAgentConfiguration).toHaveBeenCalledWith({
+      model: addedModelId,
+      auth_profile_revision_hash: profileHash,
+      executor_revision: configuration.executor_revision,
+      requested_capability: configuration.requested_capability
+    });
     await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(1));
     const [, write] = putModelRegistry.mock.calls[0] ?? [];
     expect(write.body).toBe(JSON.stringify(write.input));
     expect(write.input).toEqual({
       revision_number: 2,
       entries: [{
-        model_id: registeredEntry.model_id,
-        agent_configuration_revision_hash: registeredEntry.agent_configuration_revision_hash
+        model_id: addedModelId,
+        agent_configuration_revision_hash: addedConfigurationHash
       }]
     });
+    expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", addedConfigurationHash);
+    expect(await screen.findByText(addedModelId)).toBeTruthy();
+    expect(await screen.findByText(settingsPageCopy.addedByYouChecked)).toBeTruthy();
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).getByRole(
+      "option",
+      { name: new RegExp(addedModelId) }
+    )).toBeTruthy();
   });
 
   it("keeps an unavailable saved default visible until it is cleared", async () => {
@@ -274,7 +399,9 @@ describe("Settings owns project sources, models, and defaults", () => {
       }]))
     });
 
-    expect((await screen.findByText(settingsPageCopy.unknownAtProvider)).isConnected).toBe(true);
+    expect((await screen.findByText(noSuchModel("anthropic"))).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: settingsPageCopy.correctTheId })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.remove })).toBeTruthy();
     expect(screen.getByText(settingsPageCopy.defaultsUnavailableModels)).toBeTruthy();
     expect(screen.getByText(retainedAccountChoice(configuration.model, profile.profile_id))).toBeTruthy();
     const difficultyThree = screen.getByRole("combobox", { name: difficultyLabel(3) });
@@ -345,8 +472,9 @@ describe("Settings owns project sources, models, and defaults", () => {
       getProjectModelDefaults: vi.fn(async () => defaults([]))
     });
 
-    const addModel = await screen.findByRole("combobox", { name: settingsPageCopy.addModel });
-    expect(within(addModel).getByRole("option", { name: new RegExp(configuration.model) })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: settingsPageCopy.addModel })).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: settingsPageCopy.addModel })).toBeNull();
+    expect(screen.queryByText(configuration.model)).toBeNull();
     expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).queryByRole(
       "option",
       { name: new RegExp(configuration.model) }
@@ -411,7 +539,7 @@ describe("Settings owns project sources, models, and defaults", () => {
       validateModelRegistryEntry
     });
 
-    expect(await screen.findByText("anthropic")).toBeTruthy();
+    expect(await screen.findByText(providerAccount("anthropic", profile.profile_id))).toBeTruthy();
     expect(screen.getByText(configuration.model)).toBeTruthy();
     expect(screen.getByRole("button", { name: settingsPageCopy.check })).toBeTruthy();
     expect(screen.getByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
@@ -547,8 +675,8 @@ describe("Settings owns project sources, models, and defaults", () => {
       }
     });
 
-    expect((await screen.findByText("anthropic")).isConnected).toBe(true);
-    expect(screen.getByText("xai")).toBeTruthy();
+    expect((await screen.findByText(providerAccount("anthropic", "operator-anthropic-subscription"))).isConnected).toBe(true);
+    expect(screen.getByText(providerAccount("xai", "grok-felix"))).toBeTruthy();
     expect(screen.getByText("claude-opus-4-6")).toBeTruthy();
     expect(screen.getByText("operator-anthropic-subscription")).toBeTruthy();
     expect(screen.getByText("grok-4.6")).toBeTruthy();
@@ -601,10 +729,37 @@ describe("Settings owns project sources, models, and defaults", () => {
       getProjectModelDefaults: vi.fn(async () => defaults([]))
     });
 
-    expect(await screen.findByText(settingsPageCopy.modelsEmpty)).toBeTruthy();
-    expect(screen.getByText(settingsPageCopy.defaultsEmptyRegistry)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: settingsPageCopy.addModel })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.addModel }).closest("table")).toBeNull();
+    expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
+    expect(screen.queryByText("No models are registered")).toBeNull();
+    expect(screen.queryByText("No source connected")).toBeNull();
     expect(screen.queryByRole("combobox", { name: settingsPageCopy.addModel })).toBeNull();
-    expect(screen.queryByText(/add a model/i)).toBeNull();
+  });
+
+  it("renders the empty settings form without emptiness sentences", async () => {
+    openSettings({
+      getProjectSourceConnection: vi.fn(async () => { throw projectSourceNotConnected(); }),
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [],
+        next_after_revision_hash: null
+      })),
+      listAuthProfileRevisions: vi.fn(async () => ({
+        items: [],
+        next_after_revision_hash: null
+      })),
+      getProjectModelDefaults: vi.fn(async () => defaults([]))
+    });
+
+    expect(await screen.findByRole("heading", { name: settingsPageCopy.sourcesTitle })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: settingsPageCopy.defaultsTitle })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.addModel })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(3) })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(2) })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(1) })).toBeTruthy();
+    expect(screen.queryByText("No source connected")).toBeNull();
+    expect(screen.queryByText("No models are registered")).toBeNull();
   });
 
   it("retries the exact failed defaults write", async () => {
@@ -627,6 +782,8 @@ describe("Settings owns project sources, models, and defaults", () => {
   });
 
   it("retries the identical uncertain registry write", async () => {
+    const getModelRegistry = vi.fn(async () => registry([registeredEntry]));
+    const putProjectModelDefaults = echoDefaultsPut();
     const putModelRegistry = vi
       .fn()
       .mockRejectedValueOnce(new Error("uncertain"))
@@ -634,13 +791,227 @@ describe("Settings owns project sources, models, and defaults", () => {
         status: 200,
         value: { ...registry(write.input.entries), revision_number: write.input.revision_number }
       }));
-    openSettings({ putModelRegistry });
+    openSettings({ getModelRegistry, putModelRegistry, putProjectModelDefaults });
 
     await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.remove }));
     await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
 
     await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(2));
     expect(putModelRegistry.mock.calls[1]).toEqual(putModelRegistry.mock.calls[0]);
+    expect(getModelRegistry).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears saved defaults that name a removed model before dropping the registry entry", async () => {
+    const putProjectModelDefaults = echoDefaultsPut();
+    const putModelRegistry = echoRegistryPut();
+    openSettings({ putProjectModelDefaults, putModelRegistry });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.remove }));
+
+    await waitFor(() => {
+      expect(putProjectModelDefaults).toHaveBeenCalledTimes(1);
+      expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    });
+    expect(putProjectModelDefaults.mock.invocationCallOrder[0]).toBeLessThan(
+      putModelRegistry.mock.invocationCallOrder[0] ?? 0
+    );
+    const defaultsWrite = putProjectModelDefaults.mock.calls[0]?.[1];
+    if (defaultsWrite === undefined) throw new Error("expected a defaults write");
+    expect(defaultsWrite.body).toBe(JSON.stringify(defaultsWrite.input));
+    expect(defaultsWrite.input.defaults.some(
+      (item) => item.difficulty === 3 && item.agent_configuration_revision_hash === configurationHash
+    )).toBe(false);
+    const registryWrite = putModelRegistry.mock.calls[0]?.[1];
+    if (registryWrite === undefined) throw new Error("expected a registry write");
+    expect(registryWrite.input.entries.map(
+      (entry) => entry.agent_configuration_revision_hash
+    )).not.toContain(configurationHash);
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).queryByRole(
+      "option",
+      { name: new RegExp(configuration.model) }
+    )).toBeNull();
+  });
+
+  it("does not list an added model when the configuration POST fails", async () => {
+    const input = {
+      model: addedModelId,
+      auth_profile_revision_hash: profileHash,
+      executor_revision: configuration.executor_revision,
+      requested_capability: configuration.requested_capability
+    };
+    const publishAgentConfiguration = vi.fn().mockRejectedValue(new Error("uncertain"));
+    const putModelRegistry = vi.fn();
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(screen.queryByText(addedModelId)).toBeNull();
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(publishAgentConfiguration).toHaveBeenCalledWith(input);
+    expect(putModelRegistry).not.toHaveBeenCalled();
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
+
+    await waitFor(() => expect(publishAgentConfiguration).toHaveBeenCalledTimes(2));
+    expect(publishAgentConfiguration.mock.calls[1]?.[0]).toEqual(input);
+    expect(putModelRegistry).not.toHaveBeenCalled();
+    expect(screen.queryByText(addedModelId)).toBeNull();
+  });
+
+  it("does not list an added model when the registry PUT fails", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockImplementation(async (_providerId, write) => ({
+        status: 200,
+        value: {
+          ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+            entry.model_id,
+            entry.agent_configuration_revision_hash,
+            "not-checked"
+          ))),
+          revision_number: write.input.revision_number
+        }
+      }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(screen.queryByText(addedModelId)).toBeNull();
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    expect(validateModelRegistryEntry).not.toHaveBeenCalled();
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
+
+    await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(2));
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    const [, write] = putModelRegistry.mock.calls[1] ?? [];
+    expect(write.input.entries).toEqual([{
+      model_id: addedModelId,
+      agent_configuration_revision_hash: addedConfigurationHash
+    }]);
+    expect(await screen.findByText(addedModelId)).toBeTruthy();
+    expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", addedConfigurationHash);
+  });
+
+  it("does not present a checked add when validation fails", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: {
+        ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+          entry.model_id,
+          entry.agent_configuration_revision_hash,
+          "not-checked"
+        ))),
+        revision_number: write.input.revision_number
+      }
+    }));
+    const validateModelRegistryEntry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockResolvedValueOnce({
+        status: 201,
+        value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+      });
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(screen.queryByText(settingsPageCopy.addedByYouChecked)).toBeNull();
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    expect(validateModelRegistryEntry).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
+
+    await waitFor(() => expect(validateModelRegistryEntry).toHaveBeenCalledTimes(2));
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(settingsPageCopy.addedByYouChecked)).toBeTruthy();
+  });
+
+  it("rebases a conflicting registry remove onto the current revision without a second click", async () => {
+    const siblingHash = "2".repeat(64);
+    const sibling = {
+      model_id: "sibling-model",
+      agent_configuration_revision_hash: siblingHash,
+      source: "discovered" as const,
+      provider_check: "checked" as const
+    };
+    const currentAfterConflict = {
+      provider_id: "anthropic",
+      revision_number: 2,
+      model_registry_revision_hash: "f".repeat(64),
+      entries: [registeredEntry, sibling]
+    };
+    const getModelRegistry = vi
+      .fn()
+      .mockResolvedValueOnce(registry([registeredEntry]))
+      .mockResolvedValueOnce(currentAfterConflict);
+    const putProjectModelDefaults = echoDefaultsPut();
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(modelRegistryRevisionConflict())
+      .mockImplementation(async (_providerId, write) => ({
+        status: 200,
+        value: {
+          provider_id: "anthropic",
+          revision_number: write.input.revision_number,
+          model_registry_revision_hash: "e".repeat(64),
+          entries: write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => ({
+            ...entry,
+            source: "discovered" as const,
+            provider_check: "checked" as const
+          }))
+        }
+      }));
+    openSettings({ getModelRegistry, putModelRegistry, putProjectModelDefaults });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.remove }));
+
+    await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: settingsPageCopy.retry })).toBeNull();
+    const [, write] = putModelRegistry.mock.calls[1] ?? [];
+    expect(write.input.revision_number).toBe(3);
+    expect(write.input.entries).toEqual([{
+      model_id: sibling.model_id,
+      agent_configuration_revision_hash: siblingHash
+    }]);
+    expect(await screen.findByText("sibling-model")).toBeTruthy();
+    expect(screen.queryByText(configuration.model)).toBeNull();
   });
 
   it("shows honest empty and failed states", async () => {
@@ -652,7 +1023,8 @@ describe("Settings owns project sources, models, and defaults", () => {
       listAuthProfileRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
       getProjectModelDefaults: vi.fn(async () => defaults([]))
     });
-    expect((await screen.findByText(settingsPageCopy.modelsEmpty)).isConnected).toBe(true);
+    expect((await screen.findByRole("button", { name: settingsPageCopy.addModel })).isConnected).toBe(true);
+    expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
     view.unmount();
 
     openSettings({ listProjects: vi.fn(async () => { throw new Error("private"); }) });
@@ -685,6 +1057,299 @@ describe("Settings owns project sources, models, and defaults", () => {
 
     expect((await screen.findByText(configuration.model)).isConnected).toBe(true);
     expect(listAgentConfigurationRevisions.mock.calls).toEqual([[undefined], [next]]);
+  });
+
+
+  it("names an already present model instead of publishing a duplicate", async () => {
+    const publishAgentConfiguration = vi.fn();
+    openSettings({ publishAgentConfiguration });
+
+    await submitAddSheet(configuration.model);
+
+    expect(publishAgentConfiguration).not.toHaveBeenCalled();
+    expect(await screen.findByText(settingsPageCopy.alreadyPresent)).toBeTruthy();
+    expect(screen.getAllByText(configuration.model)).toHaveLength(1);
+    expect(screen.queryByRole("dialog", { name: settingsPageCopy.addModel })).toBeNull();
+  });
+
+  it("shows no such model and Correct the id after an unknown provider check", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: { ...registry(write.input.entries), revision_number: write.input.revision_number }
+    }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "unknown-at-provider")])
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(noSuchModel("anthropic"))).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.correctTheId })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.remove })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: settingsPageCopy.check })).toBeNull();
+  });
+
+  it("keeps Remove enabled while Checking a just-added model", async () => {
+    let release!: (value: {
+      status: number;
+      value: ModelRegistryRevision;
+    }) => void;
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: {
+        ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+          entry.model_id,
+          entry.agent_configuration_revision_hash,
+          "not-checked"
+        ))),
+        revision_number: write.input.revision_number
+      }
+    }));
+    const validateModelRegistryEntry = vi.fn(() => new Promise<{
+      status: number;
+      value: ModelRegistryRevision;
+    }>((resolve) => {
+      release = resolve;
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.checking)).toBeTruthy();
+    const remove = screen.getByRole("button", { name: settingsPageCopy.remove });
+    expect((remove as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: settingsPageCopy.check })).toBeNull();
+
+    release({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(settingsPageCopy.checking)).toBeNull();
+      expect(screen.getByText(settingsPageCopy.addedByYouChecked)).toBeTruthy();
+    });
+  });
+
+  it("offers the added model in difficulty 3 after a checked validate", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: {
+        ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+          entry.model_id,
+          entry.agent_configuration_revision_hash,
+          "not-checked"
+        ))),
+        revision_number: write.input.revision_number
+      }
+    }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    await waitFor(() => {
+      expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).getByRole(
+        "option",
+        { name: new RegExp(addedModelId) }
+      )).toBeTruthy();
+    });
+  });
+
+  it("does not resurrect a model removed while Checking", async () => {
+    let release!: (value: {
+      status: number;
+      value: ModelRegistryRevision;
+    }) => void;
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: {
+        ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+          entry.model_id,
+          entry.agent_configuration_revision_hash,
+          "not-checked"
+        ))),
+        revision_number: write.input.revision_number
+      }
+    }));
+    const validateModelRegistryEntry = vi.fn(() => new Promise<{
+      status: number;
+      value: ModelRegistryRevision;
+    }>((resolve) => {
+      release = resolve;
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+    expect(await screen.findByText(settingsPageCopy.checking)).toBeTruthy();
+    const remove = screen.getByRole("button", { name: settingsPageCopy.remove });
+    expect((remove as HTMLButtonElement).disabled).toBe(false);
+
+    await fireEvent.click(remove);
+    release({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    });
+
+    await waitFor(() => expect(screen.queryByText(addedModelId)).toBeNull());
+    expect(screen.queryByText(settingsPageCopy.writeFailed)).toBeNull();
+    const retry = screen.queryByRole("button", { name: settingsPageCopy.retry });
+    if (retry !== null) {
+      await fireEvent.click(retry);
+      await waitFor(() => expect(screen.queryByText(addedModelId)).toBeNull());
+    }
+    await waitFor(() => expect(putModelRegistry).toHaveBeenCalled());
+    const lastWrite = putModelRegistry.mock.calls.at(-1)?.[1];
+    expect(lastWrite?.input.entries.map(
+      (entry: { agent_configuration_revision_hash: string }) => entry.agent_configuration_revision_hash
+    )).not.toContain(addedConfigurationHash);
+  });
+
+  it("retries the same configuration POST after an uncertain add", async () => {
+    const input = {
+      model: addedModelId,
+      auth_profile_revision_hash: profileHash,
+      executor_revision: configuration.executor_revision,
+      requested_capability: configuration.requested_capability
+    };
+    const publishAgentConfiguration = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockResolvedValueOnce({
+        status: 201 as const,
+        value: publishedConfiguration()
+      });
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: {
+        ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+          entry.model_id,
+          entry.agent_configuration_revision_hash,
+          "not-checked"
+        ))),
+        revision_number: write.input.revision_number
+      }
+    }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(publishAgentConfiguration).toHaveBeenCalledWith(input);
+    expect((screen.getByRole("button", { name: settingsPageCopy.addModel }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(screen.getByRole("dialog", { name: settingsPageCopy.addModel })).getByRole(
+      "button",
+      { name: settingsPageCopy.add }
+    ) as HTMLButtonElement).disabled).toBe(true);
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
+
+    await waitFor(() => expect(publishAgentConfiguration).toHaveBeenCalledTimes(2));
+    expect(publishAgentConfiguration.mock.calls[1]?.[0]).toEqual(input);
+    expect(publishAgentConfiguration.mock.calls[1]).toEqual(publishAgentConfiguration.mock.calls[0]);
+    await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(1));
+    expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", addedConfigurationHash);
+    expect(await screen.findByText(addedModelId)).toBeTruthy();
+    expect(await screen.findByText(settingsPageCopy.addedByYouChecked)).toBeTruthy();
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).getByRole(
+      "option",
+      { name: new RegExp(addedModelId) }
+    )).toBeTruthy();
+  });
+
+  it("removes an added model from the table and difficulty options", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: {
+        ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+          entry.model_id,
+          entry.agent_configuration_revision_hash,
+          "checked"
+        ))),
+        revision_number: write.input.revision_number
+      }
+    }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+    expect(await screen.findByText(addedModelId)).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: settingsPageCopy.remove }));
+
+    await waitFor(() => expect(screen.queryByText(addedModelId)).toBeNull());
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).queryByRole(
+      "option",
+      { name: new RegExp(addedModelId) }
+    )).toBeNull();
   });
 
   it("carries no local trail back from the rail destination", async () => {
