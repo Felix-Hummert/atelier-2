@@ -13,6 +13,7 @@ from atelier2.contracts.host_configuration import (
     ProjectId,
     ProjectRootRevision,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
@@ -49,6 +50,7 @@ class ProjectChannel:
 def connection() -> ProjectSourceConnectionRevision:
     return ProjectSourceConnectionRevision(
         PROJECT,
+        ProjectSourceId("11111111-1111-1111-1111-111111111111"),
         3,
         SourceKind("github"),
         SourceAddress("FlexOr2/atelier-2"),

@@ -10,6 +10,7 @@ second copy of it.
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -22,6 +23,7 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import RoleDifficulty
 
 MAXIMUM_PROJECT_ID_CHARACTERS = 1_024
@@ -44,10 +46,18 @@ MAXIMUM_SOURCE_KIND_CHARACTERS = 64
 # The source address is opaque here, so its bound mirrors the tracker item
 # reference's: room for any platform's own identifier, no room for a document.
 MAXIMUM_SOURCE_ADDRESS_CHARACTERS = 1_024
+# A managed connection receives one provider token through the bounded HTTP
+# door before depositing it outside durable configuration.
+MAXIMUM_SOURCE_TOKEN_CHARACTERS = 4_096
+# This slice admits at most one active source for a project. The list door and
+# application decision share this bound until multi-source identity lands.
+MAXIMUM_ACTIVE_PROJECT_SOURCES = 1
 MAXIMUM_CONNECTION_ACTOR_CHARACTERS = 1_024
 # The credential reference is a filesystem directory, so the project-root
 # bound's PATH_MAX rationale is this bound too.
 MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS = MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
+SOURCE_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_SOURCE_ID = re.compile(SOURCE_ID_PATTERN)
 
 PROJECT_UNKNOWN = "project-unknown"
 PROJECT_ROOT_MISSING = "project-root-missing"
@@ -432,6 +442,17 @@ class HostProjectSourceConnectionRevisionHash(Sha256Hash):
     """Identity of one immutable project-source connection revision."""
 
 
+@dataclass(frozen=True)
+class ProjectSourceId:
+    """Durable identity of one source connection across its revisions."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if _SOURCE_ID.fullmatch(self.value) is None:
+            raise ValueError("a project source id must be a canonical lowercase UUID")
+
+
 def _bounded_text(value: object, maximum: int, what: str) -> str:
     if type(value) is not str or not 1 <= len(value) <= maximum:
         raise ValueError(f"{what} must contain 1..{maximum} exact characters")
@@ -489,6 +510,11 @@ class SourceConnectionAuthMethod(StrEnum):
     PERSONAL_ACCESS_TOKEN = "personal-access-token"
 
 
+class ProjectSourceConnectionLifecycle(StrEnum):
+    CONNECTED = "CONNECTED"
+    DISCONNECTED = "DISCONNECTED"
+
+
 @dataclass(frozen=True)
 class ProjectSourceConnectionRevision:
     """One immutable connect act: identities and a credential reference only.
@@ -499,17 +525,24 @@ class ProjectSourceConnectionRevision:
     """
 
     project_id: ProjectId
+    source_id: ProjectSourceId
     revision_number: int
     source_kind: SourceKind
     source_address: SourceAddress
     credential_directory: Path
     auth_method: SourceConnectionAuthMethod
     connected_by: ConnectionActor
+    lifecycle: ProjectSourceConnectionLifecycle = (
+        ProjectSourceConnectionLifecycle.CONNECTED
+    )
+    connected_at: RecordedAt | None = None
     revision_hash: HostProjectSourceConnectionRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_id, ProjectId):
             raise TypeError("project id must use its typed contract")
+        if not isinstance(self.source_id, ProjectSourceId):
+            raise TypeError("source id must use its typed contract")
         if (
             type(self.revision_number) is not int
             or not 1 <= self.revision_number <= MAXIMUM_SIGNED_INT64
@@ -528,6 +561,12 @@ class ProjectSourceConnectionRevision:
             raise TypeError("auth method must use its typed contract")
         if not isinstance(self.connected_by, ConnectionActor):
             raise TypeError("connection actor must use its typed contract")
+        if not isinstance(self.lifecycle, ProjectSourceConnectionLifecycle):
+            raise TypeError("connection lifecycle must use its typed contract")
+        if self.connected_at is not None and not isinstance(
+            self.connected_at, RecordedAt
+        ):
+            raise TypeError("connected at must use its typed contract")
         stored = str(self.credential_directory.expanduser().resolve())
         if not 1 <= len(stored) <= MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS:
             raise ValueError(
@@ -540,14 +579,19 @@ class ProjectSourceConnectionRevision:
             "revision_hash",
             HostProjectSourceConnectionRevisionHash.of(
                 frame(
-                    "host-project-source-connection-revision/v1",
+                    "host-project-source-connection-revision/v2",
                     self.project_id.value.encode("utf-8"),
+                    self.source_id.value.encode("ascii"),
                     struct.pack(">Q", self.revision_number),
                     self.source_kind.value.encode("utf-8"),
                     self.source_address.value.encode("utf-8"),
                     stored.encode("utf-8"),
                     self.auth_method.value.encode("ascii"),
                     self.connected_by.value.encode("utf-8"),
+                    self.lifecycle.value.encode("ascii"),
+                    b""
+                    if self.connected_at is None
+                    else self.connected_at.value.encode("ascii"),
                 )
             ),
         )

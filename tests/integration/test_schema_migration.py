@@ -52,6 +52,7 @@ from atelier2.adapters.dbos.schema import (
     V41_SCHEMA_HANDOFF,
     V42_SCHEMA_HANDOFF,
     V43_SCHEMA_HANDOFF,
+    V44_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -485,11 +486,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[43]
         == "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 44
+    assert V44_SCHEMA_HANDOFF.version == 44
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V44_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[44]
         == "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 45
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[45]
+        == "d6a13244a2843f1313c3c7682676e854b5cac29ebeddf9eb01f0b58653df8223"
     )
 
 
@@ -501,7 +508,7 @@ def test_populated_v41_effect_rows_are_backfilled_before_v42_publish(
 
     report = migrate_store(database_path)
 
-    assert (report.source_version, report.target_version) == (41, 44)
+    assert (report.source_version, report.target_version) == (41, 45)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT operation_name FROM effect_intents"

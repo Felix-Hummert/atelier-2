@@ -33,10 +33,13 @@ from atelier2.application.project_connections import (
     connect_project_source,
     get_project_source_connection,
 )
+from atelier2.application.refusals import DurableStateCorrupt
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
+    ProjectSourceConnectionLifecycle,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
@@ -44,6 +47,7 @@ from atelier2.contracts.host_configuration import (
 from atelier2.host import main
 from atelier2.ports.host_configuration import (
     ProjectSourceConnectionRevisionConflict,
+    ProjectSourceConnectionRevisionCreated,
 )
 from tests.integration.test_host_configuration import opened_channel
 
@@ -192,6 +196,7 @@ def test_a_different_connection_at_the_same_key_conflicts(
     channel = DbosHostConfigurationChannel(engine)
     rival = ProjectSourceConnectionRevision(
         ProjectId("studio"),
+        first.revision.source_id,
         1,
         SourceKind("github"),
         SourceAddress("acme/other"),
@@ -204,6 +209,128 @@ def test_a_different_connection_at_the_same_key_conflicts(
         channel.publish_project_source_connection_revision(rival)
         == ProjectSourceConnectionRevisionConflict()
     )
+
+
+def test_latest_connection_and_cli_identity_follow_the_active_source(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    channel = DbosHostConfigurationChannel(engine)
+    first_source = ProjectSourceId("11111111-1111-4111-8111-111111111111")
+    active_source = ProjectSourceId("22222222-2222-4222-8222-222222222222")
+    first_connected = ProjectSourceConnectionRevision(
+        ProjectId("studio"),
+        first_source,
+        1,
+        SourceKind("github"),
+        SourceAddress("acme/retired"),
+        credential_directory,
+        SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+        ConnectionActor("felix"),
+    )
+    first_disconnected = ProjectSourceConnectionRevision(
+        ProjectId("studio"),
+        first_source,
+        2,
+        first_connected.source_kind,
+        first_connected.source_address,
+        credential_directory,
+        first_connected.auth_method,
+        first_connected.connected_by,
+        ProjectSourceConnectionLifecycle.DISCONNECTED,
+    )
+    second_connected = ProjectSourceConnectionRevision(
+        ProjectId("studio"),
+        active_source,
+        1,
+        SourceKind("github"),
+        SourceAddress("acme/studio"),
+        credential_directory,
+        SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+        ConnectionActor("felix"),
+    )
+    assert channel.publish_project_source_connection_revision(
+        first_connected
+    ) == ProjectSourceConnectionRevisionCreated(first_connected)
+    assert channel.publish_project_source_connection_revision(
+        first_disconnected
+    ) == ProjectSourceConnectionRevisionCreated(first_disconnected)
+    assert channel.publish_project_source_connection_revision(
+        second_connected
+    ) == ProjectSourceConnectionRevisionCreated(second_connected)
+
+    read = get_project_source_connection("studio", channel)
+    assert read == ProjectSourceConnectionRead(second_connected)
+
+    result = _connect(engine, credential_directory)
+
+    assert result == ProjectSourceConnectionUnchanged(second_connected)
+    assert _connection_revision_count(engine) == 3
+
+
+def test_reading_more_than_one_active_source_is_typed_durable_corruption(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    revisions = tuple(
+        ProjectSourceConnectionRevision(
+            ProjectId("studio"),
+            source_id,
+            1,
+            SourceKind("github"),
+            SourceAddress(source_address),
+            credential_directory,
+            SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+            ConnectionActor("felix"),
+        )
+        for source_id, source_address in (
+            (
+                ProjectSourceId("11111111-1111-4111-8111-111111111111"),
+                "acme/first",
+            ),
+            (
+                ProjectSourceId("22222222-2222-4222-8222-222222222222"),
+                "acme/second",
+            ),
+        )
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            host_project_source_connection_revisions.insert(),
+            tuple(
+                {
+                    "revision_hash": revision.revision_hash.value,
+                    "project_id": revision.project_id.value,
+                    "source_id": revision.source_id.value,
+                    "source_kind": revision.source_kind.value,
+                    "revision_number": revision.revision_number,
+                    "source_address": revision.source_address.value,
+                    "credential_directory": str(revision.credential_directory),
+                    "auth_method": revision.auth_method.value,
+                    "connected_by": revision.connected_by.value,
+                    "lifecycle": revision.lifecycle.value,
+                    "connected_at": None,
+                }
+                for revision in revisions
+            ),
+        )
+
+    assert (
+        get_project_source_connection("studio", DbosHostConfigurationChannel(engine))
+        == DurableStateCorrupt()
+    )
+
+
+def _connection_revision_count(engine: Engine) -> int:
+    with engine.connect() as connection:
+        return int(
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(
+                    host_project_source_connection_revisions
+                )
+            )
+            or 0
+        )
 
 
 @pytest.mark.parametrize(

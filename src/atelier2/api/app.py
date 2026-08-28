@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -68,7 +69,12 @@ from atelier2.application.plan_queue_item import (
 )
 from atelier2.application.prepare_run_events import prepare_run_events
 from atelier2.application.project_connections import (
+    connect_managed_project_source,
+    disconnect_project_source,
     get_served_project_source_connection,
+    list_served_project_sources,
+    new_project_source_id,
+    rotate_project_source_token,
 )
 from atelier2.application.project_root import (
     get_project_root_revision,
@@ -120,7 +126,8 @@ from atelier2.application.read_workflow_revisions import (
 from atelier2.application.reconcile_run import reconcile_run
 from atelier2.application.resolve_catalog_name import resolve_catalog_name
 from atelier2.application.start_published_run import start_published_run
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.host_configuration import ProjectId, ProjectSourceId
+from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.contracts.workflow_projections import (
     EnrichedPageBudget,
 )
@@ -132,6 +139,8 @@ def bound_use_cases(
     projection_limit: WorkflowPublicationLimits,
     enriched_page_budget: EnrichedPageBudget,
     served_project_id: ProjectId | None,
+    source_id_generator: Callable[[], ProjectSourceId],
+    connection_clock: Callable[[], RecordedAt],
 ) -> ApiUseCases:
     """Spend the ports here, so that nothing below this line can reach one."""
     return ApiUseCases(
@@ -327,6 +336,48 @@ def bound_use_cases(
                 ports.project_source_connection_channel,
             )
         ),
+        list_project_sources=lambda project_id: list_served_project_sources(
+            project_id,
+            served_project_id,
+            ports.host_configuration_channel,
+            ports.project_source_connection_channel,
+            ports.project_source_connector,
+        ),
+        connect_project_source=lambda project_id, address, token: (
+            connect_managed_project_source(
+                project_id,
+                served_project_id,
+                address,
+                token,
+                ports.host_configuration_channel,
+                ports.project_source_connection_channel,
+                ports.project_source_connector,
+                ports.project_source_credential_store,
+                source_id_generator,
+                connection_clock,
+            )
+        ),
+        disconnect_project_source=lambda project_id, source_id: (
+            disconnect_project_source(
+                project_id,
+                served_project_id,
+                source_id,
+                ports.host_configuration_channel,
+                ports.project_source_connection_channel,
+            )
+        ),
+        rotate_project_source_token=lambda project_id, source_id, token: (
+            rotate_project_source_token(
+                project_id,
+                served_project_id,
+                source_id,
+                token,
+                ports.host_configuration_channel,
+                ports.project_source_connection_channel,
+                ports.project_source_connector,
+                ports.project_source_credential_store,
+            )
+        ),
         get_model_registry=lambda provider_id: get_model_registry(
             provider_id, ports.host_configuration_channel
         ),
@@ -453,6 +504,8 @@ def create_app(
     frontend_dist: Path | None = None,
     served_project_id: ProjectId | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
+    source_id_generator: Callable[[], ProjectSourceId] = new_project_source_id,
+    connection_clock: Callable[[], RecordedAt] = recorded_instant,
 ) -> FastAPI:
     if not source_commit:
         raise ValueError("source_commit must be injected at application construction")
@@ -494,6 +547,8 @@ def create_app(
                     ),
                 ),
                 served_project_id,
+                source_id_generator,
+                connection_clock,
             ),
             ports=ports,
             limits=limits,

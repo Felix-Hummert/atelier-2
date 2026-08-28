@@ -15,6 +15,7 @@ from atelier2.contracts.host_configuration import (
     ProjectModelDefaultsRevision,
     ProjectRootRevision,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     ProviderModelCheck,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -211,6 +212,12 @@ type LatestProjectSourceConnectionResult = (
     | DurableStateCorrupt
 )
 
+type LatestProjectSourceConnectionsResult = (
+    tuple[ProjectSourceConnectionRevision, ...]
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
 type PublishProjectSourceConnectionResult = (
     ProjectSourceConnectionRevisionCreated
     | ProjectSourceConnectionRevisionExisting
@@ -266,6 +273,14 @@ class ProjectSourceConnectionChannel(Protocol):
 
     def latest_project_source_connection_revision(
         self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionResult: ...
+
+    def latest_project_source_connection_revisions(
+        self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionsResult: ...
+
+    def latest_project_source_connection_revision_by_source(
+        self, project_id: ProjectId, source_id: ProjectSourceId
     ) -> LatestProjectSourceConnectionResult: ...
 
     def publish_project_source_connection_revision(

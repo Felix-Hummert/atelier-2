@@ -48,6 +48,7 @@ from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
@@ -174,6 +175,7 @@ def connection_revision(
 ) -> ProjectSourceConnectionRevision:
     return ProjectSourceConnectionRevision(
         ProjectId("studio"),
+        ProjectSourceId("11111111-1111-1111-1111-111111111111"),
         1,
         SourceKind(source_kind),
         SourceAddress(source_address),

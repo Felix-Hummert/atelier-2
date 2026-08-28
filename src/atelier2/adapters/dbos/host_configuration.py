@@ -47,13 +47,16 @@ from atelier2.contracts.host_configuration import (
     ProjectSourceConnectionBytesDisagree,
     ProjectSourceConnectionConflict,
     ProjectSourceConnectionHashCollision,
+    ProjectSourceConnectionLifecycle,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     ProjectUnknown,
     ProviderModelCheck,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import RoleDifficulty
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.host_configuration import (
@@ -64,6 +67,7 @@ from atelier2.ports.host_configuration import (
     LatestProjectModelDefaultsResult,
     LatestProjectRootResult,
     LatestProjectSourceConnectionResult,
+    LatestProjectSourceConnectionsResult,
     ModelRegistryRevisionCollision,
     ModelRegistryRevisionCreated,
     ModelRegistryRevisionExisting,
@@ -622,12 +626,19 @@ def project_source_connection_revision_from_record(
 ) -> ProjectSourceConnectionRevision:
     revision = ProjectSourceConnectionRevision(
         ProjectId(str(record["project_id"])),
+        ProjectSourceId(str(record["source_id"])),
         int(record["revision_number"]),
         SourceKind(str(record["source_kind"])),
         SourceAddress(str(record["source_address"])),
         Path(str(record["credential_directory"])),
         SourceConnectionAuthMethod(str(record["auth_method"])),
         ConnectionActor(str(record["connected_by"])),
+        ProjectSourceConnectionLifecycle(str(record["lifecycle"])),
+        (
+            None
+            if record["connected_at"] is None
+            else RecordedAt(str(record["connected_at"]))
+        ),
     )
     if revision.revision_hash.value != record["revision_hash"]:
         raise ProjectSourceConnectionBytesDisagree(
@@ -640,22 +651,19 @@ def project_source_connection_revision_from_record(
 def _latest_project_source_connection_revision(
     connection: Connection, project_id: ProjectId
 ) -> ProjectSourceConnectionRevision | None:
-    record = (
-        connection.execute(
-            sa.select(host_project_source_connection_revisions)
-            .where(
-                host_project_source_connection_revisions.c.project_id
-                == project_id.value
-            )
-            .order_by(host_project_source_connection_revisions.c.revision_number.desc())
-            .limit(1)
+    active = tuple(
+        revision
+        for revision in _latest_project_source_connection_revisions(
+            connection, project_id
         )
-        .mappings()
-        .one_or_none()
+        if revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
     )
-    if record is None:
-        return None
-    return project_source_connection_revision_from_record(record)
+    if len(active) > 1:
+        raise ProjectSourceConnectionBytesDisagree(
+            "project-source connection bytes disagree: a project has more than "
+            "one active source"
+        )
+    return None if not active else active[0]
 
 
 def latest_project_source_connection_revision(
@@ -671,16 +679,96 @@ def latest_project_source_connection_revision(
         ) from error
 
 
+def _latest_project_source_connection_revisions(
+    connection: Connection, project_id: ProjectId
+) -> tuple[ProjectSourceConnectionRevision, ...]:
+    ranked = (
+        sa.select(
+            host_project_source_connection_revisions,
+            sa.func.row_number()
+            .over(
+                partition_by=host_project_source_connection_revisions.c.source_id,
+                order_by=host_project_source_connection_revisions.c.revision_number.desc(),
+            )
+            .label("source_rank"),
+        )
+        .where(
+            host_project_source_connection_revisions.c.project_id == project_id.value
+        )
+        .subquery()
+    )
+    records = (
+        connection.execute(
+            sa.select(ranked)
+            .where(ranked.c.source_rank == 1)
+            .order_by(ranked.c.source_id)
+        )
+        .mappings()
+        .all()
+    )
+    return tuple(
+        project_source_connection_revision_from_record(record) for record in records
+    )
+
+
+def _latest_project_source_connection_revision_by_source(
+    connection: Connection, project_id: ProjectId, source_id: ProjectSourceId
+) -> ProjectSourceConnectionRevision | None:
+    record = (
+        connection.execute(
+            sa.select(host_project_source_connection_revisions)
+            .where(
+                host_project_source_connection_revisions.c.project_id
+                == project_id.value,
+                host_project_source_connection_revisions.c.source_id == source_id.value,
+            )
+            .order_by(host_project_source_connection_revisions.c.revision_number.desc())
+            .limit(1)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return (
+        None
+        if record is None
+        else project_source_connection_revision_from_record(record)
+    )
+
+
 def _write_project_source_connection_revision(
     connection: Connection, revision: ProjectSourceConnectionRevision
 ) -> ProjectSourceConnectionRevisionCreated | ProjectSourceConnectionRevisionExisting:
+    if revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED:
+        other = host_project_source_connection_revisions.alias("other_source")
+        later = host_project_source_connection_revisions.alias("later_other_revision")
+        active_other_source = connection.execute(
+            sa.select(other.c.source_id)
+            .where(
+                other.c.project_id == revision.project_id.value,
+                other.c.source_id != revision.source_id.value,
+                other.c.lifecycle == ProjectSourceConnectionLifecycle.CONNECTED.value,
+                ~sa.exists(
+                    sa.select(later.c.revision_hash).where(
+                        later.c.project_id == other.c.project_id,
+                        later.c.source_id == other.c.source_id,
+                        later.c.revision_number > other.c.revision_number,
+                    )
+                ),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if active_other_source is not None:
+            raise ProjectSourceConnectionConflict(
+                "project-source-connection-conflict: project already has an "
+                f"active source {active_other_source!r}"
+            )
     keyed = (
         connection.execute(
             sa.select(host_project_source_connection_revisions).where(
                 host_project_source_connection_revisions.c.project_id
                 == revision.project_id.value,
-                host_project_source_connection_revisions.c.source_kind
-                == revision.source_kind.value,
+                host_project_source_connection_revisions.c.source_id
+                == revision.source_id.value,
                 host_project_source_connection_revisions.c.revision_number
                 == revision.revision_number,
             )
@@ -694,7 +782,7 @@ def _write_project_source_connection_revision(
             return ProjectSourceConnectionRevisionExisting(durable)
         raise ProjectSourceConnectionConflict(
             "project-source-connection-conflict: "
-            f"{revision.project_id.value!r} source {revision.source_kind.value!r} "
+            f"{revision.project_id.value!r} source {revision.source_id.value!r} "
             f"revision {revision.revision_number} already exists"
         )
     hashed = (
@@ -719,12 +807,17 @@ def _write_project_source_connection_revision(
         host_project_source_connection_revisions.insert().values(
             revision_hash=revision.revision_hash.value,
             project_id=revision.project_id.value,
+            source_id=revision.source_id.value,
             source_kind=revision.source_kind.value,
             revision_number=revision.revision_number,
             source_address=revision.source_address.value,
             credential_directory=str(revision.credential_directory),
             auth_method=revision.auth_method.value,
             connected_by=revision.connected_by.value,
+            lifecycle=revision.lifecycle.value,
+            connected_at=(
+                None if revision.connected_at is None else revision.connected_at.value
+            ),
         )
     )
     return ProjectSourceConnectionRevisionCreated(revision)
@@ -868,6 +961,36 @@ class DbosHostConfigurationChannel:
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
         except (ProjectUnknown, ValueError, TypeError, RuntimeError):
+            return DurableStateCorrupt()
+
+    def latest_project_source_connection_revisions(
+        self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionsResult:
+        try:
+            with self._engine.connect() as connection:
+                return _latest_project_source_connection_revisions(
+                    connection, project_id
+                )
+        except ProjectSourceConnectionBytesDisagree:
+            return DurableStateCorrupt()
+        except (OperationalError, PoolTimeoutError):
+            return HostConfigurationReadUnavailable()
+        except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def latest_project_source_connection_revision_by_source(
+        self, project_id: ProjectId, source_id: ProjectSourceId
+    ) -> LatestProjectSourceConnectionResult:
+        try:
+            with self._engine.connect() as connection:
+                return _latest_project_source_connection_revision_by_source(
+                    connection, project_id, source_id
+                )
+        except ProjectSourceConnectionBytesDisagree:
+            return DurableStateCorrupt()
+        except (OperationalError, PoolTimeoutError):
+            return HostConfigurationReadUnavailable()
+        except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
 
     def publish_project_source_connection_revision(

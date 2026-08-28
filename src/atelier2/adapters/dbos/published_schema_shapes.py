@@ -32,6 +32,31 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+_V44_PROJECT_SOURCE_CONNECTION_REVISIONS = """
+CREATE TABLE host_project_source_connection_revisions (
+	revision_hash TEXT NOT NULL,
+	project_id TEXT NOT NULL,
+	source_kind TEXT NOT NULL,
+	revision_number INTEGER NOT NULL,
+	source_address TEXT NOT NULL,
+	credential_directory TEXT NOT NULL,
+	auth_method TEXT NOT NULL,
+	connected_by TEXT NOT NULL,
+	PRIMARY KEY (revision_hash),
+	UNIQUE (project_id, source_kind, revision_number),
+	UNIQUE (revision_hash, project_id, source_kind, revision_number),
+	CHECK (length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(project_id) BETWEEN 1 AND 1024),
+	CHECK (length(source_kind) BETWEEN 1 AND 64),
+	CHECK (revision_number BETWEEN 1 AND 9223372036854775807),
+	CHECK (length(source_address) BETWEEN 1 AND 1024),
+	CHECK (length(credential_directory) BETWEEN 1 AND 4095),
+	CHECK (auth_method IN ('personal-access-token')),
+	CHECK (length(connected_by) BETWEEN 1 AND 1024)
+)
+
+"""
+
 _AGENT_ATTEMPTS_BEFORE_THE_TRANSCRIPT = """
 CREATE TABLE agent_attempts (
 	attempt_id TEXT NOT NULL,
@@ -587,6 +612,42 @@ CREATE TABLE effect_receipts (
 
 
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
+    (33, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (34, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (35, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (36, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (37, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (38, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (39, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (40, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (41, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (42, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (43, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (44, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
     (40, "effect_receipts"): _EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     (41, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
     (41, "effect_receipts"): _EFFECT_RECEIPTS_WITH_FORK_REFERENCE,

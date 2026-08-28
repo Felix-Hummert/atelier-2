@@ -33,6 +33,9 @@ from atelier2.api.openapi import (
     PROJECT_QUEUE_POLICY_PATH,
     PROJECT_ROOT_PATH,
     PROJECT_SOURCE_CONNECTION_PATH,
+    PROJECT_SOURCE_PATH,
+    PROJECT_SOURCE_TOKEN_PATH,
+    PROJECT_SOURCES_PATH,
     PROJECTS_PATH,
     QUEUE_ADMISSIONS_PATH,
     QUEUE_ITEMS_PATH,
@@ -43,8 +46,10 @@ from atelier2.api.openapi import (
 from atelier2.api.problems import problem_resource
 from atelier2.api.references import (
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
+    PUBLIC_SOURCE_REFERENCE_PATTERN,
     encode_public_run_reference,
 )
 from atelier2.api.wire import events as wire_events
@@ -127,6 +132,9 @@ EXPECTED_PATHS = {
     PROJECT_MODEL_RESOLUTION_PATH,
     PROJECT_ROOT_PATH,
     PROJECT_SOURCE_CONNECTION_PATH,
+    PROJECT_SOURCES_PATH,
+    PROJECT_SOURCE_PATH,
+    PROJECT_SOURCE_TOKEN_PATH,
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
     RUN_FORK_PATH,
@@ -255,6 +263,10 @@ EXPECTED_ROUTE_SEQUENCE = (
         PROJECT_SOURCE_CONNECTION_PATH,
         "get_project_source_connection_route",
     ),
+    ("GET", PROJECT_SOURCES_PATH, "list_project_sources_route"),
+    ("POST", PROJECT_SOURCES_PATH, "connect_project_source_route"),
+    ("DELETE", PROJECT_SOURCE_PATH, "disconnect_project_source_route"),
+    ("PUT", PROJECT_SOURCE_TOKEN_PATH, "rotate_project_source_token_route"),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
@@ -317,6 +329,10 @@ EXPECTED_SUCCESS_STATUSES = {
     (PROJECT_ROOT_PATH, "put"): {"200", "201"},
     (PROJECT_ROOT_PATH, "get"): {"200"},
     (PROJECT_SOURCE_CONNECTION_PATH, "get"): {"200"},
+    (PROJECT_SOURCES_PATH, "get"): {"200"},
+    (PROJECT_SOURCES_PATH, "post"): {"201"},
+    (PROJECT_SOURCE_PATH, "delete"): {"204"},
+    (PROJECT_SOURCE_TOKEN_PATH, "put"): {"200"},
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
@@ -536,6 +552,43 @@ def test_model_configuration_paths_use_the_owned_project_reference_component() -
         }
         assert parameters[("public_project_reference", "path")]["schema"] == {
             "$ref": "#/components/schemas/PublicProjectReference"
+        }
+
+
+def test_project_source_paths_use_owned_reference_components() -> None:
+    schema = served_app().openapi()
+
+    assert schema["components"]["schemas"]["PublicSourceReference"] == {
+        "type": "string",
+        "pattern": PUBLIC_SOURCE_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
+    }
+    assert schema["components"]["schemas"]["ProjectSourceResource"]["properties"][
+        "public_source_reference"
+    ] == {"$ref": "#/components/schemas/PublicSourceReference"}
+    for path, method in (
+        (PROJECT_SOURCES_PATH, "get"),
+        (PROJECT_SOURCES_PATH, "post"),
+        (PROJECT_SOURCE_PATH, "delete"),
+        (PROJECT_SOURCE_TOKEN_PATH, "put"),
+    ):
+        parameters = {
+            (parameter["name"], parameter["in"]): parameter
+            for parameter in schema["paths"][path][method]["parameters"]
+        }
+        assert parameters[("public_project_reference", "path")]["schema"] == {
+            "$ref": "#/components/schemas/PublicProjectReference"
+        }
+    for path, method in (
+        (PROJECT_SOURCE_PATH, "delete"),
+        (PROJECT_SOURCE_TOKEN_PATH, "put"),
+    ):
+        parameters = {
+            (parameter["name"], parameter["in"]): parameter
+            for parameter in schema["paths"][path][method]["parameters"]
+        }
+        assert parameters[("public_source_reference", "path")]["schema"] == {
+            "$ref": "#/components/schemas/PublicSourceReference"
         }
 
 

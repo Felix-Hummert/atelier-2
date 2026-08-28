@@ -64,6 +64,7 @@ from atelier2.adapters.github import (
     live_github_effect_registry,
     live_github_issue_source,
 )
+from atelier2.adapters.github.project_connections import GitHubProjectSourceConnector
 from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
@@ -76,6 +77,10 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.markdown_agent_definitions import (
     parse_agent_definition,
     render_agent_definition,
+)
+from atelier2.adapters.project_source_credentials import (
+    MANAGED_PROJECT_SOURCE_CREDENTIALS_DIRECTORY,
+    FilesystemProjectSourceCredentialStore,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -1176,6 +1181,11 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
                 project_source_connection_channel=DbosHostConfigurationChannel(
                     runtime.engine
+                ),
+                project_source_connector=GitHubProjectSourceConnector(),
+                project_source_credential_store=FilesystemProjectSourceCredentialStore(
+                    settings.database_path.parent
+                    / MANAGED_PROJECT_SOURCE_CREDENTIALS_DIRECTORY
                 ),
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
                 tracker_item_source=(

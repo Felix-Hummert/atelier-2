@@ -23,6 +23,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.hashing import frame
 from atelier2.contracts.host_configuration import (
     MAXIMUM_CONNECTION_ACTOR_CHARACTERS,
     MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS,
@@ -31,7 +32,14 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
+    ConnectionActor,
+    ProjectId,
+    ProjectSourceConnectionLifecycle,
+    ProjectSourceConnectionRevision,
+    ProjectSourceId,
+    SourceAddress,
     SourceConnectionAuthMethod,
+    SourceKind,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ACTIVE_RUNS,
@@ -65,7 +73,7 @@ class ProductSchemaHandoff:
 
 # Movable hop: Phase D separates proposal from admission and reserves one exact
 # launch before run creation, so a restart cannot mint a second run (#79 D1).
-_HOP_PREDECESSOR_VERSION = 43
+_HOP_PREDECESSOR_VERSION = 44
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -103,6 +111,7 @@ _VERSION_FORTY_ONE = 41
 _VERSION_FORTY_TWO = 42
 _VERSION_FORTY_THREE = 43
 _VERSION_FORTY_FOUR = 44
+_VERSION_FORTY_FIVE = 45
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -253,6 +262,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # schema-refused attempts their immutable evidence record. V44 gives the queue
 # append-only policies, proposals, exact-revision dependency edges, and launch
 # reservations while preserving the admission-only V43 rows as legacy review.
+# V45 gives a source a durable identity and lifecycle, records the connection
+# instant for new revisions, and preserves every legacy revision with an absent
+# instant and one deterministic source identity per project history.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -294,6 +306,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     42: "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865",
     43: "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782",
     44: "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b",
+    45: "d6a13244a2843f1313c3c7682676e854b5cac29ebeddf9eb01f0b58653df8223",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -434,6 +447,10 @@ V42_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V43_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FORTY_THREE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_THREE],
+)
+V44_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY_FOUR,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_FOUR],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -2302,17 +2319,20 @@ host_project_source_connection_revisions = sa.Table(
     metadata,
     sa.Column("revision_hash", sa.Text, primary_key=True),
     sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("source_id", sa.Text, nullable=False),
     sa.Column("source_kind", sa.Text, nullable=False),
     sa.Column("revision_number", sa.Integer, nullable=False),
     sa.Column("source_address", sa.Text, nullable=False),
     sa.Column("credential_directory", sa.Text, nullable=False),
     sa.Column("auth_method", sa.Text, nullable=False),
     sa.Column("connected_by", sa.Text, nullable=False),
-    sa.UniqueConstraint("project_id", "source_kind", "revision_number"),
+    sa.Column("lifecycle", sa.Text, nullable=False),
+    sa.Column("connected_at", sa.Text, nullable=True),
+    sa.UniqueConstraint("project_id", "source_id", "revision_number"),
     sa.UniqueConstraint(
         "revision_hash",
         "project_id",
-        "source_kind",
+        "source_id",
         "revision_number",
     ),
     sa.CheckConstraint(
@@ -2320,6 +2340,15 @@ host_project_source_connection_revisions = sa.Table(
     ),
     sa.CheckConstraint(
         f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        "length(source_id) BETWEEN 36 AND 36 AND source_id GLOB "
+        "'[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-"
+        "[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-"
+        "[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-"
+        "[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-"
+        "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]"
+        "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'"
     ),
     sa.CheckConstraint(
         f"length(source_kind) BETWEEN 1 AND {MAXIMUM_SOURCE_KIND_CHARACTERS}"
@@ -2338,6 +2367,8 @@ host_project_source_connection_revisions = sa.Table(
     sa.CheckConstraint(
         f"length(connected_by) BETWEEN 1 AND {MAXIMUM_CONNECTION_ACTOR_CHARACTERS}"
     ),
+    sa.CheckConstraint("lifecycle IN ('CONNECTED', 'DISCONNECTED')"),
+    sa.CheckConstraint(_rfc3339_utc_or_null("connected_at")),
 )
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
@@ -3502,6 +3533,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_FORTY_FOUR:
+        return PRODUCT_TABLE_NAMES
     if version == _VERSION_FORTY_THREE:
         return before_phase_d
     if version == _VERSION_FORTY_TWO:
@@ -3852,6 +3885,8 @@ def _table_shape_at(version: int, table: sa.Table) -> str:
     frozen_shape = PUBLISHED_TABLE_SHAPES.get((version, table.name))
     if frozen_shape is not None:
         return frozen_shape
+    if version == _VERSION_FORTY_FOUR:
+        return str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
     raise StoreMigrationRefused(
         f"no published shape of {table.name} at schema version {version} is "
         "recorded, so this hop cannot rebuild it"
@@ -5561,6 +5596,138 @@ def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FORTY_THREE, _VERSION_FORTY_FOUR)
 
 
+_V44_PROJECT_SOURCE_CONNECTIONS = "project_source_connections_before_identity"
+
+
+def _legacy_project_source_id(project_id: str) -> ProjectSourceId:
+    digest = hashlib.sha256(
+        frame("legacy-project-source-id/v1", project_id.encode("utf-8"))
+    ).hexdigest()
+    value = digest[:32]
+    return ProjectSourceId(
+        f"{value[:8]}-{value[8:12]}-{value[12:16]}-{value[16:20]}-{value[20:]}"
+    )
+
+
+def _v44_project_source_connection_revision_hash(
+    project_id: ProjectId,
+    revision_number: int,
+    source_kind: SourceKind,
+    source_address: SourceAddress,
+    credential_directory: Path,
+    auth_method: SourceConnectionAuthMethod,
+    connected_by: ConnectionActor,
+) -> str:
+    """Rebuild the hash exactly as the published V44 contract framed it."""
+
+    stored_credential_directory = str(credential_directory.expanduser().resolve())
+    return hashlib.sha256(
+        frame(
+            "host-project-source-connection-revision/v1",
+            project_id.value.encode("utf-8"),
+            revision_number.to_bytes(8, byteorder="big"),
+            source_kind.value.encode("utf-8"),
+            source_address.value.encode("utf-8"),
+            stored_credential_directory.encode("utf-8"),
+            auth_method.value.encode("ascii"),
+            connected_by.value.encode("utf-8"),
+        )
+    ).hexdigest()
+
+
+def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
+    """Give the existing connection history identity and lifecycle without loss."""
+
+    if connection.execute(
+        "SELECT name FROM sqlite_master WHERE name=?",
+        (_V44_PROJECT_SOURCE_CONNECTIONS,),
+    ).fetchone():
+        raise StoreMigrationRefused(
+            f"schema version 44 already has {_V44_PROJECT_SOURCE_CONNECTIONS}; "
+            "this command will not alter it"
+        )
+    cursor = connection.execute(
+        "SELECT * FROM host_project_source_connection_revisions "
+        "ORDER BY project_id, source_kind, revision_number"
+    )
+    column_names = tuple(str(description[0]) for description in cursor.description)
+    records = tuple(
+        dict(zip(column_names, values, strict=True)) for values in cursor.fetchall()
+    )
+    for record in records:
+        expected_hash = _v44_project_source_connection_revision_hash(
+            ProjectId(str(record["project_id"])),
+            int(record["revision_number"]),
+            SourceKind(str(record["source_kind"])),
+            SourceAddress(str(record["source_address"])),
+            Path(str(record["credential_directory"])),
+            SourceConnectionAuthMethod(str(record["auth_method"])),
+            ConnectionActor(str(record["connected_by"])),
+        )
+        if record["revision_hash"] != expected_hash:
+            raise StoreMigrationRefused(
+                "schema version 44 project-source connection hash does not "
+                "match its fields; this command will not alter it"
+            )
+    trigger_names = (
+        "host_project_source_connection_revisions_no_update",
+        "host_project_source_connection_revisions_no_delete",
+    )
+    for trigger_name in trigger_names:
+        connection.execute(f"DROP TRIGGER {trigger_name}")
+    connection.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        connection.execute(
+            "ALTER TABLE host_project_source_connection_revisions "
+            f"RENAME TO {_V44_PROJECT_SOURCE_CONNECTIONS}"
+        )
+    finally:
+        connection.execute("PRAGMA legacy_alter_table=OFF")
+    connection.execute(
+        str(
+            CreateTable(host_project_source_connection_revisions).compile(
+                dialect=sqlite_dialect.dialect()
+            )
+        )
+    )
+    for record in records:
+        revision = ProjectSourceConnectionRevision(
+            ProjectId(str(record["project_id"])),
+            _legacy_project_source_id(str(record["project_id"])),
+            int(record["revision_number"]),
+            SourceKind(str(record["source_kind"])),
+            SourceAddress(str(record["source_address"])),
+            Path(str(record["credential_directory"])),
+            SourceConnectionAuthMethod(str(record["auth_method"])),
+            ConnectionActor(str(record["connected_by"])),
+            ProjectSourceConnectionLifecycle.CONNECTED,
+            None,
+        )
+        connection.execute(
+            "INSERT INTO host_project_source_connection_revisions "
+            "(revision_hash, project_id, source_id, source_kind, revision_number, "
+            "source_address, credential_directory, auth_method, connected_by, "
+            "lifecycle, connected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                revision.revision_hash.value,
+                revision.project_id.value,
+                revision.source_id.value,
+                revision.source_kind.value,
+                revision.revision_number,
+                revision.source_address.value,
+                str(revision.credential_directory),
+                revision.auth_method.value,
+                revision.connected_by.value,
+                revision.lifecycle.value,
+                None,
+            ),
+        )
+    connection.execute(f"DROP TABLE {_V44_PROJECT_SOURCE_CONNECTIONS}")
+    for trigger_name in trigger_names:
+        connection.execute(_PRODUCT_TRIGGERS[trigger_name])
+    _raise_declared_version(connection, _VERSION_FORTY_FOUR, _VERSION_FORTY_FIVE)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -5724,6 +5891,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_FORTY_FOUR,
         _apply_v43_to_v44,
     ),
+    _SchemaMigrationStep(
+        _VERSION_FORTY_FOUR,
+        _VERSION_FORTY_FIVE,
+        _apply_v44_to_v45,
+    ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
@@ -5807,7 +5979,7 @@ def _inspect_store_readonly(database_path: Path) -> tuple[int, str | None]:
             version = _read_declared_schema_version(connection)
             if version == SCHEMA_VERSION or version in _SCHEMA_MIGRATION_BY_SOURCE:
                 try:
-                    if version == _VERSION_FORTY_FOUR:
+                    if version in {_VERSION_FORTY_FOUR, _VERSION_FORTY_FIVE}:
                         _validate_v44_queue_rows(connection)
                     return version, _fingerprint_for_version(connection, version)
                 except UnsupportedSchemaVersion as error:

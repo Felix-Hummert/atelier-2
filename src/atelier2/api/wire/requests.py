@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
@@ -34,6 +34,8 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_MODEL_DEFAULTS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+    MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    MAXIMUM_SOURCE_TOKEN_CHARACTERS,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ACTIVE_RUNS,
@@ -156,6 +158,15 @@ class PutProjectRootRevisionRequestResource(ApiModel):
     root_path: str = Field(
         min_length=1, max_length=MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
     )
+
+
+class ConnectProjectSourceRequestResource(ApiModel):
+    address: str = Field(min_length=1, max_length=MAXIMUM_SOURCE_ADDRESS_CHARACTERS)
+    token: SecretStr = Field(min_length=1, max_length=MAXIMUM_SOURCE_TOKEN_CHARACTERS)
+
+
+class RotateProjectSourceTokenRequestResource(ApiModel):
+    token: SecretStr = Field(min_length=1, max_length=MAXIMUM_SOURCE_TOKEN_CHARACTERS)
 
 
 class ModelRegistryEntryInputResource(ApiModel):

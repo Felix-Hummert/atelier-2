@@ -39,7 +39,11 @@ from atelier2.application.plan_queue_item import (
 )
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
 from atelier2.application.project_connections import (
+    ConnectManagedProjectSourceResult,
+    DisconnectProjectSourceResult,
     GetServedProjectSourceConnectionResult,
+    ListProjectSourcesResult,
+    RotateProjectSourceTokenResult,
 )
 from atelier2.application.project_root import (
     GetProjectRootResult,
@@ -118,7 +122,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageQuery,
 )
 from atelier2.contracts.executions import NodeExecutionId
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.host_configuration import ProjectId, ProjectSourceId
 from atelier2.contracts.queue_projection import (
     ConfirmQueueProposal,
     PlanQueueItem,
@@ -141,6 +145,10 @@ from atelier2.ports.host_configuration import (
     ProviderModelInspector,
 )
 from atelier2.ports.issue_observation import TrackerItemSource
+from atelier2.ports.project_connections import (
+    ManagedProjectSourceCredentialStore,
+    ProjectSourceConnector,
+)
 from atelier2.ports.published_revisions import (
     CatalogAdmissions,
     CatalogResolver,
@@ -184,6 +192,8 @@ class ApiPorts:
     artifact_publisher: ArtifactPublisher
     host_configuration_channel: HostConfigurationChannel
     project_source_connection_channel: ProjectSourceConnectionChannel
+    project_source_connector: ProjectSourceConnector
+    project_source_credential_store: ManagedProjectSourceCredentialStore
     queue_projection: QueueProjection
     # None is the honest default: a composition that serves no connected
     # project has no tracker to observe, and the import door says so by name.
@@ -325,6 +335,16 @@ class ApiUseCases:
     ]
     get_project_source_connection: Callable[
         [ProjectId], GetServedProjectSourceConnectionResult
+    ]
+    list_project_sources: Callable[[ProjectId], ListProjectSourcesResult]
+    connect_project_source: Callable[
+        [ProjectId, str, str], ConnectManagedProjectSourceResult
+    ]
+    disconnect_project_source: Callable[
+        [ProjectId, ProjectSourceId], DisconnectProjectSourceResult
+    ]
+    rotate_project_source_token: Callable[
+        [ProjectId, ProjectSourceId, str], RotateProjectSourceTokenResult
     ]
     confirm_queue_proposal: Callable[
         [ConfirmQueueProposal], ConfirmQueueProposalOutcome

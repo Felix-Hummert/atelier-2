@@ -36,6 +36,7 @@ from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
@@ -99,6 +100,7 @@ def issue_source(
     composed = live_github_issue_source(
         ProjectSourceConnectionRevision(
             PROJECT,
+            ProjectSourceId("11111111-1111-1111-1111-111111111111"),
             1,
             SourceKind("github"),
             SourceAddress(f"{OWNER}/{REPO}@main"),
