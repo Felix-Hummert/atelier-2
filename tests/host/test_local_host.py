@@ -710,13 +710,14 @@ def _github_credential_directory(tmp_path: Path, token: str | None) -> Path:
 def _github_connected_settings(
     tmp_path: Path,
     token: str | None,
-    source_address: str = "FlexOr2/atelier-2@main",
+    source_address: str = "FlexOr2/atelier-2",
+    source_ref: str | None = "main",
 ) -> HostSettings:
-    """Settings whose store already connects project 'studio' to live GitHub.
+    """Settings whose store has a GitHub record for project 'studio'.
 
-    The connection is the durable record `atelier2 connect` writes; no serve
-    flag carries a repository fact any more, so serve must compose the live
-    adapter from exactly this state.
+    The defaults are the durable shape `atelier2 connect` writes. Individual
+    corruption tests can override a detail because no serve flag carries a
+    repository fact; serve must compose or refuse exactly this stored state.
     """
 
     credential_directory = _github_credential_directory(tmp_path, token)
@@ -737,6 +738,7 @@ def _github_connected_settings(
             "felix",
             channel,
             channel,
+            source_ref=source_ref,
         )
         assert isinstance(connected, ProjectSourceConnectionPublished)
     finally:
@@ -773,14 +775,18 @@ def test_a_connected_project_without_a_readable_token_refuses_to_serve(
         compose_application(_github_connected_settings(tmp_path, token))
 
 
-def test_a_connected_address_the_adapter_cannot_decode_refuses_to_serve(
+def test_a_corrupt_current_github_record_without_a_ref_refuses_to_serve(
     tmp_path: Path,
 ) -> None:
+    # The platform-neutral application port can represent this malformed row,
+    # but the GitHub CLI boundary never writes it and composition refuses it.
     settings = _github_connected_settings(
-        tmp_path, "gho_a_test_scenario_token", source_address="acme/studio"
+        tmp_path, "gho_a_test_scenario_token", source_ref=None
     )
 
-    with pytest.raises(GitHubConnectionUncomposable, match="owner/name@base-branch"):
+    with pytest.raises(
+        GitHubConnectionUncomposable, match="owner/name with one base ref"
+    ):
         compose_application(settings)
 
 

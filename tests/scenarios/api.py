@@ -344,6 +344,8 @@ def api_ports(**overrides: object) -> ApiPorts:
         "artifact_publisher": unused,
         "host_configuration_channel": unused,
         "project_source_connection_channel": unused,
+        "project_source_connector": unused,
+        "project_source_credential_store": unused,
         "queue_projection": unused,
         "model_registry_inspector": ExactConfiguredModelInspector(),
     }
@@ -368,6 +370,7 @@ def durable_ports(
     """
     resolved_queries = queries if queries is not None else durable_queries(engine)
     catalog = DbosCatalogStore(engine)
+    unused = UnusedPort()
     ports: dict[str, Any] = {
         "workflow_revision_publisher": DbosWorkflowRevisionPublisher(engine),
         "published_run_starter": DbosDurableRunStarter(
@@ -397,6 +400,8 @@ def durable_ports(
         "artifact_publisher": DbosArtifactStore(engine),
         "host_configuration_channel": DbosHostConfigurationChannel(engine),
         "project_source_connection_channel": DbosHostConfigurationChannel(engine),
+        "project_source_connector": unused,
+        "project_source_credential_store": unused,
         "queue_projection": DbosQueueProjectionStore(engine),
         "model_registry_inspector": ExactConfiguredModelInspector(),
     }

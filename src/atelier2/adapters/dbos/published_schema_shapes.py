@@ -32,6 +32,57 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+_V44_PROJECT_SOURCE_CONNECTION_REVISIONS = """
+CREATE TABLE host_project_source_connection_revisions (
+	revision_hash TEXT NOT NULL,
+	project_id TEXT NOT NULL,
+	source_kind TEXT NOT NULL,
+	revision_number INTEGER NOT NULL,
+	source_address TEXT NOT NULL,
+	credential_directory TEXT NOT NULL,
+	auth_method TEXT NOT NULL,
+	connected_by TEXT NOT NULL,
+	PRIMARY KEY (revision_hash),
+	UNIQUE (project_id, source_kind, revision_number),
+	UNIQUE (revision_hash, project_id, source_kind, revision_number),
+	CHECK (length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(project_id) BETWEEN 1 AND 1024),
+	CHECK (length(source_kind) BETWEEN 1 AND 64),
+	CHECK (revision_number BETWEEN 1 AND 9223372036854775807),
+	CHECK (length(source_address) BETWEEN 1 AND 1024),
+	CHECK (length(credential_directory) BETWEEN 1 AND 4095),
+	CHECK (auth_method IN ('personal-access-token')),
+	CHECK (length(connected_by) BETWEEN 1 AND 1024)
+)
+
+"""
+
+_V44_QUEUE_ITEMS = """
+CREATE TABLE queue_items (
+	item_id TEXT NOT NULL,
+	project_id TEXT NOT NULL,
+	tracker_item_reference TEXT NOT NULL,
+	state TEXT NOT NULL,
+	state_version INTEGER NOT NULL,
+	workflow_lineage_id TEXT,
+	admission_rationale TEXT,
+	current_proposal_revision INTEGER,
+	decision_authority TEXT,
+	PRIMARY KEY (item_id),
+	UNIQUE (project_id, tracker_item_reference),
+	UNIQUE (item_id, project_id),
+	FOREIGN KEY(item_id, current_proposal_revision) REFERENCES queue_proposal_revisions (item_id, proposal_revision),
+	CHECK (length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(project_id) BETWEEN 1 AND 1024),
+	CHECK (length(tracker_item_reference) BETWEEN 1 AND 1024),
+	CHECK (state IN ('OBSERVED', 'PROPOSED', 'ADMITTED')),
+	CHECK (state_version >= 0),
+	CHECK ((state = 'ADMITTED' AND workflow_lineage_id IS NOT NULL AND length(workflow_lineage_id) = 64 AND workflow_lineage_id NOT GLOB '*[^0-9a-f]*' AND admission_rationale IS NOT NULL AND length(admission_rationale) BETWEEN 1 AND 4096 AND ((current_proposal_revision IS NULL AND decision_authority IS NULL) OR (current_proposal_revision IS NOT NULL AND current_proposal_revision >= 1 AND state_version = current_proposal_revision + 1 AND decision_authority IS NOT NULL AND decision_authority IN ('OPERATOR', 'AUTOMATION_RULE')))) OR (state = 'PROPOSED' AND current_proposal_revision IS NOT NULL AND current_proposal_revision >= 1 AND state_version = current_proposal_revision AND workflow_lineage_id IS NULL AND admission_rationale IS NULL AND decision_authority IS NULL) OR (state = 'OBSERVED' AND state_version = 0 AND workflow_lineage_id IS NULL AND admission_rationale IS NULL AND current_proposal_revision IS NULL AND decision_authority IS NULL)),
+	FOREIGN KEY(workflow_lineage_id) REFERENCES catalog_lineages (lineage_id)
+)
+
+"""
+
 _AGENT_ATTEMPTS_BEFORE_THE_TRANSCRIPT = """
 CREATE TABLE agent_attempts (
 	attempt_id TEXT NOT NULL,
@@ -587,6 +638,43 @@ CREATE TABLE effect_receipts (
 
 
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
+    (33, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (34, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (35, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (36, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (37, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (38, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (39, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (40, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (41, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (42, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (43, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (44, "host_project_source_connection_revisions"): (
+        _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
+    ),
+    (44, "queue_items"): _V44_QUEUE_ITEMS,
     (40, "effect_receipts"): _EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     (41, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
     (41, "effect_receipts"): _EFFECT_RECEIPTS_WITH_FORK_REFERENCE,

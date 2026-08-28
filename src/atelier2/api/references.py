@@ -10,6 +10,7 @@ from atelier2.contracts.hashing import SHA256_HEX_DIGEST
 from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
     ProjectId,
+    ProjectSourceId,
     ProjectUnknown,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
@@ -71,9 +72,11 @@ REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
 PUBLIC_PROJECT_REFERENCE_PATTERN = r"^project1\.[A-Za-z0-9_-]+$"
+PUBLIC_SOURCE_REFERENCE_PATTERN = r"^source1\.[A-Za-z0-9_-]+$"
 EVENT_CURSOR_PATTERN = r"^event1\.[A-Za-z0-9_-]+\.[1-9][0-9]*$"
 _PUBLIC_REFERENCE_PREFIX = "run1."
 _PUBLIC_PROJECT_REFERENCE_PREFIX = "project1."
+_PUBLIC_SOURCE_REFERENCE_PREFIX = "source1."
 _EVENT_CURSOR_PREFIX = "event1."
 _UNPADDED_BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
 _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
@@ -85,6 +88,10 @@ class InvalidPublicRunReference(ValueError):
 
 class InvalidPublicProjectReference(ValueError):
     """A public project reference is malformed or not canonically encoded."""
+
+
+class InvalidPublicSourceReference(ValueError):
+    """A public source reference is malformed or not canonically encoded."""
 
 
 class InvalidEventCursor(ValueError):
@@ -140,6 +147,44 @@ def encode_public_project_reference(project_id: ProjectId) -> str:
     payload = project_id.value.encode("utf-8")
     encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     return _PUBLIC_PROJECT_REFERENCE_PREFIX + encoded
+
+
+def encode_public_source_reference(source_id: ProjectSourceId) -> str:
+    encoded = base64.urlsafe_b64encode(source_id.value.encode("ascii")).decode("ascii")
+    return _PUBLIC_SOURCE_REFERENCE_PREFIX + encoded.rstrip("=")
+
+
+MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS = len(
+    encode_public_source_reference(
+        ProjectSourceId("ffffffff-ffff-ffff-ffff-ffffffffffff")
+    )
+)
+
+
+def decode_public_source_reference(reference: str) -> ProjectSourceId:
+    if len(reference) > MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS:
+        raise InvalidPublicSourceReference("public source reference is too long")
+    if not reference.startswith(_PUBLIC_SOURCE_REFERENCE_PREFIX):
+        raise InvalidPublicSourceReference(
+            "public source reference has the wrong version"
+        )
+    encoded = reference.removeprefix(_PUBLIC_SOURCE_REFERENCE_PREFIX)
+    if _UNPADDED_BASE64URL.fullmatch(encoded) is None:
+        raise InvalidPublicSourceReference(
+            "public source reference is not canonical base64url"
+        )
+    try:
+        payload = base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+        )
+        source_id = ProjectSourceId(payload.decode("ascii"))
+    except (binascii.Error, UnicodeDecodeError, ValueError) as error:
+        raise InvalidPublicSourceReference(
+            "public source reference has invalid payload"
+        ) from error
+    if encode_public_source_reference(source_id) != reference:
+        raise InvalidPublicSourceReference("public source reference is not canonical")
+    return source_id
 
 
 # Longest project1. encoding of a UTF-8-encodable ProjectId at the durable

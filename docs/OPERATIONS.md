@@ -658,11 +658,15 @@ starts clean.
 **Connecting a served project to live GitHub is `atelier2 connect`, once,
 offline — it replaces the removed `--github-*` serve flags.** The connect act
 records the source kind (`github`), the opaque source address
-(`owner/name@base-branch`), a credential-directory reference holding a `token`
-file, the auth method (`personal-access-token`) and the connecting actor;
+(`owner/name`), its nonidentity operating ref (`--source-ref base-branch`), a
+credential-directory reference holding a `token` file, the auth method
+(`personal-access-token`) and the connecting actor;
 serve then composes the live `open-pr` adapter from that record whenever it
 serves the connected project, with no GitHub flag on the serve line. A serve
 started with the old flags is refused by argparse as unrecognized arguments.
+For GitHub, the CLI requires the separate ref and refuses the legacy
+`owner/name@branch` address; V44 migration relocates that embedded branch into
+the row's private source-ref detail before V45 readers accept it.
 The live composition still requires a loopback bind. An agent-authored
 `open-pr` grant now uses the same durable reconciliation path as an Action:
 an unknown GitHub readback pauses at the agent node for an operator decision,

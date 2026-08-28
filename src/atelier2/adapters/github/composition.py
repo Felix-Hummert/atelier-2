@@ -2,10 +2,10 @@
 
 A connection revision carries its source address as an opaque value (ADR 0010
 decision 1), and this module is that address's one decode owner for the
-`github` source kind: `owner/name@base-branch`, in GitHub's own words for a
-repository plus the branch pull requests target. Serving hands the whole
-revision over and receives the effect registry or open-issue observation
-source; no repository fact travels back above this package.
+`github` source kind: branchless `owner/name` identity plus an adapter-owned
+base ref. Serving hands the whole revision over and receives the effect
+registry or open-issue observation source; no repository fact travels back
+above this package.
 
 The revision's credential directory stays a reference here exactly as it is in
 the record (ADR 0009 §6): the token it names is read when the composed surface
@@ -36,6 +36,7 @@ from atelier2.contracts.host_configuration import (
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from atelier2.ports.effects import (
     EffectAdapterRegistration,
@@ -47,6 +48,37 @@ GITHUB_SOURCE_KIND = SourceKind("github")
 
 class GitHubConnectionUncomposable(ValueError):
     """The connection record does not compose this package's live surfaces."""
+
+
+def github_public_source_address(source_address: SourceAddress) -> str:
+    if "@" in source_address.value:
+        raise GitHubConnectionUncomposable(
+            "a github source address stores only owner/name; its ref is a detail"
+        )
+    owner, slash, name = source_address.value.partition("/")
+    if not slash or not owner or not name or "/" in name:
+        raise GitHubConnectionUncomposable(
+            "a github source address stores only owner/name; its ref is a detail"
+        )
+    return source_address.value
+
+
+def migrate_v44_github_source_location(
+    source_kind: SourceKind, source_address: SourceAddress
+) -> tuple[SourceAddress, SourceReference | None]:
+    if source_kind != GITHUB_SOURCE_KIND:
+        return source_address, None
+    public_address, separator, source_ref = source_address.value.partition("@")
+    if not separator:
+        github_public_source_address(source_address)
+        return source_address, None
+    if not source_ref:
+        raise GitHubConnectionUncomposable(
+            "a legacy github source location requires a nonempty base ref"
+        )
+    migrated_address = SourceAddress(public_address)
+    github_public_source_address(migrated_address)
+    return migrated_address, SourceReference(source_ref)
 
 
 def live_github_effect_adapter_factory(
@@ -106,7 +138,7 @@ def _connected_repository(
             f"source kind {connection.source_kind.value!r} has no live "
             f"composition; only {GITHUB_SOURCE_KIND.value!r} composes here"
         )
-    return _repository(connection.source_address)
+    return _repository(connection.source_address, connection.source_ref)
 
 
 def _token_credential(
@@ -119,12 +151,14 @@ def _token_credential(
             assert_never(unreachable)
 
 
-def _repository(address: SourceAddress) -> GitHubRepository:
-    repository_part, at, base_branch = address.value.partition("@")
-    owner, slash, name = repository_part.partition("/")
-    if not at or not slash or not owner or not name or not base_branch or "/" in name:
+def _repository(
+    address: SourceAddress, source_ref: SourceReference | None
+) -> GitHubRepository:
+    repository = github_public_source_address(address)
+    owner, _slash, name = repository.partition("/")
+    if source_ref is None or not source_ref.value:
         raise GitHubConnectionUncomposable(
-            "a github source address reads owner/name@base-branch, "
+            "a github source reads owner/name with one base ref, "
             f"not {address.value!r}; reconnect the project with that address"
         )
-    return GitHubRepository(owner, name, base_branch)
+    return GitHubRepository(owner, name, source_ref.value)

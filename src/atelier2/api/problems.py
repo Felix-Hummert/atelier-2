@@ -646,6 +646,31 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Serve a project whose source is connected with `atelier2 connect` "
         "before reading its items.",
     ),
+    "project-source-already-connected": ProblemDefinition(
+        409,
+        "Project source already connected",
+        "Disconnect the existing source before connecting another one.",
+    ),
+    "project-source-unknown": ProblemDefinition(
+        404,
+        "Project source unknown",
+        "Reload the project's sources and use a listed source reference.",
+    ),
+    "project-source-disconnected": ProblemDefinition(
+        409,
+        "Project source disconnected",
+        "Reconnect the source before rotating its token.",
+    ),
+    "project-source-invalid": ProblemDefinition(
+        422,
+        "Project source invalid",
+        "Use a provider source address this installation recognizes.",
+    ),
+    "project-source-token-refused": ProblemDefinition(
+        422,
+        "Project source token refused",
+        "Use a token the provider accepts for this source.",
+    ),
     "project-source-unavailable": ProblemDefinition(
         503,
         "Project source unavailable",
@@ -699,6 +724,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
     ),
     "route-not-found": ProblemDefinition(
         404, "Route not found", ROUTE_NOT_FOUND_ACTION + "."
+    ),
+    "invalid-public-source-reference": ProblemDefinition(
+        400,
+        "Invalid public source reference",
+        "Use the source reference returned by this API.",
     ),
     "method-not-allowed": ProblemDefinition(
         405, "Method not allowed", "Use the HTTP method described for this path."
