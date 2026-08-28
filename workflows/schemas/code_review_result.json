@@ -31,25 +31,29 @@
   "allOf": [
     {
       "if": {
+        "type": "object",
         "required": ["verdict"],
         "properties": {
           "verdict": {"const": "revise"}
         }
       },
       "then": {
+        "type": "object",
         "properties": {
-          "findings": {"minItems": 1}
+          "findings": {"type": "array", "minItems": 1}
         }
       }
     },
     {
       "if": {
+        "type": "object",
         "required": ["verdict"],
         "properties": {
           "verdict": {"const": "cannot-judge"}
         }
       },
       "then": {
+        "type": "object",
         "required": ["reason"]
       }
     }
