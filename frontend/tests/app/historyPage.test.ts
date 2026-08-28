@@ -160,6 +160,17 @@ function historyCardByRun(publicReference: string): HTMLElement {
   return card;
 }
 
+function visibleResultText(row: HTMLElement): string {
+  const cell = row.querySelector(".row-result");
+  if (!(cell instanceof HTMLElement)) return "";
+  const clone = cell.cloneNode(true);
+  if (!(clone instanceof HTMLElement)) return "";
+  for (const hidden of clone.querySelectorAll(".visually-hidden")) {
+    hidden.remove();
+  }
+  return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
 function openHistory(
   runsByState: { completed?: AnyRun[]; failed?: AnyRun[] },
   overrides: Partial<CockpitApi> = {}
@@ -285,7 +296,7 @@ describe("History shows only what has finished", () => {
     expect(row.textContent).toContain("38 min");
   });
 
-  it("leaves a completed Result empty until extras settle, never Done", async () => {
+  it("says Looking in a completed Result until extras settle, never Done or empty", async () => {
     const getNodeDetail = vi.fn(() => new Promise<NodeDetail>(() => undefined));
     openHistory({ completed: [v3Run()] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
@@ -293,10 +304,57 @@ describe("History shows only what has finished", () => {
     });
 
     const row = await findHistoryCard(/Two agents in a line/);
-    const result = row.querySelector(".row-result");
-    expect(result?.textContent).not.toContain(standingWords.done);
-    expect(result?.textContent).not.toContain(historyPageCopy.notRecorded);
+    const visible = visibleResultText(row);
+    expect(visible).toBe(wrapDisplayCopy(historyPageCopy.looking));
+    expect(visible).not.toBe("");
+    expect(visible).not.toContain(standingWords.done);
+    expect(visible).not.toContain(historyPageCopy.notRecorded);
     expect(getNodeDetail).toHaveBeenCalled();
+  });
+
+  it("names a completed code-review Result as the derived half-sentence, never Done or finding text", async () => {
+    const raw = codeReviewAnswer("revise", ["high", "medium"]);
+    const getNodeDetail = vi.fn(async () =>
+      nodeDetail({
+        answer: { value_base64: btoa(raw), value_hash: "f".repeat(64) }
+      })
+    );
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/code-review/);
+    const expected = historyOutcome("code-review", raw);
+    await waitFor(() => {
+      expect(visibleResultText(row)).toBe(wrapDisplayCopy(expected));
+    });
+    const visible = visibleResultText(row);
+    expect(visible).not.toContain(standingWords.done);
+    expect(visible).not.toContain("sk-live-should-never-appear");
+    expect(visible).not.toContain("secret.ts");
+    expect(row.textContent).not.toContain("sk-live-should-never-appear");
+  });
+
+  it("names a completed Result could not load when the node detail rejects, never Done or Not recorded", async () => {
+    const getNodeDetail = vi.fn(async () => {
+      throw new Error("private transport detail");
+    });
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
+      getNodeDetail
+    });
+
+    const row = await findHistoryCard(/Two agents in a line/);
+    await waitFor(() => {
+      expect(visibleResultText(row)).toBe(wrapDisplayCopy(historyPageCopy.couldNotLoad));
+    });
+    const visible = visibleResultText(row);
+    expect(visible).not.toBe("");
+    expect(visible).not.toContain(standingWords.done);
+    expect(visible).not.toContain(historyPageCopy.notRecorded);
+    expect(row.textContent).not.toContain("private transport detail");
+    expect(row.textContent).not.toContain("job bytes must never become the result");
   });
 
   it("names a completed Result not recorded once extras settle with no readable answer, never Done", async () => {

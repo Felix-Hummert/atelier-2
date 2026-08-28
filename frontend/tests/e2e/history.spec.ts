@@ -385,3 +385,57 @@ test("a populated History row at 390 names the work item and stays inside the vi
     fullPage: true
   });
 });
+
+test("a finished code-review row at 1280 shows a visible derived Result, never Done or raw bytes", async ({
+  page
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const token = `${testInfo.repeatEachIndex}-${testInfo.retry}`;
+  const workflowName = "code-review";
+  const schemaHash = await anyJsonSchema(page);
+
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: {
+      profile_id: `history-717-result-${token}`,
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect([200, 201]).toContain(auth.status());
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: `history-717-result-model-${token}`,
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect([200, 201]).toContain(configuration.status());
+  const agentHash = (await configuration.json()).agent_configuration_revision_hash as string;
+  await publishCheckedModelRegistry(page, "e2e-v3", `history-717-result-model-${token}`, agentHash);
+
+  const revisionHash = await publishWorkflow(page, workflowName, schemaHash);
+  const finished = await startCompletedRun(
+    page,
+    `history-717/code-review-${token}`,
+    revisionHash,
+    agentHash
+  );
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/atelier/history");
+  const row = page.locator(".history-row").filter({
+    has: page.locator(`a.history-row-open[href="/atelier/runs/${finished.reference}"]`)
+  });
+  await expect(row).toBeVisible();
+  await expect(row.locator(".row-purpose")).toHaveText(workflowName);
+  await expect(row.locator(".row-result")).toContainText(historyPageCopy.outcome.text);
+  await expect(row.locator(".row-result")).not.toContainText(RAW_PROVIDER_BYTES);
+  await expect(row.locator(".row-result")).not.toHaveText(standingWords.done);
+  const resultRendered = await renderedText(row.locator(".row-result"));
+  expect(resultRendered.length).toBeGreaterThan(0);
+  expect(resultRendered).toContain(historyPageCopy.outcome.text);
+  expect(resultRendered).not.toBe(standingWords.done);
+  expect(resultRendered).not.toContain(RAW_PROVIDER_BYTES);
+});

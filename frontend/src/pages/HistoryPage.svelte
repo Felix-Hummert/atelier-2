@@ -56,7 +56,8 @@
 
   type ExtrasLoad =
     | { status: "loading" }
-    | { status: "settled"; extras: HistoryRowExtras };
+    | { status: "settled"; extras: HistoryRowExtras }
+    | { status: "unavailable" };
 
   let history: RetainedRead<HistorySnapshot, HistoryReadFailure> =
     retainedRead<HistorySnapshot, HistoryReadFailure>();
@@ -128,33 +129,33 @@
     extrasLoadByReference = new Map(
       rows.map((row) => [row.run.public_run_reference, { status: "loading" as const }])
     );
-    const settledEntries = await Promise.all(
+    const loads = await Promise.all(
       rows.map(async (row) => {
-        const extras = await extrasForRow(row);
-        return [row.run.public_run_reference, extras] as const;
+        const load = await extrasForRow(row);
+        return [row.run.public_run_reference, load] as const;
       })
     );
     if (token !== extrasToken) return;
-    extrasLoadByReference = new Map(
-      settledEntries.map(([reference, extras]) => [
-        reference,
-        { status: "settled" as const, extras }
-      ])
-    );
+    extrasLoadByReference = new Map(loads);
   }
 
-  async function extrasForRow(row: HistoryRow): Promise<HistoryRowExtras> {
+  async function extrasForRow(
+    row: HistoryRow
+  ): Promise<{ status: "settled"; extras: HistoryRowExtras } | { status: "unavailable" }> {
     try {
       const detail = await cockpitApi.getNodeDetail(
         row.run.public_run_reference,
         historyResultNodeId(row.run)
       );
       return {
-        workItem: workItemFromDetail(detail),
-        resultSentence: resultSentenceFromDetail(row.workflowName, row.result.kind, detail)
+        status: "settled",
+        extras: {
+          workItem: workItemFromDetail(detail),
+          resultSentence: resultSentenceFromDetail(row.workflowName, row.result.kind, detail)
+        }
       };
     } catch {
-      return { workItem: null, resultSentence: null };
+      return { status: "unavailable" };
     }
   }
 
@@ -323,12 +324,16 @@
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
                   {failedResultCopy(row.result.nodeId, row.result.sentence, extras?.status === "settled")}
+                {:else if extras?.status === "unavailable"}
+                  {wrapDisplayCopy(historyPageCopy.couldNotLoad)}
                 {:else if extras?.status === "settled"}
                   {#if row.result.sentence !== null}
                     {wrapDisplayCopy(row.result.sentence)}
                   {:else}
                     {wrapDisplayCopy(historyPageCopy.notRecorded)}
                   {/if}
+                {:else}
+                  {wrapDisplayCopy(historyPageCopy.looking)}
                 {/if}
               </span>
               <span class="row-duration">
