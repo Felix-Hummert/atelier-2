@@ -102,6 +102,7 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventKind,
     WaitAnswerAttribution,
+    WaitAnswerAttributionKind,
     WaitAnswerState,
     logical_effect_key_for_node,
 )
@@ -2299,8 +2300,17 @@ class DbosQueries:
                 raise WaitAnswerProjectionCorrupt(
                     "wait answer event has no unique durable answer"
                 )
+            answer_record = answer_records[0]
+            if (
+                answer_record["actor"] is None
+                and answer_record["actor_attribution_kind"]
+                != WaitAnswerAttributionKind.LEGACY_UNATTRIBUTED.value
+            ):
+                raise WaitAnswerProjectionCorrupt(
+                    "wait answer event has no durable actor"
+                )
             try:
-                answer_snapshot = wait_answer_snapshot_from_record(answer_records[0])
+                answer_snapshot = wait_answer_snapshot_from_record(answer_record)
             except (RunTransitionConflict, TypeError, ValueError) as error:
                 raise WaitAnswerProjectionCorrupt(
                     "wait answer event has an unreadable durable answer"

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from atelier2.adapters.dbos import run_transitions as run_transitions_module
 from atelier2.adapters.dbos import starter as starter_module
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
-from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.queries import DbosQueries, WaitAnswerProjectionCorrupt
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
@@ -73,8 +73,10 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
+    RunEventKind,
     SubmitWaitAnswerRequest,
     WaitAnswerActor,
+    WaitAnswerAttributionKind,
     WaitAnswerState,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -84,6 +86,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableAnswerExisting,
@@ -1215,11 +1218,10 @@ def test_http_wait_answer_refuses_a_fabricated_execution_as_corrupt(
     assert _durable_snapshot(runtime) == before
 
 
-def test_http_same_answer_to_the_applied_current_execution_is_already_answered(
-    runtime: DbosRuntime,
-) -> None:
+def _applied_v3_wait_answer(
+    runtime: DbosRuntime, run_id: RunId
+) -> SubmitWaitAnswerRequest:
     client = _client(runtime)
-    run_id = RunId("http-doubled-applied-answer")
     published_schema = client.post(
         "/atelier/api/v1/schema-revisions",
         content=ANY_JSON_SCHEMA.document,
@@ -1246,25 +1248,63 @@ def test_http_same_answer_to_the_applied_current_execution_is_already_answered(
     assert started.status_code == 201, started.text
     with canonical_write_transaction(runtime.engine) as connection:
         waiting = commit_waiting_input(connection, run_id, revision_hash, "wait")
-    path = f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers"
-    body = {
-        "workflow_revision_hash": revision_hash.value,
-        "node_id": "wait",
-        "expected_node_execution_id": waiting.event.node_execution_id.value,
-        "actor": "operator",
-        "answer_base64": encode_canonical_base64(b"17"),
-    }
-
-    accepted = client.post(path, json=body)
+    request = SubmitWaitAnswerRequest(
+        run_id,
+        revision_hash,
+        "wait",
+        waiting.event.node_execution_id,
+        WaitAnswerActor.OPERATOR,
+        b"17",
+    )
+    accepted = client.post(_wait_answer_path(request), json=_wait_answer_body(request))
     assert accepted.status_code == 202, accepted.text
     with canonical_write_transaction(runtime.engine) as connection:
         pending = load_wait_answer(connection, run_id, revision_hash, "wait")
         commit_wait_answered(connection, pending.answer)
         applied = load_wait_answer(connection, run_id, revision_hash, "wait")
     assert applied.state is WaitAnswerState.APPLIED
+    return request
+
+
+def _wait_answer_path(request: SubmitWaitAnswerRequest) -> str:
+    return f"/atelier/api/v1/runs/{encode_public_run_reference(request.run_id)}/answers"
+
+
+def _wait_answer_body(request: SubmitWaitAnswerRequest) -> dict[str, str]:
+    return {
+        "workflow_revision_hash": request.revision_hash.value,
+        "node_id": request.node_id,
+        "expected_node_execution_id": request.expected_node_execution_id.value,
+        "actor": request.actor.value,
+        "answer_base64": encode_canonical_base64(request.answer_bytes),
+    }
+
+
+def _remove_recorded_wait_answer_actor(
+    runtime: DbosRuntime, request: SubmitWaitAnswerRequest
+) -> None:
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER wait_answers_payload_no_update")
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            wait_answers.update()
+            .where(
+                wait_answers.c.node_execution_id
+                == request.expected_node_execution_id.value
+            )
+            .values(actor=None)
+        )
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+
+def test_http_same_answer_to_the_applied_current_execution_is_already_answered(
+    runtime: DbosRuntime,
+) -> None:
+    client = _client(runtime)
+    request = _applied_v3_wait_answer(runtime, RunId("http-doubled-applied-answer"))
     before_second = _durable_snapshot(runtime)
 
-    second = client.post(path, json=body)
+    second = client.post(_wait_answer_path(request), json=_wait_answer_body(request))
 
     assert second.status_code == 200
     assert second.json()["state"] == RunState.COMPLETED.value
@@ -1274,14 +1314,98 @@ def test_http_same_answer_to_the_applied_current_execution_is_already_answered(
         connection.exec_driver_sql("DROP TRIGGER wait_answers_no_delete")
         connection.execute(
             wait_answers.delete().where(
-                wait_answers.c.node_execution_id == body["expected_node_execution_id"]
+                wait_answers.c.node_execution_id
+                == request.expected_node_execution_id.value
             )
         )
 
-    missing_answer = client.post(path, json=body)
+    missing_answer = client.post(
+        _wait_answer_path(request), json=_wait_answer_body(request)
+    )
 
     assert missing_answer.status_code == 500
     assert missing_answer.json()["type"].endswith(":durable-state-corrupt")
+
+
+def test_a_recorded_wait_answer_without_an_actor_is_durable_corruption(
+    runtime: DbosRuntime,
+) -> None:
+    request = _applied_v3_wait_answer(runtime, RunId("recorded-answer-without-actor"))
+    _remove_recorded_wait_answer_actor(runtime, request)
+
+    with (
+        runtime.engine.connect() as connection,
+        pytest.raises(RunTransitionConflict, match="recorded wait answer has no actor"),
+    ):
+        load_wait_answer(
+            connection,
+            request.run_id,
+            request.revision_hash,
+            request.node_id,
+        )
+
+
+def test_a_v3_wait_answer_projection_refuses_a_recorded_row_without_an_actor(
+    runtime: DbosRuntime,
+) -> None:
+    request = _applied_v3_wait_answer(
+        runtime, RunId("project-recorded-answer-without-actor")
+    )
+    _remove_recorded_wait_answer_actor(runtime, request)
+    with runtime.engine.connect() as connection:
+        event_record = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.node_execution_id
+                    == request.expected_node_execution_id.value,
+                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+    with (
+        runtime.engine.connect() as connection,
+        pytest.raises(
+            WaitAnswerProjectionCorrupt,
+            match="wait answer event has no durable actor",
+        ),
+    ):
+        DbosQueries._event_projection(
+            connection,
+            event_record,
+            WorkflowFormatVersion.V3,
+            durable_projection_limit(api_limits()),
+        )
+
+
+def test_an_applied_legacy_wait_answer_is_not_an_attributed_idempotent_hit(
+    runtime: DbosRuntime,
+) -> None:
+    request = _applied_v3_wait_answer(runtime, RunId("applied-legacy-answer-retry"))
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER wait_answers_payload_no_update")
+        connection.execute(
+            wait_answers.update()
+            .where(
+                wait_answers.c.node_execution_id
+                == request.expected_node_execution_id.value
+            )
+            .values(
+                actor=None,
+                actor_attribution_kind=(
+                    WaitAnswerAttributionKind.LEGACY_UNATTRIBUTED.value
+                ),
+            )
+        )
+
+    response = _client(runtime).post(
+        _wait_answer_path(request), json=_wait_answer_body(request)
+    )
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith(":durable-state-corrupt")
 
 
 @pytest.mark.parametrize(

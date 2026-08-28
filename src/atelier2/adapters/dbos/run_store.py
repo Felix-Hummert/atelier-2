@@ -1106,6 +1106,8 @@ def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSna
     attribution_kind = WaitAnswerAttributionKind(str(record["actor_attribution_kind"]))
     match attribution_kind:
         case WaitAnswerAttributionKind.RECORDED:
+            if actor_value is None:
+                raise RunTransitionConflict("recorded wait answer has no actor")
             actor = WaitAnswerActor(str(actor_value))
         case WaitAnswerAttributionKind.LEGACY_UNATTRIBUTED:
             if actor_value is not None:
@@ -1226,7 +1228,9 @@ def _wait_answer_binds_execution(
 
 
 def _applied_answer_matches_event(
-    snapshot: WaitAnswerSnapshot, events: tuple[RunEvent, ...]
+    snapshot: WaitAnswerSnapshot,
+    events: tuple[RunEvent, ...],
+    request_actor: WaitAnswerActor,
 ) -> bool:
     answered = tuple(
         event for event in events if event.event_kind is RunEventKind.WAIT_ANSWERED
@@ -1244,6 +1248,7 @@ def _applied_answer_matches_event(
         and event.round_ordinal == answer.round_ordinal
         and event.payload == answer.answer_bytes
         and event.payload_hash == answer.answer_hash
+        and answer.actor == request_actor
     )
 
 
@@ -1450,7 +1455,7 @@ class DbosWaitAnswerer:
                             return DurableStateCorrupt()
                         if requested_snapshot.state is WaitAnswerState.APPLIED:
                             if not _applied_answer_matches_event(
-                                requested_snapshot, expected_events
+                                requested_snapshot, expected_events, request.actor
                             ):
                                 connection.rollback()
                                 return DurableStateCorrupt()
