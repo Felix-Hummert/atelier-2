@@ -46,4 +46,4 @@ nodes:
       - name: result
         schema:
           ref: code_review_result
-          revision: "19cec6b7aac1f66a82c831b9c895b8344dd4483a05a4e33515737112c2fe93ba"
+          revision: "e2078399680746e474a6c52e5aa0924e1bd8225a8b51f155e49362de854a6938"

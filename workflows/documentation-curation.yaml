@@ -94,4 +94,4 @@ nodes:
       - name: result
         schema:
           ref: documentation_trace_review_result
-          revision: "79cace671525a3c9b2b0bd6965c59dda8cd1fc5dc28a406be37f81d231b85ba4"
+          revision: "3c7b9677f94ca3aa7e0f4b9d523d34f5f3f293dfe427815c999a3dab71034a86"
