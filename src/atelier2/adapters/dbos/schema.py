@@ -5689,9 +5689,9 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
         )
         if len(current_kinds) != 1:
             raise StoreMigrationRefused(
-                "schema version 44 has project-source histories tied at the "
-                f"latest revision for project {project_id!r}; this command will "
-                "not alter it"
+                "schema version 44 contains durable project-source corruption: "
+                f"project {project_id!r} has {len(current_kinds)} current kinds; "
+                "expected exactly one; this command will not alter it"
             )
         current_source_kind_by_project[project_id] = current_kinds[0]
     for record in records:

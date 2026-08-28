@@ -1257,8 +1257,8 @@ def test_v45_marks_every_historical_revision_disconnected_across_source_kinds(
 
 
 @pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
-def test_v45_refuses_tied_legacy_kind_heads_without_mutation(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_v45_refuses_a_project_with_an_ambiguous_current_kind_without_mutation(
+    tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
     _create_populated_v44_source_store(database)
@@ -1286,9 +1286,15 @@ def test_v45_refuses_tied_legacy_kind_heads_without_mutation(
         connection.commit()
     before = _logical_dump(database)
 
-    assert main(["migrate", "--database", str(database)]) == 1
+    with pytest.raises(
+        StoreMigrationRefused,
+        match=(
+            "durable project-source corruption: project 'studio' has 2 current "
+            "kinds; expected exactly one"
+        ),
+    ):
+        migrate_store(database)
 
-    assert "histories tied" in capsys.readouterr().err
     assert _logical_dump(database) == before
 
 
