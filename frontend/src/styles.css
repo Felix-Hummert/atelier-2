@@ -105,8 +105,8 @@
   --popover-width: 20rem;
   --name-column: 16rem;
   --name-column-narrow: 8rem;
-  --when-column: 11.5rem;
-  --work-item-column: 8rem;
+  --when-column: 6.5rem;
+  --work-item-column: 5rem;
   --duration-column: 6rem;
   --decision-question-min: 10rem;
   --card-min: 14rem;
@@ -132,6 +132,13 @@
   background: var(--ground);
   font-synthesis: none;
   line-height: var(--leading-body);
+}
+
+/* History's When/Work-item columns are this surface's, not the shared
+   --when-column / --work-item-column. */
+.history-page {
+  --history-when-column: 11.5rem;
+  --history-work-item-column: 8rem;
 }
 
 @media (prefers-color-scheme: dark) {

@@ -406,12 +406,12 @@
   .col-when,
   .row-when {
     flex: none;
-    width: var(--when-column);
+    width: var(--history-when-column);
   }
 
   .col-work-item {
     flex: none;
-    width: var(--work-item-column);
+    width: var(--history-work-item-column);
   }
 
   .col-result {
@@ -530,7 +530,7 @@
     position: relative;
     z-index: 2;
     flex: none;
-    width: var(--work-item-column);
+    width: var(--history-work-item-column);
     overflow: hidden;
     color: var(--ink-dim);
     font-size: var(--text-xs);
