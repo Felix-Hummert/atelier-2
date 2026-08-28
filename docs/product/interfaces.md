@@ -202,9 +202,11 @@ History's finished-run row names when it ran, the work item or an em dash,
 a derived half-sentence of what came of the run, and a short public run
 reference so two otherwise identical finished runs stay distinguishable —
 not only whether it ended, and never the raw result bytes.
-Settings shows the project's source connection as read-only provenance. It is
-the one editing surface only for each provider's exact model registry and the
-three difficulty defaults, in that order. The startable configuration list is
+Settings is the door for connecting, disconnecting, and renewing a project
+source token against the source collection, showing the pictured source row;
+the residual singular source-connection GET remains for other readers
+(History). It is also the one editing surface for each provider's exact model
+registry and the three difficulty defaults, in that order. The startable configuration list is
 the owner of that provider-grouped rendering: a provider whose registry is
 missing, or whose entry is not yet checked, still renders, marked unavailable,
 with the Check action that publishes a missing registry if needed, then asks

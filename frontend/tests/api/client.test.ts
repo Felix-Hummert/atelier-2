@@ -14,6 +14,8 @@ import {
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   nodeDetailSchema,
   projectSourceConnectionRevisionSchema,
+  projectSourceListSchema,
+  projectSourceResourceSchema,
   problemDefinitions,
   type Problem,
   type RunProjectionCorrupt
@@ -1518,6 +1520,133 @@ describe("the project source connection Settings will read", () => {
     await expect(client.getProjectSourceConnection(projectReference)).rejects.toThrow(
       /another project/
     );
+  });
+});
+
+describe("the project source collection Settings writes", () => {
+  const projectReference = "project1.dGVhbS9yZWQ";
+  const sourceReference = "source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj";
+  const source = {
+    public_source_reference: sourceReference,
+    kind: "github",
+    address: "FlexOr2/atelier-2",
+    scope: "issues" as const,
+    connected_at: null,
+    revision: 2,
+    auth_method: "personal-access-token" as const
+  };
+  const token = "write-only-token";
+
+  function jsonOk(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" }
+    });
+  }
+
+  it("lists the collection and defaults omitted scope and connection time", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonOk({
+        items: [{
+          public_source_reference: sourceReference,
+          kind: "github",
+          address: "FlexOr2/atelier-2",
+          revision: 2,
+          auth_method: "personal-access-token"
+        }]
+      })
+    );
+
+    const read = await createCockpitApi(fetcher).listProjectSources(projectReference);
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `/atelier/api/v1/projects/${projectReference}/sources`
+    );
+    expect(read).toEqual(projectSourceListSchema.parse({ items: [source] }));
+  });
+
+  it("posts only address and token, then returns the created resource without a token", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonOk(source, 201));
+
+    const created = await createCockpitApi(fetcher).connectProjectSource(projectReference, {
+      address: "FlexOr2/atelier-2",
+      token
+    });
+
+    const init = fetcher.mock.calls[0]?.[1];
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `/atelier/api/v1/projects/${projectReference}/sources`
+    );
+    expect(init?.method).toBe("POST");
+    expect((init?.headers as Record<string, string>)["content-type"]).toBe("application/json");
+    expect(init?.body).toBe(JSON.stringify({ address: "FlexOr2/atelier-2", token }));
+    expect(JSON.parse(String(init?.body))).toEqual({ address: "FlexOr2/atelier-2", token });
+    expect(created).toEqual(projectSourceResourceSchema.parse(source));
+    expect(JSON.stringify(created)).not.toContain(token);
+  });
+
+  it("puts only a token and keeps the returned resource free of it", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonOk(source));
+
+    const rotated = await createCockpitApi(fetcher).rotateProjectSourceToken(
+      projectReference,
+      sourceReference,
+      { token }
+    );
+
+    const init = fetcher.mock.calls[0]?.[1];
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `/atelier/api/v1/projects/${projectReference}/sources/${sourceReference}/token`
+    );
+    expect(init?.method).toBe("PUT");
+    expect(init?.body).toBe(JSON.stringify({ token }));
+    expect(rotated).toEqual(source);
+    expect(JSON.stringify(rotated)).not.toContain(token);
+  });
+
+  it("disconnects a 204 empty body without parsing JSON", async () => {
+    const json = vi.fn();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue({
+      status: 204,
+      headers: new Headers(),
+      json
+    } as unknown as Response);
+
+    await expect(
+      createCockpitApi(fetcher).disconnectProjectSource(projectReference, sourceReference)
+    ).resolves.toBeUndefined();
+    expect(fetcher.mock.calls[0]?.[1]?.method).toBe("DELETE");
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it("refuses extra fields and a too-long source reference", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonOk({ items: [{ ...source, credential_directory: "/secret" }] }))
+      .mockResolvedValueOnce(jsonOk({
+        ...source,
+        public_source_reference: `source1.${"A".repeat(49)}`
+      }, 201));
+    const client = createCockpitApi(fetcher);
+
+    await expect(client.listProjectSources(projectReference)).rejects.toThrow(
+      "durable wire contract"
+    );
+    await expect(
+      client.connectProjectSource(projectReference, { address: source.address, token })
+    ).rejects.toThrow("durable wire contract");
+  });
+
+  it("parses a well-formed list of two source resources", async () => {
+    const second = {
+      ...source,
+      public_source_reference: "source1.YWx0ZXJuYXRlLXNvdXJjZS1yZWZlcmVuY2UtYWFhYQ",
+      address: "github.com/other/repo"
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonOk({ items: [source, second] }));
+
+    const read = await createCockpitApi(fetcher).listProjectSources(projectReference);
+
+    expect(read.items).toEqual([source, second]);
   });
 });
 

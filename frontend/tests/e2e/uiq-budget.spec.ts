@@ -17,8 +17,7 @@ import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
  * view, not §07's 4-click start-by-hand / Start-run remainder. The Run view
  * adds its standing sentence and node Log path from frame #v8-14-run-log.
  * Queue-admit is named in §07 and has no Workbench door yet — not asserted
- * here. Settings' connect-a-source path is a named deferral to #567 until
- * that door exists, never a silent pass.
+ * here. Settings' connect-a-source path is measured against mockup v8.
  *
  * Contract only: user-click count to the goal, and the named goal elements in
  * the viewport without scrolling at the picture's 390 and 1280 widths.
@@ -651,11 +650,25 @@ test("Settings connect-a-source stays inside mockup v8 click and glance budgets 
     const sources = page.getByRole("heading", { name: settingsPageCopy.sourcesTitle });
     await expect(sources).toBeVisible();
     await expect(sources, `settings room glance at ${viewport.width}`).toBeInViewport();
+    await page.route("**/atelier/api/v1/projects/*/sources", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 201,
+        json: {
+          public_source_reference: "source1.dGVzdA",
+          kind: "github",
+          address: "github.com/FlexOr2/docs",
+          scope: "issues",
+          connected_at: null,
+          revision: 1,
+          auth_method: "personal-access-token"
+        }
+      });
+    });
     const connectDoor = page.getByRole("button", { name: CONNECT_A_SOURCE_DOOR });
-    test.fixme(
-      (await connectDoor.count()) === 0,
-      "Settings has no Connect-a-source door yet — owner #567 (mockup v8 §06/§07)"
-    );
     await expect(connectDoor, `connect-a-source room glance at ${viewport.width}`).toBeInViewport();
     let connectGlances = 1;
     await connectPath.click(connectDoor);
@@ -663,7 +676,10 @@ test("Settings connect-a-source stays inside mockup v8 click and glance budgets 
     await expect(sheet, `connect-a-source sheet glance at ${viewport.width}`).toBeInViewport();
     connectGlances += 1;
     expect(connectGlances).toBe(CONNECT_A_SOURCE_GLANCES);
-    await connectPath.click(page.getByRole("button", { name: "Connect", exact: true }));
+    const dialog = page.getByRole("dialog", { name: CONNECT_A_SOURCE_DOOR });
+    await dialog.getByRole("textbox", { name: settingsPageCopy.where }).fill("github.com/FlexOr2/docs");
+    await dialog.getByLabel(settingsPageCopy.token).fill("test-token");
+    await connectPath.click(page.getByRole("button", { name: settingsPageCopy.connect, exact: true }));
     expect(connectPath.count).toBeLessThanOrEqual(CONNECT_A_SOURCE_CLICKS);
   }
 });
