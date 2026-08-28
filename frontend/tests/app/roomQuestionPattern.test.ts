@@ -41,9 +41,6 @@ const SVELTE_FROM = /\bfrom\s+["']([^"']+\.svelte)["']/g;
 const DIALOG_ROLES = new Set(["dialog", "alertdialog"]);
 const GLOBAL_ASKS = new Set(["confirm", "prompt"]);
 
-const SENTENCE =
-  "A dialog, confirmation, answer-taking sheet, or script-level confirm in a room page or a .svelte file that page imports is the shared question component or a rendering of it, not markup that file composed; today's AddModelSheet, CatalogImportSheet, ConnectSourceSheet, DisconnectSourceSheet, RenewSourceTokenSheet, WorkflowStartSheet, RunForkSheet, RunCancelCard, and ReconciliationActionCard each compose their own dialog, which this sentence does not prove they share; a createElement overlay, a question in a .ts module, and an in-page decision stage that is not a dialog or confirm are outside what the templates and script tags show.";
-
 const NAMED_RESIDUAL_FILES = [
   "components/AddModelSheet.svelte",
   "components/CatalogImportSheet.svelte",
@@ -669,7 +666,7 @@ describe("a question is the shared component, not markup a host composed", () =>
     );
   });
 
-  it(`proves(a-question-uses-the-shared-question-pattern): ${SENTENCE}`, () => {
+  it("proves(a-question-uses-the-shared-question-pattern): a question in a room is the shared question component or a rendering of it", () => {
     const sources = roomSources();
     expect([...sources.keys()]).toEqual(expect.arrayContaining(["pages/WorkbenchPage.svelte"]));
     const shared = sharedQuestionComponent(sources);
