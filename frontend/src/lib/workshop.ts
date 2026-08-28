@@ -47,9 +47,10 @@ export const WORKSHOP_ROOMS: readonly WorkshopDestination[] = [
  *
  * The workflow detail sits under the Catalog: it is the one
  * room a workflow is found and started from. A run sits under the Workbench,
- * where living work lives now that the Board is gone, and the run page's trail
- * leads back to the same entry. Deriving that trail from the run's own state —
- * alive to the Workbench, ended to History (ADR 0019 §1) — is a successor gap.
+ * where living work lives now that the Board is gone. The run page's trail
+ * is derived from the run — alive to the Workbench, ended to History
+ * (ADR 0019 §1), with an in-app room origin overriding — so the remaining
+ * gap is this rail mark, not the trail.
  */
 export function activeWorkshopDestination(route: CockpitRoute): WorkshopDestination["id"] | null {
   if (route.page === "workbench" || route.page === "run") {

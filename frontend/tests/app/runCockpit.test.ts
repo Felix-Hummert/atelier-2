@@ -14,6 +14,7 @@ import { proofAnchorCopy } from "../../src/lib/proofAnchorCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   actionCompleted,
@@ -289,11 +290,11 @@ describe("read-only run cockpit", () => {
 });
 
 describe("the trail back from a run (#654)", () => {
-  async function trailLink(): Promise<HTMLElement> {
+  async function trailLink(overrides: Partial<CockpitApi> = {}): Promise<HTMLElement> {
     const feed = new FakeRunEventFeed();
     render(App, {
       props: {
-        cockpitApi: api({ openRunEvents: feed.open }),
+        cockpitApi: api({ openRunEvents: feed.open, ...overrides }),
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
@@ -304,8 +305,8 @@ describe("the trail back from a run (#654)", () => {
   it("leads back to the Workbench, the room living work belongs to", async () => {
     const link = await trailLink();
 
-    expect(link.textContent).toContain("Workbench");
-    expect(link.getAttribute("href")).toBe("/atelier/chat");
+    expect(link.textContent).toContain(backLinkCopy.workbench);
+    expect(link.getAttribute("href")).toBe(WORKSHOP_DESTINATION.workbench.path);
   });
 
   it("leads back to the Workbench when the run was opened from the chat", async () => {
@@ -313,8 +314,25 @@ describe("the trail back from a run (#654)", () => {
 
     const link = await trailLink();
 
-    expect(link.textContent).toContain("Workbench");
-    expect(link.getAttribute("href")).toBe("/atelier/chat");
+    expect(link.textContent).toContain(backLinkCopy.workbench);
+    expect(link.getAttribute("href")).toBe(WORKSHOP_DESTINATION.workbench.path);
+  });
+
+  it("leads a leftover from=chat query on an ended run back to History, not Workbench", async () => {
+    window.history.replaceState(null, "", `/atelier/runs/${publicReference}?from=chat`);
+
+    const link = await trailLink({ getRun: vi.fn(async () => completedRun()) });
+
+    expect(link.textContent).toContain(backLinkCopy.history);
+    expect(link.getAttribute("href")).toBe(WORKSHOP_DESTINATION.history.path);
+    expect(link.textContent).not.toContain(backLinkCopy.workbench);
+  });
+
+  it("leads an ended run opened by a direct hit back to History", async () => {
+    const link = await trailLink({ getRun: vi.fn(async () => completedRun()) });
+
+    expect(link.textContent).toContain(backLinkCopy.history);
+    expect(link.getAttribute("href")).toBe(WORKSHOP_DESTINATION.history.path);
   });
 });
 
