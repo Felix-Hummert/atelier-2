@@ -60,12 +60,12 @@ const SPARSE_RETRY_MINIMUM_GAP_MS = 15_000;
  * The bounded recovery loop for a surface that holds no open stream of its
  * own (#700 stage 1).
  *
- * A run cockpit or the board heals the moment its native `EventSource`
- * reopens and reports here on its own `open` event. The Workbench, Catalog,
- * Workflows and History pages never hold one, so nothing would ever ask
- * again once a request failed -- this is the one loop that asks on their
- * behalf, a fixed number of tries against an existing cheap read, starting
- * only while the store is unhealthy and stopping the instant it is not.
+ * A run cockpit, and the Workbench's attention hold, heal the moment their
+ * native `EventSource` reopens and reports here on its own `open` event.
+ * Catalog and History never hold a stream, so nothing would ever ask again
+ * once a request failed -- this is the one loop that asks on their behalf, a
+ * fixed number of tries against an existing cheap read, starting only while
+ * the store is unhealthy and stopping the instant it is not.
  *
  * The interval above gives up once its budget is spent, but a tab is not:
  * the operator returning to it (`visibilitychange`) or the OS reporting the

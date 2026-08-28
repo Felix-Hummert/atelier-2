@@ -371,3 +371,64 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
   await expect(decisions).toHaveCount(6);
   await photograph(page, "workbench-bounded-decisions", true);
 });
+
+test("proves(a-decision-opens-on-the-workbench-while-you-watch): a decision that opens while you watch appears at 1280 and 390 without a reload", async ({
+  page
+}) => {
+  test.setTimeout(120_000);
+
+  const reset = await page.request.post("/__e2e/recompose?reset=true");
+  expect(reset.status()).toBe(202);
+  const expectedGeneration = await reset.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
+
+  const schema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: '{"type":"boolean"}'
+  });
+  expect([200, 201]).toContain(schema.status());
+  const schemaRevisionHash = (await schema.json()).schema_revision_hash as string;
+  const question = "May this wait open while you watch?";
+  const runId = "workbench/live-attention-while-watching";
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/atelier/chat");
+  await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
+  const card = page.locator(".pinned-decision").filter({ hasText: question });
+  await expect(card).toHaveCount(0);
+  const openedUrl = page.url();
+
+  const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      "name: Opened while watching",
+      "nodes:",
+      "  - id: ask",
+      "    type: wait",
+      `    prompt: ${question}`,
+      `    outputs: [{name: answer, schema: {ref: decision, revision: ${schemaRevisionHash}}}]`,
+      ""
+    ].join("\n")
+  });
+  expect(workflow.status()).toBe(201);
+  const started = await page.request.post("/atelier/api/v1/runs", {
+    data: {
+      workflow_format_version: 3,
+      run_id: runId,
+      workflow_revision_hash: (await workflow.json()).workflow_revision_hash as string,
+      agent_bindings: [],
+      orders: []
+    }
+  });
+  expect(started.status()).toBe(201);
+
+  await expect(card).toBeVisible({ timeout: 20_000 });
+  expect(page.url()).toBe(openedUrl);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(card).toBeVisible();
+  expect(page.url()).toBe(openedUrl);
+});
