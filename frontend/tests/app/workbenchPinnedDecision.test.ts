@@ -12,8 +12,9 @@ import {
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
-import { cockpitApiStub } from "../support/cockpitApi";
+import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { cancellableBlock } from "../support/runV3";
+import { waitingInput } from "../support/workflowV1";
 
 /**
  * The Workbench pins every open decision in its own non-scrolling "Needs you"
@@ -62,7 +63,11 @@ function answeredRun(): RunV3 {
   });
 }
 
-function revision(kind: "boolean" | "enum" | "free", values: string[] | null = null): WorkflowRevisionDetail {
+function revision(
+  kind: "boolean" | "enum" | "free",
+  values: string[] | null = null,
+  nodeIds: readonly string[] = ["approve"]
+): WorkflowRevisionDetail {
   return {
     workflow_revision_hash: revisionHash,
     document_base64: "YQ==",
@@ -70,13 +75,22 @@ function revision(kind: "boolean" | "enum" | "free", values: string[] | null = n
       workflow_format_version: 3,
       executable: true,
       not_executable_reason: null,
-      node_count: 1,
+      node_count: nodeIds.length,
       agent_roles: [],
       orders: [],
-      wait_answer_schemas: [
-        { node_id: "approve", schema: { ref: "decision", revision: "e".repeat(64) }, kind, values }
-      ],
-      node_previews: [{ id: "approve", kind: "wait", role: null, instruction_start: null, depends_on: [] }],
+      wait_answer_schemas: nodeIds.map((nodeId) => ({
+        node_id: nodeId,
+        schema: { ref: "decision", revision: "e".repeat(64) },
+        kind,
+        values
+      })),
+      node_previews: nodeIds.map((id) => ({
+        id,
+        kind: "wait",
+        role: null,
+        instruction_start: null,
+        depends_on: []
+      })),
       loops: [],
       name: "Approve once",
       description: null
@@ -84,11 +98,11 @@ function revision(kind: "boolean" | "enum" | "free", values: string[] | null = n
   } as WorkflowRevisionDetail;
 }
 
-function questionDetail(job: string | null = question) {
+function questionDetail(job: string | null = question, nodeId = "approve") {
   return {
     run_id: "v3/decide",
     public_run_reference: publicReference,
-    node_id: "approve",
+    node_id: nodeId,
     state: "needs_you",
     job_base64: job === null ? null : btoa(job),
     job_hash: job === null ? null : "e".repeat(64),
@@ -180,9 +194,22 @@ describe("the Workbench pins open decisions (#580)", () => {
       answer_base64: btoa("true")
     });
 
-    // Answered, the pin is retired -- the room shows the question no longer,
-    // rather than keeping one the run no longer asks.
-    await waitFor(() => expect(screen.queryByRole("heading", { name: question })).toBeNull());
+    // Ruled line 3: the operator first sees that the answer landed, with the
+    // pin still there and no take-back. After one house beat the pin retires.
+    const landed = await screen.findByRole("status", { name: workbenchPageCopy.answerLanded });
+    expect(landed.isConnected).toBe(true);
+    expect(returned.isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.discard })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
+
+    await waitFor(
+      () => {
+        expect(screen.queryByRole("status", { name: workbenchPageCopy.answerLanded })).toBeNull();
+        expect(screen.queryByRole("heading", { name: question })).toBeNull();
+      },
+      { timeout: 3_000 }
+    );
   });
 
   it("greets an empty workshop instead of pinning a decision that is not there", async () => {
@@ -313,5 +340,194 @@ describe("the Workbench pins open decisions (#580)", () => {
         name: new RegExp(workbenchPageCopy.answerDecision)
       })
     ).toBeNull();
+    expect(screen.queryByRole("status", { name: workbenchPageCopy.answerLanded })).toBeNull();
+  });
+
+  it("shows a landed sentence on the live 202 same-node payload and keeps it after the beat", async () => {
+    const waiting = waitingRun();
+    const answer = vi.fn(async (mutation: { body_base64: string }) => {
+      void mutation;
+      return { status: 202 as const, value: waitingRun() };
+    });
+    openWorkbench([waiting], { answer });
+
+    const needsYou = await screen.findByRole("region", { name: question });
+    await fireEvent.click(within(needsYou).getByRole("button", { name: runPageCopy.answerYes }));
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+
+    const landed = await screen.findByRole("status", { name: workbenchPageCopy.answerLanded });
+    expect(landed.isConnected).toBe(true);
+    expect(screen.queryByRole("heading", { name: question })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Answer pending" })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.discard })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 3_000);
+    });
+    expect(screen.getByRole("status", { name: workbenchPageCopy.answerLanded }).isConnected).toBe(
+      true
+    );
+    expect(screen.queryByRole("heading", { name: question })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Answer pending" })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.discard })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+  });
+
+  it("shows a confirmed answer as a landed sentence before the pin retires, and never on an uncertain send", async () => {
+    const answer = vi.fn(async (mutation: { body_base64: string }) => {
+      void mutation;
+      return { status: 202 as const, value: answeredRun() };
+    });
+    openWorkbench([waitingRun()], { answer });
+
+    const needsYou = await screen.findByRole("region", { name: question });
+    await fireEvent.click(within(needsYou).getByRole("button", { name: runPageCopy.answerYes }));
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+
+    const landed = await screen.findByRole("status", { name: workbenchPageCopy.answerLanded });
+    expect(landed.isConnected).toBe(true);
+    expect(
+      screen.getByRole("region", { name: workbenchPageCopy.pinnedDecisionsLabel }).isConnected
+    ).toBe(true);
+    expect(screen.queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.discard })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: new RegExp(workbenchPageCopy.answerDecision) })
+    ).toBeNull();
+
+    await waitFor(
+      () => {
+        expect(screen.queryByRole("status", { name: workbenchPageCopy.answerLanded })).toBeNull();
+        expect(screen.queryByRole("region", { name: workbenchPageCopy.pinnedDecisionsLabel })).toBeNull();
+      },
+      { timeout: 3_000 }
+    );
+
+    cleanup();
+    const uncertain = vi.fn(async () => {
+      throw new CockpitRequestError("The connection ended without a response.");
+    });
+    openWorkbench([waitingRun()], { answer: uncertain });
+    const stillOpen = await screen.findByRole("region", { name: question });
+    await fireEvent.click(within(stillOpen).getByRole("button", { name: runPageCopy.answerYes }));
+    await within(stillOpen).findByRole("heading", { name: "Answer uncertain" });
+    expect(screen.queryByRole("status", { name: workbenchPageCopy.answerLanded })).toBeNull();
+    expect(within(stillOpen).getByRole("button", { name: runPageCopy.retry }).isConnected).toBe(true);
+    expect(within(stillOpen).getByRole("button", { name: runPageCopy.discard }).isConnected).toBe(
+      true
+    );
+  });
+
+  it("shows the next wait on the same run after the landed beat", async () => {
+    const nextQuestion = "Who reviews round 4?";
+    const nextWait = waitingRun({
+      current_node_id: "next-gate",
+      current_node_execution_id: "f".repeat(64),
+      node_rail: [
+        { node_id: "approve", state: "succeeded", attempt: null },
+        { node_id: "next-gate", state: "needs_you", attempt: null }
+      ]
+    });
+    const answer = vi.fn(async (mutation: { body_base64: string }) => {
+      void mutation;
+      return { status: 202 as const, value: nextWait };
+    });
+    openWorkbench([waitingRun()], {
+      answer,
+      getNodeDetail: vi.fn(async (_publicReference: string, nodeId: string) =>
+        nodeId === "next-gate"
+          ? (questionDetail(nextQuestion, "next-gate") as never)
+          : (questionDetail() as never)
+      ),
+      getWorkflowRevision: vi.fn(async () => revision("boolean", null, ["approve", "next-gate"]))
+    });
+
+    const needsYou = await screen.findByRole("region", { name: question });
+    await fireEvent.click(within(needsYou).getByRole("button", { name: runPageCopy.answerYes }));
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+
+    const landed = await screen.findByRole("status", { name: workbenchPageCopy.answerLanded });
+    expect(landed.isConnected).toBe(true);
+    expect(screen.queryByRole("heading", { name: question })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.discard })).toBeNull();
+
+    await waitFor(
+      () => {
+        expect(screen.queryByRole("status", { name: workbenchPageCopy.answerLanded })).toBeNull();
+        expect(screen.getByRole("heading", { name: nextQuestion }).isConnected).toBe(true);
+        expect(screen.getByRole("button", { name: runPageCopy.answerYes }).isConnected).toBe(true);
+        expect(screen.getByRole("button", { name: runPageCopy.answerNo }).isConnected).toBe(true);
+        expect(screen.queryByRole("heading", { name: question })).toBeNull();
+      },
+      { timeout: 3_000 }
+    );
+  });
+
+  it("does not re-absorb a stale same-node 202 when the stream takes the next wait", async () => {
+    const nextQuestion = "Who reviews round 4?";
+    const nextWait = waitingRun({
+      current_node_id: "next-gate",
+      current_node_execution_id: "f".repeat(64),
+      node_rail: [
+        { node_id: "approve", state: "succeeded", attempt: null },
+        { node_id: "next-gate", state: "needs_you", attempt: null }
+      ]
+    });
+    const feed = new FakeRunEventFeed();
+    const answer = vi.fn(async (mutation: { body_base64: string }) => {
+      void mutation;
+      return { status: 202 as const, value: waitingRun() };
+    });
+    const getRun = vi.fn(async () => nextWait);
+    openWorkbench([waitingRun()], {
+      answer,
+      getRun,
+      openAttentionEvents: feed.openAttention,
+      getNodeDetail: vi.fn(async (_publicReference: string, nodeId: string) =>
+        nodeId === "next-gate"
+          ? (questionDetail(nextQuestion, "next-gate") as never)
+          : (questionDetail() as never)
+      ),
+      getWorkflowRevision: vi.fn(async () => revision("boolean", null, ["approve", "next-gate"]))
+    });
+
+    const needsYou = await screen.findByRole("region", { name: question });
+    await fireEvent.click(within(needsYou).getByRole("button", { name: runPageCopy.answerYes }));
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+
+    const landed = await screen.findByRole("status", { name: workbenchPageCopy.answerLanded });
+    expect(landed.isConnected).toBe(true);
+
+    feed.handlers?.opened();
+    feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, {
+          public_run_reference: publicReference,
+          cursor: `event1.${publicReference.slice("run1.".length)}.1`,
+          node_id: "next-gate"
+        })
+      )
+    );
+
+    await waitFor(() => expect(getRun).toHaveBeenCalledWith(publicReference));
+    expect(screen.getByRole("status", { name: workbenchPageCopy.answerLanded }).isConnected).toBe(
+      true
+    );
+    expect(screen.queryByRole("heading", { name: question })).toBeNull();
+
+    await waitFor(
+      () => {
+        expect(screen.queryByRole("status", { name: workbenchPageCopy.answerLanded })).toBeNull();
+        expect(screen.getByRole("heading", { name: nextQuestion }).isConnected).toBe(true);
+        expect(screen.getByRole("button", { name: runPageCopy.answerYes }).isConnected).toBe(true);
+        expect(screen.getByRole("button", { name: runPageCopy.answerNo }).isConnected).toBe(true);
+        expect(screen.queryByRole("heading", { name: question })).toBeNull();
+      },
+      { timeout: 3_000 }
+    );
   });
 });

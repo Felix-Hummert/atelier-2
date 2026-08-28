@@ -6,8 +6,7 @@
     type AnyRun,
     type CockpitApi,
     type RunEvent,
-    type RunEventSubscription,
-    type RunV3
+    type RunEventSubscription
   } from "../api/client";
   import PinnedDecision from "../components/PinnedDecision.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
@@ -54,6 +53,7 @@
     protocolTitle,
     streamStopped
   } from "../lib/streamStatus";
+  import { absorbAttentionRun, workbenchDecisionPins } from "../lib/workbenchAttention";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
   import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
   import { WORKSHOP_DESTINATION, runsWaitingForYou } from "../lib/workshop";
@@ -170,9 +170,9 @@
    * it -- a run still confirms with its own real fields when its name could not
    * be resolved, falling back to the run id honestly.
    *
-   * These runs are not streamed: a decision that opens while the operator is
-   * already sitting here appears on the next read, not the moment it opens.
-   * Consuming the live attention stream is a named successor gap.
+   * The list is the cold read; the attention hold nudges each change through
+   * the same canonical `getRun` so a decision that opens while the operator
+   * is sitting here appears without a reload.
    */
   async function load(): Promise<void> {
     const begun = beginRead(live);
@@ -326,18 +326,10 @@
   function absorbRun(read: AnyRun): boolean {
     const confirmed = live.confirmed;
     if (confirmed === null) return false;
-    const others = confirmed.runs.filter(
-      (run) => run.public_run_reference !== read.public_run_reference
-    );
-    const runs = runHasMoved(read) ? others : [...others, read];
+    const runs = absorbAttentionRun(confirmed.runs, read);
     live = updateConfirmed(live, { ...confirmed, runs });
     publishCount(runs);
     return true;
-  }
-
-  function runHasMoved(run: AnyRun): boolean {
-    const standing = runStanding(run.state);
-    return standing !== "waiting" && standing !== "running";
   }
 
   /**
@@ -376,12 +368,10 @@
 
   $: streamTitle = protocolTitle(hold);
   $: snapshot = live.confirmed;
-  $: pins = (snapshot?.runs ?? [])
-    .filter((run): run is RunV3 => isRunV3(run) && run.state === "WAITING_INPUT")
-    .map((run) => ({
-      run,
-      workflowName: resolveWorkflowName(run, snapshot?.workflowNames ?? null)
-    }));
+  $: pins = workbenchDecisionPins(snapshot?.runs ?? []).map((run) => ({
+    run,
+    workflowName: resolveWorkflowName(run, snapshot?.workflowNames ?? null)
+  }));
   $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
     expandedPinReference = pins[0]?.run.public_run_reference ?? null;
   }

@@ -23,6 +23,8 @@ export const workbenchPageCopy = {
 
   openTheRun: "open the run",
   answerDecision: "Answer →",
+  /** HEART "Decision as stage": the warm sentence after a successful answer. */
+  answerLanded: "Your answer landed.",
   pinnedDecisionsLabel: "Open decisions",
 
   runsIncomplete: "Workbench runs incomplete",

@@ -36,8 +36,8 @@ its confirmation fenced on and answers the closed cancellation vocabulary
 conflict); submit an accountable reconciliation; and follow the
 closed durable event history as a resumable server-sent event stream. A
 subscriber who does not already know a run holds `GET /events`; opening that
-stream is the subscription. The cockpit holds that stream, so a Wait or an
-agent failure appears without `POST /subscriptions`. The feed is closed to
+stream is the subscription. The Workbench holds that stream, so a wait that opens while the operator
+watches appears without a reload and without `POST /subscriptions`. The feed is closed to
 `WAITING_INPUT`, `AGENT_FAILED`, and `ACTION_RECONCILIATION_REQUIRED` — the
 events that stop a run until an operator acts — in the same envelope and
 `VersionedRunEventResource` the per-run stream emits. A run whose projection cannot be served is named on this feed as `RUN_PROJECTION_CORRUPT` (`durable-state-corrupt`, `public_run_reference`) and does not end the subscription; that run's own event stream still ends with `STREAM_FAILED`. `Last-Event-ID` resumes by same-instant identity
