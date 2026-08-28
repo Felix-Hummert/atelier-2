@@ -500,6 +500,7 @@ describe("a version 3 run that stops for a person", () => {
       event_hash: "c".repeat(64),
       node_rail: [{ node_id: "approve", state: "succeeded", attempt: null }],
       event: "WAIT_ANSWERED",
+      actor: "operator",
       answer_base64: btoa(answer),
       answer_hash: [
         ...new Uint8Array(
@@ -638,6 +639,8 @@ describe("a version 3 run that stops for a person", () => {
     expect(body).toEqual({
       workflow_revision_hash: digest,
       node_id: "approve",
+      expected_node_execution_id: "d".repeat(64),
+      actor: "operator",
       answer_base64: btoa(answer)
     });
   });

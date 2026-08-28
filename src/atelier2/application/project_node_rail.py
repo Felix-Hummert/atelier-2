@@ -26,7 +26,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptState,
 )
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import NodeExecutionId, RunEventKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -45,6 +45,8 @@ from atelier2.contracts.workflows import (
     AgentNode,
     AgentNodeV2,
     AnyWorkflowNode,
+    RunContinues,
+    completion_after_node,
 )
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
@@ -178,7 +180,8 @@ class _RailDerivation:
             ),
             None,
         )
-        last_event = self._last_event_of(node.id)
+        node_execution_id = self._execution_of(node.id)
+        last_event = self._last_event_of(node_execution_id)
         leading_event = self.leading_event
         state = (
             self._event_driven_state(node, last_event, leading_event)
@@ -191,11 +194,31 @@ class _RailDerivation:
             node.id, state, last_event, self._attempt(node, last_event), reused
         )
 
-    def _last_event_of(self, node_id: str) -> PersistedRunEvent | None:
+    def _last_event_of(
+        self, node_execution_id: NodeExecutionId
+    ) -> PersistedRunEvent | None:
         for persisted in reversed(self.events):
-            if persisted.event.node_id == node_id:
+            if persisted.event.node_execution_id == node_execution_id:
                 return persisted
         return None
+
+    def _execution_of(self, node_id: str) -> NodeExecutionId:
+        round_ordinal = self.projection.run.current_round_ordinal
+        leading = self.leading_event
+        if leading is not None and leading.event.node_id == node_id:
+            round_ordinal = leading.event.round_ordinal
+        elif (
+            leading is not None and leading.event.event_kind in _SUCCESSFUL_ENDING_KINDS
+        ):
+            successor = self._successor_of(leading)
+            if successor is not None and successor.node_id == node_id:
+                round_ordinal = successor.round_ordinal
+        return NodeExecutionId.for_node(
+            self.projection.run.run_id,
+            self.projection.run.revision_hash,
+            node_id,
+            round_ordinal,
+        )
 
     def _snapshot_state(
         self, node: _RailNode, index: int, last_event: PersistedRunEvent | None
@@ -258,24 +281,19 @@ class _RailDerivation:
             )
         if (
             leading_event.event.event_kind in _SUCCESSFUL_ENDING_KINDS
-            and self._successor_of(leading_event.event.node_id) == node.id
+            and (successor := self._successor_of(leading_event)) is not None
+            and successor.node_id == node.id
         ):
             return NodeState.WORKING
         return NodeState.QUEUED
 
-    def _successor_of(self, node_id: str) -> str | None:
-        """The node the walk reaches next, whichever format declared that edge.
-
-        Asked of the walk rather than of the node: a V1 or V2 node names its
-        successor in `next` and a V3 node does not name one at all, but the walk
-        has already resolved both into one order, so reading it here keeps a
-        single owner of what follows what.
-        """
-        for index, node in enumerate(self.nodes):
-            if node.id == node_id:
-                following = self.nodes[index + 1 :]
-                return following[0].id if following else None
-        return None
+    def _successor_of(self, event: PersistedRunEvent) -> RunContinues | None:
+        completion = completion_after_node(
+            self.projection.graph,
+            event.event.node_id,
+            event.event.round_ordinal,
+        )
+        return completion if isinstance(completion, RunContinues) else None
 
     def _attempt(
         self, node: _RailNode, last_event: PersistedRunEvent | None

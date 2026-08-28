@@ -3,7 +3,9 @@ from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.executions import (
+    NodeExecutionId,
     SubmitWaitAnswerRequest,
+    WaitAnswerActor,
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
@@ -16,6 +18,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerNotAdmitted,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
+    DurableAnswerStale,
     DurableAnswerStateConflict,
     DurableWriteUnavailable,
     TransactionalWaitAnswerer,
@@ -61,6 +64,11 @@ class AnswerStateConflict:
 
 
 @dataclass(frozen=True)
+class AnswerStale:
+    pass
+
+
+@dataclass(frozen=True)
 class AnswerBytesConflict:
     pass
 
@@ -74,6 +82,7 @@ type AnswerWaitResult = (
     | NodeMissing
     | AnswerRevisionConflict
     | AnswerStateConflict
+    | AnswerStale
     | AnswerBytesConflict
     | WriteUnavailable
     | DurableStateCorrupt
@@ -96,6 +105,8 @@ def answer_wait_result(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
+    expected_node_execution_id: NodeExecutionId,
+    actor: WaitAnswerActor,
     answer_bytes: bytes,
     answerer: TransactionalWaitAnswerer,
 ) -> AnswerWaitResult:
@@ -116,7 +127,14 @@ def answer_wait_result(
     when the decision did.
     """
     try:
-        request = SubmitWaitAnswerRequest(run_id, revision_hash, node_id, answer_bytes)
+        request = SubmitWaitAnswerRequest(
+            run_id,
+            revision_hash,
+            node_id,
+            expected_node_execution_id,
+            actor,
+            answer_bytes,
+        )
     except (TypeError, ValueError):
         return UnanswerableWait()
     result = answerer.submit_result(request)
@@ -135,6 +153,8 @@ def answer_wait_result(
             return AnswerRevisionConflict()
         case DurableAnswerStateConflict():
             return AnswerStateConflict()
+        case DurableAnswerStale():
+            return AnswerStale()
         case DurableAnswerBytesConflict():
             return AnswerBytesConflict()
         case DurableAnswerNotAdmitted():

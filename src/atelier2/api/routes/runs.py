@@ -62,6 +62,7 @@ from atelier2.application.answer_wait import (
     AnswerExistingApplied,
     AnswerExistingPending,
     AnswerRevisionConflict,
+    AnswerStale,
     AnswerStateConflict,
     NodeMissing,
     RunMissing,
@@ -159,7 +160,7 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import NodeExecutionId, WaitAnswerActor
 from atelier2.contracts.orders import (
     ArtifactOrderValue,
     InlineOrderValue,
@@ -593,7 +594,12 @@ async def answer_run_route(
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.answer_wait(
-            run_id, revision_hash, body.node_id, answer_bytes
+            run_id,
+            revision_hash,
+            body.node_id,
+            NodeExecutionId(body.expected_node_execution_id),
+            WaitAnswerActor(body.actor),
+            answer_bytes,
         ),
     )
     match result:
@@ -611,6 +617,8 @@ async def answer_run_route(
             raise ApiProblem("answer-revision-conflict")
         case AnswerStateConflict():
             raise ApiProblem("answer-state-conflict")
+        case AnswerStale():
+            raise ApiProblem("answer-execution-stale")
         case AnswerBytesConflict():
             raise ApiProblem("answer-bytes-conflict")
         case WriteUnavailable(detail):

@@ -916,6 +916,31 @@ describe("the catalog name the picker asks for the head", () => {
 });
 
 describe("answering a wait over the existing door", () => {
+  function answerMutation() {
+    return {
+      mutation_id: `wait:run1.cnVu:${digest}`,
+      kind: "wait" as const,
+      target: "/atelier/api/v1/runs/run1.cnVu/answers",
+      content_type: "application/json" as const,
+      body_base64: btoa(
+        JSON.stringify({
+          workflow_revision_hash: digest,
+          node_id: "ask",
+          expected_node_execution_id: digest,
+          actor: "operator",
+          answer_base64: btoa("true")
+        })
+      ),
+      public_run_reference: "run1.cnVu",
+      workflow_revision_hash: digest,
+      node_id: "ask",
+      expected_node_execution_id: digest,
+      actor: "operator" as const,
+      answer_base64: btoa("true"),
+      answer_hash: digest
+    };
+  }
+
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): decodes a V3 run the answers door returns", async () => {
     const run = {
       workflow_format_version: 3,
@@ -940,30 +965,40 @@ describe("answering a wait over the existing door", () => {
         headers: { "content-type": "application/json" }
       })
     );
-    const mutation = {
-      mutation_id: "wait:run1.cnVu:ask",
-      kind: "wait" as const,
-      target: "/atelier/api/v1/runs/run1.cnVu/answers",
-      content_type: "application/json" as const,
-      body_base64: btoa(
-        JSON.stringify({
-          workflow_revision_hash: digest,
-          node_id: "ask",
-          answer_base64: btoa("true")
-        })
-      ),
-      public_run_reference: "run1.cnVu",
-      workflow_revision_hash: digest,
-      node_id: "ask",
-      answer_base64: btoa("true"),
-      answer_hash: digest
-    };
+    const mutation = answerMutation();
 
     const answered = await createCockpitApi(fetcher).answer(mutation);
 
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/runs/run1.cnVu/answers");
     expect(answered).toEqual({ status: 200, value: run });
   });
+
+  it.each([
+    ["answer-execution-stale", 409, true],
+    ["durable-state-corrupt", 500, true],
+    ["temporarily-unavailable", 503, false]
+  ] as const)(
+    "classifies %s at HTTP %i as definitive=%s",
+    async (code, status, definitive) => {
+      const problem = {
+        type: `${PROBLEM_TYPE_PREFIX}${code}`,
+        title: problemDefinitions[code].title,
+        status,
+        detail: "The durable answer door names this outcome."
+      };
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(problem), {
+          status,
+          headers: { "content-type": "application/problem+json" }
+        })
+      );
+
+      await expect(createCockpitApi(fetcher).answer(answerMutation())).rejects.toMatchObject({
+        problem,
+        definitive_failure: definitive
+      });
+    }
+  );
 });
 
 describe("cancelling a run over its cancel door", () => {

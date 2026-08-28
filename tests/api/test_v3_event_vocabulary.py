@@ -27,6 +27,7 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventAgentAttemptBinding,
     RunEventKind,
+    WaitAnswerActor,
 )
 from atelier2.contracts.run_cancellations import RunCancelCommandId
 from atelier2.contracts.run_events import PersistedRunEvent
@@ -60,7 +61,14 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
         payload,
         attempt_binding=attempt_binding,
     )
-    return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
+    return PersistedRunEvent(
+        event,
+        None,
+        WorkflowFormatVersion.V3,
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAIT_ANSWERED else None
+        ),
+    )
 
 
 def unavailable_v3_projection() -> PersistedRunEvent:

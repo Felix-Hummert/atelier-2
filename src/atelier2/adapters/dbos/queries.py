@@ -37,6 +37,7 @@ from atelier2.adapters.dbos.run_store import (
     load_node_outputs,
     load_run_inputs,
     load_run_orders,
+    wait_answer_snapshot_from_record,
 )
 from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
@@ -58,6 +59,7 @@ from atelier2.adapters.dbos.schema import (
     run_forks,
     run_instants,
     runs,
+    wait_answers,
     workflow_revisions,
 )
 from atelier2.adapters.dbos.workflow import (
@@ -99,6 +101,8 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
     RunEventKind,
+    WaitAnswerActor,
+    WaitAnswerState,
     logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -2273,6 +2277,40 @@ class DbosQueries:
         projection_limit: DurableProjectionLimit,
     ) -> PersistedRunEvent:
         event = event_from_record(record)
+        wait_answer_actor: WaitAnswerActor | None = None
+        if (
+            workflow_format_version is WorkflowFormatVersion.V3
+            and event.event_kind is RunEventKind.WAIT_ANSWERED
+        ):
+            answer_records = tuple(
+                connection.execute(
+                    sa.select(wait_answers).where(
+                        wait_answers.c.node_execution_id
+                        == event.node_execution_id.value
+                    )
+                ).mappings()
+            )
+            if len(answer_records) != 1:
+                raise RunTransitionConflict(
+                    "wait answer event has no unique durable answer"
+                )
+            answer_snapshot = wait_answer_snapshot_from_record(answer_records[0])
+            answer = answer_snapshot.answer
+            if (
+                answer_snapshot.state is not WaitAnswerState.APPLIED
+                or answer_snapshot.state_version != 1
+                or answer.run_id != event.run_id
+                or answer.revision_hash != event.revision_hash
+                or answer.node_id != event.node_id
+                or answer.node_execution_id != event.node_execution_id
+                or answer.round_ordinal != event.round_ordinal
+                or answer.answer_bytes != event.payload
+                or answer.answer_hash != event.payload_hash
+            ):
+                raise RunTransitionConflict(
+                    "wait answer event and durable answer disagree"
+                )
+            wait_answer_actor = answer.actor
         if (
             event.event_kind is RunEventKind.AGENT_FAILED
             and workflow_format_version not in _AGENT_FAILURE_FORMATS
@@ -2307,7 +2345,11 @@ class DbosQueries:
             RunEventKind.ACTION_COMPLETED,
         }:
             return PersistedRunEvent(
-                event, None, workflow_format_version, node_receipt_reason
+                event,
+                None,
+                workflow_format_version,
+                node_receipt_reason,
+                wait_answer_actor,
             )
         logical_key = event.receipt_logical_key
         if logical_key is None:
@@ -2339,4 +2381,9 @@ class DbosQueries:
             or receipt.result.payload_hash != event.receipt_result_hash
         ):
             raise RunTransitionConflict("receipt event binding disagrees")
-        return PersistedRunEvent(event, receipt, workflow_format_version)
+        return PersistedRunEvent(
+            event,
+            receipt,
+            workflow_format_version,
+            wait_answer_actor=wait_answer_actor,
+        )

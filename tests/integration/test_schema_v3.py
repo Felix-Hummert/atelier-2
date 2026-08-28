@@ -624,7 +624,7 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
         connection.execute(
             sa.text(
                 "INSERT INTO wait_answers VALUES "
-                "('run-1',:revision,'wait',:node,:round,:answer,:answer_hash,"
+                "('run-1',:revision,'wait',:node,:round,'operator',:answer,:answer_hash,"
                 "'answer-workflow','PENDING',0)"
             ),
             {
@@ -640,6 +640,8 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
         connection.execute(sa.text("UPDATE run_events SET payload=X'00'"))
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(sa.text("DELETE FROM wait_answers"))
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(sa.text("UPDATE wait_answers SET actor='someone-else'"))
     engine.dispose()
 
 

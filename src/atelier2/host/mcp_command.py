@@ -46,8 +46,10 @@ from atelier2.api.wire.resources import (
     ArtifactResource,
     CatalogNameResolutionResource,
     ProblemResource,
+    RunResourceV3,
     VersionedWorkflowRevisionPageResource,
 )
+from atelier2.contracts.executions import WaitAnswerActor
 from atelier2.host.address import (
     ADDRESSABLE_SCHEMES,
     DEFAULT_SERVICE_URL,
@@ -345,13 +347,31 @@ def run_status(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]
         _get(f"{_api_url(service_url)}{RUN_PATH}/{quote(reference, safe='')}"),
         "a run",
     )
-    return ended.model_dump(mode="json")
+    resource = ended.model_dump(mode="json")
+    resource["answerable_wait"] = _answerable_wait(ended)
+    return resource
+
+
+def _answerable_wait(run: AnyRunResource) -> dict[str, str] | None:
+    """The exact fence MCP can write back to the answer door, or no open wait."""
+
+    execution_id: str | None = None
+    if isinstance(run, RunResourceV3) and run.state == "WAITING_INPUT":
+        execution_id = run.cancellation.target_node_execution_id
+    if execution_id is None:
+        return None
+    return {
+        "actor": WaitAnswerActor.OPERATOR.value,
+        "expected_node_execution_id": execution_id,
+    }
 
 
 def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     reference = _required_text(arguments, "public_run_reference")
     workflow_revision_hash = _required_text(arguments, "workflow_revision_hash")
     node_id = _required_text(arguments, "node_id")
+    expected_node_execution_id = _required_text(arguments, "expected_node_execution_id")
+    actor = _required_text(arguments, "actor")
     answer_base64 = _required_text(arguments, "answer_base64")
     answered = _decoded(
         _run_resource,
@@ -361,6 +381,8 @@ def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any
                 {
                     "workflow_revision_hash": workflow_revision_hash,
                     "node_id": node_id,
+                    "expected_node_execution_id": expected_node_execution_id,
+                    "actor": actor,
                     "answer_base64": answer_base64,
                 }
             ).encode(),

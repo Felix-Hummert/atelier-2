@@ -174,7 +174,7 @@ three live-GitHub guards stand on the record-composed path: a non-loopback bind
 refuses to start, admission refuses an agent-authored `open-pr` grant, and a
 start refuses while an earlier run still owes an agent `open-pr` redemption.
 
-The canonical store is schema V45. A fresh store is created as exact V45 and
+The canonical store is schema V46. A fresh store is created as exact V46 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output
@@ -184,6 +184,7 @@ orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
 artifacts an order may name instead of carrying their bytes, the round a
 declared loop was turning when each run, event and agent receipt was written,
+the operator actor and exact node execution fenced into every Wait answer,
 the host configuration channel's project-root, project-source, provider model
 registry, and project model-default revisions, and the queue projection's
 admission row per work item. V40 retired lineage occupancy instead of carrying

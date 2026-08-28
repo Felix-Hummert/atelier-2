@@ -141,6 +141,12 @@ class WaitAnswerState(StrEnum):
     APPLIED = "APPLIED"
 
 
+class WaitAnswerActor(StrEnum):
+    """Who supplied one durable answer, in the current closed vocabulary."""
+
+    OPERATOR = "operator"
+
+
 @dataclass(frozen=True)
 class RunEventAgentAttemptBinding:
     attempt_id: AgentAttemptId
@@ -414,6 +420,7 @@ class WaitAnswer:
     revision_hash: WorkflowRevisionHash
     node_id: str
     node_execution_id: NodeExecutionId
+    actor: WaitAnswerActor
     answer_bytes: bytes
     round_ordinal: int = FIRST_ROUND_ORDINAL
     answer_hash: Sha256Hash = field(init=False)
@@ -421,6 +428,8 @@ class WaitAnswer:
     def __post_init__(self) -> None:
         if self.node_id == "":
             raise ValueError("answer node id must be nonempty")
+        if not isinstance(self.actor, WaitAnswerActor):
+            raise TypeError("answer actor must be typed")
         if self.node_execution_id != NodeExecutionId.for_node(
             self.run_id, self.revision_hash, self.node_id, self.round_ordinal
         ):
@@ -440,11 +449,17 @@ class SubmitWaitAnswerRequest:
     run_id: RunId
     revision_hash: WorkflowRevisionHash
     node_id: str
+    expected_node_execution_id: NodeExecutionId
+    actor: WaitAnswerActor
     answer_bytes: bytes
 
     def __post_init__(self) -> None:
         if self.node_id == "":
             raise ValueError("answer node id must be nonempty")
+        if not isinstance(self.expected_node_execution_id, NodeExecutionId):
+            raise TypeError("answer execution fence must be typed")
+        if not isinstance(self.actor, WaitAnswerActor):
+            raise TypeError("answer actor must be typed")
 
 
 def logical_effect_key_for(execution_id: NodeExecutionId) -> LogicalEffectKey:

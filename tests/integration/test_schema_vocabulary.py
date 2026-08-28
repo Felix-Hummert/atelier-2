@@ -42,7 +42,11 @@ from atelier2.contracts.effects import (
     EffectOutcome,
     ReconcileCommandState,
 )
-from atelier2.contracts.executions import RunEventKind, WaitAnswerState
+from atelier2.contracts.executions import (
+    RunEventKind,
+    WaitAnswerActor,
+    WaitAnswerState,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
     MAXIMUM_CONNECTION_ACTOR_CHARACTERS,
@@ -406,6 +410,7 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "runs.state": _values(RunState),
     "runs.workflow_format_version": _values(WorkflowFormatVersion),
     "wait_answers.state": _values(WaitAnswerState),
+    "wait_answers.actor": _values(WaitAnswerActor),
     "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
     "published_revisions.kind": _values(RevisionKind),
     # A tool redemption is the exec-shaped record -- a command, an exit code, a

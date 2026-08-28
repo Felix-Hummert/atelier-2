@@ -173,6 +173,7 @@ async function chainedWaitAnswered(answer: string, sequence: number) {
     ...chainedWaitBase(sequence),
     node_rail: [{ node_id: "approve", state: "succeeded", attempt: null }],
     event: "WAIT_ANSWERED",
+    actor: "operator",
     answer_base64: btoa(answer),
     answer_hash: await sha256Of(answer)
   };

@@ -108,6 +108,7 @@
   let runStateElement: { focus(): void };
   let disposed = false;
   let eventQueue: Promise<void> = Promise.resolve();
+  let waitJournalGeneration = 0;
   $: pendingAnswer = pendingWait === null ? null : waitAnswer(pendingWait);
   $: openFormNodeIds = new Set(
     [pendingWait?.node_id, pendingReconciliation?.node_id].filter(
@@ -271,6 +272,9 @@
       await refreshWatchedV3Run(next);
       return;
     }
+    if (latest?.event === "WAITING_INPUT" && snapshot.confirmed !== null) {
+      await loadPendingWait(snapshot.confirmed.run);
+    }
     if (latest?.event === "SUBWORKFLOW_COMPLETED") {
       projection = markComplete(next);
       stream?.close();
@@ -321,13 +325,17 @@
       // answer reaches the stream through the API alone, so there is no pending
       // mutation of this page's to settle against it.
       if (event.event === "WAIT_ANSWERED" && "answer" in event) {
-        const mutationId = waitMutationId(event.public_run_reference, event.node_id);
+        const mutationId = waitMutationId(
+          event.public_run_reference,
+          event.node_execution_id
+        );
         const entry = await mutationJournal.get(mutationId);
         const resolved = entry?.kind === "wait" && await mutationJournal.resolve(mutationId, {
           type: "wait_answered",
           public_run_reference: event.public_run_reference,
           workflow_revision_hash: event.workflow_revision_hash,
           node_id: event.node_id,
+          node_execution_id: event.node_execution_id,
           answer: event.answer,
           answer_hash: event.answer_hash
         });
@@ -375,13 +383,21 @@
   }
 
   async function loadPendingWait(run: Run): Promise<void> {
+    const generation = waitJournalGeneration;
     if (run.state !== "WAITING_INPUT" || run.waiting.type !== "WAITING_INPUT") {
       pendingWait = null;
       waitAccepted = false;
       return;
     }
-    const mutationId = waitMutationId(run.public_run_reference, run.waiting.node_id);
+    const nodeExecutionId = currentWaitExecutionId(run);
+    if (nodeExecutionId === null) {
+      pendingWait = null;
+      waitAccepted = false;
+      return;
+    }
+    const mutationId = waitMutationId(run.public_run_reference, nodeExecutionId);
     const entry = await mutationJournal.get(mutationId);
+    if (generation !== waitJournalGeneration) return;
     if (entry !== null && entry.kind !== "wait") {
       throw new Error(runPageCopy.savedRequestWrongOperation);
     }
@@ -393,6 +409,7 @@
     if (
       entry.workflow_revision_hash !== run.workflow_revision_hash ||
       entry.node_id !== run.waiting.node_id ||
+      entry.expected_node_execution_id !== nodeExecutionId ||
       entry.public_run_reference !== run.public_run_reference
     ) {
       throw new Error(runPageCopy.savedAnswerWrongNode);
@@ -443,6 +460,20 @@
     pendingReconciliation = entry;
   }
 
+  function currentWaitExecutionId(run: Run): string | null {
+    if (projection === null || run.waiting.type !== "WAITING_INPUT") return null;
+    const head = projection.events.at(-1);
+    if (
+      run.latest_event_cursor === null ||
+      head?.cursor !== run.latest_event_cursor ||
+      head.event !== "WAITING_INPUT" ||
+      head.node_id !== run.waiting.node_id
+    ) {
+      return null;
+    }
+    return head.node_execution_id;
+  }
+
   async function submitWait(answer: string): Promise<void> {
     waitValidationMessage = null;
     waitFailureMessage = null;
@@ -452,6 +483,11 @@
     }
     const run = snapshot.confirmed?.run;
     if (run?.state !== "WAITING_INPUT" || run.waiting.type !== "WAITING_INPUT") return;
+    const nodeExecutionId = currentWaitExecutionId(run);
+    if (nodeExecutionId === null) {
+      waitFailureMessage = "The waiting turn does not name its exact execution.";
+      return;
+    }
     waitBusy = true;
     let mutation: WaitMutation | null = null;
     try {
@@ -459,6 +495,7 @@
         run.public_run_reference,
         run.workflow_revision_hash,
         run.waiting.node_id,
+        nodeExecutionId,
         answer
       );
       const prepared = await mutationJournal.prepare(mutation);
@@ -498,7 +535,9 @@
 
   async function discardWait(): Promise<void> {
     if (pendingWait === null) return;
+    waitJournalGeneration += 1;
     await mutationJournal.discard(pendingWait.mutation_id);
+    waitJournalGeneration += 1;
     pendingWait = null;
     waitAccepted = false;
     waitValidationMessage = null;
@@ -686,12 +725,13 @@
 
   function matchingReconciliationEventExists(mutation: ReconciliationMutation): boolean {
     const command = reconciliationCommand(mutation);
+    const nodeId = mutation.node_id;
     return projection?.events.some((event) => {
       if (
         event.event !== "ACTION_RECONCILIATION_RESOLVED" ||
         event.public_run_reference !== publicReference ||
         event.workflow_revision_hash !== mutation.workflow_revision_hash ||
-        event.node_id !== mutation.node_id ||
+        event.node_id !== nodeId ||
         event.receipt.reconcile_command_id !== command.command_id ||
         event.receipt.request_hash !== mutation.request_hash
       ) {
@@ -815,6 +855,7 @@
         event.public_run_reference === mutation.public_run_reference &&
         event.workflow_revision_hash === mutation.workflow_revision_hash &&
         event.node_id === mutation.node_id &&
+        event.node_execution_id === mutation.expected_node_execution_id &&
         event.answer === answer &&
         event.answer_hash === mutation.answer_hash
     ) ?? false;
@@ -952,6 +993,7 @@
         {pendingAnswer}
         accepted={waitAccepted}
         busy={waitBusy}
+        answerable={currentWaitExecutionId(snapshot.confirmed.run) !== null}
         validationMessage={waitValidationMessage}
         failureMessage={waitFailureMessage}
         onAnswer={(answer) => { void submitWait(answer); }}

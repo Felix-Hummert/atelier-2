@@ -49,7 +49,11 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    SubmitWaitAnswerRequest,
+    WaitAnswerActor,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import (
     RunId,
@@ -277,6 +281,10 @@ def submit_answer(
                 RunId(run_id),
                 WorkflowRevisionHash(revision_hash),
                 node_id,
+                NodeExecutionId.for_node(
+                    RunId(run_id), WorkflowRevisionHash(revision_hash), node_id
+                ),
+                WaitAnswerActor.OPERATOR,
                 answer.encode("utf-8"),
             ),
         )

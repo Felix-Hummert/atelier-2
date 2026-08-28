@@ -79,6 +79,18 @@ pre-release migration, taken for the same reason as the SSE envelope below and
 under the same condition: no external consumer exists, and the cockpit, the
 command, the MCP door and the frozen document migrate together.
 
+The Wait-answer request is the third explicit breaking pre-release migration.
+It requires the closed actor `operator` and the exact
+`expected_node_execution_id` served for the current pause. The durable store
+first validates the current run head and any answer already bound to it under
+the write transaction, then checks the caller's fence before inserting anything.
+An older or already answered turn is a definitive `409 answer-execution-stale`,
+while missing or contradictory durable truth is corruption rather than a retry
+signal. V3 `WAIT_ANSWERED` receipts expose the recorded actor; the frozen
+V1 and V2 event families do not change. The cockpit, MCP projection, request
+schema, problem vocabulary, and frozen OpenAPI document migrate in the same
+head under the same pre-release condition.
+
 V1, V2, and V3 SSE event resources coexist as exact closed unions. V1 and V2
 workflow, start, and run resources remain their own closed families.
 Start uses the closed shape itself to select the version. A V2 run projection includes

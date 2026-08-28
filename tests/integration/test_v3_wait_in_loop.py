@@ -22,46 +22,48 @@ could be admitted but not driven to a second round.
 
 from __future__ import annotations
 
+import base64
+import json
 import time
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from fastapi.testclient import TestClient
+from httpx import Response
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import run_events, runs
-from atelier2.adapters.dbos.starter import (
-    DbosDurableRunStarter,
-    DbosWorkflowRevisionPublisher,
-)
+from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.app import create_app
+from atelier2.api.references import encode_public_run_reference
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
 from atelier2.application.compose_node_job import RESULT_HEADING
 from atelier2.contracts.agents import (
-    AgentBinding,
-    AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
     AgentExecutorRevision,
-    AgentRole,
     AuthMode,
     AuthProfileRevision,
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import NodeExecutionId, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    WaitAnswerActor,
+)
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
-from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
@@ -73,19 +75,26 @@ from tests.scenarios.agents import (
     answering_each_execution,
     publish_checked_model_registry,
 )
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import (
+    api_limits,
+    durable_ports,
+    durable_queries,
+    event_poll_backoff,
+)
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/wait-in-loop")
 WAIT_NODE = "ask"
 AGENT_NODE = "work"
 LOOP_ID = "conversation"
-LOOP_MAXIMUM_ROUNDS = 2
+LOOP_MAXIMUM_ROUNDS = 3
 
 ANSWER_ROUND_1 = b'"do the first thing"'
 ANSWER_ROUND_2 = b'"do the second thing"'
+ANSWER_ROUND_3 = b'"do the third thing"'
 REPORT_ROUND_1 = b'"the first thing is done"'
 REPORT_ROUND_2 = b'"the second thing is done"'
+REPORT_ROUND_3 = b'"the third thing is done"'
 SOURCE_NODE = "source"
 LATER_FIRST_NODE = "later-first"
 LATER_LAST_NODE = "later-last"
@@ -224,6 +233,7 @@ def provider() -> RecordingAgentExecutorFactoryV2:
             {
                 (AGENT_NODE, 1): REPORT_ROUND_1,
                 (AGENT_NODE, 2): REPORT_ROUND_2,
+                (AGENT_NODE, 3): REPORT_ROUND_3,
             }
         ),
     )
@@ -286,30 +296,82 @@ def publish_and_start(
         runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(document)
-    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
-    started = DbosDurableRunStarter(
-        runtime.engine,
-        runtime.settings,
-        runtime.agent_executor_registry,
-    ).start_published(
-        StartPublishedRunRequestV2(
-            RUN,
-            workflow.revision_hash,
-            AgentBindingSet(
-                (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
-            ),
-        )
+    client = public_client(runtime)
+    published_response = client.post(
+        "/atelier/api/v1/workflow-revisions",
+        content=document,
+        headers={"content-type": "application/yaml"},
     )
-    assert isinstance(started, DurableRunCreated), started
+    assert published_response.status_code in (200, 201), published_response.text
+    started_response = client.post(
+        "/atelier/api/v1/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": RUN.value,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": "builder",
+                    "agent_configuration_revision_hash": configuration.revision_hash.value,
+                }
+            ],
+            "orders": [],
+        },
+    )
+    assert started_response.status_code == 201, started_response.text
     return workflow
 
 
-def answer(runtime: DbosRuntime, workflow: WorkflowRevision, value: bytes) -> object:
+def public_client(runtime: DbosRuntime) -> TestClient:
+    return TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=durable_ports(
+                runtime.engine,
+                runtime.settings,
+                runtime.agent_executor_registry,
+            ),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+
+def public_answer(
+    client: TestClient,
+    workflow: WorkflowRevision,
+    value: bytes,
+    round_ordinal: int,
+) -> Response:
+    execution_id = NodeExecutionId.for_node(
+        RUN, workflow.revision_hash, WAIT_NODE, round_ordinal
+    )
+    return client.post(
+        f"/atelier/api/v1/runs/{encode_public_run_reference(RUN)}/answers",
+        json={
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "node_id": WAIT_NODE,
+            "expected_node_execution_id": execution_id.value,
+            "actor": "operator",
+            "answer_base64": base64.b64encode(value).decode("ascii"),
+        },
+    )
+
+
+def answer(
+    runtime: DbosRuntime,
+    workflow: WorkflowRevision,
+    value: bytes,
+    round_ordinal: int = 1,
+) -> object:
     """Answer the currently open round of the Wait, exactly as the API route does."""
     return answer_wait_result(
         RUN,
         workflow.revision_hash,
         WAIT_NODE,
+        NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE, round_ordinal),
+        WaitAnswerActor.OPERATOR,
         value,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
@@ -367,13 +429,17 @@ def durable_events(runtime: DbosRuntime) -> list[tuple[str, int, str]]:
         ]
 
 
-def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
-    tmp_path: Path, recording: RecordingAgentExecutorFactoryV2
+@pytest.mark.proves("one-run-keeps-three-attributed-turns-and-refuses-a-stale-round")
+def test_one_public_run_keeps_three_attributed_turns_and_refuses_a_stale_round(
+    tmp_path: Path,
+    recording: RecordingAgentExecutorFactoryV2,
+    dbos_logging_isolation: None,
 ) -> None:
     started = runtime_over(tmp_path, recording)
     started.initialize_storage()
     try:
         workflow = publish_and_start(started, recording)
+        client = public_client(started)
         started.launch()
 
         # Round one: the run's very first node is the Wait itself -- nothing
@@ -383,9 +449,8 @@ def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
             (WAIT_NODE, 1, RunEventKind.WAITING_INPUT.value)
         ]
 
-        assert isinstance(
-            answer(started, workflow, ANSWER_ROUND_1), AnswerAcceptedPending
-        )
+        first = public_answer(client, workflow, ANSWER_ROUND_1, 1)
+        assert first.status_code == 202, first.text
 
         # Round two's own pause is durable proof round one's agent ran and the
         # loop turned back to its head rather than ending on the bound alone.
@@ -406,10 +471,40 @@ def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
     # it, is not the one that held round one's pause.
     recovered = runtime_over(tmp_path, recording)
     try:
-        assert isinstance(
-            answer(recovered, workflow, ANSWER_ROUND_2), AnswerAcceptedPending
+        recovered_client = public_client(recovered)
+        round_two_read = recovered_client.get(
+            f"/atelier/api/v1/runs/{encode_public_run_reference(RUN)}"
         )
+        assert round_two_read.status_code == 200, round_two_read.text
+        assert (
+            next(
+                entry
+                for entry in round_two_read.json()["node_rail"]
+                if entry["node_id"] == WAIT_NODE
+            )["state"]
+            == "needs_you"
+        )
+        before_stale = durable_events(recovered)
+        stale = public_answer(recovered_client, workflow, ANSWER_ROUND_1, 1)
+        assert stale.status_code == 409, stale.text
+        assert stale.json()["type"].endswith(":answer-execution-stale")
+        assert durable_events(recovered) == before_stale
+        with recovered.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(wait_answers)
+                    .where(wait_answers.c.round_ordinal == 2)
+                )
+                == 0
+            )
+
+        second = public_answer(recovered_client, workflow, ANSWER_ROUND_2, 2)
+        assert second.status_code == 202, second.text
         recovered.launch()
+        wait_for_waiting_round(recovered, 3)
+        third = public_answer(recovered_client, workflow, ANSWER_ROUND_3, 3)
+        assert third.status_code == 202, third.text
         wait_for_state(recovered, RunState.COMPLETED)
 
         assert recording.opened is not None
@@ -423,7 +518,7 @@ def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
         assert RESULT_HEADING.format(node=AGENT_NODE, name="report") in round_two_job
         assert REPORT_ROUND_1.decode("utf-8") in round_two_job
 
-        # The loop's declared ceiling, not a verdict, ended the run: two rounds
+        # The loop's declared ceiling, not a verdict, ended the run: three rounds
         # ran, each leaving its own Wait and Agent evidence, and nothing after
         # the loop was ever declared to run a third.
         with recovered.engine.connect() as connection:
@@ -442,6 +537,9 @@ def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
             (WAIT_NODE, 2, RunEventKind.WAITING_INPUT.value),
             (WAIT_NODE, 2, RunEventKind.WAIT_ANSWERED.value),
             (AGENT_NODE, 2, RunEventKind.AGENT_COMPLETED.value),
+            (WAIT_NODE, 3, RunEventKind.WAITING_INPUT.value),
+            (WAIT_NODE, 3, RunEventKind.WAIT_ANSWERED.value),
+            (AGENT_NODE, 3, RunEventKind.AGENT_COMPLETED.value),
         ]
         assert NodeExecutionId.for_node(
             RUN, workflow.revision_hash, WAIT_NODE, 1
@@ -449,9 +547,59 @@ def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
     finally:
         recovered.close()
 
+    reader = runtime_over(tmp_path, recording)
+    try:
+        reader_client = public_client(reader)
+        public_reference = encode_public_run_reference(RUN)
+        reread = reader_client.get(f"/atelier/api/v1/runs/{public_reference}")
+        assert reread.status_code == 200, reread.text
+        assert reread.json()["run_id"] == RUN.value
+        assert reread.json()["state"] == RunState.COMPLETED.value
+
+        event_response = reader_client.get(
+            f"/atelier/api/v1/runs/{public_reference}/events"
+        )
+        assert event_response.status_code == 200, event_response.text
+        receipts = [
+            json.loads(line.removeprefix("data: "))
+            for line in event_response.text.splitlines()
+            if line.startswith("data: ") and '"event":"WAIT_ANSWERED"' in line
+        ]
+        assert [receipt["actor"] for receipt in receipts] == ["operator"] * 3
+        assert [receipt["node_execution_id"] for receipt in receipts] == [
+            NodeExecutionId.for_node(
+                RUN, workflow.revision_hash, WAIT_NODE, round_ordinal
+            ).value
+            for round_ordinal in (1, 2, 3)
+        ]
+        with reader.engine.connect() as connection:
+            rows = connection.execute(
+                sa.select(
+                    wait_answers.c.actor,
+                    wait_answers.c.node_execution_id,
+                    wait_answers.c.round_ordinal,
+                )
+                .where(wait_answers.c.run_id == RUN.value)
+                .order_by(wait_answers.c.round_ordinal)
+            ).all()
+        assert rows == [
+            (
+                "operator",
+                NodeExecutionId.for_node(
+                    RUN, workflow.revision_hash, WAIT_NODE, round_ordinal
+                ).value,
+                round_ordinal,
+            )
+            for round_ordinal in (1, 2, 3)
+        ]
+    finally:
+        reader.close()
+
 
 def test_a_bound_wait_keeps_its_execution_after_a_later_loop_turns(
-    tmp_path: Path, recording: RecordingAgentExecutorFactoryV2
+    tmp_path: Path,
+    recording: RecordingAgentExecutorFactoryV2,
+    dbos_logging_isolation: None,
 ) -> None:
     """A later loop's round cannot change which durable pause detail displays."""
     recording.command = answering_each_execution(
@@ -484,7 +632,7 @@ def test_a_bound_wait_keeps_its_execution_after_a_later_loop_turns(
         assert SOURCE_OUTPUT.decode("utf-8") in paused.detail.job.decode("utf-8")
 
         assert isinstance(
-            answer(runtime, workflow, ANSWER_ROUND_2), AnswerAcceptedPending
+            answer(runtime, workflow, ANSWER_ROUND_2, 2), AnswerAcceptedPending
         )
         wait_for_state(runtime, RunState.COMPLETED)
 

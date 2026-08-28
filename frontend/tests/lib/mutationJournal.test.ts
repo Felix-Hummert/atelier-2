@@ -105,6 +105,7 @@ describe("MutationJournal exact transport truth", () => {
         public_run_reference: publicReference,
         workflow_revision_hash: revisionHash,
         node_id: "other",
+        node_execution_id: revisionHash,
         answer: "17",
         answer_hash: answerHash
       })
@@ -159,6 +160,7 @@ describe("MutationJournal exact transport truth", () => {
           public_run_reference: publicReference,
           workflow_revision_hash: revisionHash,
           node_id: "wait",
+          node_execution_id: revisionHash,
           answer: "17",
           answer_hash: answerHash
         }
@@ -359,7 +361,7 @@ function start(): MutationEnvelope {
 
 function wait(): MutationEnvelope {
   return {
-    mutation_id: `wait:${publicReference}:wait`,
+    mutation_id: `wait:${publicReference}:${revisionHash}`,
     kind: "wait",
     target: `/atelier/api/v1/runs/${publicReference}/answers`,
     content_type: "application/json",
@@ -367,13 +369,21 @@ function wait(): MutationEnvelope {
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
     node_id: "wait",
+    expected_node_execution_id: revisionHash,
+    actor: "operator",
     answer_base64: "MTc=",
     answer_hash: answerHash
   };
 }
 
 function waitBody(node_id: string): string {
-  return JSON.stringify({ workflow_revision_hash: revisionHash, node_id, answer_base64: "MTc=" });
+  return JSON.stringify({
+    workflow_revision_hash: revisionHash,
+    node_id,
+    expected_node_execution_id: revisionHash,
+    actor: "operator",
+    answer_base64: "MTc="
+  });
 }
 
 function reconciliation(): Extract<MutationEnvelope, { kind: "reconciliation" }> {

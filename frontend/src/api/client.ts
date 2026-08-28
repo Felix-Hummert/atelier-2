@@ -1706,6 +1706,7 @@ const runEventV3Schema = z
         event: z.literal("WAIT_ANSWERED"),
         answer_base64: standardBase64,
         answer_hash: sha256,
+        actor: z.literal("operator"),
       })
       .strict(),
     z
@@ -2214,6 +2215,7 @@ export const problemDefinitions = {
     title: "Durable projection cannot be represented",
   },
   "durable-state-corrupt": { status: 500, title: "Durable state is corrupt" },
+  "answer-execution-stale": { status: 409, title: "Answer execution is stale" },
   "internal-error": { status: 500, title: "Internal error" },
 } as const;
 
@@ -2783,6 +2785,10 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "durable-state-corrupt",
     problemDefinitions["durable-state-corrupt"],
+  ),
+  problemVariant(
+    "answer-execution-stale",
+    problemDefinitions["answer-execution-stale"],
   ),
   problemVariant("internal-error", problemDefinitions["internal-error"]),
 ]);
@@ -3700,7 +3706,7 @@ async function requestJsonResult<T>(
       throw new CockpitRequestError(
         problem.detail,
         problem,
-        problem.status < 500,
+        problem.status < 500 || problem.type.endsWith(":durable-state-corrupt"),
       );
     } catch (error) {
       if (error instanceof CockpitRequestError) throw error;

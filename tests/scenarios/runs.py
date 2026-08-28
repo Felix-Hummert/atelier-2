@@ -151,6 +151,8 @@ def submit_wait_answer(
         request.run_id,
         request.revision_hash,
         request.node_id,
+        request.expected_node_execution_id,
+        request.actor,
         request.answer_bytes,
         DbosWaitAnswerer(engine, application_version),
     )

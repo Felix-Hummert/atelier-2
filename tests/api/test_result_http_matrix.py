@@ -41,6 +41,7 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     SubmitWaitAnswerRequest,
     WaitAnswer,
+    WaitAnswerActor,
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
@@ -76,6 +77,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerResult,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
+    DurableAnswerStale,
     DurableAnswerStateConflict,
     DurablePublishedRunResult,
     DurableRunCreated,
@@ -160,6 +162,7 @@ ANSWER = WaitAnswer(
     REVISION.revision_hash,
     "wait",
     NodeExecutionId.for_node(RUN.run_id, REVISION.revision_hash, "wait"),
+    WaitAnswerActor.OPERATOR,
     b"3",
 )
 PENDING_ANSWER = WaitAnswerSnapshot(ANSWER, WaitAnswerState.PENDING, 0)
@@ -679,6 +682,14 @@ PROBLEM_CASES = (
         "answer-state-conflict",
     ),
     (
+        "wait-execution-stale",
+        "wait",
+        "answerer",
+        DurableAnswerStale(),
+        409,
+        "answer-execution-stale",
+    ),
+    (
         "wait-bytes-conflict",
         "wait",
         "answerer",
@@ -1178,6 +1189,8 @@ def _request(client: TestClient, case: RouteResultCase):
             json={
                 "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "Mw==",
             },
         )
@@ -1347,6 +1360,8 @@ class UnreachedAnswer:
             {
                 "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "not base64!!",
             },
             None,
@@ -1362,6 +1377,8 @@ class UnreachedAnswer:
             {
                 "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "Mw==",
             },
             {"content-type": "text/plain"},
@@ -1375,6 +1392,8 @@ class UnreachedAnswer:
             {
                 "workflow_revision_hash": "not-a-hash",
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "not base64!!",
             },
             None,

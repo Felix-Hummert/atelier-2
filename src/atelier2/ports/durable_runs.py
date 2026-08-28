@@ -268,6 +268,11 @@ class DurableAnswerStateConflict:
 
 
 @dataclass(frozen=True)
+class DurableAnswerStale:
+    pass
+
+
+@dataclass(frozen=True)
 class DurableAnswerBytesConflict:
     pass
 
@@ -293,6 +298,7 @@ type DurableAnswerResult = (
     | DurableAnswerNodeMissing
     | DurableAnswerRevisionConflict
     | DurableAnswerStateConflict
+    | DurableAnswerStale
     | DurableAnswerBytesConflict
     | DurableAnswerNotAdmitted
     | DurableWriteUnavailable

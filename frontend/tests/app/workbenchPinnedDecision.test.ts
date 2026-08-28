@@ -173,6 +173,8 @@ describe("the Workbench pins open decisions (#580)", () => {
     expect(body).toEqual({
       workflow_revision_hash: revisionHash,
       node_id: "approve",
+      expected_node_execution_id: "d".repeat(64),
+      actor: "operator",
       answer_base64: btoa("true")
     });
 

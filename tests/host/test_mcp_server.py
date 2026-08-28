@@ -82,6 +82,7 @@ ARTIFACT_HASH = "a" * 64
 WORK_ITEM_REFERENCE = "gh:712"
 PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
 WORKFLOW_NAME = "review-bounded-diff"
+WAIT_EXECUTION_ID = "e" * 64
 
 RUNS_PATH = API_PREFIX + "/runs"
 RUN_PATH = f"{RUNS_PATH}/{PUBLIC_RUN_REFERENCE}"
@@ -319,6 +320,34 @@ def started_run() -> RunResourceV3:
     )
 
 
+def waiting_run() -> RunResourceV3:
+    return RunResourceV3(
+        workflow_format_version=3,
+        run_id="named-run",
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        agent_binding_set_hash=BINDING_SET_HASH,
+        run_configuration_revision_hash=CONFIGURATION_HASH,
+        agent_bindings=(),
+        orders=(),
+        state_version=2,
+        state="WAITING_INPUT",
+        current_node_id="waiting",
+        node_rail=(
+            NodeRailResource(
+                node_id="waiting", state=NodeState.NEEDS_YOU, attempt=None
+            ),
+        ),
+        cancellation=RunCancellabilityResource(
+            cancellable=True,
+            reason=None,
+            target_node_execution_id=WAIT_EXECUTION_ID,
+        ),
+        terminal_hash=None,
+        latest_event_cursor="event1.dGVzdA.2",
+    )
+
+
 def catalog_and_run_answers() -> dict[tuple[str, str], list[Answer]]:
     return {
         ("GET", DESCRIBED_PATH): [Answer(described_page().model_dump_json().encode())],
@@ -495,6 +524,8 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
         {
             "workflow_revision_hash": REVISION_HASH,
             "node_id": "waiting",
+            "expected_node_execution_id": REVISION_HASH,
+            "actor": "operator",
             "answer_base64": "Ng==",
         }
     ).encode()
@@ -505,6 +536,8 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
             "public_run_reference": PUBLIC_RUN_REFERENCE,
             "workflow_revision_hash": REVISION_HASH,
             "node_id": "waiting",
+            "expected_node_execution_id": REVISION_HASH,
+            "actor": "operator",
             "answer_base64": "Ng==",
         },
     )
@@ -513,6 +546,64 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
     assert http_status == HTTPStatus.UNPROCESSABLE_ENTITY
     assert payload == http_body
     assert payload["type"].endswith("invalid-request")
+
+
+@pytest.mark.proves("mcp-tools-are-the-published-http-doors")
+def test_run_status_names_the_exact_wait_that_answer_wait_writes_back() -> None:
+    waiting = waiting_run()
+    answered = started_run()
+    with ScriptedService(
+        {
+            ("GET", RUN_PATH): [Answer(waiting.model_dump_json().encode())],
+            ("POST", ANSWERS_PATH): [
+                Answer(answered.model_dump_json().encode(), status=HTTPStatus.ACCEPTED)
+            ],
+        }
+    ) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            status, status_is_error = client.call_tool(
+                McpToolName.RUN_STATUS.value,
+                {"public_run_reference": PUBLIC_RUN_REFERENCE},
+            )
+            wait = status["answerable_wait"]
+            answered_payload, answer_is_error = client.call_tool(
+                McpToolName.ANSWER_WAIT.value,
+                {
+                    "public_run_reference": PUBLIC_RUN_REFERENCE,
+                    "workflow_revision_hash": status["workflow_revision_hash"],
+                    "node_id": status["current_node_id"],
+                    **wait,
+                    "answer_base64": "Ng==",
+                },
+            )
+        finally:
+            client.close()
+
+    assert not status_is_error
+    assert wait == {
+        "actor": "operator",
+        "expected_node_execution_id": WAIT_EXECUTION_ID,
+    }
+    assert not answer_is_error
+    assert answered_payload == answered.model_dump(mode="json")
+    assert service.calls == [
+        Call("GET", RUN_PATH, b""),
+        Call(
+            "POST",
+            ANSWERS_PATH,
+            json.dumps(
+                {
+                    "workflow_revision_hash": REVISION_HASH,
+                    "node_id": "waiting",
+                    "expected_node_execution_id": WAIT_EXECUTION_ID,
+                    "actor": "operator",
+                    "answer_base64": "Ng==",
+                }
+            ).encode(),
+            JSON_MEDIA_TYPE,
+        ),
+    ]
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")

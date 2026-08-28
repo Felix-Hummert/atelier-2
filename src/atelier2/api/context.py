@@ -121,7 +121,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageId,
     CatalogLineageQuery,
 )
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import NodeExecutionId, WaitAnswerActor
 from atelier2.contracts.host_configuration import ProjectId, ProjectSourceId
 from atelier2.contracts.queue_projection import (
     ConfirmQueueProposal,
@@ -300,7 +300,10 @@ class ApiUseCases:
         StartPublishedRunResult,
     ]
     fork_run: Callable[[RunId, str, str], ForkRunResult]
-    answer_wait: Callable[[RunId, WorkflowRevisionHash, str, bytes], AnswerWaitResult]
+    answer_wait: Callable[
+        [RunId, WorkflowRevisionHash, str, NodeExecutionId, WaitAnswerActor, bytes],
+        AnswerWaitResult,
+    ]
     reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
     cancel_agent_attempt: Callable[
         [CancelAgentAttemptRequest], CancelAgentAttemptResult

@@ -93,6 +93,7 @@ from atelier2.adapters.dbos.schema import (
     V42_SCHEMA_HANDOFF,
     V43_SCHEMA_HANDOFF,
     V44_SCHEMA_HANDOFF,
+    V45_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     _rebuild_product_table,
@@ -191,6 +192,7 @@ from atelier2.contracts.executions import (
     RunEventAgentAttemptBinding,
     RunEventCancellationBinding,
     RunEventKind,
+    WaitAnswerActor,
     WaitAnswerState,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -471,6 +473,7 @@ def _restore_v43_queue_predecessor(connection: sqlite3.Connection) -> None:
 def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
     """Restore the project-source table shape published by V44."""
 
+    _restore_v45_wait_answer_predecessor(connection)
     schema_module._rebuild_product_table(
         connection,
         schema_module.host_project_source_connection_revisions,
@@ -481,6 +484,20 @@ def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
         ),
         45,
         44,
+    )
+
+
+def _restore_v45_wait_answer_predecessor(connection: sqlite3.Connection) -> None:
+    """Restore the exact answer table and triggers published through V45."""
+
+    schema_module._rebuild_product_table(
+        connection,
+        schema_module.wait_answers,
+        "wait_answers_v46",
+        schema_module._WAIT_ANSWERS_TRIGGERS,
+        46,
+        45,
+        trigger_source=schema_module.PUBLISHED_WAIT_ANSWER_TRIGGERS[45],
     )
 
 
@@ -802,7 +819,7 @@ def test_v41_effect_rows_cross_v42_with_open_pr_backfilled(tmp_path: Path) -> No
 
     report = migrate_store(database)
 
-    assert (report.source_version, report.target_version) == (41, 45)
+    assert (report.source_version, report.target_version) == (41, SCHEMA_VERSION)
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT operation_name FROM effect_intents"
@@ -911,10 +928,10 @@ def test_every_populated_v42_product_row_crosses_v43_and_v44_unchanged(
 
     report = migrate_store(database)
 
-    assert (report.source_version, report.target_version) == (42, 45)
+    assert (report.source_version, report.target_version) == (42, SCHEMA_VERSION)
     assert _v42_product_rows(database) == before
     with sqlite3.connect(database) as connection:
-        assert schema_module._fingerprint_for_version(connection, 45) == (
+        assert schema_module._fingerprint_for_version(connection, SCHEMA_VERSION) == (
             PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         )
 
@@ -998,9 +1015,9 @@ def test_v44_process_loss_after_queue_copy_rolls_back_then_reruns_cleanly(
 
     report = migrate_store(database)
 
-    assert (report.source_version, report.target_version) == (43, 45)
+    assert (report.source_version, report.target_version) == (43, SCHEMA_VERSION)
     with sqlite3.connect(database) as connection:
-        assert schema_module._fingerprint_for_version(connection, 45) == (
+        assert schema_module._fingerprint_for_version(connection, SCHEMA_VERSION) == (
             PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         )
 
@@ -1423,6 +1440,8 @@ def test_migrate_refuses_a_hand_corrupted_partial_v44_queue_row(
         )
     engine.dispose()
     with sqlite3.connect(database) as connection:
+        _restore_v44_connection_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 44")
         connection.execute("DROP TRIGGER queue_items_state_transition")
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
@@ -3938,6 +3957,102 @@ def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
         _require_product_shape(connection, V33_SCHEMA_HANDOFF.version)
 
 
+def test_v45_wait_answers_gain_the_operator_actor_through_the_real_migrate_entry(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    recording = recording_provider()
+    runtime = wait_runtime_over(tmp_path, recording)
+    runtime.initialize_storage()
+    try:
+        workflow = start_and_launch(runtime, WAIT_IN_THE_MIDDLE)
+        wait_for_state(runtime, RunState.WAITING_INPUT)
+        accepted = answer_wait_result(
+            RUN,
+            workflow.revision_hash,
+            WAIT_NODE,
+            NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+            WaitAnswerActor.OPERATOR,
+            ANSWER,
+            DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
+        )
+        assert isinstance(accepted, AnswerAcceptedPending), accepted
+    finally:
+        runtime.close()
+
+    with sqlite3.connect(database_path) as connection:
+        _restore_v45_wait_answer_predecessor(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V45_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V45_SCHEMA_HANDOFF.version)
+        predecessor = connection.execute(
+            "SELECT * FROM wait_answers ORDER BY node_execution_id"
+        ).fetchall()
+
+    assert V45_SCHEMA_HANDOFF.fingerprint_sha256 == (
+        "39d0811369f0b7a4b248448042623ecde0d290e95d191d75c32a9faf538fffa5"
+    )
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr().out
+    assert "45" in shown and "46" in shown
+
+    with sqlite3.connect(database_path) as connection:
+        _require_product_shape(connection, SCHEMA_VERSION)
+        migrated = connection.execute(
+            "SELECT run_id, revision_hash, node_id, node_execution_id, "
+            "round_ordinal, answer_bytes, answer_hash, answer_workflow_id, state, "
+            "state_version FROM wait_answers ORDER BY node_execution_id"
+        ).fetchall()
+        actors = connection.execute(
+            "SELECT actor FROM wait_answers ORDER BY node_execution_id"
+        ).fetchall()
+        assert migrated == predecessor
+        assert actors == [(WaitAnswerActor.OPERATOR.value,)]
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute("UPDATE wait_answers SET actor = 'operator'")
+
+    replay = migrate_store(database_path)
+    assert (replay.source_version, replay.target_version) == (
+        SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    )
+
+
+def test_v46_failure_after_version_cas_restores_the_exact_v45_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v45_wait_answer_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 45")
+        connection.commit()
+        _require_product_shape(connection, 45)
+    before = _logical_dump(database_path)
+    raise_declared_version = schema_module._raise_declared_version
+
+    def fail_after_version_cas(
+        connection: sqlite3.Connection, expected_version: int, target_version: int
+    ) -> None:
+        raise_declared_version(connection, expected_version, target_version)
+        if expected_version == 45:
+            raise RuntimeError("v46 failpoint")
+
+    monkeypatch.setattr(
+        schema_module, "_raise_declared_version", fail_after_version_cas
+    )
+
+    with pytest.raises(RuntimeError, match="v46 failpoint"):
+        migrate_store(database_path)
+
+    assert _logical_dump(database_path) == before
+
+
 def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3979,6 +4094,8 @@ def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
             RUN,
             workflow.revision_hash,
             WAIT_NODE,
+            NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+            WaitAnswerActor.OPERATOR,
             ANSWER,
             DbosWaitAnswerer(engine, application_version),
         )

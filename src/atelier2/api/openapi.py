@@ -575,6 +575,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "node-not-found",
         "answer-revision-conflict",
         "answer-state-conflict",
+        "answer-execution-stale",
         "answer-bytes-conflict",
         "durable-projection-unrepresentable",
         "temporarily-unavailable",

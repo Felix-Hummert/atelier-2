@@ -129,42 +129,59 @@ export interface WaitMutation extends MutationBase {
   public_run_reference: string;
   workflow_revision_hash: string;
   node_id: string;
+  expected_node_execution_id: string;
+  actor: "operator";
   answer_base64: string;
   answer_hash: string;
 }
 
-export function waitMutationId(publicRunReference: string, nodeId: string): string {
-  return `wait:${publicRunReference}:${nodeId}`;
+export function waitMutationId(publicRunReference: string, nodeExecutionId: string): string {
+  return `wait:${publicRunReference}:${nodeExecutionId}`;
 }
 
 export async function waitMutation(
   publicRunReference: string,
   workflowRevisionHash: string,
   nodeId: string,
+  expectedNodeExecutionId: string,
   answer: string
 ): Promise<WaitMutation> {
   if (!canonicalIntegerPattern.test(answer)) {
     throw new Error("wait answer must be one canonical integer");
   }
-  return waitAnswerMutation(publicRunReference, workflowRevisionHash, nodeId, answer);
+  return waitAnswerMutation(
+    publicRunReference,
+    workflowRevisionHash,
+    nodeId,
+    expectedNodeExecutionId,
+    answer
+  );
 }
 
 export async function v3WaitMutation(
   publicRunReference: string,
   workflowRevisionHash: string,
   nodeId: string,
+  expectedNodeExecutionId: string,
   answer: string
 ): Promise<WaitMutation> {
   if (answer.length === 0) {
     throw new Error("wait answer must not be empty");
   }
-  return waitAnswerMutation(publicRunReference, workflowRevisionHash, nodeId, answer);
+  return waitAnswerMutation(
+    publicRunReference,
+    workflowRevisionHash,
+    nodeId,
+    expectedNodeExecutionId,
+    answer
+  );
 }
 
 async function waitAnswerMutation(
   publicRunReference: string,
   workflowRevisionHash: string,
   nodeId: string,
+  expectedNodeExecutionId: string,
   answer: string
 ): Promise<WaitMutation> {
   const answerBytes = new TextEncoder().encode(answer);
@@ -173,11 +190,13 @@ async function waitAnswerMutation(
     JSON.stringify({
       workflow_revision_hash: workflowRevisionHash,
       node_id: nodeId,
+      expected_node_execution_id: expectedNodeExecutionId,
+      actor: "operator",
       answer_base64: answerBase64
     })
   );
   return {
-    mutation_id: waitMutationId(publicRunReference, nodeId),
+    mutation_id: waitMutationId(publicRunReference, expectedNodeExecutionId),
     kind: "wait",
     target: `/atelier/api/v1/runs/${publicRunReference}/answers`,
     content_type: "application/json",
@@ -185,6 +204,8 @@ async function waitAnswerMutation(
     public_run_reference: publicRunReference,
     workflow_revision_hash: workflowRevisionHash,
     node_id: nodeId,
+    expected_node_execution_id: expectedNodeExecutionId,
+    actor: "operator",
     answer_base64: answerBase64,
     answer_hash: await sha256Hex(answerBytes)
   };
@@ -405,6 +426,7 @@ export type MutationEvidence =
       public_run_reference: string;
       workflow_revision_hash: string;
       node_id: string;
+      node_execution_id: string;
       answer: string;
       answer_hash: string;
     }
@@ -700,7 +722,13 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
   );
   const publicReference = route?.[1];
   const body = requireJsonBody(envelope.body_base64);
-  requireExactKeys(body, ["workflow_revision_hash", "node_id", "answer_base64"]);
+  requireExactKeys(body, [
+    "workflow_revision_hash",
+    "node_id",
+    "expected_node_execution_id",
+    "actor",
+    "answer_base64"
+  ]);
   const answerBytes =
     typeof body.answer_base64 === "string"
       ? decodeCanonicalBase64(body.answer_base64)
@@ -717,10 +745,15 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
     typeof body.node_id !== "string" ||
     body.node_id.length === 0 ||
     envelope.node_id !== body.node_id ||
+    typeof body.expected_node_execution_id !== "string" ||
+    !digestPattern.test(body.expected_node_execution_id) ||
+    envelope.expected_node_execution_id !== body.expected_node_execution_id ||
+    body.actor !== "operator" ||
+    envelope.actor !== body.actor ||
     envelope.answer_base64 !== body.answer_base64 ||
     answer === null ||
     answer.length === 0 ||
-    envelope.mutation_id !== waitMutationId(publicReference, body.node_id)
+    envelope.mutation_id !== waitMutationId(publicReference, body.expected_node_execution_id)
   ) {
     throw new Error("invalid wait mutation envelope");
   }
@@ -901,6 +934,7 @@ function waitEvidenceMatches(
     evidence.public_run_reference === publicReference &&
     evidence.workflow_revision_hash === body.workflow_revision_hash &&
     evidence.node_id === body.node_id &&
+    evidence.node_execution_id === body.expected_node_execution_id &&
     evidence.answer === answer &&
     evidence.answer_hash === entry.answer_hash
   );
@@ -983,6 +1017,8 @@ function envelopeKeys(envelope: MutationEnvelope): string[] {
         "public_run_reference",
         "workflow_revision_hash",
         "node_id",
+        "expected_node_execution_id",
+        "actor",
         "answer_base64",
         "answer_hash"
       ];
