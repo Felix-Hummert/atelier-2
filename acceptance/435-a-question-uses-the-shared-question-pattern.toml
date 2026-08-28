@@ -4,4 +4,4 @@ story = "https://github.com/FlexOr2/atelier-2/issues/435"
 [[sentence]]
 id = "a-question-uses-the-shared-question-pattern"
 requirement = "REQ-UIQ-07"
-text = "A dialog or decision stage a room's template or imported component opens is that file's own question surface, not markup nested in another surface."
+text = "A dialog, confirmation, answer-taking sheet, or script-level confirm in a room page or a .svelte file that page imports is the shared question component or a rendering of it, not markup that file composed; today's AddModelSheet, CatalogImportSheet, ConnectSourceSheet, DisconnectSourceSheet, RenewSourceTokenSheet, WorkflowStartSheet, RunForkSheet, RunCancelCard, and ReconciliationActionCard each compose their own dialog, which this sentence does not prove they share; a createElement overlay, a question in a .ts module, and an in-page decision stage that is not a dialog or confirm are outside what the templates and script tags show."
