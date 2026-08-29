@@ -77,7 +77,7 @@ class ProductSchemaHandoff:
 
 
 # Hop 46 attributes wait answers and fences every submission to one execution.
-_HOP_PREDECESSOR_VERSION = 45
+_HOP_PREDECESSOR_VERSION = 46
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -117,6 +117,7 @@ _VERSION_FORTY_THREE = 43
 _VERSION_FORTY_FOUR = 44
 _VERSION_FORTY_FIVE = 45
 _VERSION_FORTY_SIX = 46
+_VERSION_FORTY_SEVEN = 47
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -317,6 +318,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     44: "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b",
     45: "39d0811369f0b7a4b248448042623ecde0d290e95d191d75c32a9faf538fffa5",
     46: "1428683e38b4cce26b866e02ef1afa974a2c3208e26606f8792d0d48f0b1a43b",
+    47: "d7987152a11a2702808b5fb1b71c0891e1c6724519435e87ee840cc235c00e39",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -465,6 +467,10 @@ V44_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V45_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FORTY_FIVE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_FIVE],
+)
+V46_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY_SIX,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_SIX],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1620,6 +1626,19 @@ catalog_lineage_retirements = sa.Table(
     sa.PrimaryKeyConstraint("lineage_id", "activation_number"),
     sa.CheckConstraint("activation_number >= 1"),
     sa.CheckConstraint("state IN ('retired')"),
+    sa.CheckConstraint("length(actor) > 0"),
+    sa.CheckConstraint("length(activated_at) > 0"),
+)
+catalog_intakes = sa.Table(
+    "catalog_intakes",
+    metadata,
+    sa.Column("intake_id", sa.Text, primary_key=True),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("document", sa.LargeBinary, nullable=False),
+    sa.Column("actor", sa.Text, nullable=False),
+    sa.Column("activated_at", sa.Text, nullable=False),
+    sa.CheckConstraint("length(intake_id) = 64 AND intake_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint("kind IN ('agent', 'skill', 'workflow')"),
     sa.CheckConstraint("length(actor) > 0"),
     sa.CheckConstraint("length(activated_at) > 0"),
 )
@@ -3083,6 +3102,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'catalog lineage retirements are immutable');
         END
     """,
+    "catalog_intakes_no_update": """
+        CREATE TRIGGER catalog_intakes_no_update
+        BEFORE UPDATE ON catalog_intakes BEGIN
+          SELECT RAISE(ABORT, 'catalog intakes are immutable');
+        END
+    """,
+    "catalog_intakes_no_delete": """
+        CREATE TRIGGER catalog_intakes_no_delete
+        BEFORE DELETE ON catalog_intakes BEGIN
+          SELECT RAISE(ABORT, 'catalog intakes are immutable');
+        END
+    """,
     "node_artifacts_v3_no_update": """
         CREATE TRIGGER node_artifacts_v3_no_update
         BEFORE UPDATE ON node_artifacts_v3 BEGIN
@@ -3532,6 +3563,7 @@ _V27_ACCESS_TRIGGER_NAMES = (
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
+    predecessor_product_tables = PRODUCT_TABLE_NAMES - {catalog_intakes.name}
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
     occupancy = {"host_occupancy_revisions", "host_occupancy_bindings"}
@@ -3554,7 +3586,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         queue_dependency_edges.name,
         queue_launch_bindings.name,
     }
-    before_phase_d = PRODUCT_TABLE_NAMES - phase_d_queue_tables
+    before_phase_d = predecessor_product_tables - phase_d_queue_tables
     before_forks = before_phase_d - fork_tables - attempt_receipt_tables
     before_model_configuration = (before_forks - model_configuration) | occupancy
     predecessor_tables = (
@@ -3564,8 +3596,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
-    if version in {_VERSION_FORTY_FIVE, _VERSION_FORTY_FOUR}:
-        return PRODUCT_TABLE_NAMES
+    if version in {_VERSION_FORTY_SIX, _VERSION_FORTY_FIVE, _VERSION_FORTY_FOUR}:
+        return predecessor_product_tables
     if version == _VERSION_FORTY_THREE:
         return before_phase_d
     if version == _VERSION_FORTY_TWO:
@@ -5866,6 +5898,15 @@ def _apply_v45_to_v46(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FORTY_FIVE, _VERSION_FORTY_SIX)
 
 
+def _apply_v46_to_v47(connection: sqlite3.Connection) -> None:
+    _added_table_step(
+        catalog_intakes,
+        ("catalog_intakes_no_update", "catalog_intakes_no_delete"),
+        _VERSION_FORTY_SIX,
+        _VERSION_FORTY_SEVEN,
+    )(connection)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6039,6 +6080,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_FORTY_SIX,
         _apply_v45_to_v46,
     ),
+    _SchemaMigrationStep(_VERSION_FORTY_SIX, _VERSION_FORTY_SEVEN, _apply_v46_to_v47),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

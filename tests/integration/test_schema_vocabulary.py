@@ -32,6 +32,7 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
+from atelier2.contracts.catalog_intakes import CatalogIntakeKind
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
     CatalogRetirementState,
@@ -426,6 +427,7 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
         ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
     },
     "catalog_lineages.kind": _values(RevisionKind),
+    "catalog_intakes.kind": _values(CatalogIntakeKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
     "queue_items.state": _values(QueueItemState),
     "queue_items.decision_authority": _values(QueueDecisionAuthority),
@@ -584,6 +586,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "published_revisions.revision_hash",
         "catalog_lineages.lineage_id",
         "catalog_lineages.founding_revision_hash",
+        "catalog_intakes.intake_id",
         "catalog_lineage_members.revision_hash",
         "node_artifacts_v3.artifact_hash",
         "node_artifacts_v3.node_execution_id",

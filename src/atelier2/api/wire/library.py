@@ -6,10 +6,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from atelier2.api.references import REVISION_HASH_PATTERN, SHA256_HASH_PATTERN
+from atelier2.api.references import SHA256_HASH_PATTERN
 from atelier2.api.wire.resources import ApiModel
 from atelier2.contracts.agents import MAXIMUM_PROVIDER_ID_CHARACTERS
-from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
 
 
 class RecognizedWorkflowResource(ApiModel):
@@ -60,32 +59,6 @@ LibraryRecognitionResource = Annotated[
 ]
 
 
-class WorkflowInLibraryResource(ApiModel):
-    """The catalog entry an added workflow document now has."""
-
-    kind: Literal["workflow"]
-    name: str = Field(min_length=1, max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS)
-    description: str | None
-    lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    revision_number: int = Field(ge=1)
-
-
-class AgentDefinitionInLibraryResource(ApiModel):
-    """The library entry an added agent definition now has.
-
-    An agent has no lineage: the library lists the published kind itself, so the
-    entry is the revision and the name its own frontmatter authored.
-    """
-
-    kind: Literal["agent_definition"]
-    name: str
-    description: str
-    provider_id: str = Field(max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
-    agent_definition_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-
-
-LibraryAdditionResource = Annotated[
-    WorkflowInLibraryResource | AgentDefinitionInLibraryResource,
-    Field(discriminator="kind"),
-]
+class LibraryAdditionResource(ApiModel):
+    intake_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    kind: Literal["agent", "skill", "workflow"]

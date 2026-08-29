@@ -40,7 +40,10 @@ from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
     found_catalog_lineage,
 )
-from atelier2.application.admit_library_addition import admit_library_addition
+from atelier2.application.admit_library_addition import (
+    admit_library_addition,
+    read_library_addition,
+)
 from atelier2.application.admit_queue_item import (
     confirm_queue_proposal,
     list_queue_items,
@@ -261,19 +264,13 @@ def bound_use_cases(
                 ports.agent_definition_parser,
             )
         ),
-        admit_library_addition=lambda document, file_name, actor, activated_at: (
+        admit_library_addition=lambda document, kind, actor, activated_at: (
             admit_library_addition(
-                document,
-                file_name,
-                actor,
-                activated_at,
-                projection_limit,
-                ports.workflow_document_parser,
-                ports.agent_definition_parser,
-                ports.agent_definition_renderer,
-                ports.library_additions,
-                ports.published_revision_registry,
+                document, kind, actor, activated_at, ports.catalog_intakes
             )
+        ),
+        read_library_addition=lambda intake_id: read_library_addition(
+            intake_id, ports.catalog_intakes
         ),
         list_agent_definition_revisions=(
             lambda after, limit: list_agent_definition_revisions(

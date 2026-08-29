@@ -59,6 +59,10 @@ export const catalogPageCopy = {
 
   cancel: "Cancel",
   close: "Close",
+  kind: "Kind",
+  kindWorkflow: "Workflow",
+  kindAgent: "Agent",
+  kindSkill: "Skill",
   addToCatalog: "Add to catalog",
   addingToCatalog: "Adding…",
   importFailed: "This file could not be imported.",

@@ -121,12 +121,17 @@ the title cannot be one — the picker does not swallow that 404. Those
 refusals, and a row that cannot be started, each have their own shape, so a
 choice is not a muted twin of a refusal. After a choice the list collapses
 onto that card with a Change path, and the start form sits directly under it.
-Unnamed documents stay one row each, as they did. Publication and admission
-remain two durable states, but `POST /library/additions` reaches both for a
-workflow in one attributed act: the document bytes go in and the named library
-entry comes out. A merely published revision remains outside the library; this
-door removes the stranded intermediate step rather than merging the states.
-Before that act, `POST /library/recognitions`
+Unnamed documents stay one row each, as they did. `POST /library/additions` is
+a separate durable intake: it accepts opaque octet-stream bytes with the
+required declared kind `agent`, `skill`, or `workflow`, and records that
+declaration beside its attribution. The response and `GET /library/additions/{intake_id}`
+read back the intake identity and the exact declared kind. The same bytes under
+two declared kinds are two intakes; this door neither recognises nor validates
+their content, and it neither publishes nor admits a revision.
+The catalog Import sheet is the operator door that supplies that kind; after
+the intake it publishes and admits through the existing revision doors so a
+workflow or agent is startable.
+Separately, `POST /library/recognitions`
 says what a loose document is without writing anything: opaque bytes plus an
 optional `file_name`, answered as a recognized workflow (format, authored name
 and description), a recognized agent definition (name, description, provider

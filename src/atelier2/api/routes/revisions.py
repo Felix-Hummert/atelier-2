@@ -18,6 +18,7 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import (
     API_PREFIX,
+    LIBRARY_ADDITION_PATH,
     LIBRARY_ADDITIONS_PATH,
     LIBRARY_RECOGNITIONS_PATH,
 )
@@ -35,7 +36,6 @@ from atelier2.api.projection.workflows import (
 )
 from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
 from atelier2.api.wire.library import (
-    AgentDefinitionInLibraryResource,
     DocumentNotHeldResource,
     DocumentUnrecognizedResource,
     KindRefusalResource,
@@ -43,7 +43,6 @@ from atelier2.api.wire.library import (
     LibraryRecognitionResource,
     RecognizedAgentDefinitionResource,
     RecognizedWorkflowResource,
-    WorkflowInLibraryResource,
 )
 from atelier2.api.wire.requests import (
     AdmitCatalogMemberRequestResource,
@@ -74,12 +73,10 @@ from atelier2.application.admit_catalog_member import (
     CatalogRevisionUnpublished,
 )
 from atelier2.application.admit_library_addition import (
-    AgentDefinitionInLibrary,
-    LibraryAdditionAdmitted,
     LibraryAdditionExisting,
-    LibraryEntry,
-    LibraryNameUnusable,
-    WorkflowInLibrary,
+    LibraryAdditionFound,
+    LibraryAdditionMissing,
+    LibraryAdditionStored,
 )
 from atelier2.application.classify_definition_document import (
     ClassifyDefinitionDocumentResult,
@@ -148,6 +145,7 @@ from atelier2.application.resolve_catalog_name import (
     CatalogReferenceNonMember,
 )
 from atelier2.contracts.agent_definitions import UnrestrictedTools
+from atelier2.contracts.catalog_intakes import CatalogIntakeId, CatalogIntakeKind
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -169,7 +167,6 @@ from atelier2.contracts.library_recognition import (
     DocumentAmbiguous,
     DocumentNotHeld,
     DocumentUnrecognized,
-    KindRefusal,
     LibraryDocumentKind,
     RecognizedAgentDefinition,
     RecognizedWorkflow,
@@ -597,18 +594,12 @@ async def add_library_document_route(
     request: Request,
     actor: str,
     activated_at: str,
-    file_name: str | None = None,
+    kind: CatalogIntakeKind,
     context: ApiContext = api_context_dependency,
 ) -> JSONResponse:
-    """Take one loose document into the library, and answer with its entry.
-
-    The body is the same opaque bytes the recognition door reads, because the
-    caller still does not know the kind. The attribution travels beside it
-    rather than in it: the bytes are the document exactly as authored, and who
-    added them when is this act's, not the document's (ADR 0007 Decision 3).
-    """
+    """Store opaque bytes under the caller's required declared kind."""
     require_media_type(request, "application/octet-stream")
-    for field in (actor, activated_at, file_name):
+    for field in (actor, activated_at):
         if field is None:
             continue
         try:
@@ -624,77 +615,52 @@ async def add_library_document_route(
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.admit_library_addition(
-            document, file_name, catalog_actor, activated
+            document, kind, catalog_actor, activated
         ),
     )
     match result:
-        case LibraryAdditionAdmitted(entry):
+        case LibraryAdditionStored(entry):
             status = HTTPStatus.CREATED
         case LibraryAdditionExisting(entry):
             status = HTTPStatus.OK
-        case LibraryNameUnusable(reason):
-            raise ApiProblem("library-name-unusable", reason)
-        case DocumentNotHeld(reason=reason):
-            raise ApiProblem("library-kind-not-held", reason)
-        case DocumentUnrecognized(refusals):
-            raise ApiProblem(
-                "library-document-unrecognized", _unrecognized_detail(refusals)
-            )
-        case DocumentAmbiguous(kinds):
-            raise ApiProblem("library-document-ambiguous", _ambiguous_detail(kinds))
-        case PublicationInvalid(detail, WorkflowRefusal()):
-            raise ApiProblem("invalid-workflow-document", detail)
-        case PublicationInvalid():
-            raise ApiProblem("invalid-workflow-document")
-        case AgentDefinitionPublicationInvalid(verdict):
-            raise ApiProblem(
-                agent_definition_document_problem_code(verdict.refusal), str(verdict)
-            )
-        case AgentDefinitionPublicationCollision():
-            raise ApiProblem("agent-definition-revision-collision")
-        case CatalogAdmissionRevisionOwned():
-            raise ApiProblem("catalog-revision-owned")
-        case CatalogAdmissionRetired():
-            raise ApiProblem("catalog-lineage-retired")
-        case WriteUnavailable(detail):
-            raise ApiProblem("temporarily-unavailable", detail)
+        case WriteUnavailable():
+            raise ApiProblem("temporarily-unavailable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
-    return resource_response(_library_entry_resource(entry), status)
-
-
-def _unrecognized_detail(refusals: tuple[KindRefusal, ...]) -> str:
-    """What every marker looked for, and what it found instead."""
-
-    return " ".join(
-        f"Expected {refusal.expected}, but {refusal.refused_because}."
-        for refusal in refusals
+    return resource_response(
+        LibraryAdditionResource(intake_id=entry.intake_id.value, kind=entry.kind.value),
+        status,
     )
 
 
-def _library_entry_resource(entry: LibraryEntry) -> BaseModel:
-    match entry:
-        case WorkflowInLibrary(
-            name, description, lineage_id, revision_hash, revision_number
-        ):
-            return WorkflowInLibraryResource(
-                kind="workflow",
-                name=name.value,
-                description=description,
-                lineage_id=lineage_id.value,
-                workflow_revision_hash=revision_hash.value,
-                revision_number=revision_number,
+@router.get(LIBRARY_ADDITION_PATH, response_model=LibraryAdditionResource)
+async def get_library_addition_route(
+    intake_id: str, context: ApiContext = api_context_dependency
+) -> JSONResponse:
+    try:
+        identifier = CatalogIntakeId(intake_id)
+    except ValueError as error:
+        raise ApiProblem("invalid-request") from error
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.read_library_addition(identifier),
+    )
+    match result:
+        case LibraryAdditionFound(entry):
+            return resource_response(
+                LibraryAdditionResource(
+                    intake_id=entry.intake_id.value, kind=entry.kind.value
+                ),
+                HTTPStatus.OK,
             )
-        case AgentDefinitionInLibrary(name, description, provider, revision_hash):
-            return AgentDefinitionInLibraryResource(
-                kind="agent_definition",
-                name=name,
-                description=description,
-                provider_id=provider.value,
-                agent_definition_revision_hash=revision_hash.value,
-            )
+        case LibraryAdditionMissing():
+            raise ApiProblem("invalid-request", "No catalog intake has that identity.")
+        case ReadUnavailable():
+            raise ApiProblem("temporarily-unavailable")
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
 

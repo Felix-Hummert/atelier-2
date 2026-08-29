@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -47,6 +47,7 @@ from atelier2.contracts.run_projections import (
 )
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
 from atelier2.host.serving import api_limits as deployed_api_limits
+from atelier2.ports.catalog_intakes import CatalogIntakeStored
 from atelier2.ports.durable_runs import (
     DurableAnswerRunMissing,
     DurableRunRevisionMissing,
@@ -84,6 +85,9 @@ class RecordingMutationPorts:
             display_name,
         )
 
+    def store_intake(self, intake: object) -> object:
+        return CatalogIntakeStored(cast(Any, intake))
+
     def start_published(self, request: object) -> DurableRunRevisionMissing:
         self.starts.append(request)
         return DurableRunRevisionMissing()
@@ -103,6 +107,7 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
                 published_run_starter=mutations,
                 wait_answerer=mutations,
                 library_additions=mutations,
+                catalog_intakes=mutations,
                 workflow_document_parser=parse_executable_workflow_document,
                 agent_definition_parser=parse_agent_definition,
                 agent_definition_renderer=render_agent_definition,
@@ -361,14 +366,18 @@ def named_workflow_document() -> bytes:
     )
 
 
-@pytest.mark.proves("a-refused-addition-publishes-nothing")
+@pytest.mark.proves("a-catalog-intake-keeps-the-kind-it-was-handed-in")
 def test_addition_body_limit_rejects_one_byte_more_than_the_envelope() -> None:
     """The envelope refuses before the one act that would publish and admit."""
 
     document = named_workflow_document()
     mutations = RecordingMutationPorts()
     client = client_for(mutations, api_limits(maximum_request_body_bytes=len(document)))
-    attribution = {"actor": "operator", "activated_at": "2026-08-26T00:00:00Z"}
+    attribution = {
+        "kind": "workflow",
+        "actor": "operator",
+        "activated_at": "2026-08-26T00:00:00Z",
+    }
 
     exact = client.post(
         LIBRARY_ADDITIONS_PATH,
@@ -385,7 +394,7 @@ def test_addition_body_limit_rejects_one_byte_more_than_the_envelope() -> None:
 
     assert exact.status_code == 201, exact.text
     assert_problem(oversized, 422, "invalid-request")
-    assert mutations.additions == [WorkflowRevision(document)]
+    assert mutations.additions == []
 
 
 def test_missing_content_length_is_bounded_while_receiving_chunks() -> None:

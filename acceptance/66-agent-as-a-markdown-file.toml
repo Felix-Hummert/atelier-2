@@ -26,3 +26,7 @@ text = "The same authored file is the same revision identity, and every authored
 [[sentence]]
 id = "the-published-revision-reconstructs-the-definition"
 text = "From a published agent-definition revision, read back by its hash, the authored definition is reconstructable: name, description, model, tools, and system prompt come back identical."
+
+[[sentence]]
+id = "a-catalog-intake-keeps-the-kind-it-was-handed-in"
+text = "A catalog intake stores and reads back exactly the closed kind handed in with its opaque bytes; the same bytes under agent and skill are distinct intakes, and no content recognition changes either declaration."

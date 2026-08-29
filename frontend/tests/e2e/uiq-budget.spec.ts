@@ -65,8 +65,8 @@ const OPEN_TILE_GLANCES = 2;
 const REACH_START_CLICKS = 2;
 const REACH_START_GLANCES = 1;
 
-/** Frame "List" Import door + "Import — the sheet after the drop" (§04). §07 via Import: button · file · Add = 3 from Catalog; from another room Catalog +1. Glances: door, sheet (via-button analog of §07 "veil, sheet"). */
-const IMPORT_VIA_BUTTON_CLICKS = 4;
+/** Frame "List" Import door + "Import — the sheet after the drop" (§04). §07 via Import: button · file · Add = 3 from Catalog; from another room Catalog +1. The declaring kind on that sheet is the extra click #66 requires and the picture left open. Glances: door, sheet (via-button analog of §07 "veil, sheet"). */
+const IMPORT_VIA_BUTTON_CLICKS = 5;
 const IMPORT_VIA_BUTTON_GLANCES = 2;
 
 const VIEWPORTS = [
@@ -586,6 +586,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     importGlances += 1;
     await expect(addToCatalog, `import-via-button add door at ${viewport.width}`).toBeInViewport();
     expect(importGlances).toBe(IMPORT_VIA_BUTTON_GLANCES);
+    await importPath.click(importSheet.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }));
     await importPath.click(addToCatalog);
     await expect(importSheet).toHaveCount(0, { timeout: 20_000 });
     await expect(catalogTile(page, catalogName)).toBeVisible({ timeout: 20_000 });
