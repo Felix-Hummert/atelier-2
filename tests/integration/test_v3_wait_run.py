@@ -293,14 +293,17 @@ def wait_for_wait_node(runtime: DbosRuntime) -> None:
             sa.select(runs.c.revision_hash).where(runs.c.run_id == RUN.value)
         )
     assert revision_hash is not None
-    assert wait_for_workflow_completion(
-        node_workflow_id_for(
-            NodeExecutionId.for_node(
-                RUN, WorkflowRevisionHash(str(revision_hash)), WAIT_NODE
-            )
-        ),
-        "the wait node to write WAITING_INPUT",
-    ) == RunState.WAITING_INPUT.value
+    assert (
+        wait_for_workflow_completion(
+            node_workflow_id_for(
+                NodeExecutionId.for_node(
+                    RUN, WorkflowRevisionHash(str(revision_hash)), WAIT_NODE
+                )
+            ),
+            "the wait node to write WAITING_INPUT",
+        )
+        == RunState.WAITING_INPUT.value
+    )
 
 
 def wait_for_answer_completion(runtime: DbosRuntime) -> None:
@@ -324,16 +327,19 @@ def wait_for_answer_completion(runtime: DbosRuntime) -> None:
                 runs.c.run_id == RUN.value
             )
         ).one()
-    assert wait_for_workflow_completion(
-        node_workflow_id_for(
-            NodeExecutionId.for_node(
-                RUN,
-                WorkflowRevisionHash(str(head.revision_hash)),
-                str(head.current_node_id),
-            )
-        ),
-        "the wait answer's successor node to complete",
-    ) == RunState.COMPLETED.value
+    assert (
+        wait_for_workflow_completion(
+            node_workflow_id_for(
+                NodeExecutionId.for_node(
+                    RUN,
+                    WorkflowRevisionHash(str(head.revision_hash)),
+                    str(head.current_node_id),
+                )
+            ),
+            "the wait answer's successor node to complete",
+        )
+        == RunState.COMPLETED.value
+    )
 
 
 def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:

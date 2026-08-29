@@ -20,9 +20,7 @@ def test_waits_for_the_named_workflow_completion(
 ) -> None:
     completed = _CompletedWorkflow("WAITING_INPUT")
     monkeypatch.setattr(run_waiting.DBOS, "get_workflow_status", lambda _: object())
-    monkeypatch.setattr(
-        run_waiting.DBOS, "retrieve_workflow", lambda _: completed
-    )
+    monkeypatch.setattr(run_waiting.DBOS, "retrieve_workflow", lambda _: completed)
 
     result = run_waiting.wait_for_workflow_completion(
         "wait-node-workflow", "the wait node to write WAITING_INPUT"
@@ -40,9 +38,7 @@ def test_refuses_to_succeed_when_the_named_workflow_never_appears(
     monkeypatch.setattr(run_waiting.time, "sleep", lambda _: None)
     monkeypatch.setattr(run_waiting.DBOS, "get_workflow_status", lambda _: None)
 
-    with pytest.raises(
-        AssertionError, match="the wait node to write WAITING_INPUT"
-    ):
+    with pytest.raises(AssertionError, match="the wait node to write WAITING_INPUT"):
         run_waiting.wait_for_workflow_completion(
             "wait-node-workflow", "the wait node to write WAITING_INPUT"
         )

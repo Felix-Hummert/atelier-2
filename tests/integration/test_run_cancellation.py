@@ -364,17 +364,20 @@ def test_a_stale_round_fence_is_refused_without_stopping_the_live_round(
     finish_gated_node(LOOP_RUN, workflow, "implement", 2, release)
 
     assert result == RunCancellationNotCancellable(RunCancellationRefusal.BETWEEN_NODES)
-    assert wait_for_workflow_completion(
-        node_workflow_id_for(
-            NodeExecutionId.for_node(
-                LOOP_RUN,
-                workflow.revision_hash,
-                "review",
-                LOOPED_LINE_MAXIMUM_ROUNDS,
-            )
-        ),
-        "the loop's final review node to complete",
-    ) == RunState.COMPLETED.value
+    assert (
+        wait_for_workflow_completion(
+            node_workflow_id_for(
+                NodeExecutionId.for_node(
+                    LOOP_RUN,
+                    workflow.revision_hash,
+                    "review",
+                    LOOPED_LINE_MAXIMUM_ROUNDS,
+                )
+            ),
+            "the loop's final review node to complete",
+        )
+        == RunState.COMPLETED.value
+    )
 
 
 def test_terminal_retry_is_canonical_and_writes_no_new_event(tmp_path: Path) -> None:
