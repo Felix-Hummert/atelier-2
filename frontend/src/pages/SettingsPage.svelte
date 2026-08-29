@@ -16,6 +16,7 @@
   } from "../api/client";
   import AddModelSheet from "../components/AddModelSheet.svelte";
   import ConnectSourceSheet from "../components/ConnectSourceSheet.svelte";
+  import ProviderAccounts from "../components/ProviderAccounts.svelte";
   import DisconnectSourceSheet from "../components/DisconnectSourceSheet.svelte";
   import ReadState from "../components/ReadState.svelte";
   import RenewSourceTokenSheet from "../components/RenewSourceTokenSheet.svelte";
@@ -28,6 +29,7 @@
     trimmedModelId,
     type RegistryIntent
   } from "../lib/addModel";
+  import { presentProviderAccounts } from "../lib/providerAccounts";
   import {
     connectProjectSourceBody,
     disconnectFacts,
@@ -54,7 +56,6 @@
     accountChoice,
     difficultyLabel,
     noSuchModel,
-    providerAccount,
     retainedAccountChoice,
     settingsPageCopy,
     sourceAlreadyPresent
@@ -157,6 +158,7 @@
       source.public_source_reference === duplicateSourceReference
     )
   );
+  $: accountRows = presentProviderAccounts(settings.confirmed?.profiles ?? []);
 
   onMount(() => { void load(); });
 
@@ -790,8 +792,10 @@
     try {
       const outcome = await fetchValidation(providerId, configurationHash);
       if (!checkingHashes.has(configurationHash)) return;
-      if (outcome.kind === "ok") updateRegistry(outcome.registry);
-      else failedWrite = { kind: "validation", providerId, configurationHash };
+      if (outcome.kind === "ok") {
+        updateRegistry(outcome.registry);
+        failedWrite = null;
+      } else failedWrite = { kind: "validation", providerId, configurationHash };
     } finally {
       unmarkChecking(configurationHash);
     }
@@ -992,7 +996,7 @@
         published: retry.published
       });
     } else if (retry.kind === "validation") {
-      await validateModel(retry.providerId, retry.configurationHash, true);
+      await checkPublished(retry.providerId, retry.configurationHash);
     } else if (retry.kind === "configuration") {
       await retryConfiguration(retry.input);
     } else await sendDefaultsWrite(retry.projectReference, retry.write, true);
@@ -1045,17 +1049,6 @@
     ...missingRegistryStartable.map((configuration) => configuration.provider_id)
   ])].sort();
   $: checkingList = [...checkingHashes];
-  function groupCaption(
-    providerId: string,
-    accounts: readonly string[]
-  ): string {
-    const unique = [...new Set(accounts)];
-    const account = unique[0];
-    return unique.length === 1 && account !== undefined
-      ? providerAccount(providerId, account)
-      : providerId;
-  }
-
   $: modelGroups = modelProviders.map((providerId) => {
     const registry = registryFor(providerId);
     if (registry === null) {
@@ -1067,7 +1060,7 @@
         registry: null,
         rows: [],
         missing,
-        caption: groupCaption(providerId, missing.map((configuration) => accountFor(configuration)))
+        caption: providerId
       };
     }
     const rows = registry.entries.map((entry) => {
@@ -1085,12 +1078,7 @@
       registry,
       missing: [],
       rows,
-      caption: groupCaption(
-        providerId,
-        rows.map((row) =>
-          row.configuration === undefined ? settingsPageCopy.unknownAccount : accountFor(row.configuration)
-        )
-      )
+      caption: providerId
     };
   });
 </script>
@@ -1147,6 +1135,8 @@
       </button>
     </section>
 
+    <ProviderAccounts rows={accountRows} />
+
     <section class="settings-block" aria-labelledby="models-title">
       <h2 id="models-title">{wrapDisplayCopy(settingsPageCopy.modelsTitle)}</h2>
       {#snippet addModelButton()}
@@ -1185,8 +1175,15 @@
                           {#if duplicateNotice !== null && duplicateNotice.providerId === registry.provider_id && duplicateNotice.modelId === entry.model_id}
                             <span>{settingsPageCopy.alreadyPresent}</span>
                           {/if}
+                          {#if failedWrite?.kind === "validation" && failedWrite.configurationHash === entry.agent_configuration_revision_hash}
+                            <div class="write-failure" role="alert">
+                              <span aria-hidden="true">◇</span><strong>{settingsPageCopy.writeFailed}</strong>
+                            </div>
+                          {/if}
                           {#if presentation !== "checking" && entry.provider_check === "not-checked"}
                             <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
+                          {:else if presentation !== "checking" && entry.provider_check === "checked" && entry.source === "operator"}
+                            <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void checkPublished(registry.provider_id, entry.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
                           {/if}
                           <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>{settingsPageCopy.remove}</button>
                         </div>
@@ -1259,10 +1256,12 @@
     </section>
 
     {#if failedWrite !== null}
-      <div class="write-failure" role="alert">
-        <span aria-hidden="true">◇</span><strong>{settingsPageCopy.writeFailed}</strong>
-        {#if (failedWrite.kind === "registry" || failedWrite.kind === "check-publish") && failedWrite.rebase}
-          <span>{settingsPageCopy.registryChanged}</span>
+      <div class="write-failure" role={failedWrite.kind === "validation" ? undefined : "alert"}>
+        {#if failedWrite.kind !== "validation"}
+          <span aria-hidden="true">◇</span><strong>{settingsPageCopy.writeFailed}</strong>
+          {#if (failedWrite.kind === "registry" || failedWrite.kind === "check-publish") && failedWrite.rebase}
+            <span>{settingsPageCopy.registryChanged}</span>
+          {/if}
         {/if}
         <button class="quiet compact" type="button" disabled={writing} onclick={() => { void retryWrite(); }}>{settingsPageCopy.retry}</button>
       </div>
