@@ -1,0 +1,19 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/893"
+
+# Scheibe B of #66: the Catalog import sheet is the door that already existed
+# on the backend (PR #867) and was unreachable. Recognition reports; the
+# person decides. Folder intake, duplicate-already-in-catalog, retire, and
+# the many-at-once flow stay on #66.
+
+[[sentence]]
+id = "the-person-declares-the-kind-on-the-import-sheet"
+text = "On the Catalog import sheet the person chooses the kind, and that choice travels with the addition."
+
+[[sentence]]
+id = "an-uncertain-recognition-asks-for-a-kind-instead-of-refusing"
+text = "An uncertain recognition on the Catalog import sheet leads to a kind choice instead of a Close-only refusal."
+
+[[sentence]]
+id = "a-mistaken-kind-is-visible-on-the-sheet-before-the-catalog-changes"
+text = "A mistaken kind is named on the Catalog import sheet before anything stands in the catalog."

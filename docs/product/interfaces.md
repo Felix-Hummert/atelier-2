@@ -128,9 +128,13 @@ declaration beside its attribution. The response and `GET /library/additions/{in
 read back the intake identity and the exact declared kind. The same bytes under
 two declared kinds are two intakes; this door neither recognises nor validates
 their content, and it neither publishes nor admits a revision.
-The catalog Import sheet is the operator door that supplies that kind; after
-the intake it publishes and admits through the existing revision doors so a
-workflow or agent is startable.
+The catalog Import sheet is the operator door that supplies that kind:
+recognition reports what it saw, and the person chooses the kind; that
+choice travels with the addition. An uncertain file still gets those chips
+instead of a Close-only refusal. A mistaken kind is named on the sheet
+before anything stands in the catalog. After the intake it publishes and
+admits through the existing revision doors so a workflow or agent is
+startable, all or nothing.
 Separately, `POST /library/recognitions`
 says what a loose document is without writing anything: opaque bytes plus an
 optional `file_name`, answered as a recognized workflow (format, authored name
