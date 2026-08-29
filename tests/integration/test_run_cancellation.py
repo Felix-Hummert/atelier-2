@@ -29,6 +29,7 @@ from atelier2.adapters.dbos.run_transitions import (
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import node_receipts_v3, run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import run_resource
@@ -93,7 +94,6 @@ from tests.integration.test_v3_bounded_loop_run import (
     finish_gated_node,
     gate_execution,
     start_loop,
-    wait_for_state,
 )
 from tests.integration.test_v3_bounded_loop_run import (
     runtime as _loop_runtime,
@@ -105,6 +105,8 @@ from tests.scenarios.agents import (
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.run_waiting import wait_for_workflow_completion
+from tests.scenarios.workflows import LOOPED_LINE_MAXIMUM_ROUNDS
 
 runtime = _loop_runtime
 
@@ -362,7 +364,20 @@ def test_a_stale_round_fence_is_refused_without_stopping_the_live_round(
     finish_gated_node(LOOP_RUN, workflow, "implement", 2, release)
 
     assert result == RunCancellationNotCancellable(RunCancellationRefusal.BETWEEN_NODES)
-    wait_for_state(started_runtime, RunState.COMPLETED)
+    assert (
+        wait_for_workflow_completion(
+            node_workflow_id_for(
+                NodeExecutionId.for_node(
+                    LOOP_RUN,
+                    workflow.revision_hash,
+                    "review",
+                    LOOPED_LINE_MAXIMUM_ROUNDS,
+                )
+            ),
+            "the loop's final review node to complete",
+        )
+        == RunState.COMPLETED.value
+    )
 
 
 def test_terminal_retry_is_canonical_and_writes_no_new_event(tmp_path: Path) -> None:

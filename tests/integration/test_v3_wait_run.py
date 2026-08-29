@@ -87,6 +87,7 @@ from atelier2.contracts.runs import (
     RunId,
     RunState,
     WorkflowRevision,
+    WorkflowRevisionHash,
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -104,6 +105,7 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.run_waiting import wait_for_workflow_completion
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 APPROVAL_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
@@ -285,20 +287,67 @@ def start_and_launch(runtime: DbosRuntime, document: bytes) -> WorkflowRevision:
     return workflow
 
 
-def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
-    deadline = time.monotonic() + 8
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
+def wait_for_wait_node(runtime: DbosRuntime) -> None:
+    with runtime.engine.connect() as connection:
+        revision_hash = connection.scalar(
+            sa.select(runs.c.revision_hash).where(runs.c.run_id == RUN.value)
+        )
+    assert revision_hash is not None
+    assert (
+        wait_for_workflow_completion(
+            node_workflow_id_for(
+                NodeExecutionId.for_node(
+                    RUN, WorkflowRevisionHash(str(revision_hash)), WAIT_NODE
                 )
+            ),
+            "the wait node to write WAITING_INPUT",
+        )
+        == RunState.WAITING_INPUT.value
+    )
+
+
+def wait_for_answer_completion(runtime: DbosRuntime) -> None:
+    with runtime.engine.connect() as connection:
+        answer_workflow_id = connection.scalar(
+            sa.select(wait_answers.c.answer_workflow_id).where(
+                wait_answers.c.run_id == RUN.value,
+                wait_answers.c.node_id == WAIT_NODE,
             )
-        if observed == state.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
+        )
+    assert answer_workflow_id is not None
+    answer_result = wait_for_workflow_completion(
+        str(answer_workflow_id), "the wait answer to finish"
+    )
+    if answer_result == RunState.COMPLETED.value:
+        return
+    assert answer_result == RunState.STARTED.value
+    with runtime.engine.connect() as connection:
+        head = connection.execute(
+            sa.select(runs.c.revision_hash, runs.c.current_node_id).where(
+                runs.c.run_id == RUN.value
+            )
+        ).one()
+    assert (
+        wait_for_workflow_completion(
+            node_workflow_id_for(
+                NodeExecutionId.for_node(
+                    RUN,
+                    WorkflowRevisionHash(str(head.revision_hash)),
+                    str(head.current_node_id),
+                )
+            ),
+            "the wait answer's successor node to complete",
+        )
+        == RunState.COMPLETED.value
+    )
+
+
+def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
+    if state is RunState.WAITING_INPUT:
+        wait_for_wait_node(runtime)
+        return
+    assert state is RunState.COMPLETED
+    wait_for_answer_completion(runtime)
 
 
 def durable_events(runtime: DbosRuntime) -> list[tuple[int, str, str, bytes]]:
@@ -396,7 +445,6 @@ def test_a_v3_line_holds_at_its_wait_node_until_a_person_answers_it(
     workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
 
     wait_for_state(started, RunState.WAITING_INPUT)
-    time.sleep(0.2)
 
     with started.engine.connect() as connection:
         run = (
