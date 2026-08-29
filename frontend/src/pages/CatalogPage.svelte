@@ -43,6 +43,7 @@
     retainedRead<CatalogAgentRow[], ReadFailure>();
   type ImportResult = {
     document: Uint8Array;
+    fileName: string;
     recognition: LibraryRecognition | null;
     problem: Problem | null;
     failure: string | null;
@@ -164,6 +165,7 @@
       const document = new Uint8Array(await file.arrayBuffer());
       importResult = {
         document,
+        fileName: file.name,
         recognition: await cockpitApi.recognizeLibraryDocument(document, file.name),
         problem: null,
         failure: null
@@ -171,6 +173,7 @@
     } catch (error) {
       importResult = {
         document: new Uint8Array(),
+        fileName: file.name,
         recognition: null,
         problem: error instanceof CockpitRequestError ? error.problem : null,
         failure: error instanceof CockpitRequestError
@@ -359,6 +362,7 @@
   {#if importResult !== null}
     <CatalogImportSheet
       document={importResult.document}
+      fileName={importResult.fileName}
       recognition={importResult.recognition}
       recognitionProblem={importResult.problem}
       recognitionFailure={importResult.failure}

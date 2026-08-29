@@ -7,12 +7,21 @@
     type LibraryRecognition,
     type Problem
   } from "../api/client";
+  import {
+    IMPORT_SHEET_KINDS,
+    importKindLabel,
+    importMistakeSentence,
+    importSheetCanDeclare,
+    importSheetReport,
+    type ImportSheetKind
+  } from "../lib/catalogImport";
   import { catalogPageCopy } from "../lib/catalogPageCopy";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import ProblemNotice from "./ProblemNotice.svelte";
 
   export let document: Uint8Array;
+  export let fileName: string;
   export let recognition: LibraryRecognition | null;
   export let recognitionProblem: Problem | null;
   export let recognitionFailure: string | null;
@@ -23,16 +32,20 @@
 
   let dialogElement: DialogElement;
   let closeButton: HTMLButtonElement;
-  let firstKindButton: HTMLButtonElement;
+  let kindButtons: HTMLButtonElement[] = [];
   let adding = false;
-  let selectedKind: CatalogIntakeKind | null = null;
-  let problem: Problem | null = null;
+  let selectedKind: ImportSheetKind | null = null;
+  let mistake: string | null = null;
   let failure: string | null = null;
+
+  $: canDeclare = importSheetCanDeclare(recognition);
+  $: report = recognition !== null && canDeclare ? importSheetReport(recognition, fileName) : null;
+  $: addHeld = canDeclare && selectedKind === null && !adding;
 
   onMount(() => {
     if (typeof dialogElement.showModal === "function") dialogElement.showModal();
     else dialogElement.open = true;
-    if (recognition !== null && canAdd(recognition)) firstKindButton.focus();
+    if (canDeclare) kindButtons[0]?.focus();
     else closeButton.focus();
   });
 
@@ -42,46 +55,28 @@
   }
 
   async function addDeclaredDocument(): Promise<void> {
-    if (recognition === null || !canAdd(recognition) || selectedKind === null) return;
-    problem = null;
+    if (!canDeclare || selectedKind === null) return;
+    mistake = null;
     failure = null;
     adding = true;
     try {
       await add(document, selectedKind);
       dismiss();
     } catch (error) {
-      if (error instanceof CockpitRequestError && error.problem !== null) problem = error.problem;
-      else failure = humanErrorMessage(error, catalogPageCopy.importFailed);
+      if (error instanceof CockpitRequestError && error.transport_failure) {
+        failure = humanErrorMessage(error, catalogPageCopy.importFailed);
+      } else {
+        mistake = importMistakeSentence(selectedKind);
+      }
     } finally {
       adding = false;
     }
   }
 
-  function canAdd(value: LibraryRecognition): boolean {
-    return value.outcome === "workflow" || value.outcome === "agent_definition";
-  }
-
-  function mustClose(): boolean {
-    return recognition === null || !canAdd(recognition);
-  }
-
-  function recognitionLabel(value: LibraryRecognition): string {
-    if (value.outcome === "workflow") return value.name ?? catalogPageCopy.unnamedWorkflow;
-    if (value.outcome === "agent_definition") return value.name;
-    return "";
-  }
-
-  function recognitionGlyph(value: LibraryRecognition): string {
-    return value.outcome === "workflow" ? "⧉" : "◯";
-  }
-
-  function recognitionCount(value: LibraryRecognition): string {
-    return value.outcome === "workflow" ? catalogPageCopy.oneWorkflow : catalogPageCopy.oneAgent;
-  }
-
-  function chooseKind(kind: CatalogIntakeKind): void {
+  function chooseKind(kind: ImportSheetKind): void {
     if (adding) return;
     selectedKind = kind;
+    mistake = null;
   }
 </script>
 
@@ -91,46 +86,30 @@
       <h2 id="catalog-import-title">{wrapDisplayCopy(catalogPageCopy.import)}</h2>
     </header>
 
-    {#if recognition !== null && canAdd(recognition)}
+    {#if report !== null}
       <div class="found">
-        <span class="glyph" aria-hidden="true">{recognitionGlyph(recognition)}</span>
-        <span class="count">{wrapDisplayCopy(recognitionCount(recognition))}</span>
-        <strong>{recognitionLabel(recognition)}</strong>
+        <span class="glyph" aria-hidden="true">{report.glyph}</span>
+        <span class="count">{wrapDisplayCopy(report.count)}</span>
+        <strong>{report.name}</strong>
       </div>
       <div class="kind-field">
         <span id="catalog-import-kind">{wrapDisplayCopy(catalogPageCopy.kind)}</span>
         <div class="kind-chips" role="group" aria-labelledby="catalog-import-kind">
-          <button
-            bind:this={firstKindButton}
-            class="kind-chip"
-            class:selected={selectedKind === "workflow"}
-            type="button"
-            aria-pressed={selectedKind === "workflow"}
-            disabled={adding}
-            onclick={() => { chooseKind("workflow"); }}
-          >{wrapDisplayCopy(catalogPageCopy.kindWorkflow)}</button>
-          <button
-            class="kind-chip"
-            class:selected={selectedKind === "agent"}
-            type="button"
-            aria-pressed={selectedKind === "agent"}
-            disabled={adding}
-            onclick={() => { chooseKind("agent"); }}
-          >{wrapDisplayCopy(catalogPageCopy.kindAgent)}</button>
-          <button
-            class="kind-chip"
-            class:selected={selectedKind === "skill"}
-            type="button"
-            aria-pressed={selectedKind === "skill"}
-            disabled={adding}
-            onclick={() => { chooseKind("skill"); }}
-          >{wrapDisplayCopy(catalogPageCopy.kindSkill)}</button>
+          {#each IMPORT_SHEET_KINDS as kind, index (kind)}
+            <button
+              bind:this={kindButtons[index]}
+              class="kind-chip"
+              class:selected={selectedKind === kind}
+              type="button"
+              aria-pressed={selectedKind === kind}
+              disabled={adding}
+              onclick={() => { chooseKind(kind); }}
+            >{wrapDisplayCopy(importKindLabel(kind))}</button>
+          {/each}
         </div>
       </div>
     {:else if recognition?.outcome === "not_held"}
       <p class="failure" role="alert">{recognition.reason}</p>
-    {:else if recognition?.outcome === "unrecognized"}
-      <p class="failure" role="alert">{wrapDisplayCopy(catalogPageCopy.unrecognized)}</p>
     {/if}
 
     {#if recognitionProblem !== null}
@@ -139,21 +118,28 @@
     {#if recognitionFailure !== null}
       <p class="failure" role="alert">{recognitionFailure}</p>
     {/if}
-    {#if problem !== null}
-      <ProblemNotice title={catalogPageCopy.importFailed} {problem} />
+    {#if mistake !== null}
+      <p class="brick" role="alert">{wrapDisplayCopy(mistake)}</p>
     {/if}
     {#if failure !== null}
       <p class="failure" role="alert">{failure}</p>
     {/if}
 
     <footer>
-      {#if recognition !== null && canAdd(recognition)}
-        <button class="primary" type="button" disabled={adding || selectedKind === null} onclick={() => { void addDeclaredDocument(); }}>
+      {#if canDeclare}
+        <button
+          class="primary"
+          class:held={addHeld}
+          type="button"
+          disabled={adding || selectedKind === null}
+          title={addHeld ? wrapDisplayCopy(catalogPageCopy.noKindDeclared) : undefined}
+          onclick={() => { void addDeclaredDocument(); }}
+        >
           {wrapDisplayCopy(adding ? catalogPageCopy.addingToCatalog : catalogPageCopy.addToCatalog)}
         </button>
       {/if}
       <button bind:this={closeButton} class="quiet" type="button" disabled={adding} onclick={dismiss}>
-        {wrapDisplayCopy(mustClose() ? catalogPageCopy.close : catalogPageCopy.cancel)}
+        {wrapDisplayCopy(canDeclare ? catalogPageCopy.cancel : catalogPageCopy.close)}
       </button>
     </footer>
   </dialog>
@@ -167,12 +153,15 @@
   h2 { margin: 0; font-family: var(--serif); }
   .found { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-4); }
   .glyph { color: var(--ink-dim); }
-  .count { color: var(--ink-dim); font-size: var(--text-2xs); }
+  .count { color: var(--ink-dim); font-size: var(--text-2xs); font-variant-numeric: tabular-nums; }
   .kind-field { display: grid; gap: var(--space-1); margin-bottom: var(--space-4); }
-  .kind-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-  .kind-chip { min-height: var(--tap); padding: var(--space-2) var(--space-3); border: var(--edge) solid var(--line); border-radius: var(--r); background: transparent; color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
-  .kind-chip.selected { background: var(--chip); color: var(--ink); border-color: var(--ink); }
+  .kind-field > span { font-weight: var(--weight-strong); }
+  .kind-chips { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
+  .kind-chip { min-height: var(--tap); min-width: var(--tap); padding: var(--space-2) var(--space-1); border: 0; border-bottom: var(--edge-strong) solid transparent; border-radius: 0; background: transparent; color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  .kind-chip.selected { color: var(--ink); border-bottom-color: var(--ink); background: transparent; }
+  .brick { margin: 0 0 var(--space-4); padding: var(--space-2) var(--space-3); border-left: var(--edge-strong) solid var(--signal-failure); color: var(--signal-failure); font-size: var(--text-xs); }
   .failure { color: var(--signal-failure); }
+  button.held { cursor: not-allowed; }
   @media (max-width: 480px) { .count { display: none; } }
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>
