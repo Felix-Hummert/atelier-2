@@ -570,23 +570,14 @@ export const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
   }).strict(),
 ]);
 
-export const libraryAdditionSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("workflow"),
-    name: z.string().min(1).max(128),
-    description: z.string().nullable(),
-    lineage_id: sha256,
-    workflow_revision_hash: sha256,
-    revision_number: positiveSafeInteger,
-  }).strict(),
-  z.object({
-    kind: z.literal("agent_definition"),
-    name: z.string().min(1),
-    description: z.string().min(1),
-    provider_id: z.string().min(1),
-    agent_definition_revision_hash: sha256,
-  }).strict(),
-]);
+export const catalogIntakeKindSchema = z.enum(["agent", "skill", "workflow"]);
+
+export const libraryAdditionSchema = z
+  .object({
+    intake_id: sha256,
+    kind: catalogIntakeKindSchema,
+  })
+  .strict();
 
 export interface CatalogAdmissionInput {
   workflow_revision_hash: string;
@@ -2837,6 +2828,7 @@ export type WorkflowRevisionSummary = z.infer<
 export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
 export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
 export type LibraryRecognition = z.infer<typeof libraryRecognitionSchema>;
+export type CatalogIntakeKind = z.infer<typeof catalogIntakeKindSchema>;
 export type LibraryAddition = z.infer<typeof libraryAdditionSchema>;
 export type ProjectResource = z.infer<typeof projectResourceSchema>;
 export type ProjectList = z.infer<typeof projectListSchema>;
@@ -3004,7 +2996,7 @@ export interface CockpitApi {
   ): Promise<LibraryRecognition>;
   addLibraryDocument(
     document: Uint8Array,
-    fileName: string | null,
+    kind: CatalogIntakeKind,
     actor: string,
     activatedAt: string,
   ): Promise<HttpResult<LibraryAddition>>;
@@ -3399,10 +3391,10 @@ export function createCockpitApi(
         [200],
         libraryRecognitionSchema,
       ),
-    addLibraryDocument: (document, fileName, actor, activatedAt) =>
+    addLibraryDocument: (document, kind, actor, activatedAt) =>
       requestJsonResult(
         fetcher,
-        libraryAdditionTarget(fileName, actor, activatedAt),
+        libraryAdditionTarget(kind, actor, activatedAt),
         {
           method: "POST",
           headers: { "content-type": "application/octet-stream" },
@@ -3682,10 +3674,16 @@ function libraryDocumentTarget(path: string, fileName: string | null): string {
   return `${path}?${new URLSearchParams({ file_name: fileName }).toString()}`;
 }
 
-function libraryAdditionTarget(fileName: string | null, actor: string, activatedAt: string): string {
-  const query = new URLSearchParams({ actor, activated_at: activatedAt });
-  if (fileName !== null) query.set("file_name", fileName);
-  return `/atelier/api/v1/library/additions?${query.toString()}`;
+function libraryAdditionTarget(
+  kind: CatalogIntakeKind,
+  actor: string,
+  activatedAt: string,
+): string {
+  return `/atelier/api/v1/library/additions?${new URLSearchParams({
+    kind,
+    actor,
+    activated_at: activatedAt,
+  }).toString()}`;
 }
 
 function opaqueDocumentBody(document: Uint8Array): ArrayBuffer {

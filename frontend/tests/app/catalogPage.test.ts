@@ -470,16 +470,38 @@ describe("the catalog room", () => {
       admitted = true;
       return {
         status: 201,
-        value: {
-          kind: "workflow" as const,
-          name: WORKFLOW_NAME,
-          description: null,
-          lineage_id: LINEAGE_ID,
-          workflow_revision_hash: WORKFLOW_HASH,
-          revision_number: 1
-        }
+        value: { intake_id: WORKFLOW_HASH, kind: "workflow" as const }
       };
     });
+    const publish = vi.fn(async () => ({
+      status: 201,
+      value: {
+        workflow_revision_hash: WORKFLOW_HASH,
+        document_base64: "YQ==",
+        graph: {
+          workflow_format_version: 3 as const,
+          executable: true,
+          not_executable_reason: null,
+          node_count: 1,
+          agent_roles: [],
+          orders: [],
+          wait_answer_schemas: [],
+          node_previews: [],
+          loops: [],
+          name: WORKFLOW_NAME,
+          description: null
+        }
+      }
+    }));
+    const foundCatalogLineage = vi.fn(async () => ({
+      status: 201,
+      value: {
+        display_name: WORKFLOW_NAME,
+        lineage_id: LINEAGE_ID,
+        workflow_revision_hash: WORKFLOW_HASH,
+        revision_number: 1
+      }
+    }));
     openCatalog({
       ...listing([workflowSummary()]),
       getRevisionByName: vi.fn(async () => {
@@ -504,17 +526,27 @@ describe("the catalog room", () => {
         name: WORKFLOW_NAME,
         description: null
       })),
-      addLibraryDocument
+      addLibraryDocument,
+      publish,
+      foundCatalogLineage
     });
 
     await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.import }));
     expect(screen.queryByRole("dialog", { name: catalogPageCopy.import })).toBeNull();
     const file = { name: "iterate-code.yaml", arrayBuffer: async () => new TextEncoder().encode(EXACT_YAML).buffer };
     await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
-    await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.addToCatalog }));
+    const add = await screen.findByRole("button", { name: catalogPageCopy.addToCatalog });
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow }));
+    await fireEvent.click(add);
 
     expect((await screen.findByText(WORKFLOW_NAME)).isConnected).toBe(true);
-    expect(addLibraryDocument).toHaveBeenCalledOnce();
+    expect(addLibraryDocument).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      "workflow",
+      expect.any(String),
+      expect.any(String)
+    );
   });
 
   it("recognizes a file dropped anywhere on the Catalog page", async () => {
