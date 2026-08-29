@@ -1374,34 +1374,30 @@ describe("the one-step catalog import", () => {
     expect(recognition.outcome).toBe("workflow");
   });
 
-  it("adds a recognized file through the atomic library admission door", async () => {
+  it("posts the declared kind with the opaque bytes", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
-        kind: "workflow",
-        name: "import-proof",
-        description: null,
-        lineage_id: digest,
-        workflow_revision_hash: "b".repeat(64),
-        revision_number: 1
+        intake_id: digest,
+        kind: "workflow"
       }), { status: 201, headers: { "content-type": "application/json" } })
     );
 
     const addition = await createCockpitApi(fetcher).addLibraryDocument(
       document,
-      "import-proof.yaml",
+      "workflow",
       "atelier2-cockpit",
       "2026-08-27T10:00:00Z"
     );
 
     const request = fetcher.mock.calls[0]?.[1];
     expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-      "/atelier/api/v1/library/additions?actor=atelier2-cockpit&activated_at=2026-08-27T10%3A00%3A00Z&file_name=import-proof.yaml"
+      "/atelier/api/v1/library/additions?kind=workflow&actor=atelier2-cockpit&activated_at=2026-08-27T10%3A00%3A00Z"
     );
     expect(new TextDecoder().decode(request?.body as ArrayBuffer)).toBe(
       new TextDecoder().decode(document)
     );
     expect(addition.status).toBe(201);
-    expect(addition.value.kind).toBe("workflow");
+    expect(addition.value).toEqual({ intake_id: digest, kind: "workflow" });
   });
 });
 

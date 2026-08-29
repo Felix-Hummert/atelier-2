@@ -115,6 +115,7 @@ PROJECT_QUEUE_POLICY_PATH = PROJECT_PATH + "/queue-policy"
 PROJECT_SOURCE_IMPORT_PATH = API_PREFIX + "/project-sources/import"
 LIBRARY_RECOGNITIONS_PATH = API_PREFIX + "/library/recognitions"
 LIBRARY_ADDITIONS_PATH = API_PREFIX + "/library/additions"
+LIBRARY_ADDITION_PATH = LIBRARY_ADDITIONS_PATH + "/{intake_id}"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -269,17 +270,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "internal-error",
     ),
     (LIBRARY_ADDITIONS_PATH, "post"): (
-        *AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES,
-        "library-document-unrecognized",
-        "library-document-ambiguous",
-        "library-kind-not-held",
-        "library-name-unusable",
-        "invalid-workflow-document",
-        "agent-definition-revision-collision",
-        "catalog-revision-owned",
-        "catalog-lineage-retired",
         "invalid-request",
         "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (LIBRARY_ADDITION_PATH, "get"): (
+        "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -813,6 +811,8 @@ def _install_opaque_document_limits(schema: dict[str, Any], limits: ApiLimits) -
             },
         }
         for parameter in operation["parameters"]:
+            if "$ref" in parameter["schema"]:
+                continue
             parameter["schema"] = _bounded_field_schema(
                 parameter["schema"], limits.maximum_field_characters
             )

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { CockpitRequestError, type CockpitApi, type LibraryRecognition, type Problem } from "../api/client";
+  import { CockpitRequestError, type CatalogIntakeKind, type CockpitApi, type LibraryRecognition, type Problem } from "../api/client";
   import CatalogImportSheet from "../components/CatalogImportSheet.svelte";
   import CatalogTile from "../components/CatalogTile.svelte";
   import ReadState from "../components/ReadState.svelte";
-  import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR } from "../lib/catalogAdmission";
+  import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR, handCatalogDocumentIn } from "../lib/catalogAdmission";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { catalogPageCopy } from "../lib/catalogPageCopy";
   import {
@@ -43,7 +43,6 @@
     retainedRead<CatalogAgentRow[], ReadFailure>();
   type ImportResult = {
     document: Uint8Array;
-    fileName: string;
     recognition: LibraryRecognition | null;
     problem: Problem | null;
     failure: string | null;
@@ -165,7 +164,6 @@
       const document = new Uint8Array(await file.arrayBuffer());
       importResult = {
         document,
-        fileName: file.name,
         recognition: await cockpitApi.recognizeLibraryDocument(document, file.name),
         problem: null,
         failure: null
@@ -173,7 +171,6 @@
     } catch (error) {
       importResult = {
         document: new Uint8Array(),
-        fileName: file.name,
         recognition: null,
         problem: error instanceof CockpitRequestError ? error.problem : null,
         failure: error instanceof CockpitRequestError
@@ -199,10 +196,11 @@
     if (file !== undefined) void recognizeFile(file);
   }
 
-  async function addLibraryDocument(document: Uint8Array, fileName: string | null): Promise<void> {
-    await cockpitApi.addLibraryDocument(
+  async function addLibraryDocument(document: Uint8Array, kind: CatalogIntakeKind): Promise<void> {
+    await handCatalogDocumentIn(
+      cockpitApi,
       document,
-      fileName,
+      kind,
       COCKPIT_CATALOG_ACTOR,
       catalogActivatedAt()
     );
@@ -361,7 +359,6 @@
   {#if importResult !== null}
     <CatalogImportSheet
       document={importResult.document}
-      fileName={importResult.fileName}
       recognition={importResult.recognition}
       recognitionProblem={importResult.problem}
       recognitionFailure={importResult.failure}

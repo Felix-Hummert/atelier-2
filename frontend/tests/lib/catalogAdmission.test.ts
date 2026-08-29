@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { CockpitRequestError, type Problem, type WorkflowRevisionDetail } from "../../src/api/client";
-import { admitPublishedRevision } from "../../src/lib/catalogAdmission";
+import { admitPublishedRevision, handCatalogDocumentIn } from "../../src/lib/catalogAdmission";
 
 const hash = "a".repeat(64);
 const lineageId = "b".repeat(64);
@@ -119,5 +119,92 @@ describe("admitting a published V3 revision", () => {
       actor,
       activated_at: activatedAt
     });
+  });
+});
+
+describe("handing a catalog document in", () => {
+  const document = new TextEncoder().encode("format_version: 3\nname: import-proof\n");
+
+  it("stores the declared kind and publishes a workflow into the catalog", async () => {
+    const addLibraryDocument = vi.fn(async () => ({
+      status: 201,
+      value: { intake_id: hash, kind: "workflow" as const }
+    }));
+    const publish = vi.fn(async () => ({ status: 201, value: v3Revision("import-proof") }));
+    const foundCatalogLineage = vi.fn(async () => ({
+      status: 201,
+      value: {
+        display_name: "import-proof",
+        lineage_id: lineageId,
+        workflow_revision_hash: hash,
+        revision_number: 1
+      }
+    }));
+    const api = {
+      addLibraryDocument,
+      publish,
+      publishAgentDefinition: vi.fn(),
+      foundCatalogLineage,
+      admitCatalogMember: vi.fn(),
+      getRevisionByName: vi.fn()
+    };
+
+    await handCatalogDocumentIn(api, document, "workflow", actor, activatedAt);
+
+    expect(addLibraryDocument).toHaveBeenCalledWith(document, "workflow", actor, activatedAt);
+    expect(publish).toHaveBeenCalledOnce();
+    expect(foundCatalogLineage).toHaveBeenCalledWith({
+      workflow_revision_hash: hash,
+      actor,
+      activated_at: activatedAt
+    });
+    expect(api.publishAgentDefinition).not.toHaveBeenCalled();
+  });
+
+  it("stores an agent and publishes its definition without founding a lineage", async () => {
+    const addLibraryDocument = vi.fn(async () => ({
+      status: 201,
+      value: { intake_id: hash, kind: "agent" as const }
+    }));
+    const publishAgentDefinition = vi.fn(async () => ({
+      status: 201,
+      value: { agent_definition_revision_hash: hash }
+    }));
+    const api = {
+      addLibraryDocument,
+      publish: vi.fn(),
+      publishAgentDefinition,
+      foundCatalogLineage: vi.fn(),
+      admitCatalogMember: vi.fn(),
+      getRevisionByName: vi.fn()
+    };
+
+    await handCatalogDocumentIn(api, document, "agent", actor, activatedAt);
+
+    expect(addLibraryDocument).toHaveBeenCalledWith(document, "agent", actor, activatedAt);
+    expect(publishAgentDefinition).toHaveBeenCalledWith(new TextDecoder().decode(document));
+    expect(api.publish).not.toHaveBeenCalled();
+    expect(api.foundCatalogLineage).not.toHaveBeenCalled();
+  });
+
+  it("stores a skill without publishing", async () => {
+    const addLibraryDocument = vi.fn(async () => ({
+      status: 201,
+      value: { intake_id: hash, kind: "skill" as const }
+    }));
+    const api = {
+      addLibraryDocument,
+      publish: vi.fn(),
+      publishAgentDefinition: vi.fn(),
+      foundCatalogLineage: vi.fn(),
+      admitCatalogMember: vi.fn(),
+      getRevisionByName: vi.fn()
+    };
+
+    await handCatalogDocumentIn(api, document, "skill", actor, activatedAt);
+
+    expect(addLibraryDocument).toHaveBeenCalledWith(document, "skill", actor, activatedAt);
+    expect(api.publish).not.toHaveBeenCalled();
+    expect(api.publishAgentDefinition).not.toHaveBeenCalled();
   });
 });

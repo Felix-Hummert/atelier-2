@@ -11,7 +11,10 @@ from atelier2.application.admit_catalog_member import (
     AdmitMemberResult,
     FoundLineageResult,
 )
-from atelier2.application.admit_library_addition import AdmitLibraryAdditionResult
+from atelier2.application.admit_library_addition import (
+    AdmitLibraryAdditionResult,
+    ReadLibraryAdditionResult,
+)
 from atelier2.application.admit_queue_item import (
     ConfirmQueueProposalOutcome,
     ListQueueItemsOutcome,
@@ -114,6 +117,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AuthProfileRevisionHash,
 )
+from atelier2.contracts.catalog_intakes import CatalogIntakeId, CatalogIntakeKind
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -134,6 +138,9 @@ from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.artifacts import ArtifactPublisher
+from atelier2.ports.catalog_intakes import (
+    CatalogIntakes,
+)
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     TransactionalWaitAnswerer,
@@ -187,6 +194,7 @@ class ApiPorts:
     catalog_resolver: CatalogResolver
     catalog_admissions: CatalogAdmissions
     library_additions: LibraryAdditions
+    catalog_intakes: CatalogIntakes
     published_revision_registry: PublishedRevisionRegistry
     published_revision_listing: PublishedRevisionListing
     artifact_publisher: ArtifactPublisher
@@ -249,9 +257,10 @@ class ApiUseCases:
         [bytes, str | None], ClassifyDefinitionDocumentResult
     ]
     admit_library_addition: Callable[
-        [bytes, str | None, CatalogActor, CatalogActivatedAt],
+        [bytes, CatalogIntakeKind, CatalogActor, CatalogActivatedAt],
         AdmitLibraryAdditionResult,
     ]
+    read_library_addition: Callable[[CatalogIntakeId], ReadLibraryAdditionResult]
     list_agent_definition_revisions: Callable[
         [PublishedRevisionHash | None, int], ListAgentDefinitionRevisionsResult
     ]

@@ -65,7 +65,12 @@ function entry(page: Page, name: string) {
   return page.getByRole("listitem").filter({ hasText: name });
 }
 
-async function importInto(page: Page, fileName: string, document: string): Promise<void> {
+async function importInto(
+  page: Page,
+  fileName: string,
+  document: string,
+  kind: string
+): Promise<void> {
   await page.getByRole("button", { name: catalogPageCopy.import }).click();
   await expect(page.getByRole("dialog", { name: catalogPageCopy.import })).toHaveCount(0);
   await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
@@ -73,7 +78,11 @@ async function importInto(page: Page, fileName: string, document: string): Promi
     mimeType: "application/octet-stream",
     buffer: Buffer.from(document)
   });
-  await page.getByRole("button", { name: catalogPageCopy.addToCatalog }).click();
+  const sheet = page.getByRole("dialog", { name: catalogPageCopy.import });
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: kind, exact: true }).click();
+  await sheet.getByRole("button", { name: catalogPageCopy.addToCatalog }).click();
+  await expect(sheet).toHaveCount(0);
 }
 
 test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-imported): the catalog import sheet carries a file from disk to startable", async ({
@@ -92,11 +101,16 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   await expect(entry(page, workflowName)).toHaveCount(0);
   await expect(entry(page, agentName)).toHaveCount(0);
 
-  await importInto(page, `${workflowName}.yaml`, workflowFile(schemaHash, undefined, workflowName));
+  await importInto(
+    page,
+    `${workflowName}.yaml`,
+    workflowFile(schemaHash, undefined, workflowName),
+    catalogPageCopy.kindWorkflow
+  );
   await expect(entry(page, workflowName)).toBeVisible();
   await expect(entry(page, workflowName).getByText(catalogPageCopy.provenanceManual)).toBeVisible();
 
-  await importInto(page, `${agentName}.agent.md`, agentFile(agentName));
+  await importInto(page, `${agentName}.agent.md`, agentFile(agentName), catalogPageCopy.kindAgent);
   await expect(entry(page, agentName)).toBeVisible();
   // An imported agent belongs to the provider whose format it arrived in, and
   // the row says so instead of implying it runs anywhere.
@@ -149,7 +163,12 @@ test("an unadmitted sibling of an admitted name shows as a newer revision, not a
   const schemaHash = await anyJsonSchema(page);
 
   await page.goto("/atelier/catalog");
-  await importInto(page, `${workflowName}.yaml`, workflowFile(schemaHash, undefined, workflowName));
+  await importInto(
+    page,
+    `${workflowName}.yaml`,
+    workflowFile(schemaHash, undefined, workflowName),
+    catalogPageCopy.kindWorkflow
+  );
 
   // A second, unadmitted revision is published under the same name -- the
   // live duplicate-card finding (#659): the room must not draw a second

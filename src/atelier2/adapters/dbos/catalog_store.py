@@ -9,6 +9,7 @@ from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.schema import (
+    catalog_intakes,
     catalog_lineage_aliases,
     catalog_lineage_members,
     catalog_lineage_retirements,
@@ -17,6 +18,11 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.contracts.catalog_intakes import (
+    CatalogIntake,
+    CatalogIntakeId,
+    CatalogIntakeKind,
+)
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -32,6 +38,14 @@ from atelier2.contracts.revisions_v3 import (
     RevisionKind,
 )
 from atelier2.contracts.runs import WorkflowRevision
+from atelier2.ports.catalog_intakes import (
+    CatalogIntakeExisting,
+    CatalogIntakeFound,
+    CatalogIntakeMissing,
+    CatalogIntakeStored,
+    ReadCatalogIntakeResult,
+    StoreCatalogIntakeResult,
+)
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.published_revisions import (
     AddWorkflowToLibraryResult,
@@ -99,6 +113,20 @@ def _next_activation_number(
         )
     )
     return 1 if current is None else int(current) + 1
+
+
+def _intake_from_record(record: Mapping[Any, Any]) -> CatalogIntake:
+    intake = CatalogIntake(
+        CatalogIntakeKind(str(record["kind"])),
+        bytes(record["document"]),
+        CatalogActor(str(record["actor"])),
+        CatalogActivatedAt(str(record["activated_at"])),
+    )
+    if intake.intake_id.value != record["intake_id"]:
+        raise ValueError(
+            "durable catalog intake identity disagrees with its declared kind and bytes"
+        )
+    return intake
 
 
 def _published(
@@ -456,6 +484,62 @@ class DbosCatalogStore:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+
+    def store_intake(self, intake: CatalogIntake) -> StoreCatalogIntakeResult:
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                record = (
+                    connection.execute(
+                        sa.select(catalog_intakes).where(
+                            catalog_intakes.c.intake_id == intake.intake_id.value
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if record is not None:
+                    stored = _intake_from_record(record)
+                    return (
+                        CatalogIntakeExisting(stored)
+                        if stored == intake
+                        else DurableStateCorrupt()
+                    )
+                connection.execute(
+                    catalog_intakes.insert().values(
+                        intake_id=intake.intake_id.value,
+                        kind=intake.kind.value,
+                        document=intake.document,
+                        actor=intake.actor.value,
+                        activated_at=intake.activated_at.value,
+                    )
+                )
+                return CatalogIntakeStored(intake)
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def read_intake(self, intake_id: CatalogIntakeId) -> ReadCatalogIntakeResult:
+        try:
+            with self._engine.connect() as connection:
+                record = (
+                    connection.execute(
+                        sa.select(catalog_intakes).where(
+                            catalog_intakes.c.intake_id == intake_id.value
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+            return (
+                CatalogIntakeMissing(intake_id)
+                if record is None
+                else CatalogIntakeFound(_intake_from_record(record))
+            )
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
 
     def publish_revision(self, revision: PublishedRevision) -> PublishRevisionResult:
         try:
