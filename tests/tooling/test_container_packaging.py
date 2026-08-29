@@ -284,6 +284,24 @@ def write_stub(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _with_default_interruption_signals(command: list[str]) -> list[str]:
+    # Bash cannot trap a signal that was ignored at entry. Non-interactive
+    # parents often inherit SIGHUP=IGN; restoring SIG_DFL lets the script's
+    # own traps run.
+    return [sys.executable, "-c", _RESTORE_DEFAULT_INTERRUPTION_SIGNALS, *command]
+
+
+_RESTORE_DEFAULT_INTERRUPTION_SIGNALS = """\
+import os
+import signal
+import sys
+
+for interruption in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(interruption, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])
+"""
+
+
 def install_docker_stub(directory: Path) -> None:
     write_stub(
         directory / "docker",
@@ -366,21 +384,14 @@ def packaged_serve_arguments(
     install_serve_stub(bin_directory)
     record = tmp_path / "serve-arguments.json"
     environment = {
-        name: value
-        for name, value in os.environ.items()
-        if name not in RUNNER_LEASE_CARRIERS
+        "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
+        "ATELIER2_TEST_SERVE_RECORD": str(record),
+        SOURCE_COMMIT: "0" * 40,
+        SOURCE_TREE: "1" * 40,
+        **(declared or {}),
     }
-    environment.update(
-        {
-            "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
-            "ATELIER2_TEST_SERVE_RECORD": str(record),
-            SOURCE_COMMIT: "0" * 40,
-            SOURCE_TREE: "1" * 40,
-            **(declared or {}),
-        }
-    )
     completed = subprocess.run(
-        ["sh", str(CONTAINER_SERVE)],
+        _with_default_interruption_signals(["sh", str(CONTAINER_SERVE)]),
         env=environment,
         capture_output=True,
         text=True,
@@ -425,7 +436,7 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
 
 def run_git(repository: Path, *arguments: str) -> str:
     environment = {
-        **os.environ,
+        "PATH": os.environ["PATH"],
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_AUTHOR_NAME": "packaging",
@@ -434,7 +445,7 @@ def run_git(repository: Path, *arguments: str) -> str:
         "GIT_COMMITTER_EMAIL": "packaging@invalid",
     }
     return subprocess.run(
-        ("git", "-C", str(repository), *arguments),
+        _with_default_interruption_signals(["git", "-C", str(repository), *arguments]),
         env=environment,
         check=True,
         capture_output=True,
@@ -517,7 +528,9 @@ def run_container_up(
     **settings: Any,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(repository / "scripts" / "container_up.sh")],
+        _with_default_interruption_signals(
+            ["bash", str(repository / "scripts" / "container_up.sh")]
+        ),
         cwd=repository,
         env=container_environment(repository, tmp_path, **settings),
         capture_output=True,
@@ -889,19 +902,21 @@ def test_teardown_descriptor_renders_only_the_candidate_resources(
     project = command[5]
     descriptor = command[7]
     rendered = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "--project-name",
-            project,
-            "-f",
-            descriptor,
-            "config",
-            "--format",
-            "json",
-        ],
+        _with_default_interruption_signals(
+            [
+                "docker",
+                "compose",
+                "--project-name",
+                project,
+                "-f",
+                descriptor,
+                "config",
+                "--format",
+                "json",
+            ]
+        ),
         env={
-            **os.environ,
+            "PATH": os.environ["PATH"],
             SOURCE_COMMIT: run_git(repository, "rev-parse", "HEAD"),
             SOURCE_TREE: run_git(repository, "rev-parse", "HEAD^{tree}"),
             "ATELIER2_DEPLOYMENT": "disposable",
@@ -1097,9 +1112,11 @@ def test_printed_teardown_commands_replay_without_ambient_identity(
     else:
         (repository / "compose.yaml").rename(repository / "obsolete-compose.yaml")
     environment = container_environment(repository, tmp_path)
-    environment.pop(SOURCE_COMMIT, None)
-    environment.pop(SOURCE_TREE, None)
-    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
+    replay = subprocess.run(
+        _with_default_interruption_signals(["bash", "-c", command]),
+        env=environment,
+        check=False,
+    )
     assert replay.returncode == 0
     assert not descriptor.exists()
     assert not descriptor.parent.exists()
@@ -1119,14 +1136,6 @@ SIGNAL_CASES = (
 SIGNAL_CASE_IDS = ("build-sighup", "up-sigint", "up-sigterm", "cleanup-second-signal")
 
 
-def _restore_default_interruption_signals() -> None:
-    # Bash cannot trap a signal that was ignored at entry. Non-interactive
-    # parents often inherit SIGHUP=IGN; restoring SIG_DFL lets the script's
-    # own traps run.
-    for interruption in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-        signal.signal(interruption, signal.SIG_DFL)
-
-
 def _signals_preserve_first_status_and_teardown_exact_project(
     tmp_path: Path,
     phase: str,
@@ -1138,11 +1147,12 @@ def _signals_preserve_first_status_and_teardown_exact_project(
     wait_phases = (phase, "down") if second_signal is not None else (phase,)
     environment = container_environment(repository, tmp_path, wait_phases=wait_phases)
     process = subprocess.Popen(
-        ["bash", str(repository / "scripts" / "container_up.sh")],
+        _with_default_interruption_signals(
+            ["bash", str(repository / "scripts" / "container_up.sh")]
+        ),
         cwd=repository,
         env=environment,
         start_new_session=True,
-        preexec_fn=_restore_default_interruption_signals,
     )
     ready = tmp_path / f"{phase}-ready"
     wait_until_exists(ready, process, "Docker stub did not reach the launch boundary")
@@ -1195,9 +1205,14 @@ def test_signals_are_unmoved_by_parent_atelier2_variables(
     monkeypatch.setenv("ATELIER2_RESTART_POLICY", "unless-stopped")
     monkeypatch.setenv("ATELIER2_SOURCE_COMMIT", "a" * 40)
     monkeypatch.setenv("ATELIER2_SOURCE_TREE", "b" * 40)
-    _signals_preserve_first_status_and_teardown_exact_project(
-        tmp_path, phase, first_signal, status, second_signal
-    )
+    previous_hangup = signal.getsignal(signal.SIGHUP)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        _signals_preserve_first_status_and_teardown_exact_project(
+            tmp_path, phase, first_signal, status, second_signal
+        )
+    finally:
+        signal.signal(signal.SIGHUP, previous_hangup)
 
 
 def test_clean_tree_refusal_bites_when_its_preflight_is_removed(tmp_path: Path) -> None:
