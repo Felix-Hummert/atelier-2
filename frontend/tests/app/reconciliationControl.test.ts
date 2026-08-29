@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -120,20 +121,18 @@ describe("reconciliation control", () => {
     feed.handlers?.event(JSON.stringify(reconciliationRequired(2, { request_hash: requestHash })));
     expect(await screen.findByRole("heading", { name: "Decision pending" })).toBeTruthy();
     expect(await journal.get(first.mutation_id)).not.toBeNull();
+    const decisionGone = whenAbsent(() => screen.queryByRole("heading", { name: /Decision/ }));
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-found", "OPERATOR_FOUND")));
 
-    // The event handler's own journal write is the observable completion this
-    // waits on -- the "Decision" heading closing -- not a poll of the journal
-    // itself, which would re-run its hash validation on every poll tick. The
-    // journal's own clearing is then a single, un-polled follow-up read: the
-    // resolve() that closed the heading already finished by the time it did.
-    await waitFor(() => expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull());
+    await decisionGone;
+    expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
     expect(await journal.get(first.mutation_id)).toBeNull();
     expect(screen.getByRole("article", { name: nodeAriaName("action", "working") })).toBeTruthy();
   });
 
   it("keeps a durable reconciliation authoritative when its event arrives before the 202 response", async () => {
-    const journal = new MutationJournal(sessionStorage);
+    const { storage, cleared } = journalClearBarrier(sessionStorage);
+    const journal = new MutationJournal(storage);
     const feed = new FakeRunEventFeed();
     let acceptDecision!: (result: { status: number; value: Run }) => void;
     // Resolves the instant `reconcile` is actually invoked -- not when its own
@@ -170,18 +169,15 @@ describe("reconciliation control", () => {
     await reconcileCalledPromise;
     expect(reconcile).toHaveBeenCalledTimes(1);
 
+    const decisionGone = whenAbsent(() => screen.queryByRole("heading", { name: /Decision/ }));
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.event(JSON.stringify(reconciliationRequired(2, { request_hash: requestHash })));
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-race", "OPERATOR_FOUND")));
     acceptDecision({ status: 202, value: reconciliationRun() });
 
-    // The durable event's own resolve and the late 202 response's own
-    // handling are two independent, unawaited chains (the page's event queue
-    // runs each event's own reconciliation follow-up fire-and-forget, so nothing
-    // here can await "both settled" directly): the journal reaching empty is
-    // the one true convergence point this test owns -- that the late response
-    // never re-adds what the durable event already resolved.
-    await waitFor(async () => expect(await journal.entries()).toEqual([]));
+    await cleared;
+    await decisionGone;
+    expect(await journal.entries()).toEqual([]);
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
     expect(screen.getByRole("article", { name: nodeAriaName("action", "working") })).toBeTruthy();
   });
@@ -227,7 +223,8 @@ describe("reconciliation control", () => {
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
     expect(screen.getByText(`${PRODUCT_NAME} will execute the exact request once.`)).toBeTruthy();
     await fireEvent(dialog, new Event("cancel", { cancelable: true }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await tick();
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(review);
     expect(reconcile).not.toHaveBeenCalled();
 
@@ -308,6 +305,42 @@ describe("reconciliation control", () => {
     );
   });
 });
+
+function whenAbsent(query: () => unknown): Promise<void> {
+  if (query() == null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const observer = new MutationObserver(() => {
+      if (query() == null) {
+        observer.disconnect();
+        resolve();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+}
+
+function journalClearBarrier(inner: Storage): { storage: Storage; cleared: Promise<void> } {
+  let markCleared!: () => void;
+  const cleared = new Promise<void>((resolve) => {
+    markCleared = resolve;
+  });
+  const storage: Storage = {
+    get length() {
+      return inner.length;
+    },
+    clear: () => inner.clear(),
+    getItem: (key) => inner.getItem(key),
+    key: (index) => inner.key(index),
+    removeItem: (key) => {
+      inner.removeItem(key);
+      markCleared();
+    },
+    setItem: (key, value) => {
+      inner.setItem(key, value);
+    }
+  };
+  return { storage, cleared };
+}
 
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
