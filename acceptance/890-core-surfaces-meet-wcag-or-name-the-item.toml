@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/890"
+
+[[sentence]]
+id = "core-surfaces-meet-wcag-or-name-the-item"
+requirement = "REQ-UIQ-05"
+text = "axe-core, run in jsdom to the wcag2a, wcag2aa, and wcag22aa tags against each distinct served page rendered through App in the unit tree, reports no violation that is not tied to an atelier-2 GitHub issue URL on the same axe rule id and the same surface; a violation so tied does not fail and the run names that URL; a row without an issue URL is not an exception; incomplete jsdom checks (color-contrast) and whether a named item is still open on GitHub are outside what this tree can show."
