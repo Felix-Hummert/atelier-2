@@ -299,7 +299,9 @@ def _event_moment_from_document(
     except ValueError:
         raise ValueError("unknown transcript event moment origin") from None
     return TranscriptRecordedMoment(
-        RecordedAt(_require_text(moment_payload.get("recorded_at"), "moment recorded_at")),
+        RecordedAt(
+            _require_text(moment_payload.get("recorded_at"), "moment recorded_at")
+        ),
         origin,
     )
 
@@ -367,7 +369,11 @@ def _event_fragment(event: TranscriptEvent, document_kind: str) -> bytes:
 
 
 def _document_of(fragments: tuple[bytes, ...], document_kind: str) -> bytes:
-    return _document_prefix(document_kind) + _EVENT_SEPARATOR.join(fragments) + _DOCUMENT_SUFFIX
+    return (
+        _document_prefix(document_kind)
+        + _EVENT_SEPARATOR.join(fragments)
+        + _DOCUMENT_SUFFIX
+    )
 
 
 def _cut(text: str) -> str:
@@ -440,8 +446,10 @@ def _within_the_document_bound(
     separators = max(len(events) - 1, 0)
     remaining = sum(sizes) + separators
     for dropped in range(len(events)):
-        marker = None if dropped == 0 else TranscriptTruncated(
-            dropped, events[dropped].moment
+        marker = (
+            None
+            if dropped == 0
+            else TranscriptTruncated(dropped, events[dropped].moment)
         )
         marker_size = (
             0 if marker is None else len(_event_fragment(marker, document_kind)) + 1
@@ -489,9 +497,7 @@ class AttemptTranscript:
         if not self.events:
             raise ValueError("a transcript with no steps is no transcript")
         document_kind = _document_kind(self.events)
-        kept = _within_the_document_bound(
-            tuple(map(_kept, self.events)), document_kind
-        )
+        kept = _within_the_document_bound(tuple(map(_kept, self.events)), document_kind)
         document = _document_of(
             tuple(_event_fragment(event, document_kind) for event in kept),
             document_kind,
@@ -552,9 +558,7 @@ class AttemptTranscript:
                 )
             document_kind = decoded["kind"]
             if document_kind not in {_DOCUMENT_KIND_V1, _DOCUMENT_KIND_V2}:
-                raise ValueError(
-                    f"unknown transcript document kind {document_kind!r}"
-                )
+                raise ValueError(f"unknown transcript document kind {document_kind!r}")
             events_payload = decoded["events"]
             if not isinstance(events_payload, list):
                 raise TypeError("a transcript's events are a list")

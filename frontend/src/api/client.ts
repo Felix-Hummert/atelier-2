@@ -1215,12 +1215,33 @@ export const MAXIMUM_TRANSCRIPT_STEP_CHARACTERS = 8_192;
 
 const transcriptStepTextSchema = z.string().max(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
 
+export const transcriptRecordedMomentSchema = z
+  .object({
+    recorded_at: z
+      .string()
+      .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/),
+    origin: z.literal("recorded"),
+  })
+  .strict();
+
+export const transcriptBeforeMomentsSchema = z
+  .object({
+    origin: z.literal("v1-before-moments"),
+  })
+  .strict();
+
+export const transcriptEventMomentSchema = z.discriminatedUnion("origin", [
+  transcriptRecordedMomentSchema,
+  transcriptBeforeMomentsSchema,
+]);
+
 export const toolCalledEventSchema = z
   .object({
     event: z.literal("tool-called"),
     name: transcriptStepTextSchema,
     arguments: transcriptStepTextSchema,
     redacted: z.boolean(),
+    moment: transcriptEventMomentSchema,
   })
   .strict();
 
@@ -1230,6 +1251,7 @@ export const toolReturnedEventSchema = z
     name: transcriptStepTextSchema,
     result: transcriptStepTextSchema,
     redacted: z.boolean(),
+    moment: transcriptEventMomentSchema,
   })
   .strict();
 
@@ -1238,6 +1260,7 @@ export const assistantTurnEventSchema = z
     event: z.literal("assistant-turn"),
     text: transcriptStepTextSchema,
     redacted: z.boolean(),
+    moment: transcriptEventMomentSchema,
   })
   .strict();
 
@@ -1248,6 +1271,7 @@ export const usageEventSchema = z
     output_tokens: nonnegativeSafeInteger,
     cache_read_input_tokens: nonnegativeSafeInteger,
     cache_creation_input_tokens: nonnegativeSafeInteger,
+    moment: transcriptEventMomentSchema,
   })
   .strict();
 
@@ -1256,6 +1280,7 @@ export const unrecognisedProviderOutputEventSchema = z
     event: z.literal("unrecognised-provider-output"),
     text: transcriptStepTextSchema,
     redacted: z.boolean(),
+    moment: transcriptEventMomentSchema,
   })
   .strict();
 
@@ -1263,6 +1288,7 @@ export const transcriptTruncatedEventSchema = z
   .object({
     event: z.literal("transcript-truncated"),
     dropped_events: positiveSafeInteger,
+    moment: transcriptEventMomentSchema,
   })
   .strict();
 
