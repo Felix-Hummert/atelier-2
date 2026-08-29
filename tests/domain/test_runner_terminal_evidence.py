@@ -350,6 +350,7 @@ def test_process_boundary_failure_and_invocation_loss_carry_no_payload() -> None
     assert RunnerInvocationLost() == RunnerInvocationLost()
 
 
+@pytest.mark.proves("runner-evidence-v2-is-unambiguous")
 def test_semantic_evidence_hash_owns_the_envelope_and_all_six_variant_payloads() -> (
     None
 ):

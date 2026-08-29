@@ -390,6 +390,7 @@ def _replace_field(record: bytes, field: int, payload: bytes) -> bytes:
         "ack-tombstone",
     ),
 )
+@pytest.mark.proves("runner-evidence-v2-is-unambiguous")
 def test_every_frozen_v1_golden_vector_is_refused_without_parallel_decode(
     golden_hex: str,
 ) -> None:
