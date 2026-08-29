@@ -659,6 +659,54 @@ than the backward compatibility proven above (a new peer reading old
 traffic): both directions fail safely, before anything is armed, but only
 one direction fails by name.
 
+**2026-08-29 amendment (#889): terminal evidence has one canonical V2
+record.** `runner-terminal-evidence-exchange/v2` carries all six terminal
+variants and the payload-free ACK tombstone. A decoded provider result carries
+its bounded output and optional canonical `AttemptTranscript`. A decoded
+provider failure carries exactly one of `AGENT_REFUSED` and
+`PROCESS_EXITED_UNSUCCESSFULLY`, its physical signed-int64 exit code and bounded
+standard error, and its optional canonical transcript. Reserved fields are
+empty, so one byte record has one meaning. Its semantic identity uses the
+separate `runner-terminal-evidence/v2` hash domain and binds transcript presence
+apart from transcript bytes; for a provider failure it also binds the named
+failure code and the complete exit signature.
+
+The exact maximum record is 1,106,413 bytes: the longer admitted failure code,
+a fixed-width exit code, 49,152 bytes of standard error, a 1,048,576-byte
+canonical transcript, and maximum-width UTF-8 generation and invocation
+identities. The candidate journal grants 2,097,152 bytes, so retained evidence
+keeps the transcript in that one record under one ACK protocol and one durable
+owner; no second transcript file, evidence channel, or acknowledgement protocol
+is introduced. The V2 decoder recognizes an Exchange V1 domain only to return a
+typed refusal naming V1 and explaining that only V2 is supported; it never
+decodes a V1 payload beside V2.
+
+This retained-record bound is not the current live session-delivery bound.
+`contracts/runner_session_codec.py` fixes
+`MAXIMUM_RUNNER_SESSION_BODY_BYTES` at 1,078,291 bytes. A `TERMINAL_RECORD`
+session body spends exactly 404 bytes on its whole-frame envelope because
+`RunnerSessionFrame` pins generation and invocation identities to exactly 43
+base64url characters. The record left for its payload is therefore exactly
+1,077,887 bytes, which is 28,526 bytes below the 1,106,413-byte codec maximum.
+Records above that live ceiling are codec- and journal-legal but cannot use the
+current session delivery; after Runner exit they presently rely on the existing
+launcher handoff copy. This is deferred #301 integration, whose removal path
+must either raise the session-body bound or lower the terminal-record bound.
+
+This amendment is the evidence contract and retained-record codec only. It does
+not claim the deferred session-to-Core translation, crash replay, or Core
+commit/ACK path. In particular, a crash after provider start but before terminal
+publication remains an open #301 gap; this slice adds no schema and no second
+durable owner. `RunnerProviderFailure` therefore still defaults its omitted
+failure code to `PROCESS_EXITED_UNSUCCESSFULLY`: the current session and other
+pre-integration callers construct only the old one-argument physical-failure
+form. That default is a compatibility seam with a named removal path, not an
+Exchange V2 ambiguity. The following #301 integration must pass the decoder's
+actual `AGENT_REFUSED` or `PROCESS_EXITED_UNSUCCESSFULLY` code and transcript,
+then delete the default and `RunnerEvidenceCannotCarryTranscript`; until then
+the current session does not transport decoded `AGENT_REFUSED` or failure
+transcripts.
+
 ## Refusals
 
 | Name | Raised when | Boundary |
@@ -819,7 +867,8 @@ this record borrows that owner rather than opening a second vocabulary.
 
 This record decides only the local rootful Docker form described in §2. It leaves
 **OPEN on #21** the first remote/CI carrier, its launch/cleanup authority and
-its mutual-authentication mechanism. It also does not decide transport framing;
+its mutual-authentication mechanism. Beyond the versioned session and retained
+terminal-evidence records above, it does not decide carrier transport framing;
 the environment-requirements vocabulary; multi-project or multi-tenant isolation
 (#23); the operator-credential storage backend or cockpit login surface; the
 provider-side sandbox mechanism (#60); durable failure token names (#16); rate

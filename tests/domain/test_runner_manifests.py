@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from atelier2.contracts.runner_manifests import (
+    CANDIDATE_JOURNAL_BYTES,
     AbsentProviderCli,
     MeasuredProviderCli,
     NoProviderCliPin,
@@ -19,6 +20,15 @@ from atelier2.contracts.runner_manifests import (
     encode_runner_manifest,
     runner_manifest_id,
 )
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
+)
+
+
+def test_candidate_journal_admits_the_published_v2_terminal_record_bound() -> None:
+    assert CANDIDATE_JOURNAL_BYTES == 2_097_152
+    assert MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES <= CANDIDATE_JOURNAL_BYTES
+
 
 _CREDENTIALS = PurePosixPath("/run/atelier2-provider-config")
 _GRANTS = (

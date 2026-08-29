@@ -8,6 +8,7 @@ import pytest
 from atelier2.contracts.agent_attempts import (
     MAXIMUM_RUNNER_STANDARD_ERROR_BYTES,
     AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
     AgentAttemptId,
     ProcessExitSignature,
     RunnerCancellation,
@@ -28,6 +29,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
     RunnerTerminalEvidenceReadback,
 )
+from atelier2.contracts.agent_transcripts import AssistantTurn, AttemptTranscript
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -120,6 +122,75 @@ def test_runner_provider_result_enforces_the_existing_durable_output_bound() -> 
         RunnerProviderResult(cast(AgentExecutionResult, object()))
     with pytest.raises(TypeError, match="output bytes"):
         RunnerProviderResult(AgentExecutionResult(cast(bytes, "not-bytes")))
+
+
+def test_runner_provider_result_preserves_a_transcript() -> None:
+    transcript = AttemptTranscript.of([AssistantTurn("I read the file.")])
+    result = AgentExecutionResult(b"answer", transcript)
+
+    assert RunnerProviderResult(result).result is result
+
+
+def test_runner_provider_result_refuses_an_untyped_transcript() -> None:
+    with pytest.raises(TypeError, match="typed transcript"):
+        RunnerProviderResult(
+            AgentExecutionResult(b"answer", cast(AttemptTranscript, object()))
+        )
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    (
+        AgentAttemptFailureCode.AGENT_REFUSED,
+        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+    ),
+)
+def test_runner_provider_failure_preserves_each_admitted_failure_form(
+    failure_code: AgentAttemptFailureCode,
+) -> None:
+    transcript = AttemptTranscript.of([AssistantTurn("The provider refused.")])
+    signature = ProcessExitSignature(17, b"provider stderr")
+
+    failure = RunnerProviderFailure(signature, failure_code, transcript)
+
+    assert failure.failure_code is failure_code
+    assert failure.exit_signature is signature
+    assert failure.transcript is transcript
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    tuple(
+        code
+        for code in AgentAttemptFailureCode
+        if code
+        not in {
+            AgentAttemptFailureCode.AGENT_REFUSED,
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+        }
+    ),
+)
+def test_runner_provider_failure_refuses_every_other_failure_code(
+    failure_code: AgentAttemptFailureCode,
+) -> None:
+    with pytest.raises(ValueError, match="admitted failure code"):
+        RunnerProviderFailure(ProcessExitSignature(0, b""), failure_code)
+
+
+def test_runner_provider_failure_refuses_an_untyped_failure_code() -> None:
+    with pytest.raises(TypeError, match="typed failure code"):
+        RunnerProviderFailure(
+            ProcessExitSignature(0, b""),
+            cast(AgentAttemptFailureCode, "AGENT_REFUSED"),
+        )
+
+
+def test_runner_provider_failure_refuses_an_untyped_transcript() -> None:
+    with pytest.raises(TypeError, match="typed transcript"):
+        RunnerProviderFailure(
+            ProcessExitSignature(0, b""),
+            transcript=cast(AttemptTranscript, object()),
+        )
 
 
 @pytest.mark.parametrize(
@@ -324,6 +395,8 @@ def test_semantic_evidence_hash_owns_the_envelope_and_all_six_variant_payloads()
 
     provider_result = RunnerProviderResult(AgentExecutionResult(b"answer"))
     provider_failure = RunnerProviderFailure(ProcessExitSignature(-9, b"stderr"))
+    first_transcript = AttemptTranscript.of([AssistantTurn("read first")])
+    second_transcript = AttemptTranscript.of([AssistantTurn("read second")])
     perturbations = (
         (
             "attempt id",
@@ -388,9 +461,54 @@ def test_semantic_evidence_hash_owns_the_envelope_and_all_six_variant_payloads()
             envelope(RunnerProviderResult(AgentExecutionResult(b"other answer"))),
         ),
         (
-            "provider return code",
+            "provider exit-signature return code",
             envelope(provider_failure),
             envelope(RunnerProviderFailure(ProcessExitSignature(-8, b"stderr"))),
+        ),
+        (
+            "provider failure code",
+            envelope(
+                RunnerProviderFailure(
+                    ProcessExitSignature(-9, b"stderr"),
+                    AgentAttemptFailureCode.AGENT_REFUSED,
+                    first_transcript,
+                )
+            ),
+            envelope(
+                RunnerProviderFailure(
+                    ProcessExitSignature(-9, b"stderr"),
+                    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+                    first_transcript,
+                )
+            ),
+        ),
+        (
+            "transcript presence",
+            envelope(provider_failure),
+            envelope(
+                RunnerProviderFailure(
+                    provider_failure.exit_signature,
+                    provider_failure.failure_code,
+                    first_transcript,
+                )
+            ),
+        ),
+        (
+            "transcript content",
+            envelope(
+                RunnerProviderFailure(
+                    provider_failure.exit_signature,
+                    provider_failure.failure_code,
+                    first_transcript,
+                )
+            ),
+            envelope(
+                RunnerProviderFailure(
+                    provider_failure.exit_signature,
+                    provider_failure.failure_code,
+                    second_transcript,
+                )
+            ),
         ),
         (
             "provider standard error",
