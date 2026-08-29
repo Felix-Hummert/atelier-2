@@ -28,6 +28,7 @@ const runEvidence = {
 };
 
 const PLANTED_CANARY = "sk-ant" + "-plantedcanarysecret0123456789";
+const beforeMoments = { origin: "v1-before-moments" as const };
 
 function nodeDetail(overrides: Partial<NodeDetail> = {}): NodeDetail {
   return {
@@ -53,26 +54,30 @@ function sequenceTranscript(): AttemptTranscript {
       {
         event: "assistant-turn",
         text: "I will check the changed files against the review brief.",
-        redacted: false
+        redacted: false,
+        moment: beforeMoments
       },
       {
         event: "tool-called",
         name: "Read",
         arguments: '{"path":"docs/requirements/0003-ziel-ui.md"}',
-        redacted: false
+        redacted: false,
+        moment: beforeMoments
       },
       {
         event: "tool-returned",
         name: "Read",
         result: "Read 128 lines.",
-        redacted: false
+        redacted: false,
+        moment: beforeMoments
       },
       {
         event: "usage",
         input_tokens: 12_400,
         output_tokens: 680,
         cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0
+        cache_creation_input_tokens: 0,
+        moment: beforeMoments
       }
     ]
   };
@@ -120,12 +125,14 @@ describe("the node panel Log tab renders the stored attempt transcript (#666)", 
             {
               event: "assistant-turn",
               text: "canary credential: [redacted]",
-              redacted: true
+              redacted: true,
+              moment: beforeMoments
             },
             {
               event: "assistant-turn",
               text: "nothing secret remains in this turn",
-              redacted: true
+              redacted: true,
+              moment: beforeMoments
             }
           ]
         }
@@ -150,7 +157,8 @@ describe("the node panel Log tab renders the stored attempt transcript (#666)", 
             {
               event: "unrecognised-provider-output",
               text: "checking changed files\ncanary credential: [redacted]\ncommand stopped before an answer",
-              redacted: true
+              redacted: true,
+              moment: beforeMoments
             }
           ]
         }
@@ -311,9 +319,10 @@ describe("the node panel Log tab renders the stored attempt transcript (#666)", 
             {
               event: "assistant-turn",
               text: "I will check the changed files.",
-              redacted: false
+              redacted: false,
+              moment: beforeMoments
             },
-            { event: "transcript-truncated", dropped_events: 4 }
+            { event: "transcript-truncated", dropped_events: 4, moment: beforeMoments }
           ]
         }
       })

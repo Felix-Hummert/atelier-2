@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -41,6 +42,7 @@ from atelier2.contracts.agent_definitions import (
 from atelier2.contracts.agent_transcripts import (
     MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
     TranscriptEventKind,
+    TranscriptMomentOrigin,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -1285,11 +1287,37 @@ class NodeProvenanceResource(ApiModel):
     receipt_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class TranscriptRecordedMomentResource(ApiModel):
+    """The instant an event entered the transcript and the source of that instant."""
+
+    recorded_at: str = Field(pattern=RECORDED_AT_PATTERN)
+    origin: Literal[TranscriptMomentOrigin.RECORDED]
+
+
+class TranscriptBeforeMomentsOrigin(StrEnum):
+    """The only explicit marker for a transcript that predates event moments."""
+
+    V1 = "v1-before-moments"
+
+
+class TranscriptBeforeMomentsResource(ApiModel):
+    """An event read from a v1 transcript, before event moments existed."""
+
+    origin: Literal[TranscriptBeforeMomentsOrigin.V1]
+
+
+TranscriptMomentResource = Annotated[
+    TranscriptRecordedMomentResource | TranscriptBeforeMomentsResource,
+    Field(discriminator="origin"),
+]
+
+
 class ToolCalledEventResource(ApiModel):
     event: Literal[TranscriptEventKind.TOOL_CALLED]
     name: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     arguments: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class ToolReturnedEventResource(ApiModel):
@@ -1297,12 +1325,14 @@ class ToolReturnedEventResource(ApiModel):
     name: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     result: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class AssistantTurnEventResource(ApiModel):
     event: Literal[TranscriptEventKind.ASSISTANT_TURN]
     text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class UsageEventResource(ApiModel):
@@ -1311,17 +1341,20 @@ class UsageEventResource(ApiModel):
     output_tokens: int = Field(ge=0)
     cache_read_input_tokens: int = Field(ge=0)
     cache_creation_input_tokens: int = Field(ge=0)
+    moment: TranscriptMomentResource
 
 
 class UnrecognisedProviderOutputEventResource(ApiModel):
     event: Literal[TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT]
     text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class TranscriptTruncatedEventResource(ApiModel):
     event: Literal[TranscriptEventKind.TRANSCRIPT_TRUNCATED]
     dropped_events: int = Field(ge=1)
+    moment: TranscriptMomentResource
 
 
 AttemptTranscriptEventResource = Annotated[

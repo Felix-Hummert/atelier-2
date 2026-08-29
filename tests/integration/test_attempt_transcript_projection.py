@@ -21,11 +21,16 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
-from atelier2.adapters.dbos.artifact_store import read_stored_artifact
+from atelier2.adapters.dbos.artifact_store import keep_artifact, read_stored_artifact
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import agent_attempts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
+from atelier2.api.wire.resources import (
+    TranscriptBeforeMomentsOrigin,
+    TranscriptBeforeMomentsResource,
+    TranscriptRecordedMomentResource,
+)
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
@@ -33,13 +38,15 @@ from atelier2.contracts.agent_transcripts import (
     AttemptTranscript,
     ToolCalled,
     ToolReturned,
+    TranscriptMomentOrigin,
     UnrecognisedProviderOutput,
     Usage,
 )
 from atelier2.contracts.agents import AgentExecutionResult
-from atelier2.contracts.artifacts import ArtifactHash
+from atelier2.contracts.artifacts import Artifact, ArtifactHash
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.agent_attempts import AgentAttemptFailed, AgentAttemptSucceeded
 from atelier2.ports.agent_executions import AgentExecutionFailure
 from atelier2.ports.run_queries import NodeDetailFound
@@ -55,6 +62,15 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_api_client, durable_queries
 
 NODE_ID = "build"
+TRANSCRIPT_RECORDED_AT = RecordedAt("2026-08-29T12:00:00Z")
+
+_RECORDED_MOMENT = TranscriptRecordedMomentResource(
+    recorded_at=TRANSCRIPT_RECORDED_AT.value,
+    origin=TranscriptMomentOrigin.RECORDED,
+).model_dump(mode="json")
+_V1_BEFORE_MOMENTS = TranscriptBeforeMomentsResource(
+    origin=TranscriptBeforeMomentsOrigin.V1
+).model_dump(mode="json")
 
 
 def _canary() -> str:
@@ -73,17 +89,20 @@ _SUCCEEDED_EVENTS: list[dict[str, Any]] = [
         "name": "Read",
         "arguments": '{"file_path":"/etc/hosts"}',
         "redacted": False,
+        "moment": _RECORDED_MOMENT,
     },
     {
         "event": "tool-returned",
         "name": "Read",
         "result": "127.0.0.1 localhost",
         "redacted": False,
+        "moment": _RECORDED_MOMENT,
     },
     {
         "event": "assistant-turn",
         "text": "The host file names localhost.",
         "redacted": False,
+        "moment": _RECORDED_MOMENT,
     },
     {
         "event": "usage",
@@ -91,6 +110,7 @@ _SUCCEEDED_EVENTS: list[dict[str, Any]] = [
         "output_tokens": 48,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "moment": _RECORDED_MOMENT,
     },
 ]
 
@@ -128,6 +148,22 @@ class TranscriptNodeHttp:
         assert isinstance(found, NodeDetailFound), found
         return found
 
+    def replace_stored_transcript_with(self, transcript: AttemptTranscript) -> None:
+        """Make this completed attempt point at a v1 artifact a past writer kept."""
+
+        artifact = Artifact(transcript.document)
+        with self.runtime.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.execute(sa.text("DROP TRIGGER agent_attempts_state_transition"))
+            keep_artifact(connection, artifact)
+            connection.execute(
+                agent_attempts.update().values(
+                    transcript_artifact_hash=artifact.artifact_hash.value
+                )
+            )
+            connection.commit()
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+
 
 ArrangeTranscriptNode = Callable[
     [AgentExecutionResult | AgentExecutionFailure], TranscriptNodeHttp
@@ -156,6 +192,7 @@ def arranged_transcript_node(tmp_path: Path) -> Iterator[ArrangeTranscriptNode]:
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            clock=lambda: TRANSCRIPT_RECORDED_AT,
         )
         if isinstance(verdict, AgentExecutionFailure):
             assert isinstance(outcome, AgentAttemptFailed), outcome
@@ -224,6 +261,7 @@ def _canary_in_failed_stdout(canary: str) -> AgentExecutionFailure:
                     "event": "unrecognised-provider-output",
                     "text": f"fatal: token {REDACTION_MARKER} rejected",
                     "redacted": True,
+                    "moment": _RECORDED_MOMENT,
                 }
             ],
             id="failed attempt with redacted stdout",
@@ -255,6 +293,29 @@ def test_get_node_detail_projects_the_stored_transcript(
     assert body["transcript"] == {"events": expected_events}
     assert "kind" not in body["transcript"]
     assert "document" not in body["transcript"]
+
+
+def test_get_node_detail_names_a_v1_transcript_event_as_before_moments(
+    arranged_transcript_node: ArrangeTranscriptNode,
+) -> None:
+    """The old document reaches the HTTP reader as a known legacy state."""
+
+    node = arranged_transcript_node(_success(AttemptTranscript.of(_SUCCEEDED_STEPS)))
+    node.replace_stored_transcript_with(
+        AttemptTranscript.of([AssistantTurn("A v1 transcript predates moments.")])
+    )
+
+    response = node.get()
+
+    assert response.status_code == 200
+    assert response.json()["transcript"]["events"] == [
+        {
+            "event": "assistant-turn",
+            "text": "A v1 transcript predates moments.",
+            "redacted": False,
+            "moment": _V1_BEFORE_MOMENTS,
+        }
+    ]
 
 
 @pytest.mark.parametrize(

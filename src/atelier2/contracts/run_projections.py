@@ -253,9 +253,10 @@ class NodeDetail:
     proves what was judged, the value is its redacted presentation.
 
     `transcript` is the decoded, already-redacted steps of the current
-    execution's highest attempt that named one. A null pointer is honest
-    absence; a named address that cannot be read is not this field's job to
-    soften.
+    execution's highest attempt that named one. Its v2 events identify the
+    recording moment and origin; v1 events explicitly predate transcript
+    moments. A null pointer is honest absence; a named address that cannot be
+    read is not this field's job to soften.
     """
 
     run_id: RunId

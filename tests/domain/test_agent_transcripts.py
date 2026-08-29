@@ -306,7 +306,10 @@ def test_an_attempt_with_no_steps_keeps_no_transcript() -> None:
 )
 def test_usage_no_provider_could_have_counted_is_refused(usage: dict[str, int]) -> None:
     with pytest.raises(ValueError, match="fewer than no tokens"):
-        Usage(**usage)
+        Usage(
+            input_tokens=usage["input_tokens"],
+            output_tokens=usage["output_tokens"],
+        )
 
 
 def test_a_truncation_marker_stands_for_a_real_loss() -> None:
