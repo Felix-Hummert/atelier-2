@@ -30,7 +30,11 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
 )
-from atelier2.contracts.agent_transcripts import AssistantTurn, AttemptTranscript
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    TranscriptMomentOrigin,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentExecutionResult,
@@ -40,6 +44,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.agent_attempts import (
     AgentAttemptClaimedByThisCall,
     AgentAttemptClaimResult,
@@ -484,6 +489,7 @@ DECODED_TRANSCRIPT = AttemptTranscript.of(
     [AssistantTurn("I changed the file the check was about.")]
 )
 """What this provider decoded before the granted check stopped answering."""
+TRANSCRIPT_RECORDED_AT = RecordedAt("2026-08-29T12:00:00Z")
 
 
 @dataclass
@@ -627,6 +633,7 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
             pin,
             THE_GRANT,
         ),
+        clock=lambda: TRANSCRIPT_RECORDED_AT,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)
@@ -641,7 +648,14 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
     assert store.verdict == f"timeout {timeout_seconds} seconds"
     # The provider had already answered when the check went silent, so what
     # it did reaches the ending rather than being dropped on this one path.
-    assert store.kept_transcript == DECODED_TRANSCRIPT
+    expected_transcript = DECODED_TRANSCRIPT.with_recorded_moment(
+        TRANSCRIPT_RECORDED_AT
+    )
+    assert store.kept_transcript == expected_transcript
+    assert all(
+        event.moment.origin is TranscriptMomentOrigin.RECORDED
+        for event in expected_transcript.events
+    )
     assert verifications.ran == 1
     assert workspaces.acquired == 1
     assert workspaces.released == 1
