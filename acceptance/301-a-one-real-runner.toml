@@ -20,3 +20,7 @@ text = "After STARTED, Core persists CancelAgentAttemptRequest with replacement 
 [[sentence]]
 id = "runner-replacement-not-supported-a"
 text = "Replacement ONE is refused as runner-replacement-not-supported-a with no CANCEL frame, second attempt, or child effect."
+
+[[sentence]]
+id = "runner-evidence-v2-is-unambiguous"
+text = "Distinct terminal outcomes have distinct V2 evidence identity; Exchange V1 records are refused by name."

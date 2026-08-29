@@ -4,6 +4,7 @@ import struct
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -324,21 +325,10 @@ class RunnerCancellationObservation(StrEnum):
 
 
 class RunnerEvidenceCannotCarryTranscript(ValueError):
-    """This boundary has no room for an attempt's steps, and says so out loud.
+    """The deferred session integration cannot yet translate a failure transcript.
 
-    Runner terminal evidence travels as one canonical record bounded far below a
-    single transcript artifact, and Core's acceptance chain hashes that record.
-    Carrying a transcript across would mean re-deciding both -- the record bound
-    and what the evidence hash covers -- which is a decision this hop did not
-    make and must not make silently by truncating.
-
-    So a transcript reaching here is refused rather than dropped. Dropping it
-    would leave a Runner-carried attempt recorded as having decoded nothing,
-    which is the exact lie the transcript exists to end, and nobody would ever
-    learn the evidence had eaten it. Refusing is loud, is caught where the
-    executor ran, and cannot be mistaken for an honest absence. No executor this
-    repository composes on the Runner carrier decodes a transcript today, so
-    this is a tripwire for the day one does, not a live path.
+    Exchange V2 carries transcripts. This refusal remains only for the old
+    session composition, whose integration is outside this contract slice.
     """
 
 
@@ -357,17 +347,21 @@ class RunnerProviderResult:
             raise TypeError("runner provider result requires exact output bytes")
         if len(self.result.output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
             raise ValueError("runner provider result exceeds the durable output bound")
-        if self.result.transcript is not None:
-            raise RunnerEvidenceCannotCarryTranscript(
-                "runner terminal evidence does not carry an attempt transcript yet"
-            )
+        if self.result.transcript is not None and not isinstance(
+            self.result.transcript, AttemptTranscript
+        ):
+            raise TypeError("runner provider result requires a typed transcript")
 
 
 @dataclass(frozen=True)
 class RunnerProviderFailure:
-    """One provider ending whose bounded process evidence is authoritative."""
+    """One admitted decoded failure with its physical process evidence."""
 
     exit_signature: ProcessExitSignature
+    failure_code: AgentAttemptFailureCode = (
+        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+    )
+    transcript: AttemptTranscript | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.exit_signature, ProcessExitSignature):
@@ -387,6 +381,19 @@ class RunnerProviderFailure:
             raise ValueError(
                 "runner provider failure standard error evidence is too large"
             )
+        if not isinstance(self.failure_code, AgentAttemptFailureCode):
+            raise TypeError("runner provider failure requires a typed failure code")
+        if self.failure_code not in {
+            AgentAttemptFailureCode.AGENT_REFUSED,
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+        }:
+            raise ValueError(
+                "runner provider failure requires an admitted failure code"
+            )
+        if self.transcript is not None and not isinstance(
+            self.transcript, AttemptTranscript
+        ):
+            raise TypeError("runner provider failure requires a typed transcript")
 
 
 @dataclass(frozen=True)
@@ -513,12 +520,25 @@ class RunnerTerminalEvidenceHash(Sha256Hash):
         match evidence:
             case RunnerProviderResult(result):
                 variant = "provider-result"
-                payload = (result.output_bytes,)
-            case RunnerProviderFailure(exit_signature):
-                variant = "provider-failure"
+                transcript_presence, transcript_document = _runner_transcript_payload(
+                    result.transcript
+                )
                 payload = (
+                    result.output_bytes,
+                    transcript_presence,
+                    transcript_document,
+                )
+            case RunnerProviderFailure(exit_signature, failure_code, transcript):
+                variant = "provider-failure"
+                transcript_presence, transcript_document = _runner_transcript_payload(
+                    transcript
+                )
+                payload = (
+                    failure_code.value.encode("ascii"),
                     struct.pack(">q", exit_signature.return_code),
                     exit_signature.standard_error,
+                    transcript_presence,
+                    transcript_document,
                 )
             case RunnerOutputLimitExceeded(exceeded_streams):
                 variant = "output-limit-exceeded"
@@ -542,7 +562,7 @@ class RunnerTerminalEvidenceHash(Sha256Hash):
         invocation = envelope.invocation_id
         return cls.of(
             frame(
-                "runner-terminal-evidence/v1",
+                "runner-terminal-evidence/v2",
                 binding.attempt_id.value.encode("ascii"),
                 binding.request_hash.value.encode("ascii"),
                 binding.generation_id.value.encode("utf-8"),
@@ -552,6 +572,14 @@ class RunnerTerminalEvidenceHash(Sha256Hash):
                 *payload,
             )
         )
+
+
+def _runner_transcript_payload(
+    transcript: AttemptTranscript | None,
+) -> tuple[bytes, bytes]:
+    if transcript is None:
+        return b"absent", b""
+    return b"present", transcript.document
 
 
 @dataclass(frozen=True)
