@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/435"
+
+[[sentence]]
+id = "a-surface-asks-once-for-what-it-shows"
+requirement = "REQ-UIQ-08"
+text = "Opening Workbench, Catalog, or History with n rows and with m rows, against a counting fake of the Cockpit API, does not grow the number of API requests with the row count; today's History asks a node detail once per row and Catalog asks a catalog name once per workflow tile, which this sentence does not prove ask once; a second list page the list must follow, a click into a row, a stream event after open, Workbench open-decision pins, the Run page, Settings, a question sheet, and milliseconds are outside what this count shows."
