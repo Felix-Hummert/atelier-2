@@ -198,6 +198,9 @@ async function openUncertainSheet(page: Page, fileName: string, document: string
   const add = sheet.getByRole("button", { name: catalogPageCopy.addToCatalog });
   await expect(add).toBeDisabled();
   await expect(add).toHaveAttribute("title", catalogPageCopy.noKindDeclared);
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.kindSkill, exact: true })).toHaveCount(0);
 }
 
 test("an uncertain file asks for a kind instead of closing", async ({ page }) => {

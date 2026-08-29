@@ -71,7 +71,6 @@ export const catalogPageCopy = {
   recognitionFailed: "This file could not be recognized.",
   notAWorkflow: "This is not a workflow — nothing was added.",
   notAnAgent: "This is not an agent — nothing was added.",
-  notASkill: "This is not a skill — nothing was added.",
   fileUnreadable: "That file could not be read."
 } as const;
 

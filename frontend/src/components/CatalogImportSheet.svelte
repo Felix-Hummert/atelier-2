@@ -8,10 +8,12 @@
     type Problem
   } from "../api/client";
   import {
+    IMPORT_SHEET_KINDS,
     importKindLabel,
     importMistakeSentence,
     importSheetCanDeclare,
-    importSheetReport
+    importSheetReport,
+    type ImportSheetKind
   } from "../lib/catalogImport";
   import { catalogPageCopy } from "../lib/catalogPageCopy";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -30,9 +32,9 @@
 
   let dialogElement: DialogElement;
   let closeButton: HTMLButtonElement;
-  let firstKindButton: HTMLButtonElement;
+  let kindButtons: HTMLButtonElement[] = [];
   let adding = false;
-  let selectedKind: CatalogIntakeKind | null = null;
+  let selectedKind: ImportSheetKind | null = null;
   let mistake: string | null = null;
   let failure: string | null = null;
 
@@ -43,7 +45,7 @@
   onMount(() => {
     if (typeof dialogElement.showModal === "function") dialogElement.showModal();
     else dialogElement.open = true;
-    if (canDeclare) firstKindButton.focus();
+    if (canDeclare) kindButtons[0]?.focus();
     else closeButton.focus();
   });
 
@@ -71,7 +73,7 @@
     }
   }
 
-  function chooseKind(kind: CatalogIntakeKind): void {
+  function chooseKind(kind: ImportSheetKind): void {
     if (adding) return;
     selectedKind = kind;
     mistake = null;
@@ -93,31 +95,17 @@
       <div class="kind-field">
         <span id="catalog-import-kind">{wrapDisplayCopy(catalogPageCopy.kind)}</span>
         <div class="kind-chips" role="group" aria-labelledby="catalog-import-kind">
-          <button
-            bind:this={firstKindButton}
-            class="kind-chip"
-            class:selected={selectedKind === "workflow"}
-            type="button"
-            aria-pressed={selectedKind === "workflow"}
-            disabled={adding}
-            onclick={() => { chooseKind("workflow"); }}
-          >{wrapDisplayCopy(importKindLabel("workflow"))}</button>
-          <button
-            class="kind-chip"
-            class:selected={selectedKind === "agent"}
-            type="button"
-            aria-pressed={selectedKind === "agent"}
-            disabled={adding}
-            onclick={() => { chooseKind("agent"); }}
-          >{wrapDisplayCopy(importKindLabel("agent"))}</button>
-          <button
-            class="kind-chip"
-            class:selected={selectedKind === "skill"}
-            type="button"
-            aria-pressed={selectedKind === "skill"}
-            disabled={adding}
-            onclick={() => { chooseKind("skill"); }}
-          >{wrapDisplayCopy(importKindLabel("skill"))}</button>
+          {#each IMPORT_SHEET_KINDS as kind, index (kind)}
+            <button
+              bind:this={kindButtons[index]}
+              class="kind-chip"
+              class:selected={selectedKind === kind}
+              type="button"
+              aria-pressed={selectedKind === kind}
+              disabled={adding}
+              onclick={() => { chooseKind(kind); }}
+            >{wrapDisplayCopy(importKindLabel(kind))}</button>
+          {/each}
         </div>
       </div>
     {:else if recognition?.outcome === "not_held"}

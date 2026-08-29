@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  IMPORT_SHEET_KINDS,
   importKindLabel,
   importMistakeSentence,
   importSheetCanDeclare,
@@ -60,5 +61,13 @@ describe("the import sheet's report, as distinct from the person's decision", ()
   it("names a mistaken kind in a human sentence, never a token", () => {
     expect(importMistakeSentence("workflow")).toBe(catalogPageCopy.notAWorkflow);
     expect(importMistakeSentence("workflow")).not.toMatch(/invalid-workflow-document|urn:/);
+  });
+
+  it("the Import sheet's honourable kinds are workflow and agent, not skill", () => {
+    expect(IMPORT_SHEET_KINDS).toEqual(["workflow", "agent"]);
+    expect(IMPORT_SHEET_KINDS).not.toContain("skill");
+    for (const kind of IMPORT_SHEET_KINDS) {
+      expect(importKindLabel(kind)).not.toBe(catalogPageCopy.kindSkill);
+    }
   });
 });
