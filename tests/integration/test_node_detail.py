@@ -58,6 +58,8 @@ from atelier2.contracts.agent_transcripts import (
     AttemptTranscript,
     ToolCalled,
     ToolReturned,
+    TranscriptMomentOrigin,
+    TranscriptRecordedMoment,
     Usage,
 )
 from atelier2.contracts.agents import (
@@ -1124,13 +1126,23 @@ def test_a_stored_transcript_is_readable_through_node_detail(tmp_path: Path) -> 
         runtime.close()
 
     assert isinstance(found, NodeDetailFound), found
-    assert found.detail.transcript == STORED_TRANSCRIPT
+    assert found.detail.transcript is not None
+    moment = found.detail.transcript.events[0].moment
+    assert isinstance(moment, TranscriptRecordedMoment)
+    assert moment.origin is TranscriptMomentOrigin.RECORDED
+    assert found.detail.transcript == STORED_TRANSCRIPT.with_recorded_moment(
+        moment.recorded_at
+    )
     dumped = node_detail_resource(found.detail).model_dump(mode="json")
     assert dumped["transcript"]["events"][0] == {
         "event": "tool-called",
         "name": "Read",
         "arguments": '{"file_path":"/etc/hosts"}',
         "redacted": False,
+        "moment": {
+            "recorded_at": moment.recorded_at.value,
+            "origin": "recorded",
+        },
     }
     assert "kind" not in dumped["transcript"]
     assert "document" not in dumped["transcript"]

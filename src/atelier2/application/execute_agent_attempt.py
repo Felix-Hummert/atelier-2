@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import replace
 
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     ProcessExitSignature,
 )
+from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.tool_grants_v3 import (
     ToolGrantCapability,
     ToolGrantCapabilityNotRedeemed,
     ToolRedemptionReceipt,
 )
+from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.ports.agent_attempts import (
     AgentAttemptClaimedByThisCall,
     AgentAttemptExecutionOutcome,
@@ -45,6 +49,7 @@ def execute_agent_attempt(
     supervisor: AgentProcessRunner,
     workspaces: AgentAttemptWorkspaceOwner,
     project: PinnedProjectSource | None = None,
+    clock: Callable[[], RecordedAt] = recorded_instant,
 ) -> AgentAttemptExecutionOutcome:
     """Invoke only after this live call durably wins the launch boundary.
 
@@ -107,7 +112,9 @@ def execute_agent_attempt(
             project.source.materialize(project.pin, lease)
         invocation = AgentProcessInvocation(command, lease)
         completion = supervisor.launch_and_wait(execution, invocation)
-        result = executor.decode_process_completion(invocation, completion)
+        result = _with_recorded_transcript(
+            executor.decode_process_completion(invocation, completion), clock
+        )
         if isinstance(result, AgentExecutionFailure):
             if result.code is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:
                 raise ValueError("executor returned an unsupported known failure")
@@ -224,6 +231,18 @@ def execute_agent_attempt(
     finally:
         executor.release_credential_channel(command)
     return outcome
+
+
+def _with_recorded_transcript(
+    result: AgentExecutionResult | AgentExecutionFailure,
+    clock: Callable[[], RecordedAt],
+) -> AgentExecutionResult | AgentExecutionFailure:
+    """Stamp decoded events at the one boundary that records their transcript."""
+
+    transcript = result.transcript
+    if transcript is None:
+        return result
+    return replace(result, transcript=transcript.with_recorded_moment(clock()))
 
 
 def _keep_what_the_attempt_made(

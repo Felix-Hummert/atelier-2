@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  assistantTurnEventSchema,
   createCockpitApi,
   decodeProblem,
   decodeRun,
@@ -1914,31 +1915,36 @@ describe("the node a click asks the server about", () => {
     );
   }
 
+  const beforeMoments = { origin: "v1-before-moments" as const };
   const succeededTranscript = {
     events: [
       {
         event: "tool-called" as const,
         name: "Read",
         arguments: '{"file_path":"src/app.ts"}',
-        redacted: false
+        redacted: false,
+        moment: beforeMoments
       },
       {
         event: "tool-returned" as const,
         name: "Read",
         result: "export function start() {}",
-        redacted: false
+        redacted: false,
+        moment: beforeMoments
       },
       {
         event: "assistant-turn" as const,
         text: "I read the file and will write the three sentences.",
-        redacted: false
+        redacted: false,
+        moment: beforeMoments
       },
       {
         event: "usage" as const,
         input_tokens: 1200,
         output_tokens: 48,
         cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0
+        cache_creation_input_tokens: 0,
+        moment: beforeMoments
       }
     ]
   };
@@ -1964,7 +1970,8 @@ describe("the node a click asks the server about", () => {
     const servedStdout = {
       event: "unrecognised-provider-output" as const,
       text: "fatal: token [redacted] rejected",
-      redacted: true
+      redacted: true,
+      moment: beforeMoments
     };
     const fetcher = answering({
       ...nodeDetail,
@@ -2008,7 +2015,8 @@ describe("the node a click asks the server about", () => {
     const turn = {
       event: "assistant-turn" as const,
       text: "done",
-      redacted: false
+      redacted: false,
+      moment: beforeMoments
     };
 
     expect(() =>
@@ -2040,7 +2048,8 @@ describe("the node a click asks the server about", () => {
               output_tokens: 1,
               cache_read_input_tokens: 0,
               cache_creation_input_tokens: 0,
-              redacted: false
+              redacted: false,
+              moment: beforeMoments
             }
           ]
         }
@@ -2052,7 +2061,8 @@ describe("the node a click asks the server about", () => {
     const atBound = {
       event: "assistant-turn" as const,
       text: "a".repeat(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS),
-      redacted: false
+      redacted: false,
+      moment: beforeMoments
     };
 
     expect(
@@ -2062,6 +2072,79 @@ describe("the node a click asks the server about", () => {
       nodeDetailSchema.parse({
         ...nodeDetail,
         transcript: { events: [{ ...atBound, text: `${atBound.text}a` }] }
+      })
+    ).toThrow();
+  });
+
+  it("keeps a recorded transcript moment with origin recorded", () => {
+    const turn = {
+      event: "assistant-turn" as const,
+      text: "done",
+      redacted: false,
+      moment: {
+        origin: "recorded" as const,
+        recorded_at: "2026-08-18T15:00:00Z"
+      }
+    };
+
+    expect(assistantTurnEventSchema.parse(turn)).toEqual(turn);
+  });
+
+  it("keeps a v1-before-moments transcript moment and does not treat it as missing", () => {
+    const turn = {
+      event: "assistant-turn" as const,
+      text: "done",
+      redacted: false,
+      moment: { origin: "v1-before-moments" as const }
+    };
+    const decoded = assistantTurnEventSchema.parse(turn);
+
+    expect(decoded).toEqual(turn);
+    expect(decoded.moment.origin).toBe("v1-before-moments");
+  });
+
+  it("refuses a transcript event that omits moment", () => {
+    expect(() =>
+      assistantTurnEventSchema.parse({
+        event: "assistant-turn",
+        text: "done",
+        redacted: false
+      })
+    ).toThrow();
+  });
+
+  it("refuses a third transcript moment origin, a missing origin, recorded without recorded_at, and v1-before-moments with a time", () => {
+    const turn = {
+      event: "assistant-turn" as const,
+      text: "done",
+      redacted: false
+    };
+
+    expect(() =>
+      assistantTurnEventSchema.parse({
+        ...turn,
+        moment: { origin: "unknown", recorded_at: "2026-08-18T15:00:00Z" }
+      })
+    ).toThrow();
+    expect(() =>
+      assistantTurnEventSchema.parse({
+        ...turn,
+        moment: { recorded_at: "2026-08-18T15:00:00Z" }
+      })
+    ).toThrow();
+    expect(() =>
+      assistantTurnEventSchema.parse({
+        ...turn,
+        moment: { origin: "recorded" }
+      })
+    ).toThrow();
+    expect(() =>
+      assistantTurnEventSchema.parse({
+        ...turn,
+        moment: {
+          origin: "v1-before-moments",
+          recorded_at: "2026-08-18T15:00:00Z"
+        }
       })
     ).toThrow();
   });

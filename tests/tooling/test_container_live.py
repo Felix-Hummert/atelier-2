@@ -375,9 +375,27 @@ os.execv({real_stat!r}, [{real_stat!r}, *sys.argv[1:]])
     )
 
 
+def _with_default_interruption_signals(command: list[str]) -> list[str]:
+    # Bash cannot trap a signal that was ignored at entry. Non-interactive
+    # parents often inherit SIGHUP=IGN; restoring SIG_DFL lets the script's
+    # own traps run.
+    return [sys.executable, "-c", _RESTORE_DEFAULT_INTERRUPTION_SIGNALS, *command]
+
+
+_RESTORE_DEFAULT_INTERRUPTION_SIGNALS = """\
+import os
+import signal
+import sys
+
+for interruption in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(interruption, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])
+"""
+
+
 def run_git(repository: Path, *arguments: str) -> str:
     environment = {
-        **os.environ,
+        "PATH": os.environ["PATH"],
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_AUTHOR_NAME": "container-live-test",
@@ -386,7 +404,7 @@ def run_git(repository: Path, *arguments: str) -> str:
         "GIT_COMMITTER_EMAIL": "container-live-test@invalid",
     }
     return subprocess.run(
-        ("git", "-C", str(repository), *arguments),
+        _with_default_interruption_signals(["git", "-C", str(repository), *arguments]),
         env=environment,
         check=True,
         capture_output=True,
@@ -419,22 +437,17 @@ def lifecycle_environment(tmp_path: Path, **settings: str) -> dict[str, str]:
     install_docker_stub(bin_directory)
     install_host_stubs(bin_directory)
     environment = {
-        **os.environ,
         "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
         "XDG_STATE_HOME": str(tmp_path / "state home ; metacharacters"),
         "TMPDIR": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
         "ATELIER2_TEST_DOCKER_STATE": str(tmp_path / "docker-state.json"),
         "ATELIER2_TEST_DOCKER_RECORD": str(tmp_path / "docker-record.jsonl"),
         "ATELIER2_TEST_DOCKER_BUILD_COUNT": str(tmp_path / "docker-build-count"),
         "ATELIER2_TEST_CONTEXT": str(tmp_path / "docker-context"),
         "ATELIER2_TEST_READY_DIRECTORY": str(tmp_path),
     }
-    for variable in (
-        "ATELIER2_DEPLOYMENT",
-        "ATELIER2_PUBLISHED_PORT",
-        "ATELIER2_RESTART_POLICY",
-    ):
-        environment.pop(variable, None)
     environment.update(settings)
     return environment
 
@@ -447,12 +460,14 @@ def run_live(
     **settings: str,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [
-            "bash",
-            str(repository / "scripts/container_live.sh"),
-            command,
-            *extra_arguments,
-        ],
+        _with_default_interruption_signals(
+            [
+                "bash",
+                str(repository / "scripts/container_live.sh"),
+                command,
+                *extra_arguments,
+            ]
+        ),
         cwd=repository,
         env=lifecycle_environment(tmp_path, **settings),
         capture_output=True,
@@ -833,17 +848,23 @@ def test_failed_cleanup_keeps_durable_intent_for_recovery(
         assert not any("down" in item for item in docker_invocations(tmp_path))
 
 
-@pytest.mark.parametrize(
-    ("command", "phase", "interruption", "status", "repeated"),
-    (
-        ("install", "build", signal.SIGHUP, 129, False),
-        ("install", "up", signal.SIGINT, 130, False),
-        ("start", "start", signal.SIGHUP, 129, False),
-        ("start", "health", signal.SIGINT, 130, False),
-        ("start", "start", signal.SIGINT, 130, True),
-    ),
+LIFECYCLE_SIGNAL_CASES = (
+    ("install", "build", signal.SIGHUP, 129, False),
+    ("install", "up", signal.SIGINT, 130, False),
+    ("start", "start", signal.SIGHUP, 129, False),
+    ("start", "health", signal.SIGINT, 130, False),
+    ("start", "start", signal.SIGINT, 130, True),
 )
-def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
+LIFECYCLE_SIGNAL_CASE_IDS = (
+    "install-build-sighup",
+    "install-up-sigint",
+    "start-start-sighup",
+    "start-health-sigint",
+    "start-start-cleanup-second-signal",
+)
+
+
+def _lifecycle_signal_cleans_only_the_exact_owned_runtime(
     tmp_path: Path,
     command: str,
     phase: str,
@@ -858,7 +879,9 @@ def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
     wait_phases = f"{phase},start-cleanup" if repeated else phase
     environment = lifecycle_environment(tmp_path, ATELIER2_TEST_WAIT_PHASE=wait_phases)
     process = subprocess.Popen(
-        ["bash", str(repository / "scripts/container_live.sh"), command],
+        _with_default_interruption_signals(
+            ["bash", str(repository / "scripts/container_live.sh"), command]
+        ),
         cwd=repository,
         env=environment,
         start_new_session=True,
@@ -901,6 +924,53 @@ def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
         for arguments in mutations
     )
     assert not (installation_directory(tmp_path) / "installation.state").exists()
+
+
+@pytest.mark.parametrize(
+    ("command", "phase", "interruption", "status", "repeated"),
+    LIFECYCLE_SIGNAL_CASES,
+    ids=LIFECYCLE_SIGNAL_CASE_IDS,
+)
+def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
+    tmp_path: Path,
+    command: str,
+    phase: str,
+    interruption: signal.Signals,
+    status: int,
+    repeated: bool,
+) -> None:
+    _lifecycle_signal_cleans_only_the_exact_owned_runtime(
+        tmp_path, command, phase, interruption, status, repeated
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "phase", "interruption", "status", "repeated"),
+    LIFECYCLE_SIGNAL_CASES,
+    ids=LIFECYCLE_SIGNAL_CASE_IDS,
+)
+def test_lifecycle_signals_are_unmoved_by_parent_atelier2_variables(
+    tmp_path: Path,
+    command: str,
+    phase: str,
+    interruption: signal.Signals,
+    status: int,
+    repeated: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ATELIER2_DEPLOYMENT", "local")
+    monkeypatch.setenv("ATELIER2_PUBLISHED_PORT", "8422")
+    monkeypatch.setenv("ATELIER2_RESTART_POLICY", "unless-stopped")
+    monkeypatch.setenv("ATELIER2_SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv("ATELIER2_SOURCE_TREE", "b" * 40)
+    previous_hangup = signal.getsignal(signal.SIGHUP)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        _lifecycle_signal_cleans_only_the_exact_owned_runtime(
+            tmp_path, command, phase, interruption, status, repeated
+        )
+    finally:
+        signal.signal(signal.SIGHUP, previous_hangup)
 
 
 @pytest.mark.parametrize(

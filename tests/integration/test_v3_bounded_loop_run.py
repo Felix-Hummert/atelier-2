@@ -39,9 +39,16 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import (
+    node_workflow_id_for,
+    replacement_workflow_id_for,
+)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.agent_attempts import (
+    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    AgentAttemptId,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -110,25 +117,28 @@ def gate_execution(
     node_id: str,
     round_ordinal: int,
     output: bytes = PROVIDER_OUTPUT,
-) -> tuple[
-    Event,
-    Event,
-    Callable[[AgentExecutionRequestV2], AgentProcessCommand],
-]:
+    replacement_entered: Event | None = None,
+) -> tuple[Event, Event, Callable[[AgentExecutionRequestV2], AgentProcessCommand]]:
     """Hold one real execution at the provider boundary without polling."""
     entered = Event()
     release = Event()
+    selected_execution_count = 0
 
     def command(request: AgentExecutionRequestV2) -> AgentProcessCommand:
+        nonlocal selected_execution_count
         selected = (
             request.run_id == run_id
             and request.node_id == node_id
             and request.round_ordinal == round_ordinal
         )
         if selected:
-            entered.set()
-            if not release.wait(timeout=10):
-                raise AssertionError("the selected execution was never released")
+            selected_execution_count += 1
+            if selected_execution_count == 1:
+                entered.set()
+                if not release.wait(timeout=10):
+                    raise AssertionError("the selected execution was never released")
+            elif replacement_entered is not None:
+                replacement_entered.set()
         return emitting(output if selected else PROVIDER_OUTPUT)(request)
 
     return entered, release, command
@@ -235,11 +245,50 @@ def finish_gated_node(
     DBOS.retrieve_workflow(node_workflow_id_for(execution)).get_result()
 
 
+def wait_for_output_schema_repair(
+    runtime: DbosRuntime,
+    entered: Event,
+    recording: RecordingAgentExecutorFactoryV2,
+) -> None:
+    wait_for_gated_entry(
+        runtime,
+        RUN,
+        entered,
+        "the output-schema repair never entered the provider boundary",
+    )
+    assert recording.opened is not None
+    repair_request = recording.opened.requests[-1]
+    repair_attempt = AgentAttemptId.for_execution(
+        repair_request.node_execution_id,
+        repair_request.request_hash,
+        REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    )
+    DBOS.retrieve_workflow(replacement_workflow_id_for(repair_attempt)).get_result()
+
+
 def start_and_run(runtime: DbosRuntime) -> WorkflowRevision:
     workflow = start_loop(runtime)
     runtime.launch()
-    wait_for_state(runtime, RunState.COMPLETED)
+    wait_for_node_workflow_completion(
+        NodeExecutionId.for_node(
+            RUN,
+            workflow.revision_hash,
+            "review",
+            LOOPED_LINE_MAXIMUM_ROUNDS,
+        )
+    )
     return workflow
+
+
+def wait_for_node_workflow_completion(execution: NodeExecutionId) -> None:
+    deadline = time.monotonic() + 16
+    workflow_id = node_workflow_id_for(execution)
+    while time.monotonic() < deadline:
+        if DBOS.get_workflow_status(workflow_id) is not None:
+            DBOS.retrieve_workflow(workflow_id).get_result()
+            return
+        time.sleep(0.025)
+    raise AssertionError("the final round's node workflow was never created")
 
 
 def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
@@ -420,7 +469,14 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
 ) -> None:
     started_runtime, recording = runtime
-    entered, release, command = gate_execution(RUN, "implement", 2, b"not a JSON value")
+    replacement_entered = Event()
+    entered, release, command = gate_execution(
+        RUN,
+        "implement",
+        2,
+        b"not a JSON value",
+        replacement_entered,
+    )
     assert recording.opened is not None
     recording.opened.command = command
     workflow = start_loop(started_runtime)
@@ -429,6 +485,7 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
         started_runtime, RUN, entered, "the loop never entered its failing round"
     )
     finish_gated_node(RUN, workflow, "implement", 2, release)
+    wait_for_output_schema_repair(started_runtime, replacement_entered, recording)
     queries = durable_queries(started_runtime.engine)
     execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, "implement", 2)
 

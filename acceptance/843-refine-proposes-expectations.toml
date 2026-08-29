@@ -3,4 +3,4 @@ story = "https://github.com/FlexOr2/atelier-2/issues/843"
 
 [[sentence]]
 id = "a-refine-round-proposes-expectations-before-a-picture-or-breakdown"
-text = "A one-round headless catalog refine workflow receives an operator vision and its owner documents, then returns a two-sentence mirror and proposed expectation lines or an explicit absence for every create/change/remove, identity, states, secrets and rights, undo, and scale lens before a picture or breakdown carries the work onward."
+text = "A headless catalog refine workflow receives an operator vision and its owner documents, then returns a two-sentence mirror and one proposed expectation line from its create/change/remove, identity, states, secrets and rights, undo, or scale catalog before a picture or breakdown carries the work onward."
