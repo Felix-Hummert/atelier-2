@@ -437,12 +437,16 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
   await page.setViewportSize(viewport);
   await page.goto("/atelier/settings");
   await expect(
-    page.getByText(providerAccount(first.providerId, first.profileId), { exact: true })
-      .or(page.getByText(first.providerId, { exact: true }))
+    page.locator(".provider-account-row").getByText(
+      providerAccount(first.providerId, first.profileId),
+      { exact: true }
+    )
   ).toBeVisible();
   await expect(
-    page.getByText(providerAccount(second.providerId, second.profileId), { exact: true })
-      .or(page.getByText(second.providerId, { exact: true }))
+    page.locator(".provider-account-row").getByText(
+      providerAccount(second.providerId, second.profileId),
+      { exact: true }
+    )
   ).toBeVisible();
   await expect(page.getByText(first.modelId, { exact: true })).toBeVisible();
   await expect(page.getByText(second.modelId, { exact: true })).toBeVisible();
@@ -793,3 +797,153 @@ test("proves(settings-source-doors-follow-the-blessed-picture): Settings connect
     await expect(page.locator(".source-row")).toHaveCount(0);
   }
 });
+
+async function routeEmptyProviderAccounts(page: Page): Promise<void> {
+  await routeSettings(page);
+  await page.route("**/atelier/api/v1/auth-profile-revisions*", (route) => route.fulfill({
+    json: { items: [], next_after_revision_hash: null }
+  }));
+  await page.route("**/atelier/api/v1/agent-configuration-revisions*", (route) => route.fulfill({
+    json: { items: [], next_after_revision_hash: null }
+  }));
+  await page.route("**/atelier/api/v1/projects/*/sources", (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    return route.fulfill({ json: { items: [] } });
+  });
+  await page.route("**/atelier/api/v1/model-registries/anthropic", (route) => route.fulfill({
+    status: 404,
+    contentType: "application/problem+json",
+    json: {
+      type: "urn:atelier2:problem:v1:model-registry-missing",
+      title: "Model registry missing",
+      status: 404,
+      detail: "missing"
+    }
+  }));
+  await page.route("**/atelier/api/v1/projects/*/model-defaults", (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    return route.fulfill({
+      status: 404,
+      contentType: "application/problem+json",
+      json: {
+        type: "urn:atelier2:problem:v1:project-model-defaults-missing",
+        title: "Project model defaults not found",
+        status: 404,
+        detail: "missing"
+      }
+    });
+  });
+}
+
+function checkedOperatorRegistry() {
+  return {
+    provider_id: "anthropic",
+    revision_number: 2,
+    model_registry_revision_hash: "f".repeat(64),
+    entries: [{
+      model_id: "claude-opus-4-1",
+      agent_configuration_revision_hash: configurationHash,
+      source: "operator" as const,
+      provider_check: "checked" as const
+    }]
+  };
+}
+
+test("proves(settings-shows-the-provider-account-as-its-own-thing): Settings shows the provider account as its own thing at 1280 and 390", async ({ page }) => {
+  test.setTimeout(180_000);
+
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+
+    await routeEmptyProviderAccounts(page);
+    await page.goto("/atelier/settings");
+    const sources = page.getByRole("heading", { name: settingsPageCopy.sourcesTitle });
+    const accounts = page.getByRole("heading", { name: settingsPageCopy.account, exact: true });
+    const models = page.getByRole("heading", { name: settingsPageCopy.modelsTitle });
+    await expect(sources).toBeVisible();
+    await expect(accounts).toBeVisible();
+    await expect(models).toBeVisible();
+    const sourceBox = await sources.boundingBox();
+    const accountBox = await accounts.boundingBox();
+    const modelBox = await models.boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(accountBox).not.toBeNull();
+    expect(modelBox).not.toBeNull();
+    if (sourceBox === null || accountBox === null || modelBox === null) {
+      throw new Error("settings headings have no box");
+    }
+    expect(sourceBox.y).toBeLessThan(accountBox.y);
+    expect(accountBox.y).toBeLessThan(modelBox.y);
+    await expect(page.locator(".provider-account-row")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: settingsPageCopy.addModel, exact: true })).toBeVisible();
+    for (const difficulty of [3, 2, 1]) {
+      await expect(page.getByRole("combobox", { name: difficultyLabel(difficulty) })).toBeVisible();
+    }
+    await page.screenshot({
+      path: `test-results/settings-${viewport.width}-provider-accounts-empty.png`,
+      fullPage: true
+    });
+
+    await routeSettings(page);
+    const validationsHold = delayedReadGate();
+    let refuseValidation = false;
+    await page.route("**/atelier/api/v1/model-registries/**/validations", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      if (refuseValidation) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/problem+json",
+          json: {
+            type: "urn:atelier2:problem:v1:temporarily-unavailable",
+            title: "Temporarily unavailable",
+            status: 503,
+            detail: "validation outcome uncertain"
+          }
+        });
+        return;
+      }
+      await validationsHold.promise;
+      await route.fulfill({ status: 201, json: checkedOperatorRegistry() });
+    });
+    await page.goto("/atelier/settings");
+    const accountRow = page.locator(".provider-account-row");
+    await expect(accountRow).toHaveCount(1);
+    await expect(accountRow.getByText(providerAccount("anthropic", "Max account"), { exact: true })).toBeVisible();
+    await expect(accountRow.getByText(settingsPageCopy.neverShownAgain, { exact: true })).toBeVisible();
+    await expect(page.locator(".provider-account-rows input[type=password]")).toHaveCount(0);
+    await expect(page.getByText("secret-token-value")).toHaveCount(0);
+    await page.screenshot({
+      path: `test-results/settings-${viewport.width}-provider-accounts.png`,
+      fullPage: true
+    });
+
+    const modelRow = modelsRow(page, "claude-opus-4-1");
+    const check = modelRow.getByRole("button", { name: settingsPageCopy.check });
+    await expect(check).toBeVisible();
+    const checkClick = check.click();
+    await expect(modelRow.getByText(settingsPageCopy.checking, { exact: true })).toBeVisible();
+    validationsHold.release();
+    await checkClick;
+    await expect(modelRow.getByText(settingsPageCopy.checking, { exact: true })).toHaveCount(0);
+    await expect(modelRow.getByText(settingsPageCopy.addedByYouChecked, { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: settingsPageCopy.addModel, exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: settingsPageCopy.addModel });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("textbox", { name: settingsPageCopy.model }).fill("claude-opus-4-1");
+    await dialog.getByRole("button", { name: settingsPageCopy.add, exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText("claude-opus-4-1", { exact: true })).toHaveCount(1);
+    await expect(modelRow.getByText(settingsPageCopy.alreadyPresent)).toBeVisible();
+
+    refuseValidation = true;
+    await check.click();
+    const failure = modelRow.getByRole("alert");
+    await expect(failure).toContainText(settingsPageCopy.writeFailed);
+    await expect(page.getByRole("button", { name: settingsPageCopy.retry })).toHaveCount(1);
+  }
+});
+
