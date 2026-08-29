@@ -407,9 +407,11 @@ def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
     wait_for_state(runtime, run_id, RunState.COMPLETED)
 
     with runtime.engine.connect() as connection:
-        run = connection.execute(
-            sa.select(runs).where(runs.c.run_id == run_id.value)
-        ).mappings().one()
+        run = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
+            .mappings()
+            .one()
+        )
         ruling_rounds = tuple(
             connection.execute(
                 sa.select(wait_answers.c.round_ordinal)
