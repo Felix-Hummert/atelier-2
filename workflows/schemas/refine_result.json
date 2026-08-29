@@ -4,9 +4,7 @@
   "additionalProperties": false,
   "required": [
     "mirror",
-    "rounds",
-    "expectations",
-    "lenses_without_lines",
+    "expectation",
     "verdict"
   ],
   "properties": {
@@ -14,96 +12,40 @@
       "type": "string",
       "pattern": "^(?=[\\s\\S]*\\b[Ss]o habe ich dich verstanden\\b)[^.!?]+[.!?]\\s+[^.!?]+[.!?]$"
     },
-    "rounds": {"type": "integer", "const": 1},
-    "expectations": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "lens",
-          "sentence",
-          "example",
-          "counterexample",
-          "technical",
-          "default",
-          "status"
-        ],
-        "properties": {
-          "lens": {
-            "enum": [
-              "create_change_remove",
-              "identity",
-              "states",
-              "secrets_and_rights",
-              "undo",
-              "scale"
-            ]
-          },
-          "sentence": {"type": "string"},
-          "example": {"type": "string", "pattern": "^Wenn du .+, dann .+[.!?]$"},
-          "counterexample": {
-            "type": "string",
-            "pattern": "^Sagst du nein, dann .+[.!?]$"
-          },
-          "technical": {"type": "string"},
-          "default": {"enum": ["yes", "no", "later"]},
-          "status": {"enum": ["proposed"]}
-        }
-      }
-    },
-    "lenses_without_lines": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "enum": [
-          "create_change_remove",
-          "identity",
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lens",
+        "sentence",
+        "example",
+        "counterexample",
+        "technical",
+        "default",
+        "status"
+      ],
+      "properties": {
+        "lens": {
+          "enum": [
+            "create_change_remove",
+            "identity",
           "states",
           "secrets_and_rights",
           "undo",
-          "scale"
-        ]
+            "scale"
+          ]
+        },
+        "sentence": {"type": "string"},
+        "example": {"type": "string", "pattern": "^Wenn du .+, dann .+[.!?]$"},
+        "counterexample": {
+          "type": "string",
+          "pattern": "^Sagst du nein, dann .+[.!?]$"
+        },
+        "technical": {"type": "string"},
+        "default": {"enum": ["yes", "no", "later"]},
+        "status": {"enum": ["proposed"]}
       }
     },
     "verdict": {"enum": ["complete", "needs_more"]}
-  },
-  "allOf": [
-    {
-      "oneOf": [
-        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "create_change_remove"}}, "required": ["lens"]}}}},
-        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "create_change_remove"}}}}
-      ]
-    },
-    {
-      "oneOf": [
-        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "identity"}}, "required": ["lens"]}}}},
-        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "identity"}}}}
-      ]
-    },
-    {
-      "oneOf": [
-        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "states"}}, "required": ["lens"]}}}},
-        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "states"}}}}
-      ]
-    },
-    {
-      "oneOf": [
-        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "secrets_and_rights"}}, "required": ["lens"]}}}},
-        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "secrets_and_rights"}}}}
-      ]
-    },
-    {
-      "oneOf": [
-        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "undo"}}, "required": ["lens"]}}}},
-        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "undo"}}}}
-      ]
-    },
-    {
-      "oneOf": [
-        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "scale"}}, "required": ["lens"]}}}},
-        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "scale"}}}}
-      ]
-    }
-  ]
+  }
 }

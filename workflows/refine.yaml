@@ -1,8 +1,8 @@
 format_version: 3
 name: refine
 description: >-
-  One headless planner round proposes the expectations a vision needs before a
-  picture delta or a breakdown can carry them onward.
+  A planner proposes one expectation at a time, waits for the operator's
+  ruling, and continues only while another line is needed.
 graph_inputs:
   - name: vision
     schema:
@@ -24,8 +24,8 @@ nodes:
       required inputs. You cannot read files, run anything, or use tools in
       this headless call; these artifacts are your only evidence. First write
       a mirror of exactly two sentences beginning in the operator's language:
-      "so habe ich dich verstanden". Then propose expectation lines using this
-      catalog revision: create_change_remove, identity, states,
+      "so habe ich dich verstanden". Then propose exactly one expectation line
+      using this catalog revision: create_change_remove, identity, states,
       secrets_and_rights, undo, scale. Apply each lens to the surface the
       vision touches: create_change_remove inspects anlegen, ändern,
       entfernen, and their symmetry; identity inspects what counts as the same,
@@ -33,20 +33,21 @@ nodes:
       empty, duplicate, error, and running; secrets_and_rights inspects tokens entered
       but never shown again and who may do what; undo inspects reversing an
       action and what survives it; scale inspects 1 versus 100 of a thing.
-      Propose the self-evident lines the lenses reveal even when the vision
-      never states them, such as create implies remove, a project differs from
-      a branch, empty/duplicate/error/running states, tokens never re-shown,
-      undo, and 1 versus 100. Every lens gets one or more lines, each with a
-      default of yes, no, or later, or is listed in "lenses_without_lines" only
-      when it does not apply to the touched surface, never because the vision
-      omitted it. Write each sentence in the operator's language as an
+      Propose the self-evident line the next unresolved lens reveals even when
+      the vision never states it, such as create implies remove, a project
+      differs from a branch, empty/duplicate/error/running states, tokens never
+      re-shown, undo, and 1 versus 100. The preceding proposal and its ruling,
+      when bound below, decide what is already settled: after ja or nein move
+      to the next unresolved lens; after zeig-mir return to exactly that line
+      with another example or a picture excerpt reference, never a technical
+      explanation. Write the sentence in the operator's language as an
       acceptance sentence, with no technical vocabulary in its sentence or its
       example. Each example must say "Wenn du …, dann …" and each
       counterexample must say "Sagst du nein, dann …". Fold the technical
       explanation into "technical". Ask no questions. Do not invent actors,
       rights, limits, or implementation that no lens implies, and never turn
-      proposals into commitments. This is one round only; the Wait loop and
-      further rounds are deferred.
+      proposals into commitments. Set verdict to needs_more while a further
+      line is needed and complete when this is the final line.
     inputs:
       - name: vision
         from:
@@ -54,8 +55,63 @@ nodes:
       - name: owner_documents
         from:
           graph_input: owner_documents
+      - name: previous_proposal
+        from:
+          node: refine
+          output: result
+      - name: previous_ruling
+        from:
+          node: rule_expectation
+          output: ruling
     outputs:
       - name: result
         schema:
           ref: refine_result
-          revision: "efa110e1a6424bdb0eb3b3129c0dfab5f16622919829c70b20a9c3242ec6ea60"
+          revision: "60d97d383e5186648c33756bf4f4bcbcdc338fd2e83b87d7023720db8789a44b"
+  - id: rule_expectation
+    type: wait
+    prompt: >-
+      Rule the one proposed expectation bound below. Choose ja to accept it,
+      nein to refuse it, or zeig-mir to ask for another example or a picture
+      excerpt for exactly this line.
+    depends_on: [refine]
+    inputs:
+      - name: expectation
+        from:
+          node: refine
+          output: result
+    outputs:
+      - name: ruling
+        schema:
+          ref: refine_ruling
+          revision: "2af17fa7103e9dce937d1cb2b37c271f371bdee3bbe74144e80895049bda2e33"
+  - id: decide_next_round
+    type: agent
+    role: planner
+    mode: headless
+    instruction: >-
+      Read the proposed expectation and the operator ruling bound below. Return
+      revise only when refine must propose another line; return accepted when
+      this ruling leaves no further line to propose. A zeig-mir ruling requires
+      revise so refine can return another example or picture excerpt for the
+      same line. Return only the verdict object.
+    depends_on: [rule_expectation]
+    inputs:
+      - name: expectation
+        from:
+          node: refine
+          output: result
+      - name: ruling
+        from:
+          node: rule_expectation
+          output: ruling
+    outputs:
+      - name: verdict
+        schema:
+          ref: verdict
+          revision: "6550ce2e206ca00325827ff56c51ea5b839faa06721133becde3bf398cd07d61"
+loops:
+  - id: until_refined
+    body: [refine, rule_expectation, decide_next_round]
+    maximum_rounds: 32
+    repeat_while: {node: decide_next_round, verdict: revise}

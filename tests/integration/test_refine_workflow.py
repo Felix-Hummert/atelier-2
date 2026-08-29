@@ -14,14 +14,16 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import runs, wait_answers
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -36,6 +38,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import NodeExecutionId, WaitAnswerActor
 from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
@@ -46,6 +49,7 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
+from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -63,6 +67,7 @@ from atelier2.ports.published_revisions import (
 from atelier2.ports.run_queries import NodeDetailFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
+    answering_each_execution,
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
@@ -77,6 +82,10 @@ RESULT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "refine_result.json").read_bytes(),
 )
+RULING_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    (WORKFLOWS_DIRECTORY / "schemas" / "refine_ruling.json").read_bytes(),
+)
 VISION_TEXT = "Ich möchte für Projekte einen verständlichen Einstellungsbereich."
 OWNER_DOCUMENTS_TEXT = "Projekte haben Namen und sichtbare Einstellungen."
 VISION = json.dumps(VISION_TEXT).encode()
@@ -86,72 +95,54 @@ REFINEMENT = {
         "So habe ich dich verstanden: Du willst Projekte einfach einstellen. "
         "Die Einstellungen sollen für Menschen verständlich bleiben."
     ),
-    "rounds": 1,
-    "expectations": [
-        {
-            "lens": "create_change_remove",
-            "sentence": "Ein Projekt, das du anlegst, kannst du wieder entfernen.",
-            "example": "Wenn du ein Projekt anlegst, dann kannst du es entfernen.",
-            "counterexample": "Sagst du nein, dann bleibt es bestehen.",
-            "technical": "A removal action needs the same project identity as creation.",
-            "default": "yes",
-            "status": "proposed",
-        },
-        {
-            "lens": "identity",
-            "sentence": "Ein Projekt bleibt dasselbe, auch wenn du seinen Namen änderst.",
-            "example": "Wenn du den Namen änderst, dann bleibt es dein Projekt.",
-            "counterexample": "Sagst du nein, dann entsteht ein neues Projekt.",
-            "technical": "Persist identity separately from a mutable display name.",
-            "default": "yes",
-            "status": "proposed",
-        },
-        {
-            "lens": "states",
-            "sentence": "Du siehst, wenn noch keine Einstellung da ist oder etwas nicht klappt.",
-            "example": "Wenn du noch keine Einstellung hast, dann siehst du das sofort.",
-            "counterexample": "Sagst du nein, dann bleibt der Zustand offen.",
-            "technical": "Represent empty and failed states explicitly in the surface.",
-            "default": "yes",
-            "status": "proposed",
-        },
-        {
-            "lens": "secrets_and_rights",
-            "sentence": "Nur Menschen mit Erlaubnis können geheime Einstellungen sehen oder ändern.",
-            "example": "Wenn du die Erlaubnis hast, dann kannst du die Einstellung ändern.",
-            "counterexample": "Sagst du nein, dann bleibt sie verborgen.",
-            "technical": "Authorize reads and writes before disclosing secret values.",
-            "default": "yes",
-            "status": "proposed",
-        },
-        {
-            "lens": "undo",
-            "sentence": "Du kannst eine Änderung zurücknehmen, bevor sie dauerhaft gilt.",
-            "example": "Wenn du dich umentscheidest, dann kannst du zurückgehen.",
-            "counterexample": "Sagst du nein, dann bleibt die Änderung bestehen.",
-            "technical": "Keep an explicit cancellation path before durable persistence.",
-            "default": "later",
-            "status": "proposed",
-        },
-        {
-            "lens": "scale",
-            "sentence": "Die Einstellungen bleiben auch bei vielen Projekten übersichtlich.",
-            "example": "Wenn du viele Projekte hast, dann findest du das richtige wieder.",
-            "counterexample": "Sagst du nein, dann musst du lange suchen.",
-            "technical": "The listing needs a bounded way to find a project among many.",
-            "default": "later",
-            "status": "proposed",
-        },
-    ],
-    "lenses_without_lines": [],
-    "verdict": "complete",
+    "expectation": {
+        "lens": "create_change_remove",
+        "sentence": "Ein Projekt, das du anlegst, kannst du wieder entfernen.",
+        "example": "Wenn du ein Projekt anlegst, dann kannst du es entfernen.",
+        "counterexample": "Sagst du nein, dann bleibt es bestehen.",
+        "technical": "A removal action needs the same project identity as creation.",
+        "default": "yes",
+        "status": "proposed",
+    },
+    "verdict": "needs_more",
 }
 ANSWER = json.dumps(REFINEMENT, ensure_ascii=False).encode()
+SECOND_REFINEMENT = {
+    **REFINEMENT,
+    "expectation": {
+        "lens": "identity",
+        "sentence": "Ein Projekt bleibt dasselbe, auch wenn du seinen Namen änderst.",
+        "example": "Wenn du den Namen änderst, dann bleibt es dein Projekt.",
+        "counterexample": "Sagst du nein, dann entsteht ein neues Projekt.",
+        "technical": "Persist identity separately from a mutable display name.",
+        "default": "yes",
+        "status": "proposed",
+    },
+    "verdict": "complete",
+}
+SECOND_ANSWER = json.dumps(SECOND_REFINEMENT, ensure_ascii=False).encode()
+THIRD_REFINEMENT = {
+    **SECOND_REFINEMENT,
+    "expectation": {
+        **SECOND_REFINEMENT["expectation"],
+        "example": "Wenn du dein Projekt umbenennst, dann bleibt es dein Projekt.",
+    },
+}
+THIRD_ANSWER = json.dumps(THIRD_REFINEMENT, ensure_ascii=False).encode()
+RULE_YES = b'"ja"'
+RULE_NO = b'"nein"'
+RULE_SHOW_ME = b'"zeig-mir"'
+CONVERSATION_ANSWERS = {
+    ("refine", 1): ANSWER,
+    ("decide_next_round", 1): b'{"verdict":"revise"}',
+    ("refine", 2): SECOND_ANSWER,
+    ("decide_next_round", 2): b'{"verdict":"revise"}',
+    ("refine", 3): THIRD_ANSWER,
+    ("decide_next_round", 3): b'{"verdict":"accepted"}',
+}
 INVALID_REFINEMENT = {
     "mirror": "Ich kann keinen Vorschlag machen.",
-    "rounds": 2,
-    "expectations": [],
-    "lenses_without_lines": [],
+    "expectation": {},
     "verdict": "refused",
 }
 
@@ -175,8 +166,13 @@ def runtime_over(
 
 @pytest.fixture
 def provider(request: pytest.FixtureRequest) -> RecordingAgentExecutorFactoryV2:
+    output = getattr(request, "param", ANSWER)
     return RecordingAgentExecutorFactoryV2(
-        "exact", "exact/v1", "exact-op", getattr(request, "param", ANSWER)
+        "exact",
+        "exact/v1",
+        "exact-op",
+        b"" if isinstance(output, dict) else output,
+        command=answering_each_execution(output) if isinstance(output, dict) else None,
     )
 
 
@@ -197,7 +193,7 @@ def runtime(
 
 def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     store = DbosCatalogStore(runtime.engine)
-    for revision in (TEXT_SCHEMA, RESULT_SCHEMA):
+    for revision in (TEXT_SCHEMA, RESULT_SCHEMA, RULING_SCHEMA, VERDICT_ANSWER_SCHEMA):
         result = store.publish_revision(revision)
         assert isinstance(
             result, (PublishedRevisionCreated, PublishedRevisionExisting)
@@ -273,10 +269,48 @@ def start_refine(
     assert isinstance(created, DurableRunCreated), created
 
 
+def wait_for_round(runtime: DbosRuntime, run_id: RunId, round_ordinal: int) -> None:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            observed = connection.execute(
+                sa.select(runs.c.state, runs.c.current_round_ordinal).where(
+                    runs.c.run_id == run_id.value
+                )
+            ).one()
+        if (str(observed.state), int(observed.current_round_ordinal)) == (
+            RunState.WAITING_INPUT.value,
+            round_ordinal,
+        ):
+            return
+        time.sleep(0.025)
+    raise AssertionError(f"refine run did not wait in round {round_ordinal}")
+
+
+def rule_expectation(
+    runtime: DbosRuntime,
+    workflow: WorkflowRevision,
+    run_id: RunId,
+    round_ordinal: int,
+    ruling: bytes,
+) -> object:
+    return answer_wait_result(
+        run_id,
+        workflow.revision_hash,
+        "rule_expectation",
+        NodeExecutionId.for_node(
+            run_id, workflow.revision_hash, "rule_expectation", round_ordinal
+        ),
+        WaitAnswerActor.OPERATOR,
+        ruling,
+        DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
+    )
+
+
 @pytest.mark.proves(
     "a-refine-round-proposes-expectations-before-a-picture-or-breakdown"
 )
-def test_a_refine_round_returns_schema_valid_expectation_proposals(
+def test_a_refine_round_returns_schema_valid_expectation_proposal(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
     schema = read_schema_document(RESULT_SCHEMA.document)
@@ -288,7 +322,7 @@ def test_a_refine_round_returns_schema_valid_expectation_proposals(
     start_refine(runtime, workflow, bindings, run_id)
 
     runtime.launch()
-    wait_for_state(runtime, run_id, RunState.COMPLETED)
+    wait_for_round(runtime, run_id, 1)
 
     assert provider.opened is not None
     handed = provider.opened.requests[0].job_bytes
@@ -299,6 +333,94 @@ def test_a_refine_round_returns_schema_valid_expectation_proposals(
     assert detail.detail.state is NodeState.SUCCEEDED
     assert detail.detail.answer is not None
     assert detail.detail.answer.value == ANSWER
+
+
+@pytest.mark.parametrize("provider", [CONVERSATION_ANSWERS], indirect=True)
+@pytest.mark.proves("a-refine-run-rules-one-proposed-line-per-round")
+def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    workflow, bindings = publish(runtime)
+    run_id = RunId("v3/refine-rulings")
+    start_refine(runtime, workflow, bindings, run_id)
+
+    runtime.launch()
+    wait_for_round(runtime, run_id, 1)
+    first_question = durable_queries(runtime.engine).get_node_detail(
+        run_id, "rule_expectation"
+    )
+    assert isinstance(first_question, NodeDetailFound), first_question
+    assert first_question.detail.job is not None
+    assert ANSWER in first_question.detail.job
+    assert isinstance(
+        rule_expectation(runtime, workflow, run_id, 1, RULE_YES), AnswerAcceptedPending
+    )
+
+    wait_for_round(runtime, run_id, 2)
+    assert provider.opened is not None
+    first_round_decision = next(
+        request.job_bytes
+        for request in provider.opened.requests
+        if (request.node_id, request.round_ordinal) == ("decide_next_round", 1)
+    )
+    assert ANSWER in first_round_decision
+    assert RULE_YES in first_round_decision
+    second_refine_job = next(
+        request.job_bytes
+        for request in provider.opened.requests
+        if (request.node_id, request.round_ordinal) == ("refine", 2)
+    )
+    assert RULE_YES in second_refine_job
+    second_question = durable_queries(runtime.engine).get_node_detail(
+        run_id, "rule_expectation"
+    )
+    assert isinstance(second_question, NodeDetailFound), second_question
+    assert second_question.detail.job is not None
+    assert SECOND_ANSWER in second_question.detail.job
+    assert isinstance(
+        rule_expectation(runtime, workflow, run_id, 2, RULE_SHOW_ME),
+        AnswerAcceptedPending,
+    )
+    wait_for_round(runtime, run_id, 3)
+    second_round_decision = next(
+        request.job_bytes
+        for request in provider.opened.requests
+        if (request.node_id, request.round_ordinal) == ("decide_next_round", 2)
+    )
+    assert SECOND_ANSWER in second_round_decision
+    assert RULE_SHOW_ME in second_round_decision
+    third_refine_job = next(
+        request.job_bytes
+        for request in provider.opened.requests
+        if (request.node_id, request.round_ordinal) == ("refine", 3)
+    )
+    assert RULE_SHOW_ME in third_refine_job
+    third_question = durable_queries(runtime.engine).get_node_detail(
+        run_id, "rule_expectation"
+    )
+    assert isinstance(third_question, NodeDetailFound), third_question
+    assert third_question.detail.job is not None
+    assert THIRD_ANSWER in third_question.detail.job
+    assert isinstance(
+        rule_expectation(runtime, workflow, run_id, 3, RULE_NO), AnswerAcceptedPending
+    )
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    with runtime.engine.connect() as connection:
+        run = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
+            .mappings()
+            .one()
+        )
+        ruling_rounds = tuple(
+            connection.execute(
+                sa.select(wait_answers.c.round_ordinal)
+                .where(wait_answers.c.run_id == run_id.value)
+                .order_by(wait_answers.c.round_ordinal)
+            ).scalars()
+        )
+    assert int(run["current_round_ordinal"]) == 3
+    assert ruling_rounds == (1, 2, 3)
 
 
 @pytest.mark.parametrize(
