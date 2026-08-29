@@ -484,8 +484,10 @@ def container_environment(
     install_git_stub(bin_directory)
     record = tmp_path / "docker.jsonl"
     return {
-        **os.environ,
         "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
+        "TMPDIR": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
         "ATELIER2_TEST_DOCKER_RECORD": str(record),
         "ATELIER2_TEST_CONTEXT": str(tmp_path / "docker-context"),
         "ATELIER2_TEST_PORT_OUTPUT": port_output,
@@ -506,7 +508,6 @@ def container_environment(
         "ATELIER2_TEST_WAIT_PHASES": ",".join(wait_phases),
         "ATELIER2_TEST_READY_DIRECTORY": str(tmp_path),
         "ATELIER2_TEST_DOWN_RELEASE": str(tmp_path / "docker-down-release"),
-        "TMPDIR": str(tmp_path),
     }
 
 
@@ -1109,17 +1110,24 @@ def test_printed_teardown_commands_replay_without_ambient_identity(
         assert len(projects) == 1
 
 
-@pytest.mark.parametrize(
-    ("phase", "first_signal", "status", "second_signal"),
-    (
-        ("build", signal.SIGHUP, 129, None),
-        ("up", signal.SIGINT, 130, None),
-        ("up", signal.SIGTERM, 143, None),
-        ("up", signal.SIGINT, 130, signal.SIGTERM),
-    ),
-    ids=("build-sighup", "up-sigint", "up-sigterm", "cleanup-second-signal"),
+SIGNAL_CASES = (
+    ("build", signal.SIGHUP, 129, None),
+    ("up", signal.SIGINT, 130, None),
+    ("up", signal.SIGTERM, 143, None),
+    ("up", signal.SIGINT, 130, signal.SIGTERM),
 )
-def test_signals_preserve_first_status_and_teardown_exact_project(
+SIGNAL_CASE_IDS = ("build-sighup", "up-sigint", "up-sigterm", "cleanup-second-signal")
+
+
+def _restore_default_interruption_signals() -> None:
+    # Bash cannot trap a signal that was ignored at entry. Non-interactive
+    # parents often inherit SIGHUP=IGN; restoring SIG_DFL lets the script's
+    # own traps run.
+    for interruption in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(interruption, signal.SIG_DFL)
+
+
+def _signals_preserve_first_status_and_teardown_exact_project(
     tmp_path: Path,
     phase: str,
     first_signal: signal.Signals,
@@ -1134,6 +1142,7 @@ def test_signals_preserve_first_status_and_teardown_exact_project(
         cwd=repository,
         env=environment,
         start_new_session=True,
+        preexec_fn=_restore_default_interruption_signals,
     )
     ready = tmp_path / f"{phase}-ready"
     wait_until_exists(ready, process, "Docker stub did not reach the launch boundary")
@@ -1149,6 +1158,46 @@ def test_signals_preserve_first_status_and_teardown_exact_project(
         == status
     )
     assert_exact_candidate_teardown(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("phase", "first_signal", "status", "second_signal"),
+    SIGNAL_CASES,
+    ids=SIGNAL_CASE_IDS,
+)
+def test_signals_preserve_first_status_and_teardown_exact_project(
+    tmp_path: Path,
+    phase: str,
+    first_signal: signal.Signals,
+    status: int,
+    second_signal: signal.Signals | None,
+) -> None:
+    _signals_preserve_first_status_and_teardown_exact_project(
+        tmp_path, phase, first_signal, status, second_signal
+    )
+
+
+@pytest.mark.parametrize(
+    ("phase", "first_signal", "status", "second_signal"),
+    SIGNAL_CASES,
+    ids=SIGNAL_CASE_IDS,
+)
+def test_signals_are_unmoved_by_parent_atelier2_variables(
+    tmp_path: Path,
+    phase: str,
+    first_signal: signal.Signals,
+    status: int,
+    second_signal: signal.Signals | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ATELIER2_DEPLOYMENT", "local")
+    monkeypatch.setenv("ATELIER2_PUBLISHED_PORT", "8422")
+    monkeypatch.setenv("ATELIER2_RESTART_POLICY", "unless-stopped")
+    monkeypatch.setenv("ATELIER2_SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv("ATELIER2_SOURCE_TREE", "b" * 40)
+    _signals_preserve_first_status_and_teardown_exact_project(
+        tmp_path, phase, first_signal, status, second_signal
+    )
 
 
 def test_clean_tree_refusal_bites_when_its_preflight_is_removed(tmp_path: Path) -> None:
