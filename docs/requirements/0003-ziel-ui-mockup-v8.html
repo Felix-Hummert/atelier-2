@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.18</title>
+<title>Workshop target picture v8.19</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -488,10 +488,10 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.18 · 28.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.19 · 29.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
-  <p class="note"><b>Changelog v8.18</b> · The run view keeps one standing sentence in the head; the result lives in the Result tab, not a second card above the graph. A History row names when it ended, the work item (tracker title, or the bare reference, or an honest dash), a half-sentence from the typed output, the duration, and a dim run identifier; at 390 the rows are cards and the column header is gone.</p>
+  <p class="note"><b>Changelog v8.19</b> · The Import sheet asks what the handed-in file is. Kind chips are the person's declaration; the found rows are recognition's report; the two never share a shape. An uncertain recognition leaves those chips instead of a Close-only refusal. A mistake is brick on the sheet, and nothing is in the catalog.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -1321,6 +1321,70 @@ command stopped before an answer</div>
 <dl class="uq">
   <div><dt>Brick sentence in the sheet, one door</dt><dd>"What happened, and what now?" — a human sentence, never a token name; "Close" is the one move, because the fix happens outside the house.</dd></div>
   <div><dt>The recognised rows stay above the refusal</dt><dd>"Was anything of it taken in?" — no: all or nothing; the rows show what would have come, the sentence says why it did not (ADR 0018 §5).</dd></div>
+</dl>
+
+<section id="v8-19-import-kind">
+<h3 class="frame-title">Catalog · Import declares the kind <small>— recognition reports; the person decides</small></h3>
+<div class="frame sheeted" id="v8-19-declare">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span></div>
+    <div class="cards"><span class="card"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green.</small></span><span class="card"><b><span class="glyph">◯</span>builder</b><small>Implements a bounded change and pins it with tests.</small></span></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Import — declare the kind">
+    <h5>Import</h5>
+    <div class="found">
+      <div><span class="k">◯</span><span class="n">1 agent</span><b>walker</b></div>
+    </div>
+    <div class="fld"><label>Kind</label><div class="filters plain"><span class="f">Workflow</span><span class="f on">Agent</span><span class="f">Skill</span></div></div>
+    <div class="foot"><span class="btn primary">Add to catalog</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame sheeted" id="v8-19-uncertain">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span></div>
+    <div class="cards"><span class="card"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green.</small></span><span class="card"><b><span class="glyph">◯</span>builder</b><small>Implements a bounded change and pins it with tests.</small></span></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Import — uncertain recognition">
+    <h5>Import</h5>
+    <div class="found">
+      <div><span class="k">·</span><span class="n">1 file</span><b>notes.md</b></div>
+    </div>
+    <div class="fld"><label>Kind</label><div class="filters plain"><span class="f">Workflow</span><span class="f">Agent</span><span class="f">Skill</span></div></div>
+    <div class="foot"><span class="btn held" title="no kind declared yet">Add to catalog</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame sheeted" id="v8-19-mistake">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span></div>
+    <div class="cards"><span class="card"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green.</small></span><span class="card"><b><span class="glyph">◯</span>builder</b><small>Implements a bounded change and pins it with tests.</small></span></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Import — mistake before the catalog">
+    <h5>Import</h5>
+    <div class="found">
+      <div><span class="k">·</span><span class="n">1 file</span><b>notes.md</b></div>
+    </div>
+    <div class="fld"><label>Kind</label><div class="filters plain"><span class="f on">Workflow</span><span class="f">Agent</span><span class="f">Skill</span></div></div>
+    <div class="err">This is not a workflow — nothing was added.</div>
+    <div class="foot"><span class="btn primary">Add to catalog</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+</section>
+<dl class="uq">
+  <div><dt>Kind chips</dt><dd>"What is this?" — the person says; one chip is the declaration. Recognition never presses a chip, and a chip is never a found row.</dd></div>
+  <div><dt>Rows: glyph · count · name</dt><dd>"What did recognition see?" — a report, not a choice. The glyph and dim count belong to the report even when they agree with the pressed chip.</dd></div>
+  <div><dt>Uncertain: no kind glyph, no chip on, Add held</dt><dd>"Did it know?" — no; the person still chooses. There is no Close-only refusal; Cancel stays quiet.</dd></div>
+  <div><dt>Brick after a declaration</dt><dd>"Did anything enter the catalog?" — no; the sentence stands on the sheet before the catalog changes. The chips stay so the kind can change; Add and Cancel stay the two doors.</dd></div>
 </dl>
 
 <h3 class="frame-title">Workflow detail <small>— still</small></h3>
