@@ -304,6 +304,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "catalog-revision-unpublished",
         "catalog-name-held",
         "catalog-revision-owned",
+        "catalog-lineage-retired",
         "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",

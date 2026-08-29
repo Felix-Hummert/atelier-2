@@ -129,6 +129,8 @@ async function retireFromTechnical(page: Page, name: string): Promise<void> {
   const sheet = page.getByRole("dialog", { name: workflowDetailCopy.retireTitle(name) });
   await expect(sheet.getByText(workflowDetailCopy.retireDisappearsFact)).toBeVisible();
   await expect(sheet.getByText(workflowDetailCopy.retireStaysFact)).toBeVisible();
+  await expect(sheet.getByText(workflowDetailCopy.retirePermanentFact)).toBeVisible();
+  await expect(sheet.getByRole("button", { name: /again/i })).toHaveCount(0);
   await sheet.getByRole("button", { name: workflowDetailCopy.retire }).click();
 }
 

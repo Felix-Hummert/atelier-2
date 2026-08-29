@@ -56,6 +56,10 @@
       <b>{wrapDisplayCopy(workflowDetailCopy.retireStays)}</b>
       <span>{wrapDisplayCopy(workflowDetailCopy.retireStaysFact)}</span>
     </div>
+    <div class="fact">
+      <b>{wrapDisplayCopy(workflowDetailCopy.retirePermanent)}</b>
+      <span>{wrapDisplayCopy(workflowDetailCopy.retirePermanentFact)}</span>
+    </div>
   </div>
   {#if failure !== null}
     <p class="failure" role="alert">{wrapDisplayCopy(failure)}</p>

@@ -105,10 +105,12 @@ export const workflowDetailCopy = {
   retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here.",
   retire: "Retire",
   retireTitle: (name: string) => `Retire ${name}?`,
-  retireDisappears: "Disappears",
-  retireDisappearsFact: "Catalog tile and Start door",
-  retireStays: "Stays",
-  retireStaysFact: "Runs in History keep their reference. Immutable revisions remain.",
+  retireDisappears: "Leaves",
+  retireDisappearsFact: "It leaves Catalog and can no longer be started.",
+  retireStays: "History",
+  retireStaysFact: "Past runs and immutable revisions remain reachable.",
+  retirePermanent: "Permanent",
+  retirePermanentFact: "This workflow cannot return to Catalog. There is no way back.",
   retireFailed: "This workflow could not be retired."
 } as const;
 
