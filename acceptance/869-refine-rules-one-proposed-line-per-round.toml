@@ -1,0 +1,6 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/869"
+
+[[sentence]]
+id = "a-refine-run-rules-one-proposed-line-per-round"
+text = "A refine run pauses on each proposed expectation line for the operator to answer ja, nein, or zeig-mir, carries that ruling into the next round, and records each wait against its own round until no further line is needed."
