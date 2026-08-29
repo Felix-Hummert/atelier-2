@@ -17,6 +17,7 @@ export const catalogPageCopy = {
   filePicker: "Catalog file picker",
   oneWorkflow: "1 workflow",
   oneAgent: "1 agent",
+  oneFile: "1 file",
 
   all: "All",
   workflowsTitle: "Workflows",
@@ -65,9 +66,11 @@ export const catalogPageCopy = {
   kindSkill: "Skill",
   addToCatalog: "Add to catalog",
   addingToCatalog: "Adding…",
+  noKindDeclared: "no kind declared yet",
   importFailed: "This file could not be imported.",
   recognitionFailed: "This file could not be recognized.",
-  unrecognized: "This doesn't look like a workflow, an agent, or a plugin — nothing was added.",
+  notAWorkflow: "This is not a workflow — nothing was added.",
+  notAnAgent: "This is not an agent — nothing was added.",
   fileUnreadable: "That file could not be read."
 } as const;
 

@@ -102,6 +102,18 @@ function unlistedName(): Partial<CockpitApi> {
   };
 }
 
+function kindName(name: string): RegExp {
+  return new RegExp(`^${name}$`);
+}
+
+function kindButton(name: string) {
+  return screen.getByRole("button", { name: kindName(name) });
+}
+
+function queryKindButton(name: string) {
+  return screen.queryByRole("button", { name: kindName(name) });
+}
+
 describe("the catalog room", () => {
   it("greets an empty atelier by naming the door that fills it", async () => {
     openCatalog();
@@ -651,7 +663,57 @@ describe("the catalog room", () => {
     expect((await screen.findByLabelText(catalogPageCopy.agentProviderClaude)).isConnected).toBe(true);
   });
 
-  it("names a document the library cannot recognize without publishing it", async () => {
+  it("proves(the-person-declares-the-kind-on-the-import-sheet): the person chooses the kind on the sheet and that choice is the intake kind", async () => {
+    const addLibraryDocument = vi.fn(async () => ({
+      status: 201,
+      value: { intake_id: AGENT_HASH, kind: "agent" as const }
+    }));
+    const publishAgentDefinition = vi.fn(async () => ({
+      status: 201,
+      value: { agent_definition_revision_hash: AGENT_HASH }
+    }));
+    openCatalog({
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "agent_definition" as const,
+        name: "walker",
+        description: "Walks the surface.",
+        provider_id: "anthropic"
+      })),
+      addLibraryDocument,
+      publishAgentDefinition,
+      listAgentDefinitionRevisions: vi.fn(async () => ({
+        items: [],
+        next_after_revision_hash: null
+      }))
+    });
+
+    const file = { name: "walker.md", arrayBuffer: async () => new TextEncoder().encode("agent").buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
+
+    expect((await screen.findByText(catalogPageCopy.oneAgent)).isConnected).toBe(true);
+    expect(screen.getByText("walker").tagName).toBe("STRONG");
+    const agentChip = kindButton(catalogPageCopy.kindAgent);
+    expect(agentChip.getAttribute("aria-pressed")).toBe("false");
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("false");
+    const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    expect(add.getAttribute("title")).toBe(catalogPageCopy.noKindDeclared);
+    await fireEvent.click(agentChip);
+    expect(agentChip.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText(catalogPageCopy.oneAgent).isConnected).toBe(true);
+    await fireEvent.click(add);
+
+    await waitFor(() => {
+      expect(addLibraryDocument).toHaveBeenCalledWith(
+        expect.any(Uint8Array),
+        "agent",
+        expect.any(String),
+        expect.any(String)
+      );
+    });
+  });
+
+  it("proves(an-uncertain-recognition-asks-for-a-kind-instead-of-refusing): an uncertain recognition leads to a kind choice instead of a refusal", async () => {
     const addLibraryDocument = vi.fn();
     openCatalog({
       recognizeLibraryDocument: vi.fn(async () => ({
@@ -661,12 +723,114 @@ describe("the catalog room", () => {
       addLibraryDocument
     });
 
-    const file = { name: "notes.txt", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
+    const file = { name: "notes.md", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
     await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
 
-    expect((await screen.findByText(catalogPageCopy.unrecognized)).isConnected).toBe(true);
-    expect(screen.queryByText("Choose a file", { exact: true })).toBeNull();
+    expect((await screen.findByText("notes.md")).isConnected).toBe(true);
+    expect(screen.getByText(catalogPageCopy.oneFile).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: catalogPageCopy.close })).toBeNull();
+    expect(screen.getByRole("button", { name: catalogPageCopy.cancel })).toBeTruthy();
+    const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    expect(add.getAttribute("title")).toBe(catalogPageCopy.noKindDeclared);
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("false");
+    expect(kindButton(catalogPageCopy.kindAgent).getAttribute("aria-pressed")).toBe("false");
+    expect(queryKindButton(catalogPageCopy.kindSkill)).toBeNull();
+    expect(addLibraryDocument).not.toHaveBeenCalled();
+  });
+
+  it("Skill is not a choice on the Import sheet, so an uncertain file cannot be declared as Skill and the sheet never silently closes", async () => {
+    const addLibraryDocument = vi.fn();
+    openCatalog({
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "unrecognized" as const,
+        refusals: [{ kind: "workflow" as const, expected: "format_version", refused_because: "missing" }]
+      })),
+      addLibraryDocument
+    });
+
+    const file = { name: "notes.md", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
+
+    expect((await screen.findByText("notes.md")).isConnected).toBe(true);
+    expect(kindButton(catalogPageCopy.kindWorkflow)).toBeTruthy();
+    expect(kindButton(catalogPageCopy.kindAgent)).toBeTruthy();
+    expect(queryKindButton(catalogPageCopy.kindSkill)).toBeNull();
+    const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(add);
+    expect(screen.getByRole("dialog", { name: catalogPageCopy.import })).toBeTruthy();
+    expect(screen.getByRole("button", { name: catalogPageCopy.addToCatalog })).toBeTruthy();
+    expect(addLibraryDocument).not.toHaveBeenCalled();
+
+    await fireEvent.click(kindButton(catalogPageCopy.kindWorkflow));
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("true");
+    expect((screen.getByRole("button", { name: catalogPageCopy.addToCatalog }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(kindButton(catalogPageCopy.kindAgent));
+    expect(kindButton(catalogPageCopy.kindAgent).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("dialog", { name: catalogPageCopy.import })).toBeTruthy();
+    expect(addLibraryDocument).not.toHaveBeenCalled();
+  });
+
+  it("proves(a-mistaken-kind-is-visible-on-the-sheet-before-the-catalog-changes): a mistaken kind is named on the sheet before anything stands in the catalog", async () => {
+    const addLibraryDocument = vi.fn(async () => ({
+      status: 201,
+      value: { intake_id: WORKFLOW_HASH, kind: "workflow" as const }
+    }));
+    const publish = vi.fn(async () => {
+      throw new CockpitRequestError("invalid", {
+        type: "urn:atelier2:problem:v1:invalid-workflow-document",
+        title: "Invalid workflow document",
+        status: 422,
+        detail: "missing format_version"
+      } as Problem, true);
+    });
+    openCatalog({
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "unrecognized" as const,
+        refusals: [{ kind: "workflow" as const, expected: "format_version", refused_because: "missing" }]
+      })),
+      addLibraryDocument,
+      publish
+    });
+
+    const file = { name: "notes.md", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
+    await screen.findByText("notes.md");
+    await fireEvent.click(kindButton(catalogPageCopy.kindWorkflow));
+    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.addToCatalog }));
+
+    expect((await screen.findByText(catalogPageCopy.notAWorkflow)).isConnected).toBe(true);
+    expect(screen.queryByText("invalid-workflow-document")).toBeNull();
+    expect(screen.getByRole("button", { name: catalogPageCopy.addToCatalog })).toBeTruthy();
+    expect(screen.getByRole("button", { name: catalogPageCopy.cancel })).toBeTruthy();
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByText("notes.md", { selector: "li *" })).toBeNull();
+    expect(addLibraryDocument).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      "workflow",
+      expect.any(String),
+      expect.any(String)
+    );
+  });
+
+  it("still closes a kind the library recognises but does not hold, without adding it", async () => {
+    const addLibraryDocument = vi.fn();
+    openCatalog({
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "not_held" as const,
+        kind: "mcp_server" as const,
+        reason: "the library does not hold MCP servers yet"
+      })),
+      addLibraryDocument
+    });
+
+    const file = { name: ".mcp.json", arrayBuffer: async () => new TextEncoder().encode("{}").buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
+
+    expect((await screen.findByText("the library does not hold MCP servers yet")).isConnected).toBe(true);
     expect(screen.getByRole("button", { name: catalogPageCopy.close })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: catalogPageCopy.addToCatalog })).toBeNull();
     expect(addLibraryDocument).not.toHaveBeenCalled();
   });
 
