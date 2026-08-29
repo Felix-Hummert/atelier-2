@@ -131,6 +131,13 @@ def founding(revision: PublishedRevision, name: str | None = None) -> dict[str, 
     return request
 
 
+def retirement() -> dict[str, str]:
+    return {
+        "actor": "operator",
+        "activated_at": "2026-08-17T00:02:00Z",
+    }
+
+
 def published_over_http(api: TestClient, document: bytes = DOCUMENT) -> str:
     """The operator door: YAML in, hash out. Not the catalog's second table."""
 
@@ -184,6 +191,55 @@ def test_a_workflow_published_over_the_api_is_named_over_the_api(
     repeated = api.post(LINEAGES, json=request)
     assert repeated.status_code == 201, repeated.text
     assert repeated.json() == body
+
+
+def test_retiring_a_lineage_removes_its_name_but_keeps_its_published_revision(
+    runtime: DbosRuntime,
+) -> None:
+    api = client(runtime)
+    revision_hash = published_over_http(api)
+    founded = api.post(
+        LINEAGES,
+        json={
+            "workflow_revision_hash": revision_hash,
+            "actor": "operator",
+            "activated_at": "2026-08-17T00:00:00Z",
+        },
+    )
+    assert founded.status_code == 201, founded.text
+    lineage_id = founded.json()["lineage_id"]
+
+    retired = api.post(f"{LINEAGES}/{lineage_id}/retirements", json=retirement())
+    repeated = api.post(f"{LINEAGES}/{lineage_id}/retirements", json=retirement())
+
+    assert retired.status_code == 204, retired.text
+    assert repeated.status_code == 204, repeated.text
+    by_name = api.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+    assert by_name.status_code == 410, by_name.text
+    assert by_name.json()["type"].endswith("catalog-lineage-retired")
+    exact_revision = api.get(f"{REVISIONS}/{revision_hash}")
+    assert exact_revision.status_code == 200, exact_revision.text
+
+
+@pytest.mark.parametrize(
+    ("lineage_id", "payload", "status", "problem_type"),
+    [
+        ("a" * 64, retirement(), 404, "catalog-lineage-missing"),
+        ("not-a-lineage", retirement(), 404, "catalog-lineage-missing"),
+        ("a" * 64, {"actor": "", "activated_at": "2026-08-17T00:02:00Z"}, 422, "invalid-request"),
+    ],
+)
+def test_retirement_route_names_missing_and_invalid_requests(
+    runtime: DbosRuntime,
+    lineage_id: str,
+    payload: dict[str, str],
+    status: int,
+    problem_type: str,
+) -> None:
+    response = client(runtime).post(f"{LINEAGES}/{lineage_id}/retirements", json=payload)
+
+    assert response.status_code == status, response.text
+    assert response.json()["type"].endswith(problem_type)
 
 
 @pytest.mark.proves("a-published-revision-becomes-a-named-lineage-over-the-api")

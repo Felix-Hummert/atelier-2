@@ -19,6 +19,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageIdMismatch,
     CatalogLineageQuery,
     CatalogMemberAdmitted,
+    CatalogRetirementState,
 )
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
@@ -258,6 +259,14 @@ class CatalogAdmissions(Protocol):
         actor: CatalogActor,
         activated_at: CatalogActivatedAt,
     ) -> AdmitCatalogMemberResult: ...
+
+    def retire_lineage(
+        self,
+        lineage_id: CatalogLineageId,
+        state: CatalogRetirementState,
+        actor: CatalogActor,
+        activated_at: CatalogActivatedAt,
+    ) -> RetireCatalogLineageResult: ...
 
 
 class LibraryAdditions(Protocol):

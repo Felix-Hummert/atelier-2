@@ -47,6 +47,7 @@ from atelier2.api.wire.library import (
 from atelier2.api.wire.requests import (
     AdmitCatalogMemberRequestResource,
     FoundCatalogLineageRequestResource,
+    RetireCatalogLineageRequestResource,
     RevisionListingView,
 )
 from atelier2.api.wire.resources import (
@@ -174,6 +175,10 @@ from atelier2.contracts.library_recognition import (
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
+from atelier2.ports.published_revisions import (
+    CatalogLineageRetired,
+    CatalogRetirementExisting,
+)
 
 router = APIRouter()
 
@@ -851,6 +856,44 @@ async def admit_catalog_member_route(
         ),
     )
     return _admission_resource(result)
+
+
+@router.post(
+    API_PREFIX + "/workflow-lineages/{lineage_id}/retirements",
+    status_code=204,
+)
+async def retire_catalog_lineage_route(
+    lineage_id: str,
+    request: RetireCatalogLineageRequestResource,
+    context: ApiContext = api_context_dependency,
+) -> Response:
+    """Retire one live lineage while preserving its immutable revision history."""
+
+    try:
+        identity = CatalogLineageId(lineage_id)
+    except ValueError as error:
+        raise ApiProblem("catalog-lineage-missing") from error
+    try:
+        actor = CatalogActor(request.actor)
+        activated_at = CatalogActivatedAt(request.activated_at)
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-request") from error
+
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.retire_catalog_lineage(identity, actor, activated_at),
+    )
+    match result:
+        case CatalogLineageRetired() | CatalogRetirementExisting():
+            return Response(status_code=204)
+        case CatalogAdmissionLineageMissing():
+            raise ApiProblem("catalog-lineage-missing")
+        case CatalogLineageIdMismatch() | DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _admission_resource(result: object) -> CatalogAdmissionResource:

@@ -322,6 +322,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/workflow-lineages/{lineage_id}/retirements", "post"): (
+        "invalid-request",
+        "catalog-lineage-missing",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (API_PREFIX + "/workflow-revisions/by-name/{name}", "get"): (
         "catalog-name-not-found",
         "catalog-lineage-retired",
