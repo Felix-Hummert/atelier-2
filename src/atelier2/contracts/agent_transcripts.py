@@ -30,12 +30,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import assert_never
 
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.secret_redaction import redact_credentials
+from atelier2.contracts.when import RecordedAt
 
 MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES = MAXIMUM_ARTIFACT_BYTES
 """What one attempt's whole transcript may cost, serialized.
@@ -71,6 +72,39 @@ class TranscriptEventKind(StrEnum):
     TRANSCRIPT_TRUNCATED = "transcript-truncated"
 
 
+class TranscriptMomentOrigin(StrEnum):
+    """Where the time a transcript event names came from.
+
+    This vocabulary has one member today. Keeping it on the moment, rather than
+    implying the source from a field name, lets a provider-supplied instant join
+    later without changing the event shape a reader already understands.
+    """
+
+    RECORDED = "recorded"
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptRecordedMoment:
+    """The time this event entered the attempt transcript."""
+
+    recorded_at: RecordedAt
+    origin: TranscriptMomentOrigin
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.recorded_at, RecordedAt):
+            raise TypeError("a transcript event moment must be a recorded instant")
+        if not isinstance(self.origin, TranscriptMomentOrigin):
+            raise TypeError("a transcript event moment must name its origin")
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptBeforeMoments:
+    """The event came from a v1 transcript, before transcript moments existed."""
+
+
+type TranscriptEventMoment = TranscriptRecordedMoment | TranscriptBeforeMoments
+
+
 @dataclass(frozen=True, slots=True)
 class ToolCalled:
     """The agent asked for a door to be opened, and with what."""
@@ -78,6 +112,7 @@ class ToolCalled:
     name: str
     arguments: str
     redacted: bool = False
+    moment: TranscriptEventMoment = field(default_factory=TranscriptBeforeMoments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +122,7 @@ class ToolReturned:
     name: str
     result: str
     redacted: bool = False
+    moment: TranscriptEventMoment = field(default_factory=TranscriptBeforeMoments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +131,7 @@ class AssistantTurn:
 
     text: str
     redacted: bool = False
+    moment: TranscriptEventMoment = field(default_factory=TranscriptBeforeMoments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +142,7 @@ class Usage:
     output_tokens: int
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    moment: TranscriptEventMoment = field(default_factory=TranscriptBeforeMoments)
 
     def __post_init__(self) -> None:
         counts = (
@@ -134,6 +172,7 @@ class UnrecognisedProviderOutput:
 
     text: str
     redacted: bool = False
+    moment: TranscriptEventMoment = field(default_factory=TranscriptBeforeMoments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +180,7 @@ class TranscriptTruncated:
     """The oldest steps did not fit, and this is how many of them there were."""
 
     dropped_events: int
+    moment: TranscriptEventMoment = field(default_factory=TranscriptBeforeMoments)
 
     def __post_init__(self) -> None:
         if type(self.dropped_events) is not int or self.dropped_events < 1:
@@ -156,37 +196,42 @@ type TranscriptEvent = (
     | TranscriptTruncated
 )
 
-_DOCUMENT_KIND = "attempt-transcript/v1"
+_DOCUMENT_KIND_V1 = "attempt-transcript/v1"
+_DOCUMENT_KIND_V2 = "attempt-transcript/v2"
 _KIND_FIELD = "event"
-_DOCUMENT_PREFIX = f'{{"kind":"{_DOCUMENT_KIND}","events":['.encode()
 _DOCUMENT_SUFFIX = b"]}"
 _EVENT_SEPARATOR = b","
 
 
-def _event_document(event: TranscriptEvent) -> dict[str, object]:
+def _document_prefix(document_kind: str) -> bytes:
+    return f'{{"kind":"{document_kind}","events":['.encode()
+
+
+def _event_document(event: TranscriptEvent, document_kind: str) -> dict[str, object]:
+    document: dict[str, object]
     match event:
         case ToolCalled(name, arguments, redacted):
-            return {
+            document = {
                 _KIND_FIELD: TranscriptEventKind.TOOL_CALLED.value,
                 "name": name,
                 "arguments": arguments,
                 "redacted": redacted,
             }
         case ToolReturned(name, result, redacted):
-            return {
+            document = {
                 _KIND_FIELD: TranscriptEventKind.TOOL_RETURNED.value,
                 "name": name,
                 "result": result,
                 "redacted": redacted,
             }
         case AssistantTurn(text, redacted):
-            return {
+            document = {
                 _KIND_FIELD: TranscriptEventKind.ASSISTANT_TURN.value,
                 "text": text,
                 "redacted": redacted,
             }
         case Usage(input_tokens, output_tokens, cache_read, cache_creation):
-            return {
+            document = {
                 _KIND_FIELD: TranscriptEventKind.USAGE.value,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -194,16 +239,31 @@ def _event_document(event: TranscriptEvent) -> dict[str, object]:
                 "cache_creation_input_tokens": cache_creation,
             }
         case UnrecognisedProviderOutput(text, redacted):
-            return {
+            document = {
                 _KIND_FIELD: TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT.value,
                 "text": text,
                 "redacted": redacted,
             }
         case TranscriptTruncated(dropped_events):
-            return {
+            document = {
                 _KIND_FIELD: TranscriptEventKind.TRANSCRIPT_TRUNCATED.value,
                 "dropped_events": dropped_events,
             }
+        case _ as unreachable:
+            assert_never(unreachable)
+    match document_kind, event.moment:
+        case _DOCUMENT_KIND_V1, TranscriptBeforeMoments():
+            return document
+        case _DOCUMENT_KIND_V2, TranscriptRecordedMoment(recorded_at, origin):
+            document["moment"] = {
+                "recorded_at": recorded_at.value,
+                "origin": origin.value,
+            }
+            return document
+        case _DOCUMENT_KIND_V1, TranscriptRecordedMoment():
+            raise ValueError("a v1 transcript event cannot carry a moment")
+        case _DOCUMENT_KIND_V2, TranscriptBeforeMoments():
+            raise ValueError("a v2 transcript event must carry a moment")
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -226,7 +286,25 @@ def _require_count(value: object, field: str) -> int:
     return value
 
 
-def _event_from_document(payload: object) -> TranscriptEvent:
+def _event_moment_from_document(
+    payload: dict[object, object], document_kind: str
+) -> TranscriptEventMoment:
+    if document_kind == _DOCUMENT_KIND_V1:
+        return TranscriptBeforeMoments()
+    moment_payload = payload.get("moment")
+    if not isinstance(moment_payload, dict):
+        raise TypeError("a transcript event moment is an object")
+    try:
+        origin = TranscriptMomentOrigin(moment_payload.get("origin"))
+    except ValueError:
+        raise ValueError("unknown transcript event moment origin") from None
+    return TranscriptRecordedMoment(
+        RecordedAt(_require_text(moment_payload.get("recorded_at"), "moment recorded_at")),
+        origin,
+    )
+
+
+def _event_from_document(payload: object, document_kind: str) -> TranscriptEvent:
     if not isinstance(payload, dict):
         raise TypeError("a transcript event is an object")
     kind_value = payload.get(_KIND_FIELD)
@@ -276,19 +354,20 @@ def _event_from_document(payload: object) -> TranscriptEvent:
             )
         case _ as unreachable:
             assert_never(unreachable)
-    if _event_document(event) != payload:
+    event = replace(event, moment=_event_moment_from_document(payload, document_kind))
+    if _event_document(event, document_kind) != payload:
         raise ValueError("transcript event fields disagree")
     return event
 
 
-def _event_fragment(event: TranscriptEvent) -> bytes:
+def _event_fragment(event: TranscriptEvent, document_kind: str) -> bytes:
     return json.dumps(
-        _event_document(event), ensure_ascii=False, separators=(",", ":")
+        _event_document(event, document_kind), ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
 
 
-def _document_of(fragments: tuple[bytes, ...]) -> bytes:
-    return _DOCUMENT_PREFIX + _EVENT_SEPARATOR.join(fragments) + _DOCUMENT_SUFFIX
+def _document_of(fragments: tuple[bytes, ...], document_kind: str) -> bytes:
+    return _document_prefix(document_kind) + _EVENT_SEPARATOR.join(fragments) + _DOCUMENT_SUFFIX
 
 
 def _cut(text: str) -> str:
@@ -325,18 +404,18 @@ def _kept(event: TranscriptEvent) -> TranscriptEvent:
     """
 
     match event:
-        case ToolCalled(name, arguments, marked):
+        case ToolCalled(name, arguments, marked, moment):
             (kept_name, kept_arguments), redacted = _readable(name, arguments)
-            return ToolCalled(kept_name, kept_arguments, redacted or marked)
-        case ToolReturned(name, result, marked):
+            return ToolCalled(kept_name, kept_arguments, redacted or marked, moment)
+        case ToolReturned(name, result, marked, moment):
             (kept_name, kept_result), redacted = _readable(name, result)
-            return ToolReturned(kept_name, kept_result, redacted or marked)
-        case AssistantTurn(text, marked):
+            return ToolReturned(kept_name, kept_result, redacted or marked, moment)
+        case AssistantTurn(text, marked, moment):
             (kept_text,), redacted = _readable(text)
-            return AssistantTurn(kept_text, redacted or marked)
-        case UnrecognisedProviderOutput(text, marked):
+            return AssistantTurn(kept_text, redacted or marked, moment)
+        case UnrecognisedProviderOutput(text, marked, moment):
             (kept_text,), redacted = _readable(text)
-            return UnrecognisedProviderOutput(kept_text, redacted or marked)
+            return UnrecognisedProviderOutput(kept_text, redacted or marked, moment)
         case Usage() | TranscriptTruncated():
             return event
         case _ as unreachable:
@@ -345,6 +424,7 @@ def _kept(event: TranscriptEvent) -> TranscriptEvent:
 
 def _within_the_document_bound(
     events: tuple[TranscriptEvent, ...],
+    document_kind: str,
 ) -> tuple[TranscriptEvent, ...]:
     """These events, oldest ones dropped until the document fits, with the count.
 
@@ -355,18 +435,31 @@ def _within_the_document_bound(
 
     if not events:
         return events
-    sizes = [len(_event_fragment(event)) for event in events]
-    overhead = len(_DOCUMENT_PREFIX) + len(_DOCUMENT_SUFFIX)
+    sizes = [len(_event_fragment(event, document_kind)) for event in events]
+    overhead = len(_document_prefix(document_kind)) + len(_DOCUMENT_SUFFIX)
     separators = max(len(events) - 1, 0)
     remaining = sum(sizes) + separators
     for dropped in range(len(events)):
-        marker = None if dropped == 0 else TranscriptTruncated(dropped)
-        marker_size = 0 if marker is None else len(_event_fragment(marker)) + 1
+        marker = None if dropped == 0 else TranscriptTruncated(
+            dropped, events[dropped].moment
+        )
+        marker_size = (
+            0 if marker is None else len(_event_fragment(marker, document_kind)) + 1
+        )
         if overhead + marker_size + remaining <= MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES:
             kept = events[dropped:]
             return kept if marker is None else (marker, *kept)
         remaining -= sizes[dropped] + 1
     raise ValueError("no single transcript step fits the transcript document bound")
+
+
+def _document_kind(events: tuple[TranscriptEvent, ...]) -> str:
+    moments = tuple(event.moment for event in events)
+    if all(isinstance(moment, TranscriptBeforeMoments) for moment in moments):
+        return _DOCUMENT_KIND_V1
+    if all(isinstance(moment, TranscriptRecordedMoment) for moment in moments):
+        return _DOCUMENT_KIND_V2
+    raise ValueError("a transcript cannot mix events before and with moments")
 
 
 @dataclass(frozen=True)
@@ -388,14 +481,21 @@ class AttemptTranscript:
 
     events: tuple[TranscriptEvent, ...]
     document: bytes = field(init=False)
+    _read_from_v1_document: bool = field(init=False, default=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.events, tuple):
             raise TypeError("a transcript's steps are an exact ordered tuple")
         if not self.events:
             raise ValueError("a transcript with no steps is no transcript")
-        kept = _within_the_document_bound(tuple(map(_kept, self.events)))
-        document = _document_of(tuple(map(_event_fragment, kept)))
+        document_kind = _document_kind(self.events)
+        kept = _within_the_document_bound(
+            tuple(map(_kept, self.events)), document_kind
+        )
+        document = _document_of(
+            tuple(_event_fragment(event, document_kind) for event in kept),
+            document_kind,
+        )
         if len(document) > MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES:
             raise ValueError(
                 f"transcript document exceeds {MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES} bytes"
@@ -413,6 +513,18 @@ class AttemptTranscript:
         """
 
         return cls(tuple(events))
+
+    def with_recorded_moment(self, recorded_at: RecordedAt) -> AttemptTranscript:
+        """Record a decoded transcript now, without rewriting a stored v1 record."""
+
+        if not isinstance(recorded_at, RecordedAt):
+            raise TypeError("a transcript recording moment must be a recorded instant")
+        if self._read_from_v1_document:
+            raise ValueError("a v1 transcript cannot be given a recording moment")
+        moment = TranscriptRecordedMoment(recorded_at, TranscriptMomentOrigin.RECORDED)
+        return AttemptTranscript(
+            tuple(replace(event, moment=moment) for event in self.events)
+        )
 
     @classmethod
     def from_document(cls, document: bytes) -> AttemptTranscript:
@@ -438,15 +550,19 @@ class AttemptTranscript:
                 raise ValueError(
                     "a transcript document names kind and events and nothing else"
                 )
-            if decoded["kind"] != _DOCUMENT_KIND:
+            document_kind = decoded["kind"]
+            if document_kind not in {_DOCUMENT_KIND_V1, _DOCUMENT_KIND_V2}:
                 raise ValueError(
-                    f"unknown transcript document kind {decoded['kind']!r}"
+                    f"unknown transcript document kind {document_kind!r}"
                 )
             events_payload = decoded["events"]
             if not isinstance(events_payload, list):
                 raise TypeError("a transcript's events are a list")
             reconstructed = cls(
-                tuple(_event_from_document(payload) for payload in events_payload)
+                tuple(
+                    _event_from_document(payload, document_kind)
+                    for payload in events_payload
+                )
             )
         except TypeError as broken:
             raise ValueError(
@@ -456,4 +572,6 @@ class AttemptTranscript:
             raise ValueError(
                 "transcript document is not the canonical encoding of its events"
             )
+        if document_kind == _DOCUMENT_KIND_V1:
+            object.__setattr__(reconstructed, "_read_from_v1_document", True)
         return reconstructed

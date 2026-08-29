@@ -1,0 +1,6 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/874"
+
+[[sentence]]
+id = "every-transcript-event-carries-its-moment"
+text = "Every event in a newly recorded attempt-transcript/v2 carries the recording moment and its recorded origin; an event read from an attempt-transcript/v1 instead explicitly says it predates transcript moments and invents no time."
