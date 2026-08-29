@@ -1139,6 +1139,10 @@ def test_a_stored_transcript_is_readable_through_node_detail(tmp_path: Path) -> 
         "name": "Read",
         "arguments": '{"file_path":"/etc/hosts"}',
         "redacted": False,
+        "moment": {
+            "recorded_at": moment.recorded_at.value,
+            "origin": "recorded",
+        },
     }
     assert "kind" not in dumped["transcript"]
     assert "document" not in dumped["transcript"]

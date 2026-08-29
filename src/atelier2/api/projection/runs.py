@@ -43,6 +43,10 @@ from atelier2.api.wire.resources import (
     RunResourceV3,
     ToolCalledEventResource,
     ToolReturnedEventResource,
+    TranscriptBeforeMomentsOrigin,
+    TranscriptBeforeMomentsResource,
+    TranscriptMomentResource,
+    TranscriptRecordedMomentResource,
     TranscriptTruncatedEventResource,
     UnrecognisedProviderOutputEventResource,
     UsageEventResource,
@@ -59,8 +63,12 @@ from atelier2.contracts.agent_transcripts import (
     AttemptTranscript,
     ToolCalled,
     ToolReturned,
+    TranscriptBeforeMoments,
     TranscriptEvent,
     TranscriptEventKind,
+    TranscriptEventMoment,
+    TranscriptMomentOrigin,
+    TranscriptRecordedMoment,
     TranscriptTruncated,
     UnrecognisedProviderOutput,
     Usage,
@@ -525,44 +533,69 @@ def _transcript_event_resource(
     | TranscriptTruncatedEventResource
 ):
     match event:
-        case ToolCalled(name, arguments, redacted):
+        case ToolCalled(name, arguments, redacted, moment):
             return ToolCalledEventResource(
                 event=TranscriptEventKind.TOOL_CALLED,
                 name=name,
                 arguments=arguments,
                 redacted=redacted,
+                moment=_transcript_moment_resource(moment),
             )
-        case ToolReturned(name, result, redacted):
+        case ToolReturned(name, result, redacted, moment):
             return ToolReturnedEventResource(
                 event=TranscriptEventKind.TOOL_RETURNED,
                 name=name,
                 result=result,
                 redacted=redacted,
+                moment=_transcript_moment_resource(moment),
             )
-        case AssistantTurn(text, redacted):
+        case AssistantTurn(text, redacted, moment):
             return AssistantTurnEventResource(
                 event=TranscriptEventKind.ASSISTANT_TURN,
                 text=text,
                 redacted=redacted,
+                moment=_transcript_moment_resource(moment),
             )
-        case Usage(input_tokens, output_tokens, cache_read, cache_creation):
+        case Usage(input_tokens, output_tokens, cache_read, cache_creation, moment):
             return UsageEventResource(
                 event=TranscriptEventKind.USAGE,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
+                moment=_transcript_moment_resource(moment),
             )
-        case UnrecognisedProviderOutput(text, redacted):
+        case UnrecognisedProviderOutput(text, redacted, moment):
             return UnrecognisedProviderOutputEventResource(
                 event=TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT,
                 text=text,
                 redacted=redacted,
+                moment=_transcript_moment_resource(moment),
             )
-        case TranscriptTruncated(dropped_events):
+        case TranscriptTruncated(dropped_events, moment):
             return TranscriptTruncatedEventResource(
                 event=TranscriptEventKind.TRANSCRIPT_TRUNCATED,
                 dropped_events=dropped_events,
+                moment=_transcript_moment_resource(moment),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _transcript_moment_resource(
+    moment: TranscriptEventMoment,
+) -> TranscriptMomentResource:
+    """The event's recording fact, including the explicit legacy absence."""
+
+    match moment:
+        case TranscriptRecordedMoment(recorded_at, TranscriptMomentOrigin.RECORDED):
+            return TranscriptRecordedMomentResource(
+                recorded_at=recorded_at.value,
+                origin=TranscriptMomentOrigin.RECORDED,
+            )
+        case TranscriptBeforeMoments():
+            return TranscriptBeforeMomentsResource(
+                origin=TranscriptBeforeMomentsOrigin.V1
             )
         case _ as unreachable:
             assert_never(unreachable)
