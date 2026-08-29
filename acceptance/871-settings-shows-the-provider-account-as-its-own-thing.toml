@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/871"
+
+[[sentence]]
+id = "settings-shows-the-provider-account-as-its-own-thing"
+requirement = "REQ-UI-20"
+text = "In Settings the operator sees each provider account as its own row apart from Models, with a visible stored-secret line and never the secret value; empty account and model places stay empty of rows; a model can be added, re-checked, and removed; adding the same model id stays one row marked already present; a running check is unfinished on that model; checked and unknown stay distinct on the model; a failed check error stands on that model."
