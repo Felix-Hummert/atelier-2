@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.19</title>
+<title>Workshop target picture v8.20</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -301,6 +301,13 @@ details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:cent
 .transcript-state .loading-lines{display:grid;gap:.25rem;flex:1}
 .transcript-state .loading-lines i{display:block;height:.4rem;border-radius:999px;background:var(--chip)}
 .transcript-state .loading-lines i:last-child{width:62%}
+.transcript-gap{display:flex;align-items:center;gap:.5rem;min-height:1.1rem;color:var(--ink-dim);font-size:.78rem;font-variant-numeric:tabular-nums}
+.transcript-gap>span{flex:none;white-space:nowrap}
+.transcript-gap::before,.transcript-gap::after{content:"";flex:1 1 auto;height:1px;background:var(--line);min-width:.4rem}
+.transcript-gap.long{min-height:3.6rem;color:var(--ink);font-size:.88rem;font-weight:600}
+.transcript-entry .when{margin-left:auto;font-weight:400;letter-spacing:0;text-transform:none;font-variant-numeric:tabular-nums;color:var(--ink-faint);font-size:.7rem}
+.transcript-entry .entry-head .pill,.transcript-entry summary .pill{margin-left:auto;letter-spacing:0;text-transform:none;font-weight:400}
+.transcript-entry summary .when,.transcript-entry summary .pill{order:1}
 
 /* ── Catalog ── */
 .filters{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem 1rem;padding:.4rem 0 .5rem;margin-bottom:.6rem;background:var(--ground);border-bottom:1px solid var(--line)}
@@ -464,6 +471,9 @@ table.list tr.grp td .mark{margin-right:.2rem}
   #v8-14-run-log .pipe{flex-direction:column;gap:.15rem;overflow:visible;padding-right:.2rem}
   #v8-14-run-log .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
   #v8-14-run-log .pipe>.loop{width:100%;margin:0}
+  #v8-20-gaps .pipe,#v8-20-before .pipe{flex-direction:column;gap:.15rem;overflow:visible;padding-right:.2rem}
+  #v8-20-gaps .pipe>.link,#v8-20-before .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
+  #v8-20-gaps .pipe>.loop,#v8-20-before .pipe>.loop{width:100%;margin:0}
   /* Retry keeps every inherited and newly run node legible at the narrow width: one vertical handoff, never a faded state. */
   #v8-15-origin .pipe,#v8-15-successor .pipe{flex-direction:column;gap:.15rem;overflow:visible;mask-image:none;padding-right:.2rem}
   #v8-15-origin .pipe>.link,#v8-15-successor .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
@@ -479,6 +489,8 @@ table.list tr.grp td .mark{margin-right:.2rem}
   .found .n{display:none}
   .transcript-states{grid-template-columns:minmax(0,1fr)}
   .transcript-entry .entry-head time{margin-left:0}
+  .transcript-gap{white-space:nowrap}
+  .transcript-entry .when,.transcript-entry .entry-head .pill,.transcript-entry summary .pill{margin-left:0}
 }
 
 /* ── Motion off when the system asks — stands after every animation rule, or the later one wins ── */
@@ -488,10 +500,11 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.19 · 29.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.20 · 29.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
   <p class="note"><b>Changelog v8.19</b> · The Import sheet asks what the handed-in file is. Kind chips are the person's declaration; the found rows are recognition's report; the two never share a shape. An uncertain recognition leaves those chips instead of a Close-only refusal. A mistake is brick on the sheet, and nothing is in the catalog.</p>
+  <p class="note"><b>Changelog v8.20</b> · The Log tab shows where the time went. Elapsed between events leads; the recorded clock sits dim on the event. A long wait is a taller band. Events from before moments existed say so and invent no time.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -985,6 +998,111 @@ command stopped before an answer</div>
   <div><dt>Redaction badge</dt><dd>"Was something removed before this was saved?" — the dashed ▰ badge stays in place of the value, including the canary in failed stdout.</dd></div>
   <div><dt>Failed stdout</dt><dd>"What did the failed attempt print?" — its dark block lives with the attempt transcript, marked in brick; it never becomes a second log surface.</dd></div>
   <div><dt>Empty and loading</dt><dd>"Is there no stored transcript, or is it still arriving?" — the hollow mark names absence; the dashed blue shape and still lines name loading.</dd></div>
+</dl>
+
+<section id="v8-20-log-time">
+<h3 class="frame-title">Run view · Log, where the time went <small>— elapsed between steps; the clock sits dim</small></h3>
+<div class="frame" id="v8-20-gaps">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← History</a>
+    <div class="head"><h4>Sweep the docs</h4><span class="meta">iterate-code · <span class="word fail">Failed</span> · 44 min · today 11:05</span></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl">↻ 3 of ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h6>reviewer<span class="who">grok-4.6 · attempt 3</span></h6>
+      <div class="tabs"><span>Result</span><span>Input</span><span>Prompt</span><span class="on">Log</span><span>Evidence</span></div>
+      <div class="transcript" aria-label="Stored attempt transcript">
+        <article class="transcript-entry turn">
+          <div class="entry-head"><span>Assistant turn</span><span class="when">11:43:02</span></div>
+          <p>I will check the changed files against the review brief.</p>
+        </article>
+        <div class="transcript-gap"><span>2 s</span></div>
+        <details class="transcript-entry call">
+          <summary><span class="entry-kind">Door call</span><b>Read file</b><span class="fold">arguments</span><span class="when">11:43:04</span></summary>
+          <div class="arguments">path: docs/requirements/0003-ziel-ui.md</div>
+        </details>
+        <div class="transcript-gap long"><span>4 min</span></div>
+        <article class="transcript-entry answer">
+          <div class="entry-head"><span>Door answer</span><span class="when">11:47:04</span></div>
+          <p>Read 128 lines.</p>
+        </article>
+        <div class="transcript-gap"><span>2 s</span></div>
+        <article class="transcript-entry turn">
+          <div class="entry-head"><span>Assistant turn</span><span class="when">11:47:06</span></div>
+          <p>The acceptance sentence and the picture still disagree.</p>
+        </article>
+        <div class="transcript-gap"><span>2 s</span></div>
+        <details class="transcript-entry call">
+          <summary><span class="entry-kind">Door call</span><b>Run command</b><span class="fold">arguments</span><span class="when">11:47:08</span></summary>
+          <div class="arguments">command: check changed files</div>
+        </details>
+        <div class="transcript-gap"><span>3 s</span></div>
+        <article class="transcript-entry answer">
+          <div class="entry-head"><span>Door answer</span><span class="when">11:47:11</span></div>
+          <p>Command ended before it returned an answer.</p>
+        </article>
+        <div class="transcript-gap"><span>1 s</span></div>
+        <article class="transcript-entry usage">
+          <div class="entry-head"><span>Usage</span><span class="when">11:47:12</span></div>
+          <p>12,400 input · 680 output tokens · 10 s</p>
+        </article>
+        <div class="transcript-gap"><span>1 s</span></div>
+        <article class="transcript-entry stdout">
+          <div class="entry-head"><span>Attempt stdout</span><span class="word fail">Failed</span><span class="when">11:47:13</span></div>
+          <div class="log">checking changed files
+canary credential: [<span class="redaction">redacted</span>]
+command stopped before an answer</div>
+        </article>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="frame" id="v8-20-before">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← History</a>
+    <div class="head"><h4>Sweep the docs</h4><span class="meta">iterate-code · <span class="word fail">Failed</span> · 44 min · today 11:05</span></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl">↻ 3 of ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h6>reviewer<span class="who">grok-4.6 · attempt 3</span></h6>
+      <div class="tabs"><span>Result</span><span>Input</span><span>Prompt</span><span class="on">Log</span><span>Evidence</span></div>
+      <div class="transcript" aria-label="Stored attempt transcript from before moments existed">
+        <article class="transcript-entry turn">
+          <div class="entry-head"><span>Assistant turn</span><span class="pill dash">from before</span></div>
+          <p>I will check the changed files against the review brief.</p>
+        </article>
+        <details class="transcript-entry call">
+          <summary><span class="entry-kind">Door call</span><b>Read file</b><span class="fold">arguments</span><span class="pill dash">from before</span></summary>
+          <div class="arguments">path: docs/requirements/0003-ziel-ui.md</div>
+        </details>
+        <article class="transcript-entry answer">
+          <div class="entry-head"><span>Door answer</span><span class="pill dash">from before</span></div>
+          <p>Read 128 lines.</p>
+        </article>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<dl class="uq">
+  <div><dt>Gap 2 s · 4 min</dt><dd>"Where did the time go?" — elapsed since the previous event leads, because that is why this tab is open. The first event has no gap: there is no previous step, and the house does not print 0 s. The event does not also carry elapsed; the gap owns that.</dd></div>
+  <div><dt>Dim clock 11:43:02</dt><dd>"When exactly was this recorded?" — secondary, trailing, tabular. The absolute moment sits dim on the event. A Door call carries it too, because the interesting wait is often the call-to-answer gap.</dd></div>
+  <div><dt>Taller band 4 min</dt><dd>"Was this a long wait?" — the band is physically taller and slightly stronger, so the wait is a shape, not a pair of clocks to subtract.</dd></div>
+  <div><dt>No provider time</dt><dd>"Did the provider supply a time?" — not drawn. That edge is deferred at the adapter boundary; no run carries one today.</dd></div>
+  <div><dt>Dashed pill "from before"</dt><dd>"Does this event have a moment?" — no; it comes from a transcript written before moments existed. It invents no time, draws no gap, and does not stand as a blank, an em dash, 0 s, or "unknown".</dd></div>
 </dl>
 
 <h3 class="frame-title">Cancel <small>— two dialogs, one per state: a hand at work, or resting at a wait</small></h3>
