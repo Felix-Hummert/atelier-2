@@ -13,8 +13,8 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.hashing import frame
 from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
 
-MAXIMUM_RUNNER_SESSION_BODY_BYTES = 1_078_291
-MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES = 1_078_295
+MAXIMUM_RUNNER_SESSION_BODY_BYTES = 1_106_817
+MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES = 1_106_821
 # Position of the resolved auth reference in the PREPARE payload.
 # `encode_runner_prepare_payload` lays out two more fields after it -- the
 # declared output schema and the pinned turn limit (#672) -- so this is no

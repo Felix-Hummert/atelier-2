@@ -49,6 +49,7 @@ from atelier2.adapters.runner_core_transport import (
     bind_session_listener,
     drive_until_released_or_dropped,
 )
+from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
     core_uri_for_certificate,
@@ -70,16 +71,25 @@ from atelier2.contracts.agent_attempts import (
     RunnerInvocationId,
     RunnerManifestId,
     RunnerProviderFailure,
+    RunnerProviderResult,
     RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
+from atelier2.contracts.agent_transcripts import (
+    MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
+    MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    AssistantTurn,
+    AttemptTranscript,
+)
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
+    AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentRole,
@@ -90,6 +100,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runner_manifests import (
+    CANDIDATE_JOURNAL_BYTES,
     RunnerManifestV1,
     RunnerPathGrant,
     RunnerPathRight,
@@ -218,6 +229,7 @@ class _FakeRunnerSessionCore:
         self.acknowledged = 0
         self.cancelled = 0
         self.committed_envelope: RunnerTerminalEvidenceEnvelope | None = None
+        self.acknowledged_tombstone: RunnerTerminalEvidenceAckTombstone | None = None
 
     def arm(
         self, binding: RunnerGenerationBinding, invocation: RunnerInvocationId
@@ -248,8 +260,13 @@ class _FakeRunnerSessionCore:
         evidence_hash: RunnerTerminalEvidenceHash,
         tombstone: bytes,
     ) -> None:
-        del binding, evidence_hash, tombstone
+        decoded = decode_runner_terminal_evidence_record(tombstone)
+        if not isinstance(decoded, RunnerTerminalEvidenceAckTombstone):
+            raise TypeError("runner-terminal-record-corrupt")
+        if decoded.binding != binding or decoded.evidence_hash != evidence_hash:
+            raise ValueError("runner ACK tombstone differs")
         self.acknowledged += 1
+        self.acknowledged_tombstone = decoded
 
     def cancel(self) -> CancelAgentAttemptRequest:
         self.cancelled += 1
@@ -597,6 +614,28 @@ def _prepared_session(
         workspace_directory,
         core,
         core_session,
+    )
+
+
+def _maximum_live_runner_terminal_envelope(
+    prepared: _PreparedSession,
+) -> RunnerTerminalEvidenceEnvelope:
+    transcript = AttemptTranscript.of(
+        [
+            *(
+                AssistantTurn("x" * MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+                for _ in range(127)
+            ),
+            AssistantTurn("x" * 1_237),
+        ]
+    )
+    assert len(transcript.document) == MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
+    return RunnerTerminalEvidenceEnvelope(
+        prepared.binding,
+        prepared.invocation,
+        RunnerProviderResult(
+            AgentExecutionResult(b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2, transcript),
+        ),
     )
 
 
@@ -1046,15 +1085,7 @@ def _spawn_tls_candidate_session(
     )
 
 
-def test_runner_core_transport_drives_a_real_candidate_session_to_released_over_tls(
-    tmp_path: Path,
-) -> None:
-    """The production transport (`accept_and_drive_session`), not a hand-rolled
-    stand-in, drives the real Runner subprocess from INVOCATION_OFFER to
-    RELEASED over a genuine TLS loopback connection -- the transport the
-    witness Core (`tests/witness/runner_candidate_core.py`) is now the first
-    caller of."""
-    prepared = _prepared_session(tmp_path)
+def _run_tls_candidate_to_released(tmp_path: Path, prepared: _PreparedSession) -> int:
     authority = _loopback_authority(tmp_path)
     runner_uri = runner_uri_for_invocation(prepared.binding, prepared.invocation)
     runner_cert_path, runner_key_path, runner_leaf_der = _runner_identity(
@@ -1086,15 +1117,57 @@ def test_runner_core_transport_drives_a_real_candidate_session_to_released_over_
                 lambda: prepared.core_session,
                 1,
             )
-            returncode = candidate.wait(timeout=10)
+            return candidate.wait(timeout=10)
+        except Exception:
+            try:
+                candidate.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
         finally:
-            candidate.kill()
+            if candidate.poll() is None:
+                candidate.kill()
             candidate.wait(timeout=10)
+
+
+def test_runner_core_transport_drives_a_real_candidate_session_to_released_over_tls(
+    tmp_path: Path,
+) -> None:
+    """The production transport (`accept_and_drive_session`), not a hand-rolled
+    stand-in, drives the real Runner subprocess from INVOCATION_OFFER to
+    RELEASED over a genuine TLS loopback connection -- the transport the
+    witness Core (`tests/witness/runner_candidate_core.py`) is now the first
+    caller of."""
+    prepared = _prepared_session(tmp_path)
+    returncode = _run_tls_candidate_to_released(tmp_path, prepared)
 
     assert returncode == 0
     assert prepared.core.armed == 1
     assert prepared.core.committed == 1
     assert prepared.core.acknowledged == 1
+
+
+def test_runner_core_transport_delivers_the_largest_live_runner_record_over_tls(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared_session(tmp_path)
+    envelope = _maximum_live_runner_terminal_envelope(prepared)
+    RunnerJournal(prepared.journal_directory).publish(envelope, CANDIDATE_JOURNAL_BYTES)
+
+    returncode = _run_tls_candidate_to_released(tmp_path, prepared)
+
+    evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+    assert returncode == 0
+    assert prepared.core.armed == 1
+    assert prepared.core.committed == 1
+    assert prepared.core.committed_envelope == envelope
+    assert prepared.core.acknowledged == 1
+    assert prepared.core.acknowledged_tombstone == RunnerTerminalEvidenceAckTombstone(
+        envelope.binding,
+        envelope.invocation_id,
+        evidence_hash,
+    )
+    assert not (prepared.journal_directory / "terminal-record").exists()
 
 
 def test_runner_core_transport_raises_when_no_runner_connects_within_the_accept_bound() -> (

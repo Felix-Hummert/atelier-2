@@ -671,40 +671,57 @@ separate `runner-terminal-evidence/v2` hash domain and binds transcript presence
 apart from transcript bytes; for a provider failure it also binds the named
 failure code and the complete exit signature.
 
-The exact maximum record is 1,106,413 bytes: the longer admitted failure code,
-a fixed-width exit code, 49,152 bytes of standard error, a 1,048,576-byte
-canonical transcript, and maximum-width UTF-8 generation and invocation
-identities. The candidate journal grants 2,097,152 bytes, so retained evidence
-keeps the transcript in that one record under one ACK protocol and one durable
-owner; no second transcript file, evidence channel, or acknowledgement protocol
-is introduced. The V2 decoder recognizes an Exchange V1 domain only to return a
-typed refusal naming V1 and explaining that only V2 is supported; it never
-decodes a V1 payload beside V2.
+The codec's exact syntactic maximum remains 1,106,413 bytes: the longer admitted
+failure code, a fixed-width exit code, 49,152 bytes of standard error, a
+1,048,576-byte canonical transcript, and maximum-width UTF-8 generation and
+invocation identities. The candidate journal grants 2,097,152 bytes, so
+retained evidence keeps the transcript in that one record under one ACK
+protocol and one durable owner; no second transcript file, evidence channel, or
+acknowledgement protocol is introduced. The V2 decoder recognizes an Exchange
+V1 domain only to return a typed refusal naming V1 and explaining that only V2
+is supported; it never decodes a V1 payload beside V2.
 
-This retained-record bound is not the current live session-delivery bound.
-`contracts/runner_session_codec.py` fixes
-`MAXIMUM_RUNNER_SESSION_BODY_BYTES` at 1,078,291 bytes. A `TERMINAL_RECORD`
-session body spends exactly 404 bytes on its whole-frame envelope because
-`RunnerSessionFrame` pins generation and invocation identities to exactly 43
-base64url characters. The record left for its payload is therefore exactly
-1,077,887 bytes, which is 28,526 bytes below the 1,106,413-byte codec maximum.
-Records above that live ceiling are codec- and journal-legal but cannot use the
-current session delivery; after Runner exit they presently rely on the existing
-launcher handoff copy. This is deferred #301 integration, whose removal path
-must either raise the session-body bound or lower the terminal-record bound.
+**2026-08-29 amendment (#900): session delivery carries the record bound.** The
+syntactic maximum above is not a record a production Runner can originate.
+`RunnerSessionFrame` requires generation and invocation identities to be
+exactly 43 base64url characters, and the Runner constructs its evidence
+envelope from the same binding and invocation that the session frame carries.
+With those real identities, the largest outcome the Runner currently produces
+is a provider-result envelope containing 49,152 output bytes and a canonical
+transcript of 1,048,576 bytes: its exact encoded record is 1,098,269 bytes. A
+failure with both maximum standard error and transcript would encode to
+1,098,307 bytes under the same identities, but the current Runner refuses a
+failure transcript instead of publishing it, so that is not its live maximum.
 
-This amendment is the evidence contract and retained-record codec only. It does
-not claim the deferred session-to-Core translation, crash replay, or Core
-commit/ACK path. In particular, a crash after provider start but before terminal
-publication remains an open #301 gap; this slice adds no schema and no second
-durable owner. `RunnerProviderFailure` therefore still defaults its omitted
-failure code to `PROCESS_EXITED_UNSUCCESSFULLY`: the current session and other
-pre-integration callers construct only the old one-argument physical-failure
-form. That default is a compatibility seam with a named removal path, not an
-Exchange V2 ambiguity. The following #301 integration must pass the decoder's
-actual `AGENT_REFUSED` or `PROCESS_EXITED_UNSUCCESSFULLY` code and transcript,
-then delete the default and `RunnerEvidenceCannotCarryTranscript`; until then
-the current session does not transport decoded `AGENT_REFUSED` or failure
+`TERMINAL_RECORD` carries that canonical record verbatim as its one payload
+field. Its whole-frame envelope is exactly 404 bytes under the required session
+identities, so the largest live record needs a 1,098,673-byte body and exceeded
+the former 1,078,291-byte body limit by 20,382 bytes. The transport side moves:
+`MAXIMUM_RUNNER_SESSION_BODY_BYTES` is 1,106,817 bytes, the 1,106,413-byte
+journal-legal record bound plus that exact envelope; the four-byte length prefix
+makes `MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES` 1,106,821 bytes. The terminal
+record codec and the session identity contract stay unchanged. This is the
+honest side to move because the live maximum already crossed the transport
+bound and this message transports the journal's admitted record, rather than a
+second narrower representation of it.
+
+The deterministic wire proof publishes the largest live envelope through the
+real `RunnerJournal`, resumes it in the production candidate session, carries
+it through the production TLS/Core transport and `CoreRunnerSession`, decodes
+and validates it at the fake Core persistence boundary, then completes
+ACK-tombstone, RELEASE and journal removal. It does not prove a live Core store,
+the Docker/launcher host path, or a real crash and restart. A crash after
+provider start but before terminal publication also remains an open #301 gap;
+this slice adds no schema and no second durable owner.
+
+`RunnerProviderFailure` still defaults its omitted failure code to
+`PROCESS_EXITED_UNSUCCESSFULLY`: the current session and other pre-integration
+callers construct only the old one-argument physical-failure form. That default
+is a compatibility seam with a named removal path, not an Exchange V2
+ambiguity. A later #301 integration must pass the decoder's actual
+`AGENT_REFUSED` or `PROCESS_EXITED_UNSUCCESSFULLY` code and transcript, then
+delete the default and `RunnerEvidenceCannotCarryTranscript`; until then the
+current Runner does not originate decoded `AGENT_REFUSED` or failure
 transcripts.
 
 ## Refusals
