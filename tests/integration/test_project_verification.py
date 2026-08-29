@@ -34,6 +34,7 @@ from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
     TranscriptMomentOrigin,
+    TranscriptRecordedMoment,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
@@ -653,7 +654,8 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
     )
     assert store.kept_transcript == expected_transcript
     assert all(
-        event.moment.origin is TranscriptMomentOrigin.RECORDED
+        isinstance(event.moment, TranscriptRecordedMoment)
+        and event.moment.origin is TranscriptMomentOrigin.RECORDED
         for event in expected_transcript.events
     )
     assert verifications.ran == 1

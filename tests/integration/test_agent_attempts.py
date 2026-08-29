@@ -52,6 +52,7 @@ from atelier2.contracts.agent_transcripts import (
     ToolCalled,
     TranscriptEvent,
     TranscriptMomentOrigin,
+    TranscriptRecordedMoment,
     UnrecognisedProviderOutput,
 )
 from atelier2.contracts.agents import (
@@ -650,7 +651,8 @@ def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
             )
             assert stored == expected.document
             assert all(
-                event.moment.origin is TranscriptMomentOrigin.RECORDED
+                isinstance(event.moment, TranscriptRecordedMoment)
+                and event.moment.origin is TranscriptMomentOrigin.RECORDED
                 for event in expected.events
             )
     finally:
