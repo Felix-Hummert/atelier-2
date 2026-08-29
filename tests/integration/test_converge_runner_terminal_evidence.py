@@ -33,6 +33,7 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.runner_terminal_evidence_codec import (
+    MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
     RunnerTerminalEvidenceRecordCorrupt,
     RunnerTerminalEvidenceRecordMissing,
     RunnerTerminalEvidenceRecordOversized,
@@ -92,7 +93,10 @@ def _armed_invocation_loss(
     (
         (None, RunnerTerminalEvidenceRecordMissing()),
         (b"corrupt", RunnerTerminalEvidenceRecordCorrupt()),
-        (b"x" * 57_762, RunnerTerminalEvidenceRecordOversized()),
+        (
+            b"x" * (MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES + 1),
+            RunnerTerminalEvidenceRecordOversized(),
+        ),
     ),
     ids=("missing", "corrupt", "oversized"),
 )
