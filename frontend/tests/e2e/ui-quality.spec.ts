@@ -278,7 +278,7 @@ async function routeWorkbenchReads(page: Page, read: () => WorkbenchReadReply): 
   });
 }
 
-async function expectWorkbenchControlsAnswerNamedQuestions(
+async function expectWorkbenchControlsAreInventoried(
   page: Page,
   expected: readonly string[]
 ): Promise<void> {
@@ -484,7 +484,7 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): the Wor
   }
 });
 
-test("proves(studio-elements-answer-named-questions): every interactive Workbench control answers one named user question, populated and empty", async ({ page }) => {
+test("proves(every-rendered-workbench-control-is-inventoried): every rendered Workbench control is inventoried with a question-shaped entry, populated and empty", async ({ page }) => {
   let reply: WorkbenchReadReply = "populated";
   await routeWorkbenchReads(page, () => reply);
 
@@ -498,7 +498,7 @@ test("proves(studio-elements-answer-named-questions): every interactive Workbenc
     await expect(
       page.getByRole("button", { name: /workbench runs/ })
     ).toHaveCount(0);
-    await expectWorkbenchControlsAnswerNamedQuestions(page, [
+    await expectWorkbenchControlsAreInventoried(page, [
       workbenchQuestions.openRun.id,
       workbenchQuestions.saySomething.id,
       workbenchQuestions.emptyStart.id
@@ -515,7 +515,7 @@ test("proves(studio-elements-answer-named-questions): every interactive Workbenc
     await expect(
       page.getByRole("link", { name: workbenchPageCopy.emptyStart })
     ).toBeVisible();
-    await expectWorkbenchControlsAnswerNamedQuestions(page, [
+    await expectWorkbenchControlsAreInventoried(page, [
       workbenchQuestions.saySomething.id,
       workbenchQuestions.emptyStart.id
     ]);

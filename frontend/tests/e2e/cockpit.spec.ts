@@ -16,7 +16,7 @@ import { retryLabel } from "../../src/lib/readStateCopy";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
-import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 
@@ -440,7 +440,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   await page.goto("/atelier");
   await expect(page.getByText("Workbench runs unavailable")).toBeVisible();
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
-  const retry = page.getByRole("button", { name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel) });
+  const retry = page.getByRole("button", { name: retryLabel(workbenchPageCopy.runsLabel) });
   await expect(retry).toHaveCount(1);
   const roomUrl = page.url();
 
@@ -472,7 +472,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
 
   readsFail = false;
   observed.length = 0;
-  await page.getByRole("button", { name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel) }).click();
+  await page.getByRole("button", { name: retryLabel(workbenchPageCopy.runsLabel) }).click();
   const room = page.locator(".workbench");
   await expect(page.getByText("Workbench runs unavailable")).toHaveCount(0);
   await expect(room).toBeVisible();
