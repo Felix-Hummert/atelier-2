@@ -102,6 +102,18 @@ function unlistedName(): Partial<CockpitApi> {
   };
 }
 
+function kindName(name: string): RegExp {
+  return new RegExp(`^${name}$`);
+}
+
+function kindButton(name: string) {
+  return screen.getByRole("button", { name: kindName(name) });
+}
+
+function queryKindButton(name: string) {
+  return screen.queryByRole("button", { name: kindName(name) });
+}
+
 describe("the catalog room", () => {
   it("greets an empty atelier by naming the door that fills it", async () => {
     openCatalog();
@@ -680,9 +692,9 @@ describe("the catalog room", () => {
 
     expect((await screen.findByText(catalogPageCopy.oneAgent)).isConnected).toBe(true);
     expect(screen.getByText("walker").tagName).toBe("STRONG");
-    const agentChip = screen.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true });
+    const agentChip = kindButton(catalogPageCopy.kindAgent);
     expect(agentChip.getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }).getAttribute("aria-pressed")).toBe("false");
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("false");
     const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
     expect((add as HTMLButtonElement).disabled).toBe(true);
     expect(add.getAttribute("title")).toBe(catalogPageCopy.noKindDeclared);
@@ -721,9 +733,9 @@ describe("the catalog room", () => {
     const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
     expect((add as HTMLButtonElement).disabled).toBe(true);
     expect(add.getAttribute("title")).toBe(catalogPageCopy.noKindDeclared);
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }).getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true }).getAttribute("aria-pressed")).toBe("false");
-    expect(screen.queryByRole("button", { name: catalogPageCopy.kindSkill, exact: true })).toBeNull();
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("false");
+    expect(kindButton(catalogPageCopy.kindAgent).getAttribute("aria-pressed")).toBe("false");
+    expect(queryKindButton(catalogPageCopy.kindSkill)).toBeNull();
     expect(addLibraryDocument).not.toHaveBeenCalled();
   });
 
@@ -741,9 +753,9 @@ describe("the catalog room", () => {
     await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
 
     expect((await screen.findByText("notes.md")).isConnected).toBe(true);
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true })).toBeTruthy();
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: catalogPageCopy.kindSkill, exact: true })).toBeNull();
+    expect(kindButton(catalogPageCopy.kindWorkflow)).toBeTruthy();
+    expect(kindButton(catalogPageCopy.kindAgent)).toBeTruthy();
+    expect(queryKindButton(catalogPageCopy.kindSkill)).toBeNull();
     const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
     expect((add as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.click(add);
@@ -751,11 +763,11 @@ describe("the catalog room", () => {
     expect(screen.getByRole("button", { name: catalogPageCopy.addToCatalog })).toBeTruthy();
     expect(addLibraryDocument).not.toHaveBeenCalled();
 
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }));
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }).getAttribute("aria-pressed")).toBe("true");
+    await fireEvent.click(kindButton(catalogPageCopy.kindWorkflow));
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("true");
     expect((screen.getByRole("button", { name: catalogPageCopy.addToCatalog }) as HTMLButtonElement).disabled).toBe(false);
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true }));
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true }).getAttribute("aria-pressed")).toBe("true");
+    await fireEvent.click(kindButton(catalogPageCopy.kindAgent));
+    expect(kindButton(catalogPageCopy.kindAgent).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("dialog", { name: catalogPageCopy.import })).toBeTruthy();
     expect(addLibraryDocument).not.toHaveBeenCalled();
   });
@@ -785,14 +797,14 @@ describe("the catalog room", () => {
     const file = { name: "notes.md", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
     await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
     await screen.findByText("notes.md");
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }));
+    await fireEvent.click(kindButton(catalogPageCopy.kindWorkflow));
     await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.addToCatalog }));
 
     expect((await screen.findByText(catalogPageCopy.notAWorkflow)).isConnected).toBe(true);
     expect(screen.queryByText("invalid-workflow-document")).toBeNull();
     expect(screen.getByRole("button", { name: catalogPageCopy.addToCatalog })).toBeTruthy();
     expect(screen.getByRole("button", { name: catalogPageCopy.cancel })).toBeTruthy();
-    expect(screen.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }).getAttribute("aria-pressed")).toBe("true");
+    expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("true");
     expect(screen.queryByText("notes.md", { selector: "li *" })).toBeNull();
     expect(addLibraryDocument).toHaveBeenCalledWith(
       expect.any(Uint8Array),
