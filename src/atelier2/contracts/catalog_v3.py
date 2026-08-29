@@ -218,6 +218,16 @@ class CatalogAdmissionLineageMissing:
 
 
 @dataclass(frozen=True)
+class CatalogLineageRetired:
+    lineage_id: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogRetirementExisting:
+    lineage_id: CatalogLineageId
+
+
+@dataclass(frozen=True)
 class CatalogAdmissionKindMismatch:
     lineage_id: CatalogLineageId
     expected: RevisionKind

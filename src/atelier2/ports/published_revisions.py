@@ -17,8 +17,10 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageFounded,
     CatalogLineageId,
     CatalogLineageIdMismatch,
+    CatalogLineageRetired,
     CatalogLineageQuery,
     CatalogMemberAdmitted,
+    CatalogRetirementExisting,
     CatalogRetirementState,
 )
 from atelier2.contracts.revisions_v3 import (
@@ -177,16 +179,6 @@ Which one it is depends on durable state the caller cannot see -- whether a
 lineage already holds the authored name -- so the door answers with the union
 rather than making the caller ask first and then choose.
 """
-
-
-@dataclass(frozen=True)
-class CatalogLineageRetired:
-    lineage_id: CatalogLineageId
-
-
-@dataclass(frozen=True)
-class CatalogRetirementExisting:
-    lineage_id: CatalogLineageId
 
 
 type RetireCatalogLineageResult = (

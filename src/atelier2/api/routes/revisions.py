@@ -161,7 +161,9 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageFounded,
     CatalogLineageId,
     CatalogLineageIdMismatch,
+    CatalogLineageRetired,
     CatalogMemberAdmitted,
+    CatalogRetirementExisting,
     catalog_lineage_query,
 )
 from atelier2.contracts.library_recognition import (
@@ -175,11 +177,6 @@ from atelier2.contracts.library_recognition import (
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
-from atelier2.ports.published_revisions import (
-    CatalogLineageRetired,
-    CatalogRetirementExisting,
-)
-
 router = APIRouter()
 
 

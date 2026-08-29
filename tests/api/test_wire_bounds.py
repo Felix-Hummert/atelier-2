@@ -107,6 +107,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "FoundCatalogLineageRequestResource.display_name": (
         MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
     ),
+    "RetireCatalogLineageRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "AgentConfigurationRevisionResource.executor_revision": (
         MAXIMUM_AGENT_FIELD_CHARACTERS
     ),
