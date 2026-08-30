@@ -681,38 +681,71 @@ acknowledgement protocol is introduced. The V2 decoder recognizes an Exchange
 V1 domain only to return a typed refusal naming V1 and explaining that only V2
 is supported; it never decodes a V1 payload beside V2.
 
-**2026-08-29 amendment (#900): session delivery carries the record bound.** The
-syntactic maximum above is not a record a production Runner can originate.
-`RunnerSessionFrame` requires generation and invocation identities to be
-exactly 43 base64url characters, and the Runner constructs its evidence
-envelope from the same binding and invocation that the session frame carries.
-With those real identities, the largest outcome the Runner currently produces
-is a provider-result envelope containing 49,152 output bytes and a canonical
-transcript of 1,048,576 bytes: its exact encoded record is 1,098,269 bytes. A
-failure with both maximum standard error and transcript would encode to
-1,098,307 bytes under the same identities, but the current Runner refuses a
-failure transcript instead of publishing it, so that is not its live maximum.
+**2026-08-30 amendment (#900): the session bound is derived from the record
+bound.** Measured before moved, because a record that cannot exist is not a
+maximum. `RunnerSessionFrame` pins a session's generation and invocation tokens
+to exactly 43 base64url characters, and the Runner builds its evidence envelope
+from the same binding and invocation the frame carries. Under those real
+identities the widest record is a provider failure with the longer admitted
+failure code, a fixed-width exit code, 49,152 bytes of standard error and a full
+1,048,576-byte transcript document: 1,098,307 bytes. The widest record today's
+Runner actually originates is a provider result with 49,152 output bytes and the
+same transcript, 1,098,269 bytes, because `runner/session.py` still refuses to
+publish a failure transcript.
 
-`TERMINAL_RECORD` carries that canonical record verbatim as its one payload
-field. Its whole-frame envelope is exactly 404 bytes under the required session
-identities, so the largest live record needs a 1,098,673-byte body and exceeded
-the former 1,078,291-byte body limit by 20,382 bytes. The transport side moves:
-`MAXIMUM_RUNNER_SESSION_BODY_BYTES` is 1,106,817 bytes, the 1,106,413-byte
-journal-legal record bound plus that exact envelope; the four-byte length prefix
-makes `MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES` 1,106,821 bytes. The terminal
-record codec and the session identity contract stay unchanged. This is the
-honest side to move because the live maximum already crossed the transport
-bound and this message transports the journal's admitted record, rather than a
-second narrower representation of it.
+The codec's 1,106,413-byte maximum stands 8,106 bytes above that, and the whole
+gap is identity width: `RunnerGenerationId` and `RunnerInvocationId` bound
+themselves to 1,024 *characters*, which is 4,096 bytes each in UTF-8, where a
+session frame admits 43. Those 8,106 bytes are records the journal may hold and
+a session can never carry.
 
-The deterministic wire proof publishes the largest live envelope through the
-real `RunnerJournal`, resumes it in the production candidate session, carries
-it through the production TLS/Core transport and `CoreRunnerSession`, decodes
-and validates it at the fake Core persistence boundary, then completes
-ACK-tombstone, RELEASE and journal removal. It does not prove a live Core store,
-the Docker/launcher host path, or a real crash and restart. A crash after
-provider start but before terminal publication also remains an open #301 gap;
-this slice adds no schema and no second durable owner.
+Which bound moves is readable in the code rather than a matter of taste.
+`TERMINAL_RECORD` hands the journal's canonical record over verbatim as its
+single payload field: `RunnerJournal.publish` stores exactly the bytes the
+session later sends. The two numbers are therefore not two budgets but one plus
+a fixed envelope, and the live maximum had already crossed the old one. That
+envelope is 404 bytes, fixed because every identity a session frame carries has
+a pinned width, so delivering the live maximum needed a 1,098,673-byte body
+against a 1,078,291-byte limit -- short by 20,382 bytes, and short in the way
+that surfaces only on the rarest run, as `runner-session-oversized`: a transport
+word for a contract fault.
+
+So the transport side moves, and it moves by construction rather than by choice.
+`MAXIMUM_RUNNER_SESSION_BODY_BYTES` is now
+`MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES + TERMINAL_RECORD_ENVELOPE_BYTES`
+(1,106,817 bytes), and `MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES` adds the
+four-byte length prefix (1,106,821 bytes). Raising the record bound now raises
+the transport bound with it; a second literal beside the first is what let these
+two disagree at all. The terminal-record codec and the session identity contract
+are unchanged.
+
+Where each number comes from, so the next reader need not re-derive it:
+
+- 1,106,413 bytes --
+  `test_largest_admissible_v2_record_equals_its_codec_bound_and_fits_journal`
+  builds the widest encodable record and asserts the constant is exactly it.
+- 404 bytes -- `test_a_terminal_record_body_spends_one_fixed_width_on_its_envelope`
+  measures the envelope from the production encoder.
+- both session bounds --
+  `test_a_session_body_carries_the_largest_record_the_journal_may_hold` shows the
+  largest journal-legal record filling a `TERMINAL_RECORD` body exactly.
+- the live path --
+  `test_runner_core_transport_delivers_the_largest_originable_record_over_tls`
+  publishes the widest originable envelope through the real `RunnerJournal`,
+  resumes it in the production candidate session, carries it over genuine TLS
+  through the production transport and `CoreRunnerSession`, and completes commit,
+  ACK tombstone, RELEASE and journal removal.
+
+The 8,106 bytes of transport headroom are what one identity contract admitting
+widths another refuses costs. Narrowing `RunnerGenerationId` and
+`RunnerInvocationId` to the session's 43-character token would collapse both
+numbers onto one width and remove the headroom; that touches every minting
+caller and is not this slice.
+
+The wire proof does not cover a live Core store, the Docker/launcher host path,
+or a real crash and restart. A crash after provider start but before terminal
+publication remains an open #301 gap; this slice adds no schema and no second
+durable owner.
 
 `RunnerProviderFailure` still defaults its omitted failure code to
 `PROCESS_EXITED_UNSUCCESSFULLY`: the current session and other pre-integration

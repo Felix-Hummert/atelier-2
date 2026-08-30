@@ -76,12 +76,6 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
-from atelier2.contracts.agent_transcripts import (
-    MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
-    MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
-    AssistantTurn,
-    AttemptTranscript,
-)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentConfigurationRevision,
@@ -119,6 +113,7 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _status_field
+from tests.scenarios.transcripts import largest_attempt_transcript
 
 # A cgroup pids controller isn't delegated the same way (or readable the same
 # way) on every host this test runs on: this sandbox, the GitHub-hosted CI
@@ -617,24 +612,26 @@ def _prepared_session(
     )
 
 
-def _maximum_live_runner_terminal_envelope(
+def _largest_originable_terminal_envelope(
     prepared: _PreparedSession,
 ) -> RunnerTerminalEvidenceEnvelope:
-    transcript = AttemptTranscript.of(
-        [
-            *(
-                AssistantTurn("x" * MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
-                for _ in range(127)
-            ),
-            AssistantTurn("x" * 1_237),
-        ]
-    )
-    assert len(transcript.document) == MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
+    """The biggest terminal fact a real Runner can hand over on this session.
+
+    Every width is the real one: the session pins its generation and invocation
+    tokens to 43 base64url characters, the provider answer is as wide as the V2
+    output bound allows and the transcript fills the document bound. A provider
+    *failure* carrying the same transcript would encode 38 bytes larger and is
+    equally journal-legal, but `runner/session.py` still refuses to publish a
+    failure transcript, so it is not a record this path can originate today.
+    """
+
     return RunnerTerminalEvidenceEnvelope(
         prepared.binding,
         prepared.invocation,
         RunnerProviderResult(
-            AgentExecutionResult(b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2, transcript),
+            AgentExecutionResult(
+                b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2, largest_attempt_transcript()
+            ),
         ),
     )
 
@@ -1147,11 +1144,18 @@ def test_runner_core_transport_drives_a_real_candidate_session_to_released_over_
     assert prepared.core.acknowledged == 1
 
 
-def test_runner_core_transport_delivers_the_largest_live_runner_record_over_tls(
+@pytest.mark.proves("what-may-be-stored-can-be-delivered")
+def test_runner_core_transport_delivers_the_largest_originable_record_over_tls(
     tmp_path: Path,
 ) -> None:
+    """What the journal admits, the session hands over. The Runner publishes its
+    widest terminal fact, and the production transport carries it the whole way
+    -- real subprocess, real TLS, real `CoreRunnerSession` -- through commit,
+    ACK tombstone, RELEASE and journal removal. A transport bound below the
+    record bound stops this at `runner-session-oversized` instead."""
+
     prepared = _prepared_session(tmp_path)
-    envelope = _maximum_live_runner_terminal_envelope(prepared)
+    envelope = _largest_originable_terminal_envelope(prepared)
     RunnerJournal(prepared.journal_directory).publish(envelope, CANDIDATE_JOURNAL_BYTES)
 
     returncode = _run_tls_candidate_to_released(tmp_path, prepared)

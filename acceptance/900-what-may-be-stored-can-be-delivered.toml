@@ -1,0 +1,11 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/900"
+
+# The Runner's journal bound and the session's transport bound answer one
+# question between them. This sentence is about the whole Runner-to-Core path,
+# not about the two numbers agreeing; the numbers are pinned in
+# tests/domain/test_runner_session_codec.py.
+
+[[sentence]]
+id = "what-may-be-stored-can-be-delivered"
+text = "The largest terminal record a real Runner can originate reaches Core over a real session; a record the journal admits but the session refuses fails."
