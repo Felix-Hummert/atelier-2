@@ -39,6 +39,7 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionResult,
 )
+from atelier2.contracts.hashing import frame
 from atelier2.contracts.runner_manifests import CANDIDATE_JOURNAL_BYTES
 from atelier2.contracts.runner_terminal_evidence_codec import (
     MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
@@ -580,3 +581,37 @@ def test_a_result_with_no_transcript_still_round_trips_byte_for_byte() -> None:
     assert isinstance(decoded.evidence, RunnerProviderResult)
     assert decoded.evidence.result.transcript is None
     assert encode_runner_terminal_evidence_record(decoded) == record
+
+
+def _canonical_record() -> bytes:
+    return encode_runner_terminal_evidence_record(
+        _envelope(RunnerProviderResult(AgentExecutionResult(b"answer")))
+    )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        b"\x00" + _canonical_record(),
+        frame("runner-terminal-evidence-exchange/v3", *[b""] * 15),
+        _canonical_record()[:-2],
+        _canonical_record() + b"\x00\x00\x00\x00",
+        _canonical_record() + struct.pack(">Q", 0),
+    ],
+    ids=(
+        "foreign-prefix",
+        "another-domain",
+        "truncated-field",
+        "trailing-bytes",
+        "sixteenth-field",
+    ),
+)
+def test_a_broken_frame_is_refused_as_this_exchange_s_own_corrupt_outcome(
+    record: bytes,
+) -> None:
+    """The exchange reads the shared frame layout but answers a broken frame in
+    its own typed vocabulary, never with the reader's exception."""
+
+    assert decode_runner_terminal_evidence_record(record) == (
+        RunnerTerminalEvidenceRecordCorrupt()
+    )

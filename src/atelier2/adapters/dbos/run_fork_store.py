@@ -54,7 +54,7 @@ from atelier2.contracts.executions import (
     RunEventKind,
     logical_effect_key_for_node,
 )
-from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.hashing import Sha256Hash, unframe
 from atelier2.contracts.node_records_v3 import (
     DeclaredContextPackage,
     DeclaredContextPackageHash,
@@ -106,8 +106,6 @@ from atelier2.ports.durable_run_forks import (
     DurableRunForkWriteUnavailable,
     ForkRunRequest,
 )
-
-_FRAME_PREFIX = b"ATELIER2\x00"
 
 
 class _PrefixNotReusable(RuntimeError):
@@ -340,12 +338,12 @@ def _load_run_configuration(
     )
     if preimage is None:
         raise RuntimeError("origin run configuration is missing")
-    fields = _decode_frame(bytes(preimage), "run-configuration-revision/v1")
+    fields = unframe(bytes(preimage), "run-configuration-revision/v1")
     if len(fields) != 3:
         raise ValueError("run configuration preimage has the wrong arity")
     references = tuple(
         _resolved_reference(field)
-        for field in _decode_frame(fields[2], "run-configuration-references/v1")
+        for field in unframe(fields[2], "run-configuration-references/v1")
     )
     configuration = RunConfigurationRevision(
         WorkflowRevisionHash(fields[0].decode("ascii")),
@@ -362,30 +360,8 @@ def _load_run_configuration(
     return configuration
 
 
-def _decode_frame(payload: bytes, domain: str) -> tuple[bytes, ...]:
-    if not payload.startswith(_FRAME_PREFIX):
-        raise ValueError("framed record prefix is missing")
-    offset = len(_FRAME_PREFIX)
-    domain_size = struct.unpack_from(">I", payload, offset)[0]
-    offset += 4
-    encoded_domain = payload[offset : offset + domain_size]
-    offset += domain_size
-    if encoded_domain != domain.encode("utf-8"):
-        raise ValueError("framed record domain disagrees")
-    fields: list[bytes] = []
-    while offset < len(payload):
-        size = struct.unpack_from(">Q", payload, offset)[0]
-        offset += 8
-        end = offset + size
-        if end > len(payload):
-            raise ValueError("framed record field overruns its payload")
-        fields.append(payload[offset:end])
-        offset = end
-    return tuple(fields)
-
-
 def _resolved_reference(payload: bytes) -> ResolvedReference:
-    fields = _decode_frame(payload, "run-configuration-reference/v1")
+    fields = unframe(payload, "run-configuration-reference/v1")
     if len(fields) != 8:
         raise ValueError("run configuration reference has the wrong arity")
     chain = tuple(
@@ -393,8 +369,8 @@ def _resolved_reference(payload: bytes) -> ResolvedReference:
             ref=entry_fields[0].decode("utf-8"),
             revision=entry_fields[1].decode("utf-8"),
         )
-        for entry in _decode_frame(fields[4], "reference-chain/v1")
-        if len(entry_fields := _decode_frame(entry, "reference-chain-entry/v1")) == 2
+        for entry in unframe(fields[4], "reference-chain/v1")
+        if len(entry_fields := unframe(entry, "reference-chain-entry/v1")) == 2
     )
     return ResolvedReference(
         ReferenceSite(
