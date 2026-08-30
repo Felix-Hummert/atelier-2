@@ -79,9 +79,6 @@ Quelle: DESK — 5302769095, 5302066517 Schluss; Vorlage v8 gesegnet 25.08.2026 
 ### REQ-UI-19: Atelier 1 wird als Konzepte und Lehren wiederverwendet, nie als portierter Code.
 Quelle: DESK — #9 body @ 36800d6ecd5d3e8922028425835b368b42d163098e5d32da930e40d25f49ce99 (Regel 19)
 
-### REQ-UIQ-01: Jedes Element beantwortet eine benennbare Nutzerfrage.
-Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 1
-
 ### REQ-UIQ-02: Kernaufgaben erreichen ihr Ziel in einem benannten Klick- und Blick-Budget.
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 2
 
