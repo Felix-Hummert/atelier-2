@@ -7,7 +7,10 @@
   on issue #642, gated REVISE then folded per that review) — decision only,
   unimplemented; decision 1 amended 2026-08-26 (`snapshot()` joins the
   observation port, head ruling on issue #732) — **built with its amendment**,
-  in the change that adds this record's second reading operation (issue #712)
+  in the change that adds this record's second reading operation (issue #712);
+  decision 5's commit-identity rationale amended 2026-08-30 (operator ruling on
+  issue #883, superseding the ruling on issue #32) — what the declared identity
+  says, the rule that it is declared unchanged
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -424,8 +427,8 @@ told the platform proved something it did not.
 **The marker syntax and the commit identity have an owner here, because nothing
 else in this repository owns them.** Repository policy binds no trailer key and no
 per-invocation commit identity, so a commit operation would otherwise inherit
-whatever ambient git configuration the host happens to carry — which is how an
-agent's commit ends up wearing a human's name. Therefore: **one marker contract
+whatever ambient git configuration the host happens to carry — which is how a
+commit ends up wearing an identity nobody chose. Therefore: **one marker contract
 owns the marker's exact syntax and its trailer key.** Since decision 1's
 2026-08-25 amendment its owner is a shared, provider-neutral contract module,
 not the GitHub adapter alone — the GitHub adapter's `marker.py` is that
@@ -437,6 +440,29 @@ Both are proven with the operation revision: a commit produced by that operation
 carries exactly the declared identity and trailer, and a run with a differently
 configured host produces the same two. Should repository-wide authorship policy
 later acquire an owner, this record defers to it rather than keeping a second copy.
+
+**Amendment 2026-08-30 (operator ruling, issue #883): what that declared identity
+says.** That policy now has an owner, and this record defers to it as promised. An
+Atelier commit carries the **operator as author** and the **model of the node that
+performed the push as committer** — `Claude Opus 5`, `grok-4.6`, whichever held the
+`push-atelier-commit` grant for that run — with both addresses derived from the
+GitHub account the project is connected with, never from the model's provider. This
+supersedes the ruling on [#32](https://github.com/FlexOr2/atelier-2/issues/32), that
+an agent's commit must never claim to be the operator.
+
+The two are not in conflict once git's two identity fields are held apart, which #32
+did not do: it saw one field wearing the wrong name. **Author** names whose change it
+is — the operator's intent, his authorization, his accountability. **Committer** names
+what produced and placed the bytes — the model. #32's concern was an agent passing
+itself off as a human, and this ruling honours that concern rather than overriding it:
+the committer line names the machine in every commit, unmissably. The sentence above
+keeps its full force — the identity is declared, never inherited from the host.
+
+The derivation is a default, not a fixture: each derived part is overridable where
+models are already maintained. A published `push-atelier-commit` revision still
+declares one literal author and committer pair, so a receipt continues to prove which
+identity was authorized for that commit — which means one such revision per model,
+because this contract admits concrete identities and no derivation rule.
 
 **2026-08-25 amendment (Operator-Ruling, #642-Journal): `push-atelier-commit`
 names the git-transport push operation.** The independent architecture ruling
