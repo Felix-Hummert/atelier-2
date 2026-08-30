@@ -102,7 +102,16 @@ export const workflowDetailCopy = {
   panelClose: "Close node detail",
   notAdmittedNote: "Not admitted to the catalog.",
   retiredNote: "Retired",
-  retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here."
+  retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here.",
+  retire: "Retire",
+  retireTitle: (name: string) => `Retire ${name}?`,
+  retireDisappears: "Leaves",
+  retireDisappearsFact: "It leaves Catalog and can no longer be started.",
+  retireStays: "History",
+  retireStaysFact: "Past runs and immutable revisions remain reachable.",
+  retirePermanent: "Permanent",
+  retirePermanentFact: "This workflow cannot return to Catalog. There is no way back.",
+  retireFailed: "This workflow could not be retired."
 } as const;
 
 /** Copy owned by the catalog detail's one manual-start sheet. */

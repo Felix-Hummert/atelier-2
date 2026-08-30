@@ -89,6 +89,13 @@ class AdmitCatalogMemberRequestResource(ApiModel):
     activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
 
 
+class RetireCatalogLineageRequestResource(ApiModel):
+    """Attribute the event that removes one lineage from the live catalog."""
+
+    actor: str = Field(min_length=1, max_length=MAXIMUM_CATALOG_ACTOR_CHARACTERS)
+    activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
+
+
 class ConfirmQueueProposalRequestResource(ApiModel):
     """Confirm the exact proposal revision the operator inspected."""
 

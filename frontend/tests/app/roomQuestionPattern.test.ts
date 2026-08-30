@@ -23,7 +23,7 @@ import {
  * never excuse one. A file is not exempt because its first element
  * looks like a question surface.
  *
- * Today's tree has no such shared module: nine imported files each
+ * Today's tree has no such shared module: ten imported files each
  * compose their own `<dialog>`. The sentence names them and does not
  * prove they share one Stage or Sheet. A `createElement` overlay, a
  * question in a `.ts` module, a dynamic `role={...}`, a sheet that is
@@ -48,6 +48,7 @@ const NAMED_RESIDUAL_FILES = [
   "components/DisconnectSourceSheet.svelte",
   "components/ReconciliationActionCard.svelte",
   "components/RenewSourceTokenSheet.svelte",
+  "components/RetireCatalogLineageSheet.svelte",
   "components/RunCancelCard.svelte",
   "components/RunForkSheet.svelte",
   "components/WorkflowStartSheet.svelte"
