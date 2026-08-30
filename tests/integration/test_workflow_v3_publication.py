@@ -14,6 +14,7 @@ from httpx import Response
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs, workflow_revisions
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
@@ -24,6 +25,10 @@ from atelier2.api.references import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
+from tests.scenarios.agents import (
+    agent_scratch_root,
+    failing_agent_executor_factory,
+)
 from tests.scenarios.api import (
     api_limits,
     discovered_openapi_document,
@@ -31,7 +36,7 @@ from tests.scenarios.api import (
     event_poll_backoff,
     published_workflow_grammar,
 )
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.runs import publish_v3_agent_bindings
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
     V3_CONTROL_EDGE_LINE,
@@ -43,23 +48,28 @@ from tests.scenarios.workflows import (
 
 GUESSED_PATH = "/a-path-a-first-contact-guesses"
 
-V1_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: agent, type: agent, job: test, output: payload, next: final}
-"""
-
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    configured = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "v3-publication-tests"),
+    """The runtime these publications read through, armed to start a V3 line.
+
+    The V3 executor is what makes a start here a real one rather than a refusal
+    about an unbound executor; nothing in this file launches it, so no agent
+    ever runs.
+    """
+    configured = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "v3-publication-tests",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        ExactOutputAgentExecutorFactory(),
+        (failing_agent_executor_factory("exact", []),),
     )
     configured.initialize_storage()
     try:
@@ -567,22 +577,6 @@ nodes:
     ]
 
 
-def test_a_v1_revision_does_not_invent_a_v3_node_preview(
-    runtime: DbosRuntime,
-) -> None:
-    client = _client(runtime)
-    revision_hash = _publish(client, V1_DOCUMENT).json()["workflow_revision_hash"]
-
-    graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
-        "graph"
-    ]
-
-    assert graph["workflow_format_version"] == 1
-    assert "node_previews" not in graph
-    assert "instruction_start" not in graph["nodes"][0]
-    assert graph["nodes"][0]["job"] == "test"
-
-
 def test_the_described_listing_does_not_carry_the_node_excerpt(
     runtime: DbosRuntime,
 ) -> None:
@@ -616,19 +610,45 @@ def test_starting_a_run_on_a_v3_revision_is_refused_by_name_and_writes_no_run(
     assert _row_count(runtime, runs) == 0
 
 
-def test_a_v1_revision_published_beside_a_v3_one_still_starts_its_run(
+def test_a_runnable_revision_published_beside_a_refused_one_still_starts_its_run(
     runtime: DbosRuntime,
 ) -> None:
+    """A revision this build refuses does not stand in the way of one it runs.
+
+    The refusal above is about the document a start names, not about what else
+    the store holds -- so the same store answering `409` for one revision
+    answers `201` for the next, and exactly one run row exists afterwards.
+    """
     client = _client(runtime)
+    _publish_schema(client, ANY_JSON_SCHEMA)
     _publish(client, V3_DOCUMENT)
-    executable_hash = _publish(client, V1_DOCUMENT).json()["workflow_revision_hash"]
+    executable_hash = _publish(client, EXECUTABLE_V3_DOCUMENT).json()[
+        "workflow_revision_hash"
+    ]
+    bindings = publish_v3_agent_bindings(
+        runtime.engine, runtime.agent_executor_registry
+    )
 
     started = client.post(
         API_PREFIX + "/runs",
-        json={"run_id": "v1-run", "workflow_revision_hash": executable_hash},
+        json={
+            "workflow_format_version": 3,
+            "run_id": "runnable-run",
+            "workflow_revision_hash": executable_hash,
+            "agent_bindings": [
+                {
+                    "role": binding.role,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash
+                    ),
+                }
+                for binding in bindings
+            ],
+            "orders": [],
+        },
     )
 
-    assert started.status_code == 201
+    assert started.status_code == 201, started.text
     assert started.json()["workflow_revision_hash"] == executable_hash
     assert _row_count(runtime, runs) == 1
 

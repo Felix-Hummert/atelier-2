@@ -526,49 +526,6 @@ def test_typed_runner_failures_reach_one_named_product_seam(
 
 
 @pytest.mark.parametrize(
-    ("evidence", "failure_code"),
-    (
-        (
-            RunnerOutputLimitExceeded(frozenset({RunnerOutputStream.STANDARD_OUTPUT})),
-            AgentAttemptFailureCode.PROCESS_OUTPUT_LIMIT_EXCEEDED,
-        ),
-        (
-            RunnerProcessBoundaryFailure(),
-            AgentAttemptFailureCode.PROCESS_SUPERVISION_FAILED,
-        ),
-    ),
-)
-def test_real_v2_runner_failures_project_the_exact_new_event_code(
-    tmp_path: Path,
-    evidence: RunnerTerminalEvidence,
-    failure_code: AgentAttemptFailureCode,
-) -> None:
-    runtime, store, execution, binding, invocation = _armed(
-        tmp_path, f"runner/evidence/v2-wire-{failure_code.value.lower()}"
-    )
-    try:
-        store.commit_runner_terminal_evidence(
-            execution, RunnerTerminalEvidenceEnvelope(binding, invocation, evidence)
-        )
-        queries = durable_queries(runtime.engine)
-        page = queries.read_run_event_page(execution.request.run_id, 0, 5)
-        found = queries.get_run(execution.request.run_id)
-        assert isinstance(page, RunEventPage)
-        assert isinstance(found, RunFound)
-        assert len(page.events) == 1
-
-        resource = run_event_resource(
-            page.events[0],
-            node_rail_resources(project_node_rail(found.projection, page.events)),
-        )
-
-        assert isinstance(resource, AgentFailedEventResourceV3)
-        assert resource.failure_code == failure_code.value
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize(
     ("evidence", "failure_code", "receipt_reason"),
     (
         (

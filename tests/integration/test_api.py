@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos import run_transitions as run_transitions_module
 from atelier2.adapters.dbos import starter as starter_module
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries, WaitAnswerProjectionCorrupt
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -52,10 +55,17 @@ from atelier2.adapters.dbos.workflow_ids import (
     bootstrap_workflow_id_for,
     reconcile_workflow_id_for,
 )
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimits, durable_projection_limit
 from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
+from atelier2.contracts.agents import (
+    AgentExecutionRequestV2,
+    AgentExecutionResult,
+    AgentExecutorOperationalIdentity,
+)
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -75,11 +85,14 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
     SubmitWaitAnswerRequest,
+    TransitionSnapshot,
     WaitAnswerActor,
     WaitAnswerAttributionKind,
     WaitAnswerState,
 )
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.run_bindings import AnyRun, RunV3
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -87,6 +100,8 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
+from atelier2.ports.agent_attempts import AgentAttemptSucceeded
+from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableAnswerExisting,
@@ -103,27 +118,33 @@ from atelier2.ports.effects import (
     DurableReconciliationDeterminationConflict,
     DurableReconciliationExisting,
 )
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCreated,
     DurableRevisionExisting,
 )
-from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    agent_scratch_root,
+    commit_configured_agent,
+    failing_agent_executor_factory,
+)
 from tests.scenarios.api import (
-    RECONCILIATION_APPLIED_RESULT_HASH,
-    RECONCILIATION_LOGICAL_KEY,
-    RECONCILIATION_REQUEST,
-    RECONCILIATION_REQUEST_HASH,
-    RECONCILIATION_REVISION_HASH,
     api_limits,
     durable_ports,
     event_poll_backoff,
 )
 from tests.scenarios.runs import (
     NO_AGENT_EXECUTORS,
+    V3_EXECUTOR_REVISION,
+    V3_PROVIDER,
     prepare_and_launch_graph_action,
     start_published_v1_run,
+    start_published_v3_run,
 )
-from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, V3_DOCUMENT, declared_output
 
 DOCUMENT = b"""format_version: 1
@@ -133,21 +154,64 @@ nodes:
   - {id: wait, type: wait, answer_type: integer, next: final}
   - {id: agent, type: agent, job: test, output: payload, next: wait}
 """
-WAIT_SINK_DOCUMENT = b"""format_version: 3
+"""The format-1 document the store-level tests below still stand on.
+
+The publisher, the starter and the wait answerer all still accept format 1; only
+the wire refuses to project it. Tests that measure those writers therefore keep
+the cheaper document, and every test that reads a resource back over HTTP uses a
+format-3 document instead.
+"""
+
+
+def _wait_sink_document(prompt: str) -> bytes:
+    """A served line whose single node is the answer a person owes it.
+
+    It declares no role, so a start binds no agent and needs no executor: what
+    the HTTP tests below drive is publication, start, pagination and the answer,
+    and none of those is about who runs a node.
+    """
+
+    return (
+        f"""format_version: 3
 name: One answer ends this run
 nodes:
   - id: wait
     type: wait
-    prompt: What is the answer?
-""" + declared_output(ANY_JSON_SCHEMA, "answer")
-ACTION_DOCUMENT = b"""format_version: 1
-start: agent
+    prompt: {prompt}
+""".encode()
+        + declared_output(ANY_JSON_SCHEMA, "answer")
+    )
+
+
+WAIT_SINK_DOCUMENT = _wait_sink_document("What is the answer?")
+OPEN_PR_OPERATION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION,
+    json.dumps({"operation": AdapterOperationName.OPEN_PR.value}).encode("utf-8"),
+)
+ACTION_INSTRUCTION = "Compose the request the action lands."
+ACTION_AGENT_OUTPUT = b'"request"'
+ACTION_DOCUMENT = (
+    f"""format_version: 3
+name: One agent, one action, one answer
 nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: wait, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: wait}
-  - {id: agent, type: agent, job: test, output: request, next: action}
-"""
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: {ACTION_INSTRUCTION}
+""".encode()
+    + declared_output(ANY_JSON_SCHEMA, "request")
+    + f"""  - id: action
+    type: action
+    operation: {{ref: open-pr, revision: {OPEN_PR_OPERATION.revision_hash.value}}}
+    depends_on: [agent]
+  - id: wait
+    type: wait
+    prompt: Did the landing hold?
+    depends_on: [action]
+""".encode()
+    + declared_output(ANY_JSON_SCHEMA, "answer")
+)
 # A contended write is refused without waiting at all: the pool fails a checkout
 # it cannot serve at once, and the driver fails a write against a held lock on
 # its first attempt. Zero is what makes the refusal a decision rather than an
@@ -157,13 +221,19 @@ NO_WAIT_FOR_A_CONTENDED_WRITE = 0.0
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    configured = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "api-tests"),
+    configured = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "api-tests",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        ExactOutputAgentExecutorFactory(),
+        (failing_agent_executor_factory(V3_PROVIDER.value, []),),
     )
     configured.initialize_storage()
     try:
@@ -208,6 +278,98 @@ def _durable_snapshot(runtime: DbosRuntime) -> DurableSnapshot:
             connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) or 0
         )
     return DurableSnapshot(contents, workflow_count)
+
+
+def _publish_referenced_revisions(
+    runtime: DbosRuntime, *revisions: PublishedRevision
+) -> None:
+    """Publish what a served document points at, before the document names it."""
+
+    catalog = DbosCatalogStore(runtime.engine)
+    for revision in revisions:
+        published = catalog.publish_revision(revision)
+        assert isinstance(
+            published, (PublishedRevisionCreated, PublishedRevisionExisting)
+        ), published
+
+
+def _start_body(
+    run_id: RunId, revision_hash: WorkflowRevisionHash
+) -> dict[str, object]:
+    """What the wire asks for to start a format-3 run that binds no role."""
+
+    return {
+        "workflow_format_version": 3,
+        "run_id": run_id.value,
+        "workflow_revision_hash": revision_hash.value,
+        "agent_bindings": [],
+        "orders": [],
+    }
+
+
+def _pause_for_an_answer(
+    runtime: DbosRuntime, client: TestClient, run_id: RunId
+) -> TransitionSnapshot:
+    """Publish and start the wait-sink line, then pause it where a person answers.
+
+    Publication and the start go through the served routes; only the pause is
+    committed directly, because no runtime drives these runs.
+    """
+
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
+    published = client.post(
+        "/atelier/api/v1/workflow-revisions",
+        content=WAIT_SINK_DOCUMENT,
+        headers={"content-type": "application/yaml"},
+    )
+    assert published.status_code in {200, 201}, published.text
+    started = client.post(
+        "/atelier/api/v1/runs", json=_start_body(run_id, revision.revision_hash)
+    )
+    assert started.status_code == 201, started.text
+    with canonical_write_transaction(runtime.engine) as connection:
+        return commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+
+
+def _executor_operational_identity(
+    registry: AgentExecutorRegistry,
+) -> AgentExecutorOperationalIdentity:
+    """Which running executor the V3 agent bindings resolve to."""
+
+    key = AgentExecutorKey(V3_PROVIDER, V3_EXECUTOR_REVISION)
+    return next(
+        entry.operational_identity for entry in registry.manifest if entry.key == key
+    )
+
+
+def _complete_the_action_predecessor(runtime: DbosRuntime, run: AnyRun) -> None:
+    """Carry the action line's agent node to its durable success.
+
+    The attempt is the only door that writes a format-3 agent's output, and the
+    action that follows it reads exactly that output before it can be prepared.
+    """
+
+    assert isinstance(run, RunV3)
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run.run_id, run.revision_hash, "agent"),
+        run.run_id,
+        run.revision_hash,
+        "agent",
+        run.agent_bindings[0],
+        _executor_operational_identity(runtime.agent_executor_registry),
+        ACTION_INSTRUCTION.encode("utf-8"),
+    )
+    execution = agent_attempt_execution(request)
+    attempts = DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    )
+    attempts.prepare(execution)
+    attempts.claim(execution)
+    succeeded = attempts.complete_success(
+        execution, AgentExecutionResult(ACTION_AGENT_OUTPUT)
+    )
+    assert isinstance(succeeded, AgentAttemptSucceeded), succeeded
 
 
 def test_revision_publication_created_and_existing_are_decided_by_one_write(
@@ -470,6 +632,7 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
     runtime: DbosRuntime,
 ) -> None:
     parallelism = 4
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
     publication_barrier = Barrier(parallelism)
 
     def publish(_: int) -> int:
@@ -478,7 +641,7 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
             _client(runtime)
             .post(
                 "/atelier/api/v1/workflow-revisions",
-                content=DOCUMENT,
+                content=WAIT_SINK_DOCUMENT,
                 headers={"content-type": "application/yaml"},
             )
             .status_code
@@ -487,7 +650,7 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
         publication_statuses = list(pool.map(publish, range(parallelism)))
 
-    revision = WorkflowRevision(DOCUMENT)
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
     assert publication_statuses.count(201) == 1
     assert publication_statuses.count(200) == parallelism - 1
 
@@ -500,10 +663,7 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
             _client(runtime)
             .post(
                 "/atelier/api/v1/runs",
-                json={
-                    "run_id": start_run_id.value,
-                    "workflow_revision_hash": revision.revision_hash.value,
-                },
+                json=_start_body(start_run_id, revision.revision_hash),
             )
             .status_code
         )
@@ -515,17 +675,7 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
     assert start_statuses.count(200) == parallelism - 1
 
     answer_run_id = RunId("http-concurrent-answer")
-    start_published_v1_run(runtime.engine, runtime.settings, answer_run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(
-            connection,
-            answer_run_id,
-            revision.revision_hash,
-            "agent",
-        )
-        waiting = commit_waiting_input(
-            connection, answer_run_id, revision.revision_hash, "wait"
-        )
+    waiting = _pause_for_an_answer(runtime, _client(runtime), answer_run_id)
     answer_path = (
         f"/atelier/api/v1/runs/{encode_public_run_reference(answer_run_id)}/answers"
     )
@@ -589,11 +739,19 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
 
 
 def _waiting_reconciliation(runtime: DbosRuntime) -> EffectIntent:
+    """A format-3 Agent-Action line stopped at the effect a person must resolve."""
+
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
     revision = WorkflowRevision(ACTION_DOCUMENT)
     run_id = RunId("reconcile-run")
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
+    run = start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        run_id,
+        revision,
+        runtime.agent_executor_registry,
+    )
+    _complete_the_action_predecessor(runtime, run)
     intent = prepare_and_launch_graph_action(
         runtime.engine,
         runtime.settings,
@@ -905,8 +1063,9 @@ def test_a_published_v3_revision_still_reaches_no_run(
 def test_http_start_identity_conflict_changes_no_durable_state_or_workflow(
     runtime: DbosRuntime,
 ) -> None:
-    first_document = DOCUMENT
-    changed_document = DOCUMENT.replace(b"job: test", b"job: changed")
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
+    first_document = WAIT_SINK_DOCUMENT
+    changed_document = _wait_sink_document("What is the answer now?")
     client = _client(runtime)
     for document in (first_document, changed_document):
         publication = client.post(
@@ -915,21 +1074,17 @@ def test_http_start_identity_conflict_changes_no_durable_state_or_workflow(
             headers={"content-type": "application/yaml"},
         )
         assert publication.status_code == 201
-    first_hash = hashlib.sha256(first_document).hexdigest()
-    changed_hash = hashlib.sha256(changed_document).hexdigest()
+    run_id = RunId("identity-conflict")
     created = client.post(
         "/atelier/api/v1/runs",
-        json={"run_id": "identity-conflict", "workflow_revision_hash": first_hash},
+        json=_start_body(run_id, WorkflowRevision(first_document).revision_hash),
     )
     assert created.status_code == 201
     before = _durable_snapshot(runtime)
 
     conflict = client.post(
         "/atelier/api/v1/runs",
-        json={
-            "run_id": "identity-conflict",
-            "workflow_revision_hash": changed_hash,
-        },
+        json=_start_body(run_id, WorkflowRevision(changed_document).revision_hash),
     )
 
     assert conflict.status_code == 409
@@ -940,28 +1095,30 @@ def test_http_start_identity_conflict_changes_no_durable_state_or_workflow(
 def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
     runtime: DbosRuntime,
 ) -> None:
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
     client = _client(runtime)
 
     published = client.post(
         "/atelier/api/v1/workflow-revisions",
-        content=DOCUMENT,
+        content=WAIT_SINK_DOCUMENT,
         headers={"content-type": "application/yaml; charset=utf-8"},
     )
     retry = client.post(
         "/atelier/api/v1/workflow-revisions",
-        content=DOCUMENT,
+        content=WAIT_SINK_DOCUMENT,
         headers={"content-type": "application/yaml"},
     )
 
     assert published.status_code == 201
     assert retry.status_code == 200
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
     revision_hash = published.json()["workflow_revision_hash"]
     assert published.json() == retry.json()
-    assert published.json()["document_base64"] == encode_canonical_base64(DOCUMENT)
-    assert [node["node_id"] for node in published.json()["graph"]["nodes"]] == [
-        "agent",
-        "final",
-        "wait",
+    assert published.json()["document_base64"] == encode_canonical_base64(
+        WAIT_SINK_DOCUMENT
+    )
+    assert [node["id"] for node in published.json()["graph"]["node_previews"]] == [
+        "wait"
     ]
     assert (
         client.get(f"/atelier/api/v1/workflow-revisions/{revision_hash}").json()
@@ -974,14 +1131,9 @@ def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
 
     run_ids = ("slash/run", "nul\0run", "Grüße-東京")
     for run_id in run_ids:
-        created = client.post(
-            "/atelier/api/v1/runs",
-            json={"run_id": run_id, "workflow_revision_hash": revision_hash},
-        )
-        existing = client.post(
-            "/atelier/api/v1/runs",
-            json={"run_id": run_id, "workflow_revision_hash": revision_hash},
-        )
+        body = _start_body(RunId(run_id), revision.revision_hash)
+        created = client.post("/atelier/api/v1/runs", json=body)
+        existing = client.post("/atelier/api/v1/runs", json=body)
         assert created.status_code == 201
         assert existing.status_code == 200
         assert created.json() == existing.json()
@@ -998,10 +1150,10 @@ def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
 def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
     runtime: DbosRuntime,
 ) -> None:
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
     client = _client(runtime)
     documents = tuple(
-        DOCUMENT.replace(b"job: test", f"job: page-{index}".encode())
-        for index in range(5)
+        _wait_sink_document(f"Which page is this, {index}?") for index in range(5)
     )
     expected = tuple(
         sorted(hashlib.sha256(document).hexdigest() for document in documents)
@@ -1058,21 +1210,22 @@ def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
 def test_http_run_pages_follow_exact_utf8_order_and_every_exclusive_cursor(
     runtime: DbosRuntime,
 ) -> None:
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
     client = _client(runtime)
     publication = client.post(
         "/atelier/api/v1/workflow-revisions",
-        content=DOCUMENT,
+        content=WAIT_SINK_DOCUMENT,
         headers={"content-type": "application/yaml"},
     )
     assert publication.status_code == 201
-    revision_hash = publication.json()["workflow_revision_hash"]
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
     run_ids = ("slash/run", "nul\0run", "Grüße-東京", "alpha", "zeta")
     expected = ("Grüße-東京", "alpha", "nul\0run", "slash/run", "zeta")
     assert expected == tuple(sorted(run_ids, key=lambda value: value.encode("utf-8")))
     for run_id in run_ids:
         response = client.post(
             "/atelier/api/v1/runs",
-            json={"run_id": run_id, "workflow_revision_hash": revision_hash},
+            json=_start_body(RunId(run_id), revision.revision_hash),
         )
         assert response.status_code == 201
 
@@ -1117,18 +1270,12 @@ def test_http_run_pages_follow_exact_utf8_order_and_every_exclusive_cursor(
 def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
     runtime: DbosRuntime,
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("answer/run")
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        waiting = commit_waiting_input(
-            connection, run_id, revision.revision_hash, "wait"
-        )
     client = _client(runtime)
+    waiting = _pause_for_an_answer(runtime, client, run_id)
     path = f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers"
     body = {
-        "workflow_revision_hash": revision.revision_hash.value,
+        "workflow_revision_hash": waiting.revision_hash.value,
         "node_id": "wait",
         "expected_node_execution_id": waiting.event.node_execution_id.value,
         "actor": "operator",
@@ -1146,11 +1293,8 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
     assert accepted.status_code == 202
     assert existing.status_code == 202
     assert accepted.json() == existing.json()
-    assert accepted.json()["waiting"] == {
-        "type": "WAITING_INPUT",
-        "node_id": "wait",
-        "answer_type": "integer",
-    }
+    assert accepted.json()["state"] == RunState.WAITING_INPUT.value
+    assert accepted.json()["current_node_id"] == "wait"
     assert conflict.status_code == 500
     assert conflict.json()["type"].endswith(":durable-state-corrupt")
     assert _durable_snapshot(runtime) == before_conflict
@@ -1598,14 +1742,25 @@ def test_http_reconciliation_preserves_accountable_binding_without_adapter_ident
     assert accepted.status_code == 202
     assert existing.status_code == 202
     assert accepted.json() == existing.json()
-    waiting = accepted.json()["waiting"]
-    assert waiting["pending_command"] == {
-        "command_id": "http-command",
-        "actor": "operator-http",
-        "evidence": "inspected exact destination and request",
-        "state": "PENDING",
-        "determination": determination,
-    }
+    assert accepted.json()["state"] == RunState.WAITING_RECONCILIATION.value
+    with runtime.engine.connect() as connection:
+        command = dict(
+            connection.execute(
+                sa.select(reconcile_commands).where(
+                    reconcile_commands.c.command_id == body["command_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert (command["actor"], command["evidence"], command["state"]) == (
+        body["actor"],
+        body["evidence"],
+        "PENDING",
+    )
+    assert (command["found_effect_id"], command["found_result"]) == (
+        ("effect-http", b"result-http") if found else (None, None)
+    )
     encoded = str(accepted.json())
     assert "adapter" not in encoded
     assert "workflow_id" not in encoded
@@ -1638,10 +1793,6 @@ def test_http_reconciliation_preserves_empty_result_bytes_on_exact_retry(
 
     assert accepted.status_code == existing.status_code == 202
     assert accepted.json() == existing.json()
-    assert (
-        accepted.json()["waiting"]["pending_command"]["determination"]
-        == body["determination"]
-    )
     with runtime.engine.connect() as connection:
         command = dict(
             connection.execute(
@@ -1709,7 +1860,7 @@ def test_http_stale_reconciliation_persists_rejection_then_exact_retry_reports_i
 
 
 def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
-    runtime: DbosRuntime, tmp_path: Path
+    runtime: DbosRuntime,
 ) -> None:
     intent = _waiting_reconciliation(runtime)
     client = _client(runtime)
@@ -1742,20 +1893,20 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
 
     accepted = client.post(path, json=body)
     assert accepted.status_code == 202
-    revision_hash = RECONCILIATION_REVISION_HASH
-    request_hash = RECONCILIATION_REQUEST_HASH
-    result_hash = RECONCILIATION_APPLIED_RESULT_HASH
-    logical_key = RECONCILIATION_LOGICAL_KEY
+    result_hash = Sha256Hash.of(determination.result.payload).value
+    logical_key = intent.binding.logical_key.value
     expected_intent = {
         "logical_key": logical_key,
-        "run_id": "reconcile-run",
-        "canonical_request": RECONCILIATION_REQUEST,
-        "request_hash": request_hash,
-        "workflow_revision_hash": revision_hash,
-        "adapter_revision": "loopback-v1",
-        "destination_identity": "loopback-test",
-        "adapter_operational_identity": str((tmp_path / "external.sqlite").resolve()),
-        "operation_name": "open-pr",
+        "run_id": intent.binding.run_id.value,
+        "canonical_request": intent.request.payload,
+        "request_hash": intent.request.request_hash.value,
+        "workflow_revision_hash": intent.binding.workflow_revision_hash.value,
+        "adapter_revision": intent.binding.adapter_revision.value,
+        "destination_identity": intent.binding.destination.value,
+        "adapter_operational_identity": (
+            intent.binding.adapter_operational_identity.value
+        ),
+        "operation_name": intent.binding.operation_name.value,
         "state": "RECONCILING",
         "state_version": 2,
         "reconciliation_owner_command_id": "applied-command",
@@ -1837,14 +1988,16 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
         )
     assert dict(receipt_row) == {
         "logical_key": logical_key,
-        "run_id": "reconcile-run",
-        "canonical_request": RECONCILIATION_REQUEST,
-        "request_hash": request_hash,
-        "workflow_revision_hash": revision_hash,
-        "adapter_revision": "loopback-v1",
-        "destination_identity": "loopback-test",
-        "adapter_operational_identity": str((tmp_path / "external.sqlite").resolve()),
-        "operation_name": "open-pr",
+        "run_id": intent.binding.run_id.value,
+        "canonical_request": intent.request.payload,
+        "request_hash": intent.request.request_hash.value,
+        "workflow_revision_hash": intent.binding.workflow_revision_hash.value,
+        "adapter_revision": intent.binding.adapter_revision.value,
+        "destination_identity": intent.binding.destination.value,
+        "adapter_operational_identity": (
+            intent.binding.adapter_operational_identity.value
+        ),
+        "operation_name": intent.binding.operation_name.value,
         "effect_id": "effect-applied",
         "result": b"result-applied",
         "result_hash": result_hash,
@@ -1866,8 +2019,7 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
     retry = client.post(path, json=body)
 
     assert retry.status_code == 200
-    assert retry.json()["state"] == "STARTED"
-    assert retry.json()["waiting"] == {"type": "NONE"}
+    assert retry.json()["state"] == RunState.STARTED.value
 
 
 def test_reconciliation_retry_conflicts_are_typed_without_mutation(

@@ -2,8 +2,10 @@
 
 ADR 0007 decision 4 refuses a per-attribute column beside the document, so every
 field a listing shows is parsed from the stored bytes by the one document parser.
-These tests therefore publish real documents over the real HTTP boundary and read
-them back, rather than asserting against a projection built by hand.
+These tests therefore publish real documents and read them back, rather than
+asserting against a projection built by hand. A format-3 document goes through
+the real HTTP boundary; a format-1 one is seated in the store the way the store
+still holds the revisions it accepted before that door narrowed.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from atelier2.adapters.dbos.schema import workflow_revisions
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
@@ -30,6 +32,7 @@ from atelier2.ports.workflow_revisions import (
     QueryDurableStateCorrupt,
 )
 from tests.scenarios.api import api_limits, durable_api_client, durable_queries
+from tests.scenarios.runs import publish_revision
 from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import V3_DOCUMENT, V3_NODE_COUNT
 
@@ -78,7 +81,7 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
         configured.close()
 
 
-def _publish(client: TestClient, document: bytes) -> str:
+def _publish_over_the_api(client: TestClient, document: bytes) -> str:
     response = client.post(
         API_PREFIX + "/workflow-revisions",
         content=document,
@@ -86,6 +89,21 @@ def _publish(client: TestClient, document: bytes) -> str:
     )
     assert response.status_code in (200, 201), response.text
     return str(response.json()["workflow_revision_hash"])
+
+
+def _publish_into_the_store(runtime: DbosRuntime, document: bytes) -> str:
+    """Seat a revision the publication door no longer admits.
+
+    A store keeps every revision it ever accepted -- none is rewritten and none
+    is deleted -- so a format-1 revision published before the API narrowed to
+    format 3 is still there and still has to be listed. That door cannot produce
+    one any more, so this reaches the same use case the route calls and stops
+    short of the response the route can no longer project.
+    """
+
+    revision = WorkflowRevision(document)
+    publish_revision(runtime.engine, revision)
+    return revision.revision_hash.value
 
 
 def _listed(client: TestClient) -> dict[str, dict[str, object]]:
@@ -107,7 +125,7 @@ def test_the_default_listing_still_answers_the_shape_it_always_answered(
     """
 
     client = durable_api_client(runtime)
-    revision_hash = _publish(client, V3_DESCRIBED_DOCUMENT)
+    revision_hash = _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
 
     default = client.get(API_PREFIX + "/workflow-revisions")
 
@@ -122,7 +140,7 @@ def test_an_unknown_view_is_refused_rather_than_served_as_the_default(
     runtime: DbosRuntime,
 ) -> None:
     client = durable_api_client(runtime)
-    _publish(client, V3_DESCRIBED_DOCUMENT)
+    _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
 
     refused = client.get(API_PREFIX + "/workflow-revisions?view=descibed")
 
@@ -135,7 +153,7 @@ def test_a_published_revision_is_listed_with_the_name_its_author_wrote(
     runtime: DbosRuntime,
 ) -> None:
     client = durable_api_client(runtime)
-    revision_hash = _publish(client, V3_DESCRIBED_DOCUMENT)
+    revision_hash = _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
 
     listed = _listed(client)[revision_hash]
 
@@ -149,7 +167,7 @@ def test_a_format_that_declares_no_name_is_listed_as_unnamed(
     runtime: DbosRuntime,
 ) -> None:
     client = durable_api_client(runtime)
-    revision_hash = _publish(client, V1_DOCUMENT)
+    revision_hash = _publish_into_the_store(runtime, V1_DOCUMENT)
 
     listed = _listed(client)[revision_hash]
 
@@ -172,8 +190,8 @@ def test_the_description_is_read_from_the_published_bytes_and_from_nowhere_else(
     """
 
     client = durable_api_client(runtime)
-    described = _publish(client, V3_DESCRIBED_DOCUMENT)
-    undescribed = _publish(client, V3_DOCUMENT)
+    described = _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
+    undescribed = _publish_over_the_api(client, V3_DOCUMENT)
 
     listed = _listed(client)
     detail = client.get(API_PREFIX + f"/workflow-revisions/{described}").json()
@@ -201,9 +219,9 @@ def test_an_enriched_page_stops_at_its_derived_bound_and_pages_on(
     client = durable_api_client(runtime)
     published = sorted(
         {
-            _publish(client, V3_DESCRIBED_DOCUMENT),
-            _publish(client, V3_DOCUMENT),
-            _publish(client, V1_DOCUMENT),
+            _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT),
+            _publish_over_the_api(client, V3_DOCUMENT),
+            _publish_into_the_store(runtime, V1_DOCUMENT),
         }
     )
     queries = durable_queries(runtime.engine)
@@ -246,9 +264,9 @@ def test_each_bound_stops_a_page_on_its_own_and_pages_through_to_the_end(
     client = durable_api_client(runtime)
     published = sorted(
         {
-            _publish(client, V3_DESCRIBED_DOCUMENT),
-            _publish(client, V3_DOCUMENT),
-            _publish(client, V1_DOCUMENT),
+            _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT),
+            _publish_over_the_api(client, V3_DOCUMENT),
+            _publish_into_the_store(runtime, V1_DOCUMENT),
         }
     )
     queries = durable_queries(runtime.engine)
@@ -271,8 +289,9 @@ def test_a_generous_budget_lists_every_revision_and_ends_the_page(
     runtime: DbosRuntime,
 ) -> None:
     client = durable_api_client(runtime)
-    for document in (V3_DESCRIBED_DOCUMENT, V3_DOCUMENT, V1_DOCUMENT):
-        _publish(client, document)
+    _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
+    _publish_over_the_api(client, V3_DOCUMENT)
+    _publish_into_the_store(runtime, V1_DOCUMENT)
     queries = durable_queries(runtime.engine)
 
     page = queries.list_described_workflow_revisions(
@@ -292,8 +311,8 @@ def test_the_frozen_hash_only_listing_still_answers_beside_the_enriched_one(
     """The V1 page query keeps its own shape; the enriched page is a second read."""
 
     client = durable_api_client(runtime)
-    for document in (V1_DOCUMENT, V3_DESCRIBED_DOCUMENT):
-        _publish(client, document)
+    _publish_into_the_store(runtime, V1_DOCUMENT)
+    _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
     queries = durable_queries(runtime.engine)
 
     frozen = queries.list_workflow_revisions(None, 50)

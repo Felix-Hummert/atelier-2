@@ -1,8 +1,17 @@
+"""What a subscriber of one run's events is served over the real HTTP boundary.
+
+Every run this API serves is format 3, so the line these tests stream is one:
+two agent nodes and the person who approves what they made. The single V1
+fixture left in this file belongs to the receipt-index test at the bottom, which
+asks the durable store for a page directly and never reaches the wire.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,7 +25,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
@@ -25,12 +34,15 @@ from atelier2.adapters.dbos.run_store import (
     commit_wait_answered,
     load_wait_answer,
 )
-from atelier2.adapters.dbos.run_transitions import commit_waiting_input
+from atelier2.adapters.dbos.run_transitions import (
+    commit_reconciliation_required,
+    commit_waiting_input,
+)
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
 )
-from atelier2.adapters.dbos.schema import effect_intents
+from atelier2.adapters.dbos.schema import effect_intents, run_events
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -41,6 +53,7 @@ from atelier2.api.stream import (
     PreparedEventStream,
     stream_server_events,
 )
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -65,20 +78,20 @@ from atelier2.contracts.run_events import (
     RunEventPage,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 from atelier2.ports.run_queries import (
     RunFound,
 )
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
-    agent_attempt_execution,
     agent_scratch_root,
     commit_configured_agent,
-    process_exit,
+    dying,
 )
 from tests.scenarios.api import (
-    SSE_COMPLETE_HISTORY,
-    SSE_CURSOR_AFTER_THREE,
-    SSE_PUBLIC_RUN_REFERENCE,
     api_limits,
     durable_ports,
     durable_queries,
@@ -88,11 +101,54 @@ from tests.scenarios.api import (
 from tests.scenarios.runs import (
     prepare_and_launch_graph_action,
     start_published_v1_run,
+    start_published_v3_run,
     submit_reconcile_command,
+    submit_wait_answer,
 )
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
-DOCUMENT = b"""format_version: 1
+PROVIDER_OUTPUT = b'"the exact provider bytes"'
+DYING_PROVIDER_SAID = b"the provider process said this"
+APPROVAL = b'"approved"'
+STREAMED_RUN = RunId("v3/sse")
+STREAMED_DOCUMENT = (
+    b"""format_version: 3
+name: Two agents, then a person
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+"""
+    + declared_output()
+    + b"""  - id: review
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Check what the node before you did.
+    depends_on: [implement]
+"""
+    + declared_output()
+    + b"""  - id: approve
+    type: wait
+    prompt: Approve this candidate, or name the blocking defect.
+    depends_on: [review]
+"""
+    + declared_output(ANY_JSON_SCHEMA, "approval")
+)
+STREAMED_HISTORY = (
+    ("implement", "AGENT_COMPLETED"),
+    ("review", "AGENT_COMPLETED"),
+    ("approve", "WAITING_INPUT"),
+    ("approve", "WAIT_ANSWERED"),
+)
+"""Every event the streamed line persists, in the order it persists them."""
+
+EVENTS_BEFORE_THE_ANSWER = STREAMED_HISTORY.index(("approve", "WAIT_ANSWERED"))
+"""How far the line gets on its own, before a person answers its Wait."""
+
+RECONCILED_ACTION_DOCUMENT = b"""format_version: 1
 start: agent
 nodes:
   - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
@@ -100,27 +156,135 @@ nodes:
   - {id: action, type: action, next: wait}
   - {id: agent, type: agent, job: test, output: request, next: action}
 """
+"""The one history here carrying effect receipts, for the durable read below.
+
+Its run never reaches the wire, which projects format 3 only: the receipt-index
+test asks the durable store for a page directly. A V3 Action node needs a
+published adapter operation and an adapter that performs it, which is a fixture
+about effects rather than about the query plan being proven.
+"""
 
 
-def _runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    runtime = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "sse-tests"),
+def _agent_runtime(
+    tmp_path: Path, application_version: str, factory: RecordingAgentExecutorFactoryV2
+) -> DbosRuntime:
+    """A runtime holding the executor a V3 line's agent nodes are bound to."""
+
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            application_version,
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        ExactOutputAgentExecutorFactory(),
+        (factory,),
     )
     runtime.initialize_storage()
+    return runtime
+
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    started = _agent_runtime(
+        tmp_path,
+        "sse-tests",
+        RecordingAgentExecutorFactoryV2(
+            "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
+        ),
+    )
     try:
-        yield runtime
+        yield started
     finally:
-        runtime.close()
+        started.close()
 
 
-def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
+def _persisted_events(runtime: DbosRuntime, run_id: RunId) -> int:
+    with runtime.engine.connect() as connection:
+        return int(
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(run_events)
+                .where(run_events.c.run_id == run_id.value)
+            )
+            or 0
+        )
+
+
+def _await_events(runtime: DbosRuntime, run_id: RunId, expected: int) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if _persisted_events(runtime, run_id) >= expected:
+            return
+        time.sleep(0.025)
+    raise AssertionError(
+        f"{run_id.value} persisted {_persisted_events(runtime, run_id)} events, "
+        f"expected {expected}"
+    )
+
+
+def _publish_schema(runtime: DbosRuntime) -> None:
+    published = DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
+
+
+def _streamed_history(runtime: DbosRuntime) -> None:
+    """Drive the streamed line until every event of `STREAMED_HISTORY` is durable.
+
+    Nothing writes an event by hand: the runtime runs both agent nodes, stops on
+    the Wait, and the answer a person submits is what ends the run.
+    """
+
+    _publish_schema(runtime)
+    revision = WorkflowRevision(STREAMED_DOCUMENT)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        STREAMED_RUN,
+        revision,
+        runtime.agent_executor_registry,
+    )
+    runtime.launch()
+    _await_events(runtime, STREAMED_RUN, EVENTS_BEFORE_THE_ANSWER)
+    submit_wait_answer(
+        runtime.engine,
+        runtime.settings.application_version,
+        SubmitWaitAnswerRequest(
+            STREAMED_RUN,
+            revision.revision_hash,
+            "approve",
+            NodeExecutionId.for_node(STREAMED_RUN, revision.revision_hash, "approve"),
+            WaitAnswerActor.OPERATOR,
+            APPROVAL,
+        ),
+    )
+    _await_events(runtime, STREAMED_RUN, len(STREAMED_HISTORY))
+
+
+def _failed_first_node(runtime: DbosRuntime, run_id: RunId) -> None:
+    """Run the streamed line until its first agent node has failed durably."""
+
+    _publish_schema(runtime)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        run_id,
+        WorkflowRevision(STREAMED_DOCUMENT),
+        runtime.agent_executor_registry,
+    )
+    runtime.launch()
+    _await_events(runtime, run_id, 1)
+
+
+def _receipt_history(runtime: DbosRuntime) -> RunId:
     run_id = RunId("sse/run")
-    revision = WorkflowRevision(DOCUMENT)
+    revision = WorkflowRevision(RECONCILED_ACTION_DOCUMENT)
     start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
@@ -138,10 +302,6 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
                 state_version=1,
             )
         )
-        from atelier2.adapters.dbos.run_transitions import (
-            commit_reconciliation_required,
-        )
-
         commit_reconciliation_required(
             connection,
             run_id,
@@ -194,7 +354,7 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
         commit_subworkflow_completed(
             connection, run_id, revision.revision_hash, "final", 5
         )
-    return run_id, revision
+    return run_id
 
 
 def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
@@ -224,47 +384,47 @@ def _parse_events(body: str) -> list[dict[str, object]]:
     return parsed
 
 
+def _field(streamed: dict[str, object], name: str) -> object:
+    return cast(dict[str, object], streamed["data"])[name]
+
+
+def _history_of(events: list[dict[str, object]]) -> tuple[tuple[object, object], ...]:
+    return tuple(
+        (_field(streamed, "node_id"), _field(streamed, "event")) for streamed in events
+    )
+
+
+def _streamed_path() -> str:
+    reference = encode_public_run_reference(STREAMED_RUN)
+    return f"/atelier/api/v1/runs/{reference}/events"
+
+
 def test_agent_failed_stream_is_bounded_and_secret_free(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    from tests.integration.test_agent_attempts import attempt_request
-
     canary = "private-agent-secret-41b8e0"
     factory = RecordingAgentExecutorFactoryV2(
-        "anthropic", "claude-cli/v1", "controlled-process", b"unused"
+        "exact",
+        "exact/v1",
+        "controlled-process",
+        b"unused",
+        command=dying(1, DYING_PROVIDER_SAID),
     )
     factory.__dict__["private_material"] = canary
-    runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "failed-sse",
-            agent_scratch_root=agent_scratch_root(tmp_path),
-        ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("failed-sse"),
-        ),
-        ExactOutputAgentExecutorFactory(),
-        (factory,),
-    )
-    runtime.initialize_storage()
+    runtime = _agent_runtime(tmp_path, "failed-sse", factory)
     try:
         caplog.set_level(logging.DEBUG)
-        request = attempt_request(runtime, "attempt/failed-sse")
-        store = DbosAgentAttemptStore(runtime.engine)
-        store.prepare(agent_attempt_execution(request))
-        store.claim(agent_attempt_execution(request))
-        store.complete_known_failure(agent_attempt_execution(request), process_exit())
+        run_id = RunId("v3/failed-sse")
+        _failed_first_node(runtime, run_id)
         queries = durable_queries(runtime.engine)
 
-        found = queries.get_run(request.run_id)
+        found = queries.get_run(run_id)
         assert isinstance(found, RunFound)
 
         async def first_event() -> ServerSentEvent:
             stream = aiter(
                 stream_server_events(
-                    PreparedEventStream(request.run_id, 0, 1, True, found.projection),
+                    PreparedEventStream(run_id, 0, 1, True, found.projection),
                     stream_page_reader(queries),
                     BoundedQueryRunner(1, admission_timeout_seconds=1),
                     page_size=PageLimit(1),
@@ -279,7 +439,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         stream_json = streamed.model_dump_json()
         run_json = (
             _client(runtime)
-            .get("/atelier/api/v1/runs/" + encode_public_run_reference(request.run_id))
+            .get("/atelier/api/v1/runs/" + encode_public_run_reference(run_id))
             .text
         )
         with runtime.engine.connect() as connection:
@@ -291,8 +451,9 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
                 for table in sa.inspect(connection).get_table_names()
             }
 
+        failure_code = AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value
         assert '"event":"AGENT_FAILED"' in stream_json
-        assert '"failure_code":"PROCESS_EXITED_UNSUCCESSFULLY"' in stream_json
+        assert f'"failure_code":"{failure_code}"' in stream_json
         assert all(
             canary not in channel
             for channel in (
@@ -309,106 +470,108 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         runtime.close()
 
 
-def test_sse_emits_all_seven_persisted_events_and_resumes_after_cursor(
-    tmp_path: Path,
+def test_sse_emits_every_persisted_event_and_resumes_after_its_cursor(
+    runtime: DbosRuntime,
 ) -> None:
-    for runtime in _runtime(tmp_path):
-        _run_id, _revision = _complete_history(runtime)
-        client = _client(runtime)
-        path = f"/atelier/api/v1/runs/{SSE_PUBLIC_RUN_REFERENCE}/events"
+    _streamed_history(runtime)
+    client = _client(runtime)
+    path = _streamed_path()
 
-        first = _parse_events(client.get(path).text)
-        resumed = _parse_events(
-            client.get(path, headers={"last-event-id": SSE_CURSOR_AFTER_THREE}).text
-        )
-        second_reader = _parse_events(client.get(path).text)
+    first = _parse_events(client.get(path).text)
+    acknowledged = first[EVENTS_BEFORE_THE_ANSWER - 1]
+    resumed = _parse_events(
+        client.get(path, headers={"last-event-id": str(acknowledged["id"])}).text
+    )
+    second_reader = _parse_events(client.get(path).text)
 
-        assert first == SSE_COMPLETE_HISTORY
-        assert resumed == SSE_COMPLETE_HISTORY[3:]
-        assert second_reader == SSE_COMPLETE_HISTORY
+    assert _history_of(first) == STREAMED_HISTORY
+    assert [streamed["id"] for streamed in first] == [
+        _field(streamed, "cursor") for streamed in first
+    ]
+    assert {_field(streamed, "workflow_format_version") for streamed in first} == {3}
+    unacknowledged = first[EVENTS_BEFORE_THE_ANSWER:]
+    # A resume is compared by event identity rather than whole frame: the node
+    # rail a frame carries is folded from the events its own response streamed,
+    # so a resume legitimately says less about the nodes it did not repeat.
+    assert [streamed["id"] for streamed in resumed] == [
+        streamed["id"] for streamed in unacknowledged
+    ]
+    assert [_field(streamed, "event_hash") for streamed in resumed] == [
+        _field(streamed, "event_hash") for streamed in unacknowledged
+    ]
+    assert second_reader == first
 
 
 def test_two_concurrent_readers_receive_the_same_durable_order(
-    tmp_path: Path,
+    runtime: DbosRuntime,
 ) -> None:
-    for runtime in _runtime(tmp_path):
-        _run_id, _revision = _complete_history(runtime)
-        path = f"/atelier/api/v1/runs/{SSE_PUBLIC_RUN_REFERENCE}/events"
-        barrier = Barrier(2)
+    _streamed_history(runtime)
+    path = _streamed_path()
+    barrier = Barrier(2)
 
-        def read(
-            _: int,
-            rendezvous: Barrier = barrier,
-            configured_runtime: DbosRuntime = runtime,
-            request_path: str = path,
-        ) -> list[dict[str, object]]:
-            rendezvous.wait(timeout=5)
-            return _parse_events(_client(configured_runtime).get(request_path).text)
+    def read(
+        _: int,
+        rendezvous: Barrier = barrier,
+        configured_runtime: DbosRuntime = runtime,
+        request_path: str = path,
+    ) -> list[dict[str, object]]:
+        rendezvous.wait(timeout=5)
+        return _parse_events(_client(configured_runtime).get(request_path).text)
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            histories = list(pool.map(read, range(2)))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        histories = list(pool.map(read, range(2)))
 
-        assert histories[0] == histories[1]
-        assert [
-            cast(dict[str, object], event["data"]).get("sequence")
-            for event in histories[0]
-        ] == list(range(1, 8))
+    assert histories[0] == histories[1]
+    assert [_field(streamed, "sequence") for streamed in histories[0]] == list(
+        range(1, len(STREAMED_HISTORY) + 1)
+    )
 
 
 def test_receipt_result_limit_stays_in_each_indexed_snapshot_query(
-    tmp_path: Path,
+    runtime: DbosRuntime,
 ) -> None:
-    for runtime in _runtime(tmp_path):
-        run_id, _revision = _complete_history(runtime)
-        receipt_selects: list[tuple[str, tuple[Any, ...]]] = []
-        connection_ids: set[int] = set()
-        transaction_states: list[bool] = []
+    run_id = _receipt_history(runtime)
+    receipt_selects: list[tuple[str, tuple[Any, ...]]] = []
+    connection_ids: set[int] = set()
+    transaction_states: list[bool] = []
 
-        def capture_receipt_select(
-            connection: Any,
-            _cursor: Any,
-            statement: str,
-            parameters: tuple[Any, ...],
-            _context: Any,
-            _executemany: bool,
-            captured_receipt_selects: list[tuple[str, tuple[Any, ...]]] = (
-                receipt_selects
-            ),
-            captured_connection_ids: set[int] = connection_ids,
-            captured_transaction_states: list[bool] = transaction_states,
-        ) -> None:
-            if "FROM effect_receipts" not in statement:
-                return
-            captured_receipt_selects.append((statement, parameters))
-            raw = connection.connection.driver_connection
-            captured_connection_ids.add(id(raw))
-            captured_transaction_states.append(bool(raw.in_transaction))
+    def capture_receipt_select(
+        connection: Any,
+        _cursor: Any,
+        statement: str,
+        parameters: tuple[Any, ...],
+        _context: Any,
+        _executemany: bool,
+        captured_receipt_selects: list[tuple[str, tuple[Any, ...]]] = (receipt_selects),
+        captured_connection_ids: set[int] = connection_ids,
+        captured_transaction_states: list[bool] = transaction_states,
+    ) -> None:
+        if "FROM effect_receipts" not in statement:
+            return
+        captured_receipt_selects.append((statement, parameters))
+        raw = connection.connection.driver_connection
+        captured_connection_ids.add(id(raw))
+        captured_transaction_states.append(bool(raw.in_transaction))
 
-        event.listen(runtime.engine, "before_cursor_execute", capture_receipt_select)
-        try:
-            page = durable_queries(runtime.engine).read_run_event_page(run_id, 2, 2)
-        finally:
-            event.remove(
-                runtime.engine, "before_cursor_execute", capture_receipt_select
-            )
+    event.listen(runtime.engine, "before_cursor_execute", capture_receipt_select)
+    try:
+        page = durable_queries(runtime.engine).read_run_event_page(run_id, 2, 2)
+    finally:
+        event.remove(runtime.engine, "before_cursor_execute", capture_receipt_select)
 
-        assert isinstance(page, RunEventPage)
-        assert len(receipt_selects) == 2
-        assert connection_ids and len(connection_ids) == 1
-        assert transaction_states == [True, True]
-        for statement, parameters in receipt_selects:
-            assert "THEN effect_receipts.result END AS result" in statement
-            assert (
-                "length(effect_receipts.result) AS _atelier_length_result" in statement
-            )
-            with runtime.engine.connect() as connection:
-                plan = tuple(
-                    str(record[-1]).upper()
-                    for record in connection.exec_driver_sql(
-                        "EXPLAIN QUERY PLAN " + statement, parameters
-                    )
+    assert isinstance(page, RunEventPage)
+    assert len(receipt_selects) == 2
+    assert connection_ids and len(connection_ids) == 1
+    assert transaction_states == [True, True]
+    for statement, parameters in receipt_selects:
+        assert "THEN effect_receipts.result END AS result" in statement
+        assert "length(effect_receipts.result) AS _atelier_length_result" in statement
+        with runtime.engine.connect() as connection:
+            plan = tuple(
+                str(record[-1]).upper()
+                for record in connection.exec_driver_sql(
+                    "EXPLAIN QUERY PLAN " + statement, parameters
                 )
-            assert any(
-                "SEARCH EFFECT_RECEIPTS USING INDEX" in detail for detail in plan
             )
-            assert all("SCAN" not in detail for detail in plan)
+        assert any("SEARCH EFFECT_RECEIPTS USING INDEX" in detail for detail in plan)
+        assert all("SCAN" not in detail for detail in plan)

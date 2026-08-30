@@ -13,6 +13,7 @@ from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.advancer import prepare_graph_action as _prepare
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import EFFECT_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -43,9 +44,19 @@ from atelier2.application.reconcile_effect import (
     reconcile_effect_result,
 )
 from atelier2.application.start_published_run import (
+    AuthoredAgentBinding,
     RunCreated,
     RunExisting,
     start_published_run,
+)
+from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
+    AgentExecutorRevision,
+    AuthMode,
+    AuthProfileRevision,
+    ProviderId,
 )
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
@@ -57,11 +68,25 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionExisting,
+    AuthProfileRevisionCreated,
+    AuthProfileRevisionExisting,
+)
 from atelier2.ports.agent_executions import AgentExecutorRegistry
+from tests.scenarios.agents import publish_checked_model_registry
 from tests.scenarios.api import permissive_projection_limit
 
 NO_AGENT_EXECUTORS = AgentExecutorRegistry()
-"""What a V1 run binds: no executor at all, said rather than defaulted into."""
+"""What an unbound run binds: no executor at all, said rather than defaulted into."""
+
+V3_PROVIDER = ProviderId("exact")
+"""The provider every V3 scenario binds, matching `failing_agent_executor_factory`."""
+
+V3_EXECUTOR_REVISION = AgentExecutorRevision("exact/v1")
+V3_MODEL = "opus"
+V3_PROFILE_ID = "max"
 
 
 def publish_revision(engine: Engine, revision: WorkflowRevision) -> None:
@@ -92,6 +117,73 @@ def start_published_v1_run(
             settings,
             agent_executor_registry,
         ),
+    )
+    assert isinstance(result, (RunCreated, RunExisting)), result
+    return result.run
+
+
+def publish_v3_agent_bindings(
+    engine: Engine,
+    agent_executor_registry: AgentExecutorRegistry,
+    roles: tuple[str, ...] = ("builder",),
+) -> tuple[AuthoredAgentBinding, ...]:
+    """Everything a V3 start needs before it can name a role, published once.
+
+    A format-3 run resolves each declared role to an agent configuration, which
+    resolves to an auth profile and to an executor the registry holds, and the
+    model must be registered as checked before a start will bind it. Every
+    scenario that drives a V3 run needs that same four-step publication, so it
+    lives here rather than being reinvented per file.
+    """
+
+    catalog = DbosAgentConfigurationCatalog(engine, agent_executor_registry)
+    auth = AuthProfileRevision(V3_PROFILE_ID, 1, V3_PROVIDER, AuthMode.SUBSCRIPTION)
+    published_auth = catalog.publish_auth_profile_revision(auth)
+    assert isinstance(
+        published_auth, (AuthProfileRevisionCreated, AuthProfileRevisionExisting)
+    ), published_auth
+    configuration = AgentConfigurationRevision(
+        V3_MODEL,
+        auth.revision_hash,
+        V3_EXECUTOR_REVISION,
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    published_configuration = catalog.publish_agent_configuration_revision(
+        configuration
+    )
+    assert isinstance(
+        published_configuration,
+        (AgentConfigurationRevisionCreated, AgentConfigurationRevisionExisting),
+    ), published_configuration
+    publish_checked_model_registry(engine, V3_PROVIDER, (configuration,))
+    return tuple(
+        AuthoredAgentBinding(role, configuration.revision_hash.value) for role in roles
+    )
+
+
+def start_published_v3_run(
+    engine: Engine,
+    settings: DbosRuntimeSettings,
+    run_id: RunId,
+    revision: WorkflowRevision,
+    agent_executor_registry: AgentExecutorRegistry,
+    roles: tuple[str, ...] = ("builder",),
+) -> AnyRun:
+    """Publish a format-3 document with its bindings and start its run.
+
+    The V3 twin of `start_published_v1_run`, through the same use case the API
+    calls. `roles` names every role the document declares; the caller says which
+    they are because only the document knows.
+    """
+
+    bindings = publish_v3_agent_bindings(engine, agent_executor_registry, roles)
+    publish_revision(engine, revision)
+    result = start_published_run(
+        run_id,
+        revision.revision_hash,
+        bindings,
+        DbosDurableRunStarter(engine, settings, agent_executor_registry),
     )
     assert isinstance(result, (RunCreated, RunExisting)), result
     return result.run
