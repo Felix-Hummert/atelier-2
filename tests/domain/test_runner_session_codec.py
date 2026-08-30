@@ -16,6 +16,8 @@ from atelier2.contracts.hashing import frame as hashing_frame
 from atelier2.contracts.runner_session_codec import (
     MAXIMUM_RUNNER_SESSION_BODY_BYTES,
     MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES,
+    RUNNER_SESSION_BODY_LENGTH_PREFIX_BYTES,
+    TERMINAL_RECORD_ENVELOPE_BYTES,
     RunnerSessionCodecError,
     decode_runner_session_frame,
     encode_runner_session_frame,
@@ -26,10 +28,14 @@ from atelier2.contracts.runner_sessions import (
     RunnerSessionFrame,
     RunnerSessionMessage,
 )
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
+)
 
 
 def _frame(
     message: RunnerSessionMessage = RunnerSessionMessage.INVOCATION_OFFER,
+    payload: tuple[bytes, ...] = (),
 ) -> RunnerSessionFrame:
     return RunnerSessionFrame(
         message=message,
@@ -41,8 +47,58 @@ def _frame(
             RunnerManifestId("c" * 64),
         ),
         invocation_id=RunnerInvocationId("B" * 43),
-        payload=(),
+        payload=payload,
     )
+
+
+def _terminal_record_frame(record: bytes) -> bytes:
+    return encode_runner_session_frame(
+        _frame(RunnerSessionMessage.TERMINAL_RECORD, (record,))
+    )
+
+
+def test_a_terminal_record_body_spends_one_fixed_width_on_its_envelope() -> None:
+    """`RunnerSessionFrame` pins every identity it carries, so what a
+    TERMINAL_RECORD costs beside its record is one number and not a range."""
+    carrying_nothing = _terminal_record_frame(b"")
+
+    envelope = len(carrying_nothing) - RUNNER_SESSION_BODY_LENGTH_PREFIX_BYTES
+
+    assert envelope == TERMINAL_RECORD_ENVELOPE_BYTES
+
+
+def test_a_session_body_carries_the_largest_record_the_journal_may_hold() -> None:
+    """The record bound and the session bound answer one question between them:
+    a record the journal admits must reach Core. The largest such record fills
+    a TERMINAL_RECORD body exactly -- an envelope that grew, or a record bound
+    raised without its transport, breaks this rather than the rarest run."""
+    largest = _terminal_record_frame(
+        b"x" * MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES
+    )
+
+    assert len(largest) - RUNNER_SESSION_BODY_LENGTH_PREFIX_BYTES == (
+        MAXIMUM_RUNNER_SESSION_BODY_BYTES
+    )
+    assert len(largest) == MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES
+
+
+@pytest.mark.proves("what-may-be-stored-can-be-delivered")
+def test_a_record_past_the_journal_bound_is_refused_at_the_frame_not_on_the_wire() -> (
+    None
+):
+    """One byte past what the journal may hold, and the session will not frame
+    it: `runner-session-oversized`, before any of it reaches the wire.
+
+    This is the encoder `RunnerSession._deliver` hands its record to, with the
+    message and payload arity a real delivery uses, so the refusal asserted
+    here is the one a live session raises. It cannot be driven through a real
+    Runner: no journal admits a record this wide, which is exactly what the
+    derived bound buys.
+    """
+    unframeable = b"x" * (MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES + 1)
+
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-oversized"):
+        _terminal_record_frame(unframeable)
 
 
 def test_session_frame_round_trips_as_one_canonical_wire_record() -> None:

@@ -32,7 +32,18 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.hashing import frame
 
 MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES = 1_106_413
-"""Largest canonical V2 envelope or ACK tombstone in exact encoded bytes."""
+"""Largest canonical V2 envelope or ACK tombstone in exact encoded bytes.
+
+A provider failure carrying the longer admitted failure code, a full standard
+error and a full transcript document, under generation and invocation ids of
+`MAXIMUM_AGENT_FIELD_CHARACTERS` -- *characters*, so 4,096 bytes each in UTF-8,
+which is where 8,106 of these bytes go and why the number reads larger than any
+record a session can carry (a session frame pins those ids to 43 base64url
+characters). Derived, not asserted, by
+`test_largest_admissible_v2_record_equals_its_codec_bound_and_fits_journal`;
+`contracts/runner_session_codec.py` sizes session transport from it, so raising
+it raises transport too.
+"""
 
 _DOMAIN = "runner-terminal-evidence-exchange/v2"
 _FRAME_HEADER = frame(_DOMAIN)
