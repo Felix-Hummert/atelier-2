@@ -22,9 +22,10 @@ jobs:
   frontend:
     name: "Cockpit: types, lint, tests, e2e"
     runs-on: ubuntu-latest
-    # ~3min üblich, gemessen 18.08. (10 grüne main-Runs; mean 157s, max 255s)
-    # vor #742's zweitem (reversed) e2e-Durchlauf; Budget verdoppelt, bis ein
-    # neuer main-Mittelwert mit beiden Durchläufen gemessen ist.
+    # ~9min üblich, gemessen 30.08. (12 grüne main-Runs; mean 514s, max 559s)
+    # inklusive #742's zweitem (reversed) e2e-Durchlauf; der damals
+    # ausstehende Mittelwert ist damit gemessen und bestätigt das verdoppelte
+    # Budget: max ist 58% der Wand, sie bleibt bei 16min.
     timeout-minutes: 16
     defaults:
       run:
@@ -163,7 +164,7 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
-    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 7s, max 11s)
+    # ~25s üblich, gemessen 30.08. (12 grüne main-Runs; mean 23s, max 26s)
     timeout-minutes: 3
     steps:
       - name: Check out the event commit with full history
@@ -187,8 +188,11 @@ jobs:
   quality:
     name: "Python: architecture, lint, types, tests"
     runs-on: ubuntu-24.04
-    # ~4min üblich, gemessen 18.08. (10 grüne main-Runs; mean 180s, max 229s)
-    timeout-minutes: 10
+    # ~9min üblich, gemessen 30.08. (12 grüne main-Runs; mean 538s, max 567s)
+    # vorher 18.08. mean 180s; die Suite ist seither auf das Dreifache
+    # gewachsen und lief in PR #915 in die 10min-Wand, nachdem pytest bereits
+    # grün war. Budget auf 20min, damit eine Verdopplung wieder hineinpasst.
+    timeout-minutes: 20
     steps:
       - name: Check out the event commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -280,7 +284,7 @@ jobs:
     name: Crash recovery
     needs: quality
     runs-on: ubuntu-latest
-    # ~2min üblich, gemessen 18.08. (10 grüne main-Runs; mean 84s, max 91s)
+    # ~2,5min üblich, gemessen 30.08. (12 grüne main-Runs; mean 146s, max 150s)
     timeout-minutes: 5
     steps:
       - name: Check out the event commit
@@ -349,7 +353,7 @@ jobs:
     needs: [frontend, quality, crash-recovery]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 16s, max 39s)
+    # ~15s üblich, gemessen 30.08. (12 grüne main-Runs; mean 14s, max 19s)
     timeout-minutes: 3
     steps:
       - name: Check out the event commit
@@ -416,7 +420,7 @@ jobs:
     needs: quality
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 3s, max 5s)
+    # ~5s üblich, gemessen 30.08. (12 grüne main-Runs; mean 2s, max 4s)
     timeout-minutes: 3
     steps:
       - name: Hold the required check name
@@ -427,7 +431,7 @@ jobs:
     needs: frontend
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 3s, max 4s)
+    # ~5s üblich, gemessen 30.08. (12 grüne main-Runs; mean 3s, max 4s)
     timeout-minutes: 3
     steps:
       - name: Hold the required check name

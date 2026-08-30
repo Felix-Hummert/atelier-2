@@ -19,7 +19,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import { nodeIsLiveWork } from "../lib/liveWatch";
   import type { NodeState } from "../lib/runProjection";
   import { layerWorkflowGraph } from "../lib/workflowGraph";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -337,7 +336,7 @@
                 data-layer={slot.index}
                 data-state={state}
                 data-reused={reused ? "true" : undefined}
-                data-live={nodeIsLiveWork(state) ? "true" : undefined}
+                data-live={state === "working" ? "true" : undefined}
                 aria-label={reused
                   ? `${nodeLabel(preview.id, state)} ${workflowGraphCopy.carriedOver}`
                   : nodeLabel(preview.id, state)}

@@ -11,12 +11,14 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import {
   describeWorkbenchControlFacts,
   questionForWorkbenchControlFacts,
-  workbenchInteractiveSelector,
   workbenchQuestionAttribute,
   workbenchQuestions,
-  workbenchStageSelector,
   type WorkbenchControlFacts
 } from "../../src/lib/workbenchQuestions";
+import {
+  workbenchInteractiveSelector,
+  workbenchStageSelector
+} from "../support/workbenchControls";
 import {
   unnamedAxeViolations,
   type AxeBaselineEntry,

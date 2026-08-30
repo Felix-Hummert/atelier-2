@@ -34,8 +34,6 @@ export const catalogPageCopy = {
   workflowsIncomplete: "Workflows incomplete",
 
   agentsUnavailable: "Agents unavailable",
-  agentsIncomplete: "Agents incomplete",
-
   skillsNone: "A plugin folder brings skills.",
 
   provenanceManual: "Manual import",
@@ -63,15 +61,13 @@ export const catalogPageCopy = {
   kind: "Kind",
   kindWorkflow: "Workflow",
   kindAgent: "Agent",
-  kindSkill: "Skill",
   addToCatalog: "Add to catalog",
   addingToCatalog: "Adding…",
   noKindDeclared: "no kind declared yet",
   importFailed: "This file could not be imported.",
   recognitionFailed: "This file could not be recognized.",
   notAWorkflow: "This is not a workflow — nothing was added.",
-  notAnAgent: "This is not an agent — nothing was added.",
-  fileUnreadable: "That file could not be read."
+  notAnAgent: "This is not an agent — nothing was added."
 } as const;
 
 /**
@@ -120,7 +116,6 @@ export const workflowStartCopy = {
   configurationFor: (role: string) => `Configuration for ${role}`,
   preparing: "Preparing…",
   sheetUnavailable: "The start sheet could not be prepared.",
-  noConfiguration: "No executable configuration is available.",
   workItem: "Work item",
   noSource: "No source",
   connectSource: "Connect one in Settings",
@@ -132,13 +127,6 @@ export const workflowStartCopy = {
   pinnedInWorkflow: "pinned in workflow",
   nextHigher: "next higher",
   unavailable: "Unavailable",
-  missingRoleResolution: "Model resolution did not name this role.",
-  overrideNotRegistered: "The chosen configuration is not registered.",
-  workflowModelNotRegistered: "The model pinned in the workflow is not registered.",
-  workflowModelAmbiguous: "The model pinned in the workflow names more than one configuration.",
-  noProjectDefault: "No project default answers this difficulty or a higher one.",
-  familyDifferenceUnavailable: "No registered configuration satisfies the workflow's family rule.",
-  familyDifferenceFrom: "No registered configuration differs in family from",
   trueLabel: "True",
   falseLabel: "False",
   startRun: "Start run",

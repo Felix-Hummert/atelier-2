@@ -747,7 +747,6 @@ test("proves(settings-source-doors-follow-the-blessed-picture): Settings connect
     await expect(row).toContainText(settingsPageCopy.connectionTimeNotRecorded);
     await expect(row).not.toContainText("personal-access-token");
     await expect(row).not.toContainText("@");
-    await expect(page.getByText(settingsPageCopy.sourceAuthMethod)).toHaveCount(0);
     await page.screenshot({
       path: `test-results/settings-${viewport.width}-source-doors-row.png`,
       fullPage: true
