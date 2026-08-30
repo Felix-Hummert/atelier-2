@@ -46,36 +46,6 @@ export function groupSavedWorkflows(
   });
 }
 
-export function namesWithSeveralRevisions(
-  revisions: readonly WorkflowRevisionSummary[]
-): string[] {
-  const counts = new Map<string, number>();
-  for (const revision of revisions) {
-    if (revision.name === null) continue;
-    counts.set(revision.name, (counts.get(revision.name) ?? 0) + 1);
-  }
-  return [...counts.entries()].filter(([, count]) => count > 1).map(([name]) => name);
-}
-
-export function selectedRevisionOf(
-  row: SavedWorkflowRow,
-  selectedHash?: string
-): WorkflowRevisionSummary {
-  const fallback = row.revisions[0];
-  if (fallback === undefined) {
-    throw new Error("a saved-workflow row must carry at least one revision");
-  }
-  if (selectedHash === undefined) return fallback;
-  return row.revisions.find((item) => item.workflow_revision_hash === selectedHash) ?? fallback;
-}
-
-export function revisionChoiceLabel(
-  revision: WorkflowRevisionSummary,
-  newestHash: string
-): string {
-  return revision.workflow_revision_hash === newestHash ? "Latest" : "Earlier";
-}
-
 /** The roles authored by an executable workflow document, once each. */
 export function agentRolesOf(graph: WorkflowRevisionDetail["graph"]): string[] {
   if (graph.workflow_format_version === 3) return [...new Set(graph.agent_roles)];

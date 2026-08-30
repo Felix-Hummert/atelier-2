@@ -26,7 +26,7 @@
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
     createRunId as makeRunId,
-    startMutationV3,
+    startMutation,
     type MutationJournal
   } from "../lib/mutationJournal";
   import {
@@ -591,7 +591,7 @@
         role,
         agent_configuration_revision_hash: refreshed[role]!.agent_configuration_revision_hash!
       }));
-      const mutation = startMutationV3(
+      const mutation = startMutation(
         createRunId(),
         revision.workflow_revision_hash,
         modelOverrides(),
