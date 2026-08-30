@@ -1,6 +1,11 @@
+import { retryLabel } from "./readStateCopy";
+import { workbenchPageCopy } from "./workbenchPageCopy";
+
 /**
- * The named user question each interactive Workbench control answers
- * (REQ-UIQ-01). This is the Workbench map only — not a workshop-wide registry.
+ * Inventory of interactive Workbench controls: each rendered control has an
+ * entry, and each entry is shaped as a question. This is the Workbench map
+ * only — not a workshop-wide registry, and not a judgement that the question
+ * is the right one.
  */
 export const workbenchQuestions = {
   emptyStart: {
@@ -13,8 +18,7 @@ export const workbenchQuestions = {
   },
   reloadWorkbenchRuns: {
     id: "reload-workbench-runs",
-    question: "Can I read the workbench runs again?",
-    readLabel: "workbench runs"
+    question: "Can I read the workbench runs again?"
   },
   retryProjection: {
     id: "retry-projection",
@@ -27,17 +31,6 @@ export const workbenchQuestions = {
   answerDecision: {
     id: "answer-decision",
     question: "Can I answer, or send again, a decision that waits on me?"
-  },
-  /**
-   * Not a Workbench control of its own: `When.svelte` reuses this hint label
-   * wherever it renders a relative time, on the run page as much as here. It
-   * stays on this map because that is the one place a relative-time label is
-   * named.
-   */
-  lastLandingTime: {
-    id: "last-landing-time",
-    question: "When exactly did this happen?",
-    hintLabel: "Exact time"
   }
 } as const;
 
@@ -81,13 +74,9 @@ export function questionForWorkbenchControlFacts(
   if (facts.tag === "a" && facts.href !== null && facts.href.startsWith("/atelier/runs/")) {
     return workbenchQuestions.openRun;
   }
-  if (facts.tag === "button" && facts.ariaLabel === workbenchQuestions.lastLandingTime.hintLabel) {
-    return workbenchQuestions.lastLandingTime;
-  }
   if (
     facts.tag === "button" &&
-    facts.ariaLabel !== null &&
-    facts.ariaLabel.endsWith(` ${workbenchQuestions.reloadWorkbenchRuns.readLabel}`)
+    facts.ariaLabel === retryLabel(workbenchPageCopy.runsLabel)
   ) {
     return workbenchQuestions.reloadWorkbenchRuns;
   }

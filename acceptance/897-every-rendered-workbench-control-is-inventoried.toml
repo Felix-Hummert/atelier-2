@@ -1,0 +1,9 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/897"
+
+# Inventory of rendered Workbench controls. This sentence does not claim
+# REQ-UIQ-01; whether that requirement stays machine-proven is not decided here.
+
+[[sentence]]
+id = "every-rendered-workbench-control-is-inventoried"
+text = "Every rendered Workbench control is inventoried with a question-shaped entry; a control added without an entry fails."

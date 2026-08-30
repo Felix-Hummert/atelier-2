@@ -37,6 +37,7 @@ export const workbenchPageCopy = {
   eventUnapplied: "What changed could not be read.",
   retryEvent: "Retry",
   runsUnavailable: "Workbench runs unavailable",
+  runsLabel: "workbench runs",
   workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",
 
   transcriptLabel: "Conversation",

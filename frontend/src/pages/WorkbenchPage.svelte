@@ -425,7 +425,7 @@
 
   <ReadState
     read={live}
-    label={workbenchQuestions.reloadWorkbenchRuns.readLabel}
+    label={workbenchPageCopy.runsLabel}
     onRetry={() => { void load(); }}
   />
   {#if snapshot !== null && snapshot.workflowNames === null}
