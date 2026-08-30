@@ -148,8 +148,10 @@ def _decode_frame_body(body: bytes) -> tuple[bytes, ...]:
         # rather than "truncated" is exact only because
         # `runner_session_body_length` already bounded this body by the same
         # number, so a field that large cannot fit and the shared reader is
-        # certain to raise. A caller reaching this codec without that prior
-        # bound would get the two names the other way round.
+        # certain to raise. Without that prior bound such a field would fit a
+        # large enough body, `unframe` would not raise, and this handler would
+        # never run: the oversized case would surface later under another code,
+        # or not at all.
         declared = error.declared_field_length
         raise RunnerSessionCodecError(
             "runner-session-oversized"
