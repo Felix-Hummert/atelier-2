@@ -58,3 +58,11 @@ content_sha256 = "552b9dac8c32c04a708d6093d8d528c410b0e830db8b32aecd1a2d3b122b26
 approval_comment_id = 5361527176
 approval_sha256 = "939a56d8e114f0507ecfbb86ffb8980330b5f0acbe1ec5ec5a842054ae12e1e1"
 predecessor = "GENESIS"
+
+[[revision]]
+document = "0003"
+path = "docs/requirements/0003-ziel-ui.md"
+content_sha256 = "ee06111e30a0e7d1fa1c688e87888508696da40bab00caabf8a34c1b91874360"
+approval_comment_id = 5468894196
+approval_sha256 = "e379a78a5c1dab662e428a84f0d4760ea8f6dd48404396fa92edab01c3f85311"
+predecessor = "573b446ffa5181479d141d28d2d02e4688bc56e48b5a2cb7ef215101b961b303"
