@@ -68,7 +68,9 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
     const remaining = await page.request.get("/atelier/api/v1/runs?state=WAITING_RECONCILIATION&limit=50");
     expect(remaining.status()).toBe(200);
     expect(((await remaining.json()) as { items: unknown[] }).items).toHaveLength(0);
-  }).toPass({ timeout: 20_000 });
+    // 60s is a deadlock brake, not a latency contract: the resolutions advance
+    // through the queue, and a loaded box pays for the whole suite before them.
+  }).toPass({ timeout: 60_000 });
 
   // Reconciliation advances the fixtures asynchronously. Follow each captured
   // baseline run through its V1 input wait to completion, rather than merely
@@ -101,7 +103,7 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
       }
     }
     expect(states).toEqual(["COMPLETED", "COMPLETED"]);
-  }).toPass({ timeout: 20_000 });
+  }).toPass({ timeout: 60_000 });
 }
 
 async function photograph(page: Page, name: string, scrollMobileMainToEnd = false): Promise<void> {
@@ -227,6 +229,19 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
     });
     expect(started.status()).toBe(201);
   }
+
+  // A 201 says the run exists, not that its wait is durable yet: each run
+  // still advances through the queue to its wait node. Barrier on the durable
+  // list -- the event that settles the count -- so the exact assertions below
+  // read a settled store instead of racing the queue on a loaded box (#747).
+  await expect(async () => {
+    const waiting = await page.request.get(
+      "/atelier/api/v1/runs?state=WAITING_INPUT&limit=50"
+    );
+    expect(waiting.status()).toBe(200);
+    const { items } = (await waiting.json()) as { items: unknown[] };
+    expect(items).toHaveLength(6);
+  }).toPass({ timeout: 60_000 });
 
   await page.goto("/atelier/chat");
   await expect(page.getByRole("link", { name: "Workbench 6 needs you" })).toBeVisible({ timeout: 20_000 });
