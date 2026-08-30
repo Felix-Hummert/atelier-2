@@ -2071,15 +2071,35 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
 
         assert unregistered.status_code == 422
         assert unregistered.json()["type"].endswith(":uncast-agent-roles")
+        # One problem type now answers what three did, so the failing thing is
+        # named in the body rather than in the URN. Asserting the reason is what
+        # keeps "this override is not registered" distinguishable from "this role
+        # has no default at all" -- the distinction the old 404 carried.
+        assert unregistered.json()["uncast_roles"] == [
+            {"role": "builder", "reason": "override-not-registered"}
+        ]
         assert wrong_role.status_code == 422
         assert wrong_role.json()["type"].endswith(":invalid-agent-bindings")
         assert valid.status_code == 201
         assert rebound.status_code == 409
         assert rebound.json()["type"].endswith(":run-identity-conflict")
+        # This one answered 409 run-identity-conflict before the API narrowed to
+        # format 3: the identity check ran first, so a retry that changed its
+        # configuration still learned the run id was taken. The model cast now
+        # runs first and answers about the configuration instead. A retry sending
+        # the same body it sent before still gets the conflict -- `rebound` above
+        # proves that -- and the durable count below proves no second run is
+        # written either way, which is the protection that matters.
         assert rebound_to_unregistered.status_code == 422
         assert rebound_to_unregistered.json()["type"].endswith(":uncast-agent-roles")
+        assert rebound_to_unregistered.json()["uncast_roles"] == [
+            {"role": "builder", "reason": "override-not-registered"}
+        ]
         assert unbound.status_code == 422
         assert unbound.json()["type"].endswith(":uncast-agent-roles")
+        assert unbound.json()["uncast_roles"] == [
+            {"role": "builder", "reason": "no-project-default"}
+        ]
         with runtime.engine.connect() as connection:
             assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 1
             assert (

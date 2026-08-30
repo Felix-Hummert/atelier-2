@@ -212,6 +212,33 @@ nodes:
 """.encode()
     + declared_output(ANY_JSON_SCHEMA, "answer")
 )
+RECONCILED_LOGICAL_KEY = (
+    "atelier2-node-effect-"
+    "aa4c4a4f6baad796aa6a13cbe2f722d0073e8e1cfabcc7535c35146aee46c65c"
+)
+RECONCILED_REVISION_HASH = (
+    "db3ccb8440c207f544ff4c7c27e920c6ba1e0b22171748b144a5d316fc12751f"
+)
+RECONCILED_REQUEST = (
+    b'{"body":"\\"request\\"","head_branch":"atelier2-open-pr-8869ad22943e"}'
+)
+RECONCILED_REQUEST_HASH = (
+    "8233a24c4c2c25362c76b8f841b8b5efc8f2d7edf196b748c92827601375c2d0"
+)
+RECONCILED_APPLIED_RESULT_HASH = (
+    "fbf5b216105e471c4f89e92a1ec12897ee9f2b439eb200a4f7855901d2889e7e"
+)
+"""What the reconciled line mints, written out rather than recomputed.
+
+Asking the intent for the hash it already carries compares the store with the
+object that wrote it, and moves with any change to either. These are the whole
+literal forms, so a changed digest, separator or encoding turns identical work
+into a second identity loudly (acceptance/88) instead of silently agreeing with
+itself. They follow ACTION_DOCUMENT: change that document and these change with
+it, which is the point at which a reader has to look.
+"""
+
+
 # A contended write is refused without waiting at all: the pool fails a checkout
 # it cannot serve at once, and the driver fails a write against a held lock on
 # its first attempt. Zero is what makes the refusal a decision rather than an
@@ -899,11 +926,11 @@ def test_concurrent_same_command_http_reconciliation_creates_one_command_and_wor
         "state": "PENDING",
     }
     assert intent_row == {
-        "logical_key": intent.binding.logical_key.value,
+        "logical_key": RECONCILED_LOGICAL_KEY,
         "run_id": intent.binding.run_id.value,
-        "canonical_request": intent.request.payload,
-        "request_hash": intent.request.request_hash.value,
-        "workflow_revision_hash": intent.binding.workflow_revision_hash.value,
+        "canonical_request": RECONCILED_REQUEST,
+        "request_hash": RECONCILED_REQUEST_HASH,
+        "workflow_revision_hash": RECONCILED_REVISION_HASH,
         "adapter_revision": intent.binding.adapter_revision.value,
         "destination_identity": intent.binding.destination.value,
         "adapter_operational_identity": (
@@ -1893,14 +1920,14 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
 
     accepted = client.post(path, json=body)
     assert accepted.status_code == 202
-    result_hash = Sha256Hash.of(determination.result.payload).value
-    logical_key = intent.binding.logical_key.value
+    result_hash = RECONCILED_APPLIED_RESULT_HASH
+    logical_key = RECONCILED_LOGICAL_KEY
     expected_intent = {
         "logical_key": logical_key,
         "run_id": intent.binding.run_id.value,
-        "canonical_request": intent.request.payload,
-        "request_hash": intent.request.request_hash.value,
-        "workflow_revision_hash": intent.binding.workflow_revision_hash.value,
+        "canonical_request": RECONCILED_REQUEST,
+        "request_hash": RECONCILED_REQUEST_HASH,
+        "workflow_revision_hash": RECONCILED_REVISION_HASH,
         "adapter_revision": intent.binding.adapter_revision.value,
         "destination_identity": intent.binding.destination.value,
         "adapter_operational_identity": (
@@ -1989,9 +2016,9 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
     assert dict(receipt_row) == {
         "logical_key": logical_key,
         "run_id": intent.binding.run_id.value,
-        "canonical_request": intent.request.payload,
-        "request_hash": intent.request.request_hash.value,
-        "workflow_revision_hash": intent.binding.workflow_revision_hash.value,
+        "canonical_request": RECONCILED_REQUEST,
+        "request_hash": RECONCILED_REQUEST_HASH,
+        "workflow_revision_hash": RECONCILED_REVISION_HASH,
         "adapter_revision": intent.binding.adapter_revision.value,
         "destination_identity": intent.binding.destination.value,
         "adapter_operational_identity": (
