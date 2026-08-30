@@ -17,6 +17,7 @@ from atelier2.contracts.runner_session_codec import (
     MAXIMUM_RUNNER_SESSION_BODY_BYTES,
     MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES,
     RUNNER_SESSION_BODY_LENGTH_PREFIX_BYTES,
+    RUNNER_SESSION_FRAME_DOMAIN,
     TERMINAL_RECORD_ENVELOPE_BYTES,
     RunnerSessionCodecError,
     decode_runner_session_frame,
@@ -195,3 +196,54 @@ def test_session_length_prefix_is_refused_before_the_body_is_read() -> None:
         )
     with pytest.raises(RunnerSessionCodecError, match="runner-session-truncated"):
         runner_session_body_length(b"\x00")
+
+
+_FRAME_DOMAIN = RUNNER_SESSION_FRAME_DOMAIN.decode("ascii")
+
+
+def _wire(body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + body
+
+
+def _domain_length_inflated_by(domain: str, extra: int) -> bytes:
+    """A body promising `extra` more domain bytes than it carries."""
+    promised = hashing_frame(domain + "x" * extra)
+    return promised[: len(promised) - extra]
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        (hashing_frame("runner-session/v3", b"x"), "runner-session-noncanonical"),
+        (b"\x00" + hashing_frame(_FRAME_DOMAIN), "runner-session-noncanonical"),
+        (hashing_frame(_FRAME_DOMAIN)[:11], "runner-session-truncated"),
+        (hashing_frame(_FRAME_DOMAIN) + b"\x00" * 3, "runner-session-truncated"),
+        (
+            hashing_frame(_FRAME_DOMAIN)
+            + struct.pack(">Q", MAXIMUM_RUNNER_SESSION_BODY_BYTES + 1),
+            "runner-session-oversized",
+        ),
+        (
+            _domain_length_inflated_by(_FRAME_DOMAIN, 83),
+            "runner-session-noncanonical",
+        ),
+    ],
+    ids=(
+        "another-domain",
+        "shifted-prefix",
+        "cut-domain-length",
+        "cut-field-length",
+        "field-above-the-session-bound",
+        "inflated-domain-length",
+    ),
+)
+def test_a_broken_frame_body_keeps_this_codec_s_own_refusal_names(
+    body: bytes, code: str
+) -> None:
+    """The frame layout has one owner, but the names for a broken frame belong
+    to the protocol that reads it: a session says truncated, noncanonical or
+    oversized from its own closed vocabulary, never a shared reader's wording."""
+
+    with pytest.raises(RunnerSessionCodecError, match=code) as refusal:
+        decode_runner_session_frame(_wire(body))
+    assert str(refusal.value) in RUNNER_SESSION_REFUSAL_CODES

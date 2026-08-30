@@ -13,6 +13,7 @@ from atelier2.adapters.dbos.schema import (
     node_execution_requests_v3,
     node_receipts_v3,
     run_agent_bindings,
+    run_configuration_revisions,
     run_events,
     run_fork_reused_nodes,
     run_forks,
@@ -48,6 +49,7 @@ from atelier2.ports.durable_run_forks import (
     DurableRunForkOriginMissing,
     DurableRunForkOriginNotTerminal,
     DurableRunForkPrefixNotReusable,
+    DurableRunForkStateCorrupt,
     DurableRunForkWriteUnavailable,
     ForkRunRequest,
 )
@@ -613,5 +615,37 @@ def test_run_projection_refuses_more_than_one_bounded_successor_lineage(
             )
 
         assert durable_queries(runtime.engine).get_run(RUN) == ProjectionTooLarge()
+    finally:
+        runtime.close()
+
+
+def test_fork_refuses_an_origin_configuration_that_is_no_longer_a_frame(
+    tmp_path: Path,
+) -> None:
+    """The fork store reads the shared frame layout but keeps its own name for
+    what a broken frame means here: the durable state is corrupt, not a
+    reader's exception surfacing at the port."""
+
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        starter, _workflow = _completed_origin(runtime)
+        with runtime.engine.connect() as connection:
+            connection.exec_driver_sql(
+                "DROP TRIGGER run_configuration_revisions_no_update"
+            )
+            connection.execute(
+                run_configuration_revisions.update().values(preimage=b"not-a-frame")
+            )
+            connection.commit()
+
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RUN, "unframable", "review")),
+            DurableRunForkStateCorrupt,
+        )
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(sa.select(sa.func.count()).select_from(run_forks))
+                == 0
+            )
     finally:
         runtime.close()

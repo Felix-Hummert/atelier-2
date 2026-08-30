@@ -7,15 +7,14 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 
 from atelier2.contracts.agent_attempts import RunnerManifestId
-from atelier2.contracts.hashing import frame
+from atelier2.contracts.hashing import FrameError, frame, unframe
 from atelier2.contracts.runner_session_codec import RUNNER_SESSION_FRAME_DOMAIN
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _CAPABILITIES = re.compile(r"[0-9a-f]{16}")
 _DOTTED_VERSION = re.compile(r"(0|[1-9][0-9]{0,8})(\.(0|[1-9][0-9]{0,8})){2}")
-_FRAME_PREFIX = b"ATELIER2\x00"
-_DOMAIN = b"runner-manifest/v1"
+_DOMAIN = "runner-manifest/v1"
 _FIXED_FIELD_COUNT = 25
 _MAXIMUM_PATH_BYTES = 4096
 CANDIDATE_EFFECTIVE_UID = 10001
@@ -294,7 +293,7 @@ def encode_runner_manifest(manifest: RunnerManifestV1) -> bytes:
     now emits, not a retired one.
     """
     return frame(
-        "runner-manifest/v1",
+        _DOMAIN,
         manifest.source_commit.encode("ascii"),
         manifest.image_digest.encode("ascii"),
         RUNNER_SESSION_FRAME_DOMAIN,
@@ -353,7 +352,10 @@ def _decoded_grants(fields: tuple[bytes, ...]) -> tuple[RunnerPathGrant, ...]:
 
 def decode_runner_manifest(encoded: bytes) -> RunnerManifestV1:
     """Decode one canonical manifest and refuse any other byte sequence."""
-    fields = _decode_manifest_fields(encoded)
+    try:
+        fields = unframe(encoded, _DOMAIN)
+    except FrameError as error:
+        raise ValueError("runner-manifest-mismatch") from error
     if len(fields) < _FIXED_FIELD_COUNT or fields[2] != RUNNER_SESSION_FRAME_DOMAIN:
         raise ValueError("runner-manifest-mismatch")
     if len(fields[23]) != 8 or len(fields[24]) != 8:
@@ -458,29 +460,3 @@ def candidate_runner_manifest(
         scratch_bytes,
         child_path_grants,
     )
-
-
-def _decode_manifest_fields(encoded: bytes) -> tuple[bytes, ...]:
-    if not encoded.startswith(_FRAME_PREFIX):
-        raise ValueError("runner-manifest-mismatch")
-    cursor = len(_FRAME_PREFIX)
-    if len(encoded) < cursor + 4:
-        raise ValueError("runner-manifest-mismatch")
-    domain_length = struct.unpack(">I", encoded[cursor : cursor + 4])[0]
-    cursor += 4
-    domain_end = cursor + domain_length
-    if domain_end > len(encoded) or encoded[cursor:domain_end] != _DOMAIN:
-        raise ValueError("runner-manifest-mismatch")
-    cursor = domain_end
-    fields: list[bytes] = []
-    while cursor < len(encoded):
-        if len(encoded) - cursor < 8:
-            raise ValueError("runner-manifest-mismatch")
-        field_length = struct.unpack(">Q", encoded[cursor : cursor + 8])[0]
-        cursor += 8
-        field_end = cursor + field_length
-        if field_end > len(encoded):
-            raise ValueError("runner-manifest-mismatch")
-        fields.append(encoded[cursor:field_end])
-        cursor = field_end
-    return tuple(fields)
