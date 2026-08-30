@@ -51,46 +51,11 @@ export async function publicationMutation(document: string): Promise<PublishMuta
   };
 }
 
-export function startMutation(runId: string, workflowRevisionHash: string): StartMutation {
-  const body = new TextEncoder().encode(
-    JSON.stringify({ run_id: runId, workflow_revision_hash: workflowRevisionHash })
-  );
-  return {
-    mutation_id: `start:${runId}`,
-    kind: "start",
-    target: "/atelier/api/v1/runs",
-    content_type: "application/json",
-    body_base64: encodeBase64(body)
-  };
-}
-
-export function startMutationV2(
-  runId: string,
-  workflowRevisionHash: string,
-  agentBindings: readonly StartAgentBinding[]
-): StartMutation {
-  const body = new TextEncoder().encode(
-    JSON.stringify({
-      workflow_format_version: 2,
-      run_id: runId,
-      workflow_revision_hash: workflowRevisionHash,
-      agent_bindings: agentBindings
-    })
-  );
-  return {
-    mutation_id: `start:${runId}`,
-    kind: "start",
-    target: "/atelier/api/v1/runs",
-    content_type: "application/json",
-    body_base64: encodeBase64(body)
-  };
-}
-
 export type StartOrder =
   | { name: string; value: string }
   | { name: string; work_item: string };
 
-export function startMutationV3(
+export function startMutation(
   runId: string,
   workflowRevisionHash: string,
   agentBindings: readonly StartAgentBinding[],
@@ -112,11 +77,6 @@ export function startMutationV3(
     content_type: "application/json",
     body_base64: encodeBase64(body)
   };
-}
-
-export function requestedStartAgentBindings(mutation: Pick<StartMutation, "body_base64">): readonly StartAgentBinding[] | null {
-  const body = requireStartBody(mutation.body_base64);
-  return "agent_bindings" in body ? body.agent_bindings : null;
 }
 
 export function createRunId(): string {
@@ -620,48 +580,33 @@ function requireStart(envelope: StartMutation): void {
   }
 }
 
-function requireStartBody(bodyBase64: string):
-  | { run_id: string; workflow_revision_hash: string }
-  | { workflow_format_version: 2; run_id: string; workflow_revision_hash: string; agent_bindings: StartAgentBinding[] }
-  | {
-      workflow_format_version: 3;
-      run_id: string;
-      workflow_revision_hash: string;
-      agent_bindings: StartAgentBinding[];
-      orders: StartOrder[];
-    } {
+function requireStartBody(bodyBase64: string): {
+  workflow_format_version: 3;
+  run_id: string;
+  workflow_revision_hash: string;
+  agent_bindings: StartAgentBinding[];
+  orders: StartOrder[];
+} {
   const body = requireJsonBody(bodyBase64);
-  const isV3 = body.workflow_format_version === 3;
-  const isV2 = body.workflow_format_version === 2;
-  requireExactKeys(
-    body,
-    isV3
-      ? ["workflow_format_version", "run_id", "workflow_revision_hash", "agent_bindings", "orders"]
-      : isV2
-        ? ["workflow_format_version", "run_id", "workflow_revision_hash", "agent_bindings"]
-        : ["run_id", "workflow_revision_hash"]
-  );
+  requireExactKeys(body, [
+    "workflow_format_version",
+    "run_id",
+    "workflow_revision_hash",
+    "agent_bindings",
+    "orders"
+  ]);
   if (
+    body.workflow_format_version !== 3 ||
     typeof body.run_id !== "string" ||
     body.run_id.length === 0 ||
     typeof body.workflow_revision_hash !== "string" ||
     !digestPattern.test(body.workflow_revision_hash)
   ) throw new Error("invalid start mutation body");
-  if (!isV2 && !isV3) return { run_id: body.run_id, workflow_revision_hash: body.workflow_revision_hash };
-  const agentBindings = requireStartAgentBindings(body.agent_bindings);
-  if (!isV3) {
-    return {
-      workflow_format_version: 2,
-      run_id: body.run_id,
-      workflow_revision_hash: body.workflow_revision_hash,
-      agent_bindings: agentBindings
-    };
-  }
   return {
     workflow_format_version: 3,
     run_id: body.run_id,
     workflow_revision_hash: body.workflow_revision_hash,
-    agent_bindings: agentBindings,
+    agent_bindings: requireStartAgentBindings(body.agent_bindings),
     orders: requireStartOrders(body.orders)
   };
 }

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -10,6 +10,7 @@ import {
   type WorkflowRevisionSummary
 } from "../../src/api/client";
 import { catalogPageCopy, workflowDetailCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import { IMPORT_SHEET_KINDS } from "../../src/lib/catalogImport";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import {
   reportConnectionLost,
@@ -110,8 +111,8 @@ function kindButton(name: string) {
   return screen.getByRole("button", { name: kindName(name) });
 }
 
-function queryKindButton(name: string) {
-  return screen.queryByRole("button", { name: kindName(name) });
+function offeredKindButtons() {
+  return within(screen.getByRole("group", { name: catalogPageCopy.kind })).getAllByRole("button");
 }
 
 describe("the catalog room", () => {
@@ -735,7 +736,7 @@ describe("the catalog room", () => {
     expect(add.getAttribute("title")).toBe(catalogPageCopy.noKindDeclared);
     expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("false");
     expect(kindButton(catalogPageCopy.kindAgent).getAttribute("aria-pressed")).toBe("false");
-    expect(queryKindButton(catalogPageCopy.kindSkill)).toBeNull();
+    expect(offeredKindButtons()).toHaveLength(IMPORT_SHEET_KINDS.length);
     expect(addLibraryDocument).not.toHaveBeenCalled();
   });
 
@@ -755,7 +756,7 @@ describe("the catalog room", () => {
     expect((await screen.findByText("notes.md")).isConnected).toBe(true);
     expect(kindButton(catalogPageCopy.kindWorkflow)).toBeTruthy();
     expect(kindButton(catalogPageCopy.kindAgent)).toBeTruthy();
-    expect(queryKindButton(catalogPageCopy.kindSkill)).toBeNull();
+    expect(offeredKindButtons()).toHaveLength(IMPORT_SHEET_KINDS.length);
     const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
     expect((add as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.click(add);

@@ -1,6 +1,25 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/449"
 
+# Two sentences. "existing-runtime-lines-survive-the-binder-deletion" was
+# retracted by the operator on 30.08.2026 (ruling in #901: "bis das Atelier ein
+# Produkt ist, brauchen wir kein Fallback und keine Backwards-Compatibility").
+# It protects a runtime that has never run: 239 live runs carry
+# `workflow_format_version` min = max = 3, and all 26 stored workflow documents
+# are format 3, so "V1 Agent, Action, Wait and Subworkflow runtime behavior
+# remains unchanged" and "V2's two bound agents survive restart" promise the
+# preservation of generations no operator can reach.
+#
+# The sentence still stands below because three tests claim it today --
+# `tests/integration/test_v3_self_driving_run.py`,
+# `test_workflow_graph_runtime.py` and `test_agent_configuration_v2.py` -- and a
+# claim naming an undeclared sentence reds this gate. It is deleted in the same
+# change that deletes the V1/V2 runtime those claims exercise (#901 slice 1 and
+# slice 5), the way #88's V1 event-vocabulary sentence went with its wire in
+# #904. Its one live half costs nothing: the V3 chain that starts, runs
+# autonomously and reaches its terminal hash is already declared by #194's
+# `a-v3-run-drives-itself-through-the-runtime`, which the same test also claims.
+
 [[sentence]]
 id = "an-authored-v3-subworkflow-remains-unexecutable-without-start-writes"
 text = "V3 subworkflow and iterate declarations read back exactly as authored; executable admission and the real starter refuse them before run, configuration, or enqueue writes."

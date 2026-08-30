@@ -51,7 +51,7 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
-  import { readEveryAgentConfiguration } from "../lib/runPages";
+  import { readEveryAgentConfiguration, readEveryAuthProfile } from "../lib/runPages";
   import {
     accountChoice,
     difficultyLabel,
@@ -162,20 +162,6 @@
 
   onMount(() => { void load(); });
 
-  async function readProfiles(): Promise<AuthProfileRevision[]> {
-    const profiles: AuthProfileRevision[] = [];
-    let after: string | undefined;
-    const followed = new SvelteSet<string>();
-    for (;;) {
-      const page = await cockpitApi.listAuthProfileRevisions(after);
-      profiles.push(...page.items);
-      if (page.next_after_revision_hash === null) return profiles;
-      if (followed.has(page.next_after_revision_hash)) throw new Error("profile cursor repeated");
-      followed.add(page.next_after_revision_hash);
-      after = page.next_after_revision_hash;
-    }
-  }
-
   async function load(): Promise<void> {
     const begun = beginRead(settings);
     settings = begun.read;
@@ -190,12 +176,14 @@
       const projectReference = projects.items[0]?.public_project_reference;
       if (projectReference === undefined) throw new Error("served project missing");
 
-      const [sourceList, configurationReading, profiles] = await Promise.all([
+      const [sourceList, configurationReading, profileReading] = await Promise.all([
         cockpitApi.listProjectSources(projectReference),
         readEveryAgentConfiguration((after) => cockpitApi.listAgentConfigurationRevisions(after)),
-        readProfiles()
+        readEveryAuthProfile((after) => cockpitApi.listAuthProfileRevisions(after))
       ]);
       if (!configurationReading.complete) throw new Error("model listing incomplete");
+      if (!profileReading.complete) throw new Error("account listing incomplete");
+      const profiles = profileReading.profiles;
 
       const providers = [...new Set(
         configurationReading.configurations.map((configuration) => configuration.provider_id)

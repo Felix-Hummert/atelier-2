@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -20,8 +19,6 @@ from requirement_contract import (
     read_requirement_shelf,
     read_requirement_source_bindings,
 )
-
-EXACT_GIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 HONESTY_BOUND = (
     "```text",
@@ -164,13 +161,23 @@ def _bootstrap_base_snapshot(
     return tuple(entries.values())
 
 
-def _verify_snapshot_monotonicity(project_root: Path, base_revision: str) -> None:
-    if EXACT_GIT_SHA.fullmatch(base_revision) is None or not _git_object_exists(
-        project_root, f"{base_revision}^{{commit}}"
-    ):
+def _resolved_base_commit(project_root: Path, revision: str) -> str:
+    resolution = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if resolution.returncode != 0:
         raise RequirementContractError(
-            f"exact base revision {base_revision!r} is absent or unresolvable"
+            f"base revision {revision!r} does not resolve to a commit"
         )
+    return resolution.stdout.strip()
+
+
+def _verify_snapshot_monotonicity(project_root: Path, revision: str) -> None:
+    base_revision = _resolved_base_commit(project_root, revision)
     base_entries, base_bindings = _base_snapshot(project_root, base_revision)
     current_entries = read_requirement_registry(project_root)
     base_legacy = _legacy_entries(base_entries)
@@ -229,9 +236,7 @@ def main() -> int:
         if arguments.base_revision is not None:
             _verify_snapshot_monotonicity(Path.cwd(), arguments.base_revision)
         elif os.environ.get("GITHUB_ACTIONS") == "true":
-            raise RequirementContractError(
-                "GitHub Actions supplied no exact base revision"
-            )
+            raise RequirementContractError("GitHub Actions supplied no base revision")
     except RequirementContractError as error:
         print(f"Documentation-order gate refused: {error}", file=sys.stderr)
         return 1

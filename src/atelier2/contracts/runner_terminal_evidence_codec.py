@@ -29,13 +29,23 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionResult,
 )
-from atelier2.contracts.hashing import frame
+from atelier2.contracts.hashing import frame, unframe
 
 MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES = 1_106_413
-"""Largest canonical V2 envelope or ACK tombstone in exact encoded bytes."""
+"""Largest canonical V2 envelope or ACK tombstone in exact encoded bytes.
+
+A provider failure carrying the longer admitted failure code, a full standard
+error and a full transcript document, under generation and invocation ids of
+`MAXIMUM_AGENT_FIELD_CHARACTERS` -- *characters*, so 4,096 bytes each in UTF-8,
+which is where 8,106 of these bytes go and why the number reads larger than any
+record a session can carry (a session frame pins those ids to 43 base64url
+characters). Derived, not asserted, by
+`test_largest_admissible_v2_record_equals_its_codec_bound_and_fits_journal`;
+`contracts/runner_session_codec.py` sizes session transport from it, so raising
+it raises transport too.
+"""
 
 _DOMAIN = "runner-terminal-evidence-exchange/v2"
-_FRAME_HEADER = frame(_DOMAIN)
 _V1_DOMAIN = "runner-terminal-evidence-exchange/v1"
 _V1_FRAME_HEADER = frame(_V1_DOMAIN)
 _FIELD_COUNT = 15
@@ -127,7 +137,9 @@ def decode_runner_terminal_evidence_record(
         )
 
     try:
-        fields = _decode_fields(record)
+        fields = unframe(record, _DOMAIN)
+        if len(fields) != _FIELD_COUNT:
+            raise ValueError("runner evidence record has the wrong field count")
         decoded = _decode_record(fields)
         if encode_runner_terminal_evidence_record(decoded) != record:
             raise ValueError("runner evidence record is not canonical")
@@ -202,26 +214,6 @@ def _encode_transcript(transcript: AttemptTranscript | None) -> tuple[bytes, byt
     if transcript is None:
         return b"absent", b""
     return b"present", transcript.document
-
-
-def _decode_fields(record: bytes) -> tuple[bytes, ...]:
-    if not record.startswith(_FRAME_HEADER):
-        raise ValueError("runner evidence record frame domain is malformed")
-    cursor = len(_FRAME_HEADER)
-    fields: list[bytes] = []
-    for _ in range(_FIELD_COUNT):
-        if cursor + 8 > len(record):
-            raise ValueError("runner evidence record field length is missing")
-        field_size = struct.unpack(">Q", record[cursor : cursor + 8])[0]
-        cursor += 8
-        field_end = cursor + field_size
-        if field_end > len(record):
-            raise ValueError("runner evidence record field is truncated")
-        fields.append(record[cursor:field_end])
-        cursor = field_end
-    if cursor != len(record):
-        raise ValueError("runner evidence record has trailing bytes")
-    return tuple(fields)
 
 
 def _decode_record(fields: tuple[bytes, ...]) -> RunnerTerminalEvidenceReadback:

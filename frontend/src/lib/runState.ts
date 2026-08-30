@@ -41,15 +41,6 @@ export const standingWords: Record<RunStanding, string> = {
   done: "Done"
 };
 
-/** The order the standings read in: what moves, what needs you, what is behind you. */
-export const standingOrder: readonly RunStanding[] = [
-  "running",
-  "waiting",
-  "failed",
-  "cancelled",
-  "done"
-];
-
 /** The shape that carries the standing without colour, for eyes that read no colour. */
 export const standingMarks: Record<RunStanding, string> = {
   running: "▲",
@@ -67,20 +58,8 @@ export function runStanding(state: AnyRun["state"]): RunStanding {
   return standings[state];
 }
 
-export function waitsForAHuman(state: AnyRun["state"]): boolean {
-  return standings[state] === "waiting";
-}
-
 /** Whether a run's line is over -- done, failed or cancelled, never running or waiting. */
 export function runHasEnded(state: AnyRun["state"]): boolean {
   const standing = standings[state];
   return standing !== "running" && standing !== "waiting";
-}
-
-export function runsStanding(runs: readonly AnyRun[], standing: RunStanding): AnyRun[] {
-  return runs.filter((run) => standings[run.state] === standing);
-}
-
-export function countStanding(runs: readonly AnyRun[], standing: RunStanding): number {
-  return runsStanding(runs, standing).length;
 }

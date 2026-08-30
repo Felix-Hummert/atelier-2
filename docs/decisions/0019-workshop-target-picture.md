@@ -8,7 +8,9 @@
   is built. The requirement document 0003 is pinned
   (`docs/requirements/README.md`, lifecycle): this record **records the
   decision**, and a successor revision of 0003 **carries it** through its own
-  freeze/APPROVE step — no rule sentence changes in place.
+  freeze/APPROVE step — no rule sentence changes in place. Rulings made after
+  that date are not covered by this acceptance; §6 collects them, each with
+  its own date, source and executing party.
 - Date: 2026-08-25
 - Requirement authority: [Requirement 0003](../requirements/0003-ziel-ui.md)
   (the target UI), [HEART](../HEART.md) (what it must feel like),
@@ -303,6 +305,32 @@ head, the double role of the click).
 | Non-goals: „Keine Dashboards und kein Benachrichtigungszentrum neben dem Board." | „Keine Dashboards, kein Board und kein Benachrichtigungszentrum: die Bühne auf der Workbench und die Ocker-Zahl in der Rail sind die Benachrichtigung." |
 
 No other owner document may retain Board as a room or owner.
+
+### 6. Later rulings recorded against this mapping
+
+Not part of the 25.08.2026 blessing. §5 records that blessing and is not
+amended; a supersession ruled after it is added here with its own date, its
+source, and the party that executed the record — the requirement lifecycle's
+approval line has a field for neither, so this table is where both are named.
+
+**Requirement 0003 — identified rules: later retractions**
+
+| Retracted (verbatim) | Superseding rule |
+| --- | --- |
+| **REQ-UIQ-01**: „Jedes Element beantwortet eine benennbare Nutzerfrage." | **retracted**, with no successor sentence: no verifier can bite on it — a list that counts its own entries refutes nothing. The named screenshot gate **REQ-UIQ-11** („Die Fläche darf geil aussehen und Spaß machen; der Screenshot-Maßstab ist Mockup v8, und das letzte Wort hat der Operator.") takes its place: there it is judged whether a surface answers its questions. REQ-UIQ-01 superseded-by REQ-UIQ-11. |
+
+- Decision: the operator, 30.08.2026, recorded on
+  [#435](https://github.com/FlexOr2/atelier-2/issues/435).
+- Why it could be ruled: REQ-UIQ-01 has had no binding since 29.08.2026. Its
+  proving sentence `studio-elements-answer-named-questions` left `acceptance/`
+  with the landing of #897 (`50723cd3`), and the successor sentence
+  `every-rendered-workbench-control-is-inventoried` states in writing that it
+  does not claim the requirement.
+- Execution: the head session, not the operator, removed the rule from the 0003
+  successor revision, wrote this row, and prepared that revision's approval
+  record — under the operator's spoken delegation of 30.08.2026 for the
+  mechanical step („ich poste nichts! also du kannst das freigeben!").
+  The operator ruled; he did not type the record.
 
 ## Consequences
 

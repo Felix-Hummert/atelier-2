@@ -18,7 +18,7 @@ import {
 import { problemCode } from "./catalogName";
 import { conductorChatCopy } from "./conductorChatCopy";
 import { decodeUtf8Base64 } from "./exactBytes";
-import { createRunId, startMutationV3 } from "./mutationJournal";
+import { createRunId, startMutation } from "./mutationJournal";
 import { readEveryAgentConfiguration } from "./runPages";
 
 /**
@@ -185,7 +185,7 @@ async function startEpisode(
   pendingId: string,
   briefValue: string
 ): Promise<void> {
-  const mutation = startMutationV3(
+  const mutation = startMutation(
     createRunId(),
     connection.workflowRevisionHash,
     [

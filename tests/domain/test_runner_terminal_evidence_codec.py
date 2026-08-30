@@ -30,8 +30,6 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceReadback,
 )
 from atelier2.contracts.agent_transcripts import (
-    MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
-    MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
     AssistantTurn,
     AttemptTranscript,
 )
@@ -41,6 +39,7 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionResult,
 )
+from atelier2.contracts.hashing import frame
 from atelier2.contracts.runner_manifests import CANDIDATE_JOURNAL_BYTES
 from atelier2.contracts.runner_terminal_evidence_codec import (
     MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
@@ -51,6 +50,7 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
     decode_runner_terminal_evidence_record,
     encode_runner_terminal_evidence_record,
 )
+from tests.scenarios.transcripts import largest_attempt_transcript
 
 _INVOCATION = RunnerInvocationId("invocation-1")
 
@@ -263,26 +263,11 @@ def test_each_transcript_carrying_provider_outcome_round_trips_byte_canonically(
     assert encode_runner_terminal_evidence_record(decoded) == encoded
 
 
-def _maximum_transcript() -> AttemptTranscript:
-    # Full-width steps plus this exact tail spend every canonical document byte.
-    transcript = AttemptTranscript.of(
-        [
-            *(
-                AssistantTurn("x" * MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
-                for _ in range(127)
-            ),
-            AssistantTurn("x" * 1_237),
-        ]
-    )
-    assert len(transcript.document) == MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
-    return transcript
-
-
 def test_largest_admissible_v2_record_equals_its_codec_bound_and_fits_journal() -> None:
     maximum_utf8_identity = chr(0x10FFFF) * MAXIMUM_AGENT_FIELD_CHARACTERS
     binding = _binding(maximum_utf8_identity)
     invocation = RunnerInvocationId(maximum_utf8_identity)
-    transcript = _maximum_transcript()
+    transcript = largest_attempt_transcript()
     result_envelope = _envelope(
         RunnerProviderResult(
             AgentExecutionResult(
@@ -596,3 +581,37 @@ def test_a_result_with_no_transcript_still_round_trips_byte_for_byte() -> None:
     assert isinstance(decoded.evidence, RunnerProviderResult)
     assert decoded.evidence.result.transcript is None
     assert encode_runner_terminal_evidence_record(decoded) == record
+
+
+def _canonical_record() -> bytes:
+    return encode_runner_terminal_evidence_record(
+        _envelope(RunnerProviderResult(AgentExecutionResult(b"answer")))
+    )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        b"\x00" + _canonical_record(),
+        frame("runner-terminal-evidence-exchange/v3", *[b""] * 15),
+        _canonical_record()[:-2],
+        _canonical_record() + b"\x00\x00\x00\x00",
+        _canonical_record() + struct.pack(">Q", 0),
+    ],
+    ids=(
+        "foreign-prefix",
+        "another-domain",
+        "truncated-field",
+        "trailing-bytes",
+        "sixteenth-field",
+    ),
+)
+def test_a_broken_frame_is_refused_as_this_exchange_s_own_corrupt_outcome(
+    record: bytes,
+) -> None:
+    """The exchange reads the shared frame layout but answers a broken frame in
+    its own typed vocabulary, never with the reader's exception."""
+
+    assert decode_runner_terminal_evidence_record(record) == (
+        RunnerTerminalEvidenceRecordCorrupt()
+    )

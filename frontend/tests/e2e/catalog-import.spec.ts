@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { IMPORT_SHEET_KINDS } from "../../src/lib/catalogImport";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 
 /**
@@ -200,7 +201,9 @@ async function openUncertainSheet(page: Page, fileName: string, document: string
   await expect(add).toHaveAttribute("title", catalogPageCopy.noKindDeclared);
   await expect(sheet.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true })).toBeVisible();
   await expect(sheet.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true })).toBeVisible();
-  await expect(sheet.getByRole("button", { name: catalogPageCopy.kindSkill, exact: true })).toHaveCount(0);
+  await expect(sheet.getByRole("group", { name: catalogPageCopy.kind }).getByRole("button")).toHaveCount(
+    IMPORT_SHEET_KINDS.length
+  );
 }
 
 test("an uncertain file asks for a kind instead of closing", async ({ page }) => {
