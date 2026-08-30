@@ -10,8 +10,8 @@ It does not invent a second parse or a second publication.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import assert_never
 
+from atelier2.application.publish_document_revision import publish_document_revision
 from atelier2.application.reconstruct_agent_definition import (
     AgentDefinitionParser,
     AgentDefinitionRenderer,
@@ -20,14 +20,7 @@ from atelier2.application.reconstruct_agent_definition import (
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.agent_definitions import AgentDefinitionRefused
 from atelier2.contracts.revisions_v3 import PublishedRevision
-from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
-from atelier2.ports.durable_runs import DurableWriteUnavailable
-from atelier2.ports.published_revisions import (
-    PublishedRevisionCollision,
-    PublishedRevisionCreated,
-    PublishedRevisionExisting,
-    PublishedRevisionRegistry,
-)
+from atelier2.ports.published_revisions import PublishedRevisionRegistry
 
 
 @dataclass(frozen=True)
@@ -72,17 +65,10 @@ def publish_agent_definition_revision(
         )
     except AgentDefinitionRefused as refused:
         return AgentDefinitionPublicationInvalid(refused)
-    result = registry.publish_revision(reconstructed.revision)
-    match result:
-        case PublishedRevisionCreated(stored):
-            return AgentDefinitionPublicationCreated(stored)
-        case PublishedRevisionExisting(stored):
-            return AgentDefinitionPublicationExisting(stored)
-        case PublishedRevisionCollision():
-            return AgentDefinitionPublicationCollision()
-        case DurableWriteUnavailable():
-            return WriteUnavailable()
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
+    return publish_document_revision(
+        reconstructed.revision,
+        registry,
+        created=AgentDefinitionPublicationCreated,
+        existing=AgentDefinitionPublicationExisting,
+        collision=AgentDefinitionPublicationCollision,
+    )

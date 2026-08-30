@@ -11,22 +11,15 @@ and it asks nothing about authentication: a credential path is not a bound.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import assert_never
 
+from atelier2.application.publish_document_revision import publish_document_revision
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.budgets_v3 import (
     BudgetRevisionRefused,
     read_budget_revision_document,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
-from atelier2.ports.durable_runs import DurableWriteUnavailable
-from atelier2.ports.published_revisions import (
-    PublishedRevisionCollision,
-    PublishedRevisionCreated,
-    PublishedRevisionExisting,
-    PublishedRevisionRegistry,
-)
+from atelier2.ports.published_revisions import PublishedRevisionRegistry
 
 
 @dataclass(frozen=True)
@@ -65,18 +58,10 @@ def publish_budget_revision(
     verdict = read_budget_revision_document(document)
     if isinstance(verdict, BudgetRevisionRefused):
         return BudgetPublicationInvalid(verdict)
-    revision = PublishedRevision(RevisionKind.BUDGET_POLICY, document)
-    result = registry.publish_revision(revision)
-    match result:
-        case PublishedRevisionCreated(stored):
-            return BudgetPublicationCreated(stored)
-        case PublishedRevisionExisting(stored):
-            return BudgetPublicationExisting(stored)
-        case PublishedRevisionCollision():
-            return BudgetPublicationCollision()
-        case DurableWriteUnavailable():
-            return WriteUnavailable()
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
+    return publish_document_revision(
+        PublishedRevision(RevisionKind.BUDGET_POLICY, document),
+        registry,
+        created=BudgetPublicationCreated,
+        existing=BudgetPublicationExisting,
+        collision=BudgetPublicationCollision,
+    )
