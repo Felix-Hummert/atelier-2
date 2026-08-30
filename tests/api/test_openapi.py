@@ -21,7 +21,6 @@ from atelier2.api.openapi import (
     API_PREFIX,
     ATTENTION_EVENT_PATH,
     CANCELLATION_PATH,
-    EVENT_NAMES,
     EVENT_PATH,
     LIBRARY_ADDITION_PATH,
     LIBRARY_ADDITIONS_PATH,
@@ -498,9 +497,6 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
         "$ref": "#/components/schemas/ProblemDurableStateCorrupt"
     }
     assert "ProblemResource" not in schema["components"]["schemas"]
-    event_union = schema["components"]["schemas"]["RunEventResource"]
-    assert len(event_union["oneOf"]) == 7
-    assert set(event_union["discriminator"]["mapping"]) == set(EVENT_NAMES)
     parameters = {
         (parameter["name"], parameter["in"]): parameter
         for parameter in schema["paths"][EVENT_PATH]["get"]["parameters"]
@@ -962,12 +958,18 @@ def test_first_request_reuses_schema_built_during_app_construction(
 
 
 def test_served_agent_attempt_state_is_exactly_the_public_vocabulary() -> None:
-    schema = served_app().openapi()
-    served = schema["components"]["schemas"]["AgentAttemptResourceV2"]["properties"]
+    """The rail's attempt is where a reader meets the attempt vocabulary.
 
-    assert served["state"] == {
+    It is nullable there because a succeeded attempt carries no state -- the
+    node's own word says the work is done -- so the members, not the shape
+    around them, are what this pins to their owner.
+    """
+
+    schema = served_app().openapi()
+    served = schema["components"]["schemas"]["NodeRailAttemptResource"]["properties"]
+
+    assert served["state"]["anyOf"][0] == {
         "enum": [state.value for state in PublicAgentAttemptState],
-        "title": "State",
         "type": "string",
     }
 

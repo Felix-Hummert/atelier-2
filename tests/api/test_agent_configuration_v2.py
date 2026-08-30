@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 from typing import cast
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import TypeAdapter
 
 from atelier2.adapters.markdown_agent_definitions import (
     parse_agent_definition,
@@ -17,11 +15,8 @@ from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.projection.events import run_event_resource
-from atelier2.api.wire.events import RunEventResourceV2
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
-    AgentBinding,
-    AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentConfigurationRevisionHash,
@@ -29,12 +24,10 @@ from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutorRevision,
-    AgentRole,
     AuthMode,
     AuthProfileRevision,
     AuthProfileRevisionHash,
     ProviderId,
-    ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -42,16 +35,11 @@ from atelier2.contracts.executions import (
     RunEventAgentAttemptBinding,
     RunEventKind,
 )
-from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
-from atelier2.contracts.run_projections import (
-    RunProjection,
-)
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
-from atelier2.contracts.workflow_projections import WorkflowRevisionProjection
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision,
     AgentConfigurationRevisionCreated,
@@ -65,22 +53,16 @@ from atelier2.ports.agent_configurations import (
     CatalogReadUnavailable,
 )
 from atelier2.ports.durable_runs import (
-    DurableRunCreated,
     DurableStateCorrupt,
     DurableWriteUnavailable,
-    StartPublishedRunRequestV2,
 )
-from atelier2.ports.run_queries import (
-    RunFound,
-)
-from atelier2.ports.workflow_revisions import WorkflowRevisionFound
 from tests.api.test_agent_attempts import SERVED_RAIL
 from tests.scenarios.api import (
-    SSE_COMPLETE_HISTORY,
     api_limits,
     api_ports,
     event_poll_backoff,
 )
+from tests.scenarios.workflows import V3_DOCUMENT
 
 AUTH = AuthProfileRevision("max", 7, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
 CONFIGURATION = AgentConfigurationRevision(
@@ -93,12 +75,6 @@ CONFIGURATION = AgentConfigurationRevision(
 INTERACTIVE_CONFIGURATION_HASH = (
     "d881bf2700c0d88b37704959cfb3c44a6bb575e9c1ec93c09650f95aa8ac9279"
 )
-V2_DOCUMENT = b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
 
 
 @dataclass
@@ -383,30 +359,19 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
         "#/components/schemas/StartRunRequestResourceV2",
         "#/components/schemas/StartRunRequestResourceV3",
     ]
-    assert [
-        item["$ref"]
-        for item in start["responses"]["201"]["content"]["application/json"]["schema"][
-            "oneOf"
-        ]
-    ] == [
-        "#/components/schemas/RunResource",
-        "#/components/schemas/RunResourceV2",
-        "#/components/schemas/RunResourceV3",
-    ]
+    assert start["responses"]["201"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/RunResourceV3"
+    }
     assert schema["paths"][API_PREFIX + "/runs"]["get"]["responses"]["200"]["content"][
         "application/json"
     ]["schema"] == {"$ref": "#/components/schemas/VersionedRunPageResource"}
-    assert (
-        "oneOf"
-        in schema["components"]["schemas"]["VersionedRunPageResource"]["properties"][
-            "items"
-        ]["items"]
-    )
+    assert schema["components"]["schemas"]["VersionedRunPageResource"]["properties"][
+        "items"
+    ]["items"] == {"$ref": "#/components/schemas/RunResourceV3"}
     graph = schema["components"]["schemas"]["WorkflowRevisionDetailResource"][
         "properties"
     ]["graph"]
-    assert set(graph["discriminator"]["mapping"]) == {"1", "2", "3"}
-    assert len(graph["oneOf"]) == 3
+    assert graph == {"$ref": "#/components/schemas/WorkflowGraphResourceV3"}
 
 
 def test_auth_list_answers_with_the_published_item_form_and_no_secrets() -> None:
@@ -615,121 +580,9 @@ def test_list_maps_every_read_refusal(result: object, status: int, code: str) ->
     assert response.json()["type"] == f"urn:atelier2:problem:v1:{code}"
 
 
-def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> None:
-    workflow = WorkflowRevision(V2_DOCUMENT)
-    graph = parse_executable_workflow_document(V2_DOCUMENT)
-    binding_set = AgentBindingSet(
-        (AgentBinding(AgentRole("builder"), CONFIGURATION.revision_hash),)
-    )
-    resolved = ResolvedAgentBinding(AgentRole("builder"), CONFIGURATION, AUTH)
-    run = RunV2(
-        RunId("v2/run"),
-        workflow.revision_hash,
-        binding_set.binding_set_hash,
-        (resolved,),
-        RunState.STARTED,
-        "build",
-        0,
-        0,
-    )
-
-    @dataclass
-    class Starter:
-        request: object | None = None
-
-        def start_published(self, request: object) -> DurableRunCreated:
-            self.request = request
-            return DurableRunCreated(run)
-
-    class Queries:
-        def get_run(self, _run_id: RunId) -> RunFound:
-            return RunFound(RunProjection(run, graph, None))
-
-        def get_workflow_revision(
-            self, _revision_hash: object
-        ) -> WorkflowRevisionFound:
-            return WorkflowRevisionFound(WorkflowRevisionProjection(workflow, graph))
-
-    starter = Starter()
-    queries = Queries()
-    client = TestClient(
-        create_app(
-            source_commit="commit",
-            source_tree="tree",
-            ports=api_ports(
-                published_run_starter=starter,
-                run_queries=queries,
-                workflow_revision_queries=queries,
-                workflow_document_parser=parse_executable_workflow_document,
-                agent_definition_parser=parse_agent_definition,
-                agent_definition_renderer=render_agent_definition,
-                agent_configuration_catalog=RecordingCatalog(object(), object()),
-            ),
-            limits=api_limits(),
-            event_poll_backoff=event_poll_backoff(),
-        )
-    )
-
-    response = client.post(
-        API_PREFIX + "/runs",
-        json={
-            "workflow_format_version": 2,
-            "run_id": "v2/run",
-            "workflow_revision_hash": workflow.revision_hash.value,
-            "agent_bindings": [
-                {
-                    "role": "builder",
-                    "agent_configuration_revision_hash": CONFIGURATION.revision_hash.value,
-                }
-            ],
-        },
-    )
-
-    assert response.status_code == 201
-    assert isinstance(starter.request, StartPublishedRunRequestV2)
-    assert starter.request.agent_bindings == binding_set
-    assert response.json() == {
-        "workflow_format_version": 2,
-        "run_id": "v2/run",
-        "public_run_reference": "run1.djIvcnVu",
-        "workflow_revision_hash": workflow.revision_hash.value,
-        "agent_binding_set_hash": binding_set.binding_set_hash.value,
-        "agent_bindings": [
-            {
-                "role": "builder",
-                "agent_configuration_revision_hash": CONFIGURATION.revision_hash.value,
-                "auth_profile_revision_hash": AUTH.revision_hash.value,
-                "profile_id": "max",
-                "revision_number": 7,
-                "provider_id": "anthropic",
-                "auth_mode": "subscription",
-                "model": "claude-opus-4-1",
-                "executor_revision": "claude-cli/v1",
-            }
-        ],
-        "state_version": 0,
-        "state": "STARTED",
-        "current_node": {
-            "type": "agent",
-            "node_id": "build",
-            "role": "builder",
-            "job": "build",
-            "next_node_id": "done",
-        },
-        "node_rail": [
-            {"node_id": "build", "state": "working", "attempt": None},
-            {"node_id": "done", "state": "queued", "attempt": None},
-        ],
-        "agent_attempts": [],
-        "waiting": {"type": "NONE"},
-        "terminal_hash": None,
-        "latest_event_cursor": None,
-    }
-
-
-def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None:
-    workflow = WorkflowRevision(V2_DOCUMENT)
-    run_id = RunId("v2/non-utf8")
+def test_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None:
+    workflow = WorkflowRevision(V3_DOCUMENT)
+    run_id = RunId("v3/non-utf8")
     event = RunEvent(
         run_id,
         workflow.revision_hash,
@@ -749,22 +602,22 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
     )
 
     resource = run_event_resource(
-        PersistedRunEvent(event, None, WorkflowFormatVersion.V2), SERVED_RAIL
+        PersistedRunEvent(event, None, WorkflowFormatVersion.V3), SERVED_RAIL
     )
     api_limits().require_event_projection(
-        PersistedRunEvent(event, None, WorkflowFormatVersion.V2)
+        PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
     )
     assert event.attempt_binding is not None
 
     assert resource.model_dump(mode="json") == {
-        "workflow_format_version": 2,
+        "workflow_format_version": 3,
         "node_rail": [
             {"node_id": "build", "state": "working", "attempt": None},
             {"node_id": "done", "state": "queued", "attempt": None},
         ],
-        "cursor": "event1.djIvbm9uLXV0Zjg.1",
+        "cursor": "event1.djMvbm9uLXV0Zjg.1",
         "sequence": 1,
-        "public_run_reference": "run1.djIvbm9uLXV0Zjg",
+        "public_run_reference": "run1.djMvbm9uLXV0Zjg",
         "workflow_revision_hash": workflow.revision_hash.value,
         "node_id": "build",
         "node_execution_id": event.node_execution_id.value,
@@ -777,26 +630,7 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
     }
 
 
-def test_all_seven_v2_event_dtos_have_the_exact_closed_wire_shape() -> None:
-    adapter = TypeAdapter(RunEventResourceV2)
-
-    for envelope in SSE_COMPLETE_HISTORY:
-        expected = {**cast(dict[str, object], envelope["data"])}
-        expected["workflow_format_version"] = 2
-        expected["node_rail"] = [entry.model_dump(mode="json") for entry in SERVED_RAIL]
-        if expected["event"] == "AGENT_COMPLETED":
-            output = cast(str, expected.pop("output"))
-            expected["output_base64"] = base64.b64encode(output.encode()).decode()
-            expected["output_hash"] = expected.pop("payload_hash")
-            expected["attempt_id"] = "a" * 64
-            expected["attempt_ordinal"] = 1
-
-        resource = adapter.validate_python({**expected, "node_rail": SERVED_RAIL})
-
-        assert resource.model_dump(mode="json") == expected
-
-
-def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
+def test_openapi_sse_data_is_the_untagged_served_event_union() -> None:
     schema = cast(FastAPI, _client(RecordingCatalog(object(), object())).app).openapi()
 
     data = schema["paths"][API_PREFIX + "/runs/{public_ref}/events"]["get"][
@@ -806,21 +640,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
     ]
     assert data == {"$ref": "#/components/schemas/VersionedRunEventResource"}
     union = schema["components"]["schemas"]["VersionedRunEventResource"]
-    assert union == {
-        "oneOf": [
-            {"$ref": "#/components/schemas/RunEventResource"},
-            {"$ref": "#/components/schemas/RunEventResourceV2"},
-            {"$ref": "#/components/schemas/RunEventResourceV3"},
-        ]
-    }
-    v2 = schema["components"]["schemas"]["RunEventResourceV2"]
-    assert len(v2["oneOf"]) == 12
-    assert "discriminator" not in v2
-    assert v2["description"] == (
-        "The AGENT_FAILED forms are closed by their required shape: an "
-        "attempt failure names failure_code and an attempt; a pre-claim "
-        "executor refusal names only its product reason."
-    )
+    assert union == {"oneOf": [{"$ref": "#/components/schemas/RunEventResourceV3"}]}
     common = {
         "workflow_format_version",
         "cursor",
@@ -833,7 +653,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         "event",
         "node_rail",
     }
-    payloads = {
+    payloads: dict[str, set[str]] = {
         "AGENT_COMPLETED": {
             "output_base64",
             "output_hash",
@@ -866,53 +686,18 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         "ACTION_RECONCILIATION_REQUIRED": {"request_base64", "request_hash"},
         "ACTION_RECONCILIATION_RESOLVED": {"receipt"},
         "ACTION_COMPLETED": {"receipt"},
-        "WAITING_INPUT": {"answer_type"},
-        "WAIT_ANSWERED": {"answer", "answer_hash"},
-        "SUBWORKFLOW_COMPLETED": {"result", "result_hash"},
+        "WAITING_INPUT": set(),
+        "WAIT_ANSWERED": {"actor", "answer_base64", "answer_hash"},
+        "WAIT_CANCELLED": {"command_id"},
     }
-    v2_components = {reference["$ref"].rsplit("/", 1)[-1] for reference in v2["oneOf"]}
-    assert v2_components == {
-        "AgentCompletedEventResourceV2",
-        "AgentFailedEventResourceV2",
-        "AgentExecutorBindingUnavailableEventResourceV2",
-        "AgentCancelRequestedEventResourceV2",
-        "AgentCancelledEventResourceV2",
-        "AgentInterruptedEventResourceV2",
-        "ActionReconciliationRequiredEventResourceV2",
-        "ActionReconciliationResolvedEventResourceV2",
-        "ActionCompletedEventResourceV2",
-        "WaitingInputEventResourceV2",
-        "WaitAnsweredEventResourceV2",
-        "SubworkflowCompletedEventResourceV2",
-    }
-    for event, component_name in {
-        "AGENT_COMPLETED": "AgentCompletedEventResourceV2",
-        "AGENT_FAILED": "AgentFailedEventResourceV2",
-        "AGENT_CANCEL_REQUESTED": "AgentCancelRequestedEventResourceV2",
-        "AGENT_CANCELLED": "AgentCancelledEventResourceV2",
-        "AGENT_INTERRUPTED": "AgentInterruptedEventResourceV2",
-        "ACTION_RECONCILIATION_REQUIRED": "ActionReconciliationRequiredEventResourceV2",
-        "ACTION_RECONCILIATION_RESOLVED": "ActionReconciliationResolvedEventResourceV2",
-        "ACTION_COMPLETED": "ActionCompletedEventResourceV2",
-        "WAITING_INPUT": "WaitingInputEventResourceV2",
-        "WAIT_ANSWERED": "WaitAnsweredEventResourceV2",
-        "SUBWORKFLOW_COMPLETED": "SubworkflowCompletedEventResourceV2",
-    }.items():
-        component = schema["components"]["schemas"][component_name]
-        expected_fields = common | payloads[event]
-        assert set(component["properties"]) == expected_fields
-        assert set(component["required"]) == expected_fields
-        assert component["additionalProperties"] is False
-    unavailable_v2 = schema["components"]["schemas"][
-        "AgentExecutorBindingUnavailableEventResourceV2"
-    ]
-    assert set(unavailable_v2["properties"]) == common | {"reason"}
-    assert set(unavailable_v2["required"]) == common | {"reason"}
-    assert unavailable_v2["additionalProperties"] is False
     v3 = schema["components"]["schemas"]["RunEventResourceV3"]
     assert len(v3["oneOf"]) == 12
     assert "discriminator" not in v3
-    assert v3["description"] == v2["description"]
+    assert v3["description"] == (
+        "The AGENT_FAILED forms are closed by their required shape: an "
+        "attempt failure names failure_code and an attempt; a pre-claim "
+        "executor refusal names only its product reason."
+    )
     v3_components = {reference["$ref"].rsplit("/", 1)[-1] for reference in v3["oneOf"]}
     assert v3_components == {
         "AgentCompletedEventResourceV3",
@@ -927,12 +712,6 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         "WaitingInputEventResourceV3",
         "WaitAnsweredEventResourceV3",
         "WaitCancelledEventResourceV3",
-    }
-    payloads_v3 = {
-        **payloads,
-        "WAITING_INPUT": set(),
-        "WAIT_ANSWERED": {"actor", "answer_base64", "answer_hash"},
-        "WAIT_CANCELLED": {"command_id"},
     }
     for event, component_name in {
         "AGENT_COMPLETED": "AgentCompletedEventResourceV3",
@@ -949,7 +728,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
     }.items():
         component = schema["components"]["schemas"][component_name]
         extra = {"reason"} if event == "AGENT_FAILED" else set()
-        expected_fields = common | payloads_v3[event] | extra
+        expected_fields = common | payloads[event] | extra
         assert set(component["properties"]) == expected_fields
         assert set(component["required"]) == expected_fields
         assert component["additionalProperties"] is False

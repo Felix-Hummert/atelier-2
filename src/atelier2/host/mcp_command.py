@@ -42,7 +42,6 @@ from atelier2.api.wire.requests import (
     WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
-    AnyRunResource,
     ArtifactResource,
     CatalogNameResolutionResource,
     ProblemResource,
@@ -92,7 +91,7 @@ from atelier2.host.run_command import (
     start_request_body,
 )
 
-_run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
+_run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
 _catalog_name_resolution = TypeAdapter(CatalogNameResolutionResource)
 _described_page = TypeAdapter(VersionedWorkflowRevisionPageResource)
 _artifact_resource = TypeAdapter(ArtifactResource)
@@ -352,7 +351,7 @@ def run_status(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]
     return resource
 
 
-def _answerable_wait(run: AnyRunResource) -> dict[str, str] | None:
+def _answerable_wait(run: RunResourceV3) -> dict[str, str] | None:
     """The exact fence MCP can write back to the answer door, or no open wait."""
 
     if not isinstance(run, RunResourceV3) or run.state != "WAITING_INPUT":

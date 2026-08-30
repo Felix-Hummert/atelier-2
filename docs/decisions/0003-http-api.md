@@ -2,6 +2,8 @@
 
 - Status: ACCEPTED 2026-08-11 — implemented: the projecting API landed with this
   record and serves under `/atelier/api/v1`
+- Amended 2026-08-30 (#904, from #901): the V1 and V2 families this record froze
+  are deleted. See "Amendment 2026-08-30" below.
 
 ## Context
 
@@ -96,19 +98,18 @@ bindings, different bytes for one execution, or a WAITING_INPUT run pointing at
 a non-Wait node is `500 durable-state-corrupt`. V3 `WAIT_ANSWERED` receipts
 require a non-null actor attribution. V45-to-V46 migration names its distinct
 historical case `legacy-unattributed` instead of making attribution optional or
-inventing `operator`; new answers record `operator`. The frozen V1 and V2 event
-families do not change. The cockpit, MCP projection, request schema, problem
+inventing `operator`; new answers record `operator`. The cockpit, MCP
+projection, request schema, problem
 vocabulary, and frozen OpenAPI document migrate in the same head under the same
 pre-release condition.
 
-V1, V2, and V3 SSE event resources coexist as exact closed unions. V1 and V2
-workflow, start, and run resources remain their own closed families.
-Start uses the closed shape itself to select the version. A V2 run projection includes
-its immutable, public binding matrix. A V2 or V3 `AGENT_COMPLETED` event carries
-canonical Base64 plus the exact output hash so arbitrary bytes never pass
-through UTF-8 decoding. The preexisting V1 raw JSON and named OpenAPI
-components are byte-frozen; adding V2 or V3 does not silently widen them. The
-V3 event family publishes only the agent kinds a format-3 line actually writes.
+The SSE event resource is one exact closed union, and the workflow, start, and
+run resources are each their own closed family. Start uses the closed shape
+itself to select which start it is.
+A run projection includes its immutable, public binding matrix. An
+`AGENT_COMPLETED` event carries canonical Base64 plus the exact output hash so
+arbitrary bytes never pass through UTF-8 decoding. The event family publishes
+only the agent kinds a format-3 line actually writes.
 The SSE envelope carries only `id` and `data`: omitting the transport
 `event:` field makes every frame a default `message`, while `data.event` is the
 sole domain discriminant. The per-run stream has exactly two frame shapes under that
@@ -206,6 +207,36 @@ and `Last-Event-ID` semantics do not change.
   platform integration, cockpit, process supervision, or deployment. A host
   must supply any required access boundary before exposing it beyond a trusted
   environment.
+
+## Amendment 2026-08-30 — the V1 and V2 families are deleted
+
+This record originally froze two things that no longer exist: that "V1 and V2
+workflow, start, and run resources remain their own closed families", and that
+"the preexisting V1 raw JSON and named OpenAPI components are byte-frozen".
+Both are withdrawn.
+
+The operator ruled on 30.08.2026: *"Bis das Atelier ein Produkt ist, brauchen
+wir kein Fallback und keine Backwards-Compatibility — wir schmeißen alte Sachen
+raus."* #901 measured what that costs: 239 live runs at
+`workflow_format_version` 3, all 26 stored workflow documents at
+`format_version: 3`. No run or document of format 1 or 2 has ever existed, so
+the frozen components described shapes nothing could produce.
+
+The freeze was defensible while a consumer might hold those bytes. None does:
+the only client is this repository's own cockpit, whose API client is
+hand-written zod rather than a generated one; there is no codegen step; and
+`serve` is loopback-only. Re-freezing the document therefore breaks no
+external contract.
+
+What the API serves after #904 is one family. The published document describes
+only what the system can answer with — no resource for a run nobody can start.
+Durable state naming any other format is refused as corrupt rather than
+projected into a shape that would have to lie about it.
+
+Unchanged by this amendment: every frame string remains a value and remains
+frozen, including the eleven that hold hashes in the live store. A class name
+is a name and is free; what stands in the first argument of a `frame(...)` call
+is neither.
 
 ## Supersedes
 

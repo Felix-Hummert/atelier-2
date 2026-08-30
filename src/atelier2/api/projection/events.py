@@ -1,4 +1,4 @@
-"""Projection of a persisted run event onto its wire schema, in each version."""
+"""Projection of a persisted run event onto the wire schema this API serves."""
 
 from __future__ import annotations
 
@@ -6,57 +6,37 @@ from dataclasses import replace
 from typing import Literal, cast
 from urllib.parse import quote
 
-from atelier2.api.projection.workflows import receipt_resource
+from atelier2.api.projection.workflows import (
+    UnservedWorkflowFormat,
+    receipt_resource,
+)
 from atelier2.api.references import (
     encode_canonical_base64,
     encode_event_cursor,
     encode_public_run_reference,
 )
 from atelier2.api.wire.events import (
-    ActionCompletedEventResource,
-    ActionCompletedEventResourceV2,
     ActionCompletedEventResourceV3,
-    ActionReconciliationRequiredEventResource,
-    ActionReconciliationRequiredEventResourceV2,
     ActionReconciliationRequiredEventResourceV3,
-    ActionReconciliationResolvedEventResource,
-    ActionReconciliationResolvedEventResourceV2,
     ActionReconciliationResolvedEventResourceV3,
-    AgentCancelledEventResourceV2,
     AgentCancelledEventResourceV3,
-    AgentCancelRequestedEventResourceV2,
     AgentCancelRequestedEventResourceV3,
-    AgentCompletedEventResource,
-    AgentCompletedEventResourceV2,
     AgentCompletedEventResourceV3,
-    AgentExecutorBindingUnavailableEventResourceV2,
     AgentExecutorBindingUnavailableEventResourceV3,
-    AgentFailedEventResourceV2,
     AgentFailedEventResourceV3,
-    AgentInterruptedEventResourceV2,
     AgentInterruptedEventResourceV3,
-    AnyRunEventResource,
-    RunEventResourceV2,
     RunEventResourceV3,
-    SubworkflowCompletedEventResource,
-    SubworkflowCompletedEventResourceV2,
-    WaitAnsweredEventResource,
-    WaitAnsweredEventResourceV2,
     WaitAnsweredEventResourceV3,
     WaitCancelledEventResourceV3,
-    WaitingInputEventResource,
-    WaitingInputEventResourceV2,
     WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.resources import CancellationDispositionName, NodeRailResource
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
-    KINDS_NO_V1_RUN_CARRIES,
     AgentExecutionRefusal,
     RunEventCancellationBinding,
     RunEventKind,
-    is_canonical_integer_bytes,
 )
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
@@ -97,246 +77,20 @@ def bounded_event_summary(projection: PersistedRunEvent) -> PersistedRunEvent:
 
 def run_event_resource(
     projection: PersistedRunEvent, node_rail: tuple[NodeRailResource, ...]
-) -> AnyRunEventResource:
+) -> RunEventResourceV3:
     """One durable event on the wire, carrying where its run stands after it.
 
-    The rail reaches a V2 or V3 resource: the V1 event schema is byte-frozen, so
-    a V1 reader keeps deriving and the rail passed here is dropped.
+    Every run this API serves is format 3, so an event that names another format
+    is durable state the wire has no shape for and is refused rather than bent
+    into one.
     """
 
+    if projection.workflow_format_version is not WorkflowFormatVersion.V3:
+        raise UnservedWorkflowFormat(
+            "the API projects format-3 events only, not format "
+            f"{projection.workflow_format_version.value}"
+        )
     projection = bounded_event_summary(projection)
-    if projection.workflow_format_version is WorkflowFormatVersion.V2:
-        return _run_event_resource_v2(projection, node_rail)
-    if projection.workflow_format_version is WorkflowFormatVersion.V3:
-        return _run_event_resource_v3(projection, node_rail)
-    event = projection.event
-    if event.event_kind in KINDS_NO_V1_RUN_CARRIES:
-        raise ValueError(f"a V1 run cannot carry {event.event_kind.value}")
-    common = {
-        "cursor": encode_event_cursor(event.run_id, event.event_sequence),
-        "sequence": event.event_sequence,
-        "public_run_reference": encode_public_run_reference(event.run_id),
-        "workflow_revision_hash": event.revision_hash.value,
-        "node_id": event.node_id,
-        "node_execution_id": event.node_execution_id.value,
-        "event_hash": event.event_hash.value,
-    }
-    if event.event_kind is RunEventKind.AGENT_COMPLETED:
-        return AgentCompletedEventResource(
-            event=event.event_kind.value,
-            output=event.payload.decode("utf-8"),
-            payload_hash=event.payload_hash.value,
-            **common,
-        )
-    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_REQUIRED:
-        return ActionReconciliationRequiredEventResource(
-            event=event.event_kind.value,
-            request_base64=encode_canonical_base64(event.payload),
-            request_hash=event.payload_hash.value,
-            **common,
-        )
-    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_RESOLVED:
-        if projection.receipt is None:
-            raise ValueError("resolved event has no receipt")
-        return ActionReconciliationResolvedEventResource(
-            event=event.event_kind.value,
-            receipt=receipt_resource(projection.receipt),
-            **common,
-        )
-    if event.event_kind is RunEventKind.ACTION_COMPLETED:
-        if projection.receipt is None:
-            raise ValueError("completed effect event has no receipt")
-        return ActionCompletedEventResource(
-            event=event.event_kind.value,
-            receipt=receipt_resource(projection.receipt),
-            **common,
-        )
-    if event.event_kind is RunEventKind.WAITING_INPUT:
-        return WaitingInputEventResource(
-            event=event.event_kind.value, answer_type="integer", **common
-        )
-    if event.event_kind is RunEventKind.WAIT_ANSWERED:
-        if not is_canonical_integer_bytes(event.payload):
-            raise ValueError("durable wait answer is not canonical integer text")
-        answer = event.payload.decode("ascii")
-        return WaitAnsweredEventResource(
-            event=event.event_kind.value,
-            answer=answer,
-            answer_hash=event.payload_hash.value,
-            **common,
-        )
-    if event.event_kind is RunEventKind.SUBWORKFLOW_COMPLETED:
-        if not is_canonical_integer_bytes(event.payload):
-            raise ValueError("durable subworkflow result is not canonical integer text")
-        return SubworkflowCompletedEventResource(
-            event=event.event_kind.value,
-            result=int(event.payload.decode("ascii")),
-            result_hash=event.payload_hash.value,
-            **common,
-        )
-    raise AssertionError("closed event union was extended without API mapping")
-
-
-def _run_event_resource_v2(
-    projection: PersistedRunEvent, node_rail: tuple[NodeRailResource, ...]
-) -> RunEventResourceV2:
-    event = projection.event
-    common = {
-        "workflow_format_version": 2,
-        "node_rail": node_rail,
-        "cursor": encode_event_cursor(event.run_id, event.event_sequence),
-        "sequence": event.event_sequence,
-        "public_run_reference": encode_public_run_reference(event.run_id),
-        "workflow_revision_hash": event.revision_hash.value,
-        "node_id": event.node_id,
-        "node_execution_id": event.node_execution_id.value,
-        "event_hash": event.event_hash.value,
-    }
-    if event.event_kind is RunEventKind.AGENT_COMPLETED:
-        binding = event.attempt_binding
-        if binding is None:
-            raise ValueError("V2 agent completion has no exact attempt binding")
-        return AgentCompletedEventResourceV2(
-            event=event.event_kind.value,
-            output_base64=encode_canonical_base64(event.payload),
-            output_hash=event.payload_hash.value,
-            attempt_id=binding.attempt_id.value,
-            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
-            **common,
-        )
-    if event.event_kind is RunEventKind.AGENT_FAILED:
-        if (
-            event.payload
-            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
-        ):
-            if event.attempt_binding is not None:
-                raise ValueError("unavailable executor event has an attempt binding")
-            return AgentExecutorBindingUnavailableEventResourceV2(
-                event=event.event_kind.value,
-                reason=AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value,
-                **common,
-            )
-        failure_code = event.payload.decode("ascii")
-        if failure_code not in {
-            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value,
-            AgentAttemptFailureCode.PROCESS_OUTPUT_LIMIT_EXCEEDED.value,
-            AgentAttemptFailureCode.PROCESS_SUPERVISION_FAILED.value,
-        }:
-            raise ValueError("durable agent failure payload is not canonical")
-        binding = event.attempt_binding
-        if binding is None:
-            raise ValueError("V2 agent failure has no exact attempt binding")
-        return AgentFailedEventResourceV2(
-            event=event.event_kind.value,
-            failure_code=cast(
-                Literal[
-                    "PROCESS_EXITED_UNSUCCESSFULLY",
-                    "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-                    "PROCESS_SUPERVISION_FAILED",
-                ],
-                failure_code,
-            ),
-            attempt_id=binding.attempt_id.value,
-            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
-            **common,
-        )
-    if event.event_kind is RunEventKind.AGENT_CANCEL_REQUESTED:
-        binding = event.attempt_binding
-        if not isinstance(binding, RunEventCancellationBinding):
-            raise ValueError("V2 cancellation request has no exact binding")
-        return AgentCancelRequestedEventResourceV2(
-            event=event.event_kind.value,
-            attempt_id=binding.attempt_id.value,
-            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
-            command_id=binding.command_id,
-            replacement=cast(Literal["NONE", "ONE"], binding.replacement.value),
-            **common,
-        )
-    if event.event_kind in {
-        RunEventKind.AGENT_CANCELLED,
-        RunEventKind.AGENT_INTERRUPTED,
-    }:
-        binding = event.attempt_binding
-        if (
-            not isinstance(binding, RunEventCancellationBinding)
-            or binding.disposition is None
-        ):
-            raise ValueError("V2 cancellation terminal has no exact binding")
-        terminal_common = {
-            "attempt_id": binding.attempt_id.value,
-            "attempt_ordinal": cast(Literal[1, 2], binding.attempt_ordinal),
-            "command_id": binding.command_id,
-            "replacement": cast(Literal["NONE", "ONE"], binding.replacement.value),
-            "disposition": cast(
-                CancellationDispositionName,
-                binding.disposition.value,
-            ),
-            "replacement_attempt_id": (
-                None
-                if binding.replacement_attempt_id is None
-                else binding.replacement_attempt_id.value
-            ),
-        }
-        if event.event_kind is RunEventKind.AGENT_CANCELLED:
-            return AgentCancelledEventResourceV2(
-                event=event.event_kind.value, **terminal_common, **common
-            )
-        return AgentInterruptedEventResourceV2(
-            event="AGENT_INTERRUPTED", **terminal_common, **common
-        )
-    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_REQUIRED:
-        return ActionReconciliationRequiredEventResourceV2(
-            event=event.event_kind.value,
-            request_base64=encode_canonical_base64(event.payload),
-            request_hash=event.payload_hash.value,
-            **common,
-        )
-    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_RESOLVED:
-        if projection.receipt is None:
-            raise ValueError("resolved V2 event has no receipt")
-        return ActionReconciliationResolvedEventResourceV2(
-            event=event.event_kind.value,
-            receipt=receipt_resource(projection.receipt),
-            **common,
-        )
-    if event.event_kind is RunEventKind.ACTION_COMPLETED:
-        if projection.receipt is None:
-            raise ValueError("completed V2 effect event has no receipt")
-        return ActionCompletedEventResourceV2(
-            event=event.event_kind.value,
-            receipt=receipt_resource(projection.receipt),
-            **common,
-        )
-    if event.event_kind is RunEventKind.WAITING_INPUT:
-        return WaitingInputEventResourceV2(
-            event=event.event_kind.value, answer_type="integer", **common
-        )
-    if event.event_kind is RunEventKind.WAIT_ANSWERED:
-        if not is_canonical_integer_bytes(event.payload):
-            raise ValueError("durable V2 wait answer is not canonical integer text")
-        return WaitAnsweredEventResourceV2(
-            event=event.event_kind.value,
-            answer=event.payload.decode("ascii"),
-            answer_hash=event.payload_hash.value,
-            **common,
-        )
-    if event.event_kind is RunEventKind.SUBWORKFLOW_COMPLETED:
-        if not is_canonical_integer_bytes(event.payload):
-            raise ValueError(
-                "durable V2 subworkflow result is not canonical integer text"
-            )
-        return SubworkflowCompletedEventResourceV2(
-            event=event.event_kind.value,
-            result=int(event.payload.decode("ascii")),
-            result_hash=event.payload_hash.value,
-            **common,
-        )
-    raise AssertionError("closed V2 event union was extended without API mapping")
-
-
-def _run_event_resource_v3(
-    projection: PersistedRunEvent, node_rail: tuple[NodeRailResource, ...]
-) -> RunEventResourceV3:
     event = projection.event
     common = {
         "workflow_format_version": 3,

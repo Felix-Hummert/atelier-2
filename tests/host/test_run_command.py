@@ -23,33 +23,23 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import problem_resource
 from atelier2.api.references import encode_canonical_base64
 from atelier2.api.wire.events import (
-    AgentCompletedEventResource,
-    AgentCompletedEventResourceV2,
     AgentCompletedEventResourceV3,
-    AgentFailedEventResourceV2,
     AgentFailedEventResourceV3,
-    WaitingInputEventResourceV2,
+    WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.requests import PublishAgentConfigurationRevisionRequestResource
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
-    AgentNodeResourceV2,
     ArtifactResource,
     AuthProfileRevisionResource,
     CatalogAdmissionResource,
     NodeDetailResource,
     NodeRailResource,
     NodeStateName,
-    NoWaitingResource,
-    NoWaitingResourceV2,
     ProblemResource,
     RunCancellabilityResource,
-    RunResource,
-    RunResourceV2,
     RunResourceV3,
     StreamFailureResource,
-    SubworkflowNodeResource,
-    WorkflowGraphResourceV2,
     WorkflowGraphResourceV3,
     WorkflowNodePreviewResourceV3,
     WorkflowRevisionDetailResource,
@@ -82,7 +72,6 @@ AUTH_PROFILE_HASH = "a" * 64
 AGENT_CONFIGURATION_HASH = "b" * 64
 REVISION_HASH = "c" * 64
 TERMINAL_HASH = "d" * 64
-OUTPUT_HASH = "e" * 64
 NODE_EXECUTION_ID = "f" * 64
 EVENT_HASH = "1" * 64
 ATTEMPT_ID = "2" * 64
@@ -99,12 +88,19 @@ AGENT_ROLE = "writer"
 AGENT_NODE_ID = "draft"
 TERMINAL_NODE_ID = "total"
 AGENT_OUTPUT = b"the answer the run produced"
+OUTPUT_HASH = Sha256Hash.of(AGENT_OUTPUT).value
+"""The hash the service stamps on that output, minted by its own owner."""
 
-WORKFLOW_DOCUMENT = b"""format_version: 2
-start: draft
+WORKFLOW_NAME = "diff-review"
+WORKFLOW_DOCUMENT = b"""format_version: 3
+name: diff-review
+description: Review a bound diff.
 nodes:
-  - {id: total, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: draft, type: agent, role: writer, job: say-something, next: total}
+  - id: draft
+    type: agent
+    role: writer
+    mode: headless
+    instruction: Review the bound diff.
 """
 BINDING_DOCUMENT = json.dumps(
     {
@@ -266,41 +262,6 @@ def published_artifact(artifact_hash: str = ARTIFACT_HASH) -> Answer:
     )
 
 
-def published_workflow_revision() -> Answer:
-    return Answer(
-        WorkflowRevisionDetailResource(
-            workflow_revision_hash=REVISION_HASH,
-            document_base64=encode_canonical_base64(WORKFLOW_DOCUMENT),
-            graph=WorkflowGraphResourceV2(
-                workflow_format_version=2,
-                start_node_id=AGENT_NODE_ID,
-                nodes=(
-                    AgentNodeResourceV2(
-                        type="agent",
-                        node_id=AGENT_NODE_ID,
-                        role=AGENT_ROLE,
-                        job="say-something",
-                        next_node_id=TERMINAL_NODE_ID,
-                    ),
-                    terminal_node(),
-                ),
-            ),
-        )
-        .model_dump_json()
-        .encode()
-    )
-
-
-def terminal_node() -> SubworkflowNodeResource:
-    return SubworkflowNodeResource(
-        type="subworkflow",
-        node_id=TERMINAL_NODE_ID,
-        operation="add",
-        operands=(2, 3),
-        next_node_id=None,
-    )
-
-
 def node_rail(terminal_state: NodeStateName) -> tuple[NodeRailResource, ...]:
     """The rail the service answers with, on the two nodes this command walks."""
     return (
@@ -315,22 +276,35 @@ def run_resource(
     state: Literal["STARTED", "COMPLETED"],
     terminal_hash: str | None,
     latest_event_cursor: str = EVENT_CURSOR,
-) -> RunResourceV2:
-    return RunResourceV2(
-        workflow_format_version=2,
+    current_node_id: str = TERMINAL_NODE_ID,
+) -> RunResourceV3:
+    """The run the service answers with, which the command reads twice.
+
+    The exit-0 contract is decided on what it reads back here, not only on the
+    events, so the run and the events are the one shape the service speaks.
+    """
+
+    return RunResourceV3(
+        workflow_format_version=3,
         run_id="unread-by-the-command",
         public_run_reference=PUBLIC_RUN_REFERENCE,
         workflow_revision_hash=REVISION_HASH,
         agent_binding_set_hash=BINDING_SET_HASH,
+        run_configuration_revision_hash=RUN_CONFIGURATION_HASH,
         agent_bindings=(),
+        orders=(),
         state_version=2,
         state=state,
-        current_node=terminal_node(),
+        current_node_id=current_node_id,
+        current_node_execution_id=NODE_EXECUTION_ID,
         node_rail=node_rail(
             NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
         ),
-        agent_attempts=(),
-        waiting=NoWaitingResourceV2(type="NONE"),
+        cancellation=RunCancellabilityResource(
+            cancellable=False,
+            reason="already-ended" if state == "COMPLETED" else "between-nodes",
+            target_node_execution_id=None,
+        ),
         terminal_hash=terminal_hash,
         latest_event_cursor=latest_event_cursor,
     )
@@ -345,24 +319,6 @@ def completed_run(latest_event_cursor: str = EVENT_CURSOR) -> Answer:
         run_resource("COMPLETED", TERMINAL_HASH, latest_event_cursor)
         .model_dump_json()
         .encode()
-    )
-
-
-def unbound_run_resource(
-    state: Literal["STARTED", "COMPLETED"], terminal_hash: str | None
-) -> RunResource:
-    """A run of a workflow that binds no agent: the version-1 shape of the same run."""
-
-    return RunResource(
-        run_id="unread-by-the-command",
-        public_run_reference=PUBLIC_RUN_REFERENCE,
-        workflow_revision_hash=REVISION_HASH,
-        state_version=2,
-        state=state,
-        current_node=terminal_node(),
-        waiting=NoWaitingResource(type="NONE"),
-        terminal_hash=terminal_hash,
-        latest_event_cursor=EVENT_CURSOR,
     )
 
 
@@ -385,45 +341,39 @@ def stream_failure(code: str = STREAM_FAILURE_CODE) -> str:
     return StreamFailureResource(problem=problem_resource(code)).model_dump_json()
 
 
-def agent_completed() -> str:
-    return AgentCompletedEventResourceV2(
-        workflow_format_version=2,
+def agent_completed(
+    node_id: str = AGENT_NODE_ID,
+    output: bytes = AGENT_OUTPUT,
+    sequence: int = 1,
+    cursor: str = EVENT_CURSOR,
+) -> str:
+    """One agent completion: the output travels base64 beside its hash.
+
+    The attempt names itself and the rail rides along, which is what lets the
+    command report a run it started without deriving anything.
+    """
+
+    return AgentCompletedEventResourceV3(
+        workflow_format_version=3,
         node_rail=node_rail(NodeState.WORKING),
-        cursor=EVENT_CURSOR,
-        sequence=1,
+        cursor=cursor,
+        sequence=sequence,
         public_run_reference=PUBLIC_RUN_REFERENCE,
         workflow_revision_hash=REVISION_HASH,
-        node_id=AGENT_NODE_ID,
+        node_id=node_id,
         node_execution_id=NODE_EXECUTION_ID,
         event_hash=EVENT_HASH,
         event="AGENT_COMPLETED",
-        output_base64=encode_canonical_base64(AGENT_OUTPUT),
-        output_hash=OUTPUT_HASH,
+        output_base64=encode_canonical_base64(output),
+        output_hash=Sha256Hash.of(output).value,
         attempt_id=ATTEMPT_ID,
         attempt_ordinal=1,
     ).model_dump_json()
 
 
-def unbound_agent_completed() -> str:
-    """The version-1 event: the output travels as text, and no attempt names it."""
-
-    return AgentCompletedEventResource(
-        cursor=EVENT_CURSOR,
-        sequence=1,
-        public_run_reference=PUBLIC_RUN_REFERENCE,
-        workflow_revision_hash=REVISION_HASH,
-        node_id=AGENT_NODE_ID,
-        node_execution_id=NODE_EXECUTION_ID,
-        event_hash=EVENT_HASH,
-        event="AGENT_COMPLETED",
-        output=AGENT_OUTPUT.decode(),
-        payload_hash=OUTPUT_HASH,
-    ).model_dump_json()
-
-
 def agent_failed() -> str:
-    return AgentFailedEventResourceV2(
-        workflow_format_version=2,
+    return AgentFailedEventResourceV3(
+        workflow_format_version=3,
         node_rail=node_rail(NodeState.WORKING),
         cursor=EVENT_CURSOR,
         sequence=1,
@@ -434,6 +384,7 @@ def agent_failed() -> str:
         event_hash=EVENT_HASH,
         event="AGENT_FAILED",
         failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+        reason=None,
         attempt_id=ATTEMPT_ID,
         attempt_ordinal=1,
     ).model_dump_json()
@@ -470,8 +421,8 @@ PROCESS_DIED_REASON = (
 
 
 def waiting_for_input() -> str:
-    return WaitingInputEventResourceV2(
-        workflow_format_version=2,
+    return WaitingInputEventResourceV3(
+        workflow_format_version=3,
         node_rail=node_rail(NodeState.WORKING),
         cursor=EVENT_CURSOR,
         sequence=1,
@@ -481,7 +432,6 @@ def waiting_for_input() -> str:
         node_execution_id=NODE_EXECUTION_ID,
         event_hash=EVENT_HASH,
         event="WAITING_INPUT",
-        answer_type="integer",
     ).model_dump_json()
 
 
@@ -516,95 +466,40 @@ def serving_answers(
             node_detail(PROCESS_DIED_REASON),
         ),
     }
-    return {
+    answers = {
         (method, path): [replacements.get(name, answer)]
         for name, (method, path, answer) in scripted.items()
     }
+    answers[("POST", LINEAGES_URL_PATH)] = [founded_lineage()]
+    return answers
 
 
 CHAIN_SECOND_NODE_ID = "review"
 CHAIN_SECOND_OUTPUT = b'"what the reviewer wrote"'
 
 
-def chained_agent_completed(
-    node_id: str, output: bytes, sequence: int, cursor: str
-) -> str:
-    """One format-3 agent completion, in the shape #249 made the service answer.
-
-    This is the event that ended the first live chain run and that the command
-    could not read: the output travels base64 beside its hash, the attempt names
-    itself, and the rail rides along.
-    """
-
-    return AgentCompletedEventResourceV3(
-        workflow_format_version=3,
-        node_rail=node_rail(NodeState.WORKING),
-        cursor=cursor,
-        sequence=sequence,
-        public_run_reference=PUBLIC_RUN_REFERENCE,
-        workflow_revision_hash=REVISION_HASH,
-        node_id=node_id,
-        node_execution_id=NODE_EXECUTION_ID,
-        event_hash=EVENT_HASH,
-        event="AGENT_COMPLETED",
-        output_base64=encode_canonical_base64(output),
-        output_hash=Sha256Hash.of(output).value,
-        attempt_id=ATTEMPT_ID,
-        attempt_ordinal=1,
-    ).model_dump_json()
-
-
-def chained_run_resource(
-    state: Literal["STARTED", "COMPLETED"],
-    terminal_hash: str | None,
-    latest_event_cursor: str = EVENT_CURSOR,
-) -> RunResourceV3:
-    """The run a chain really is, in the shape the service answers with.
-
-    Pairing format-3 events with a format-2 run would prove only half the
-    conversation: the command reads the run twice as well, and the exit-0
-    contract is decided on what it reads back there.
-    """
-
-    return RunResourceV3(
-        workflow_format_version=3,
-        run_id="unread-by-the-command",
-        public_run_reference=PUBLIC_RUN_REFERENCE,
-        workflow_revision_hash=REVISION_HASH,
-        agent_binding_set_hash=BINDING_SET_HASH,
-        run_configuration_revision_hash=RUN_CONFIGURATION_HASH,
-        agent_bindings=(),
-        orders=(),
-        state_version=2,
-        state=state,
-        current_node_id=CHAIN_SECOND_NODE_ID,
-        current_node_execution_id=NODE_EXECUTION_ID,
-        node_rail=node_rail(
-            NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
-        ),
-        cancellation=RunCancellabilityResource(
-            cancellable=False,
-            reason="already-ended" if state == "COMPLETED" else "between-nodes",
-            target_node_execution_id=None,
-        ),
-        terminal_hash=terminal_hash,
-        latest_event_cursor=latest_event_cursor,
-    )
-
-
 def chained_serving_answers() -> dict[tuple[str, str], list[Answer]]:
     """The conversation a chain has: two nodes, each handing its work on."""
 
     return serving_answers(
-        start=Answer(chained_run_resource("STARTED", None).model_dump_json().encode()),
+        start=Answer(
+            run_resource("STARTED", None, current_node_id=CHAIN_SECOND_NODE_ID)
+            .model_dump_json()
+            .encode()
+        ),
         events=event_stream(
-            chained_agent_completed(AGENT_NODE_ID, AGENT_OUTPUT, 1, EVENT_CURSOR),
-            chained_agent_completed(
+            agent_completed(AGENT_NODE_ID, AGENT_OUTPUT, 1, EVENT_CURSOR),
+            agent_completed(
                 CHAIN_SECOND_NODE_ID, CHAIN_SECOND_OUTPUT, 2, LATER_EVENT_CURSOR
             ),
         ),
         run=Answer(
-            chained_run_resource("COMPLETED", TERMINAL_HASH, LATER_EVENT_CURSOR)
+            run_resource(
+                "COMPLETED",
+                TERMINAL_HASH,
+                LATER_EVENT_CURSOR,
+                current_node_id=CHAIN_SECOND_NODE_ID,
+            )
             .model_dump_json()
             .encode()
         ),
@@ -612,15 +507,14 @@ def chained_serving_answers() -> dict[tuple[str, str], list[Answer]]:
 
 
 def unbound_serving_answers() -> dict[tuple[str, str], list[Answer]]:
-    """The same conversation for a workflow that binds no agent."""
+    """The same conversation for a workflow that binds no agent.
 
-    return serving_answers(
-        start=Answer(unbound_run_resource("STARTED", None).model_dump_json().encode()),
-        events=event_stream(unbound_agent_completed()),
-        run=Answer(
-            unbound_run_resource("COMPLETED", TERMINAL_HASH).model_dump_json().encode()
-        ),
-    )
+    The run reads back in one shape whether or not the caller named bindings --
+    only the start request differs -- so this is the scripted conversation with
+    nothing replaced, and `unbound_order` is what makes it the unbound one.
+    """
+
+    return serving_answers()
 
 
 @pytest.fixture
@@ -720,7 +614,9 @@ def test_the_output_of_a_workflow_that_binds_no_agent_is_printed_as_it_was_writt
     assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
     reported = printed.err.decode()
     assert OUTPUT_HASH in reported
-    assert "attempt" not in reported
+    # The host casts the roles the caller left unnamed, so the work still runs
+    # under an attempt and the report still names it.
+    assert ATTEMPT_ID in reported
 
 
 def test_the_same_command_twice_asks_for_the_same_run(
@@ -829,13 +725,9 @@ def test_a_format_3_failed_agent_attempt_is_read_as_itself(
     """The Completed chain has its pin; failure of the same shape had none."""
     with ScriptedService(
         serving_answers(
-            start=Answer(
-                chained_run_resource("STARTED", None).model_dump_json().encode()
-            ),
+            start=Answer(run_resource("STARTED", None).model_dump_json().encode()),
             events=event_stream(agent_failed_v3()),
-            run=Answer(
-                chained_run_resource("STARTED", None).model_dump_json().encode()
-            ),
+            run=Answer(run_resource("STARTED", None).model_dump_json().encode()),
         )
     ) as service:
         exit_code = run_command(order, service)
@@ -1596,17 +1488,6 @@ def test_the_run_help_describes_input_instead_of_deferring_it(
     assert "follows issue #38" not in shown
 
 
-V3_WORKFLOW_NAME = "diff-review"
-V3_WORKFLOW_DOCUMENT = b"""format_version: 3
-name: diff-review
-description: Review a bound diff.
-nodes:
-  - id: draft
-    type: agent
-    role: writer
-    mode: headless
-    instruction: Review the bound diff.
-"""
 ILLEGAL_V3_NAME = "Der erste Lauf auf V14"
 ILLEGAL_V3_DOCUMENT = b"""format_version: 3
 name: Der erste Lauf auf V14
@@ -1619,11 +1500,11 @@ nodes:
 """
 LINEAGES_URL_PATH = API_PREFIX + WORKFLOW_LINEAGE_PATH
 MEMBERS_URL_PATH = f"{LINEAGES_URL_PATH}/{LINEAGE_ID}/members"
-V3_BY_NAME_URL_PATH = f"{API_PREFIX}{WORKFLOW_REVISION_PATH}/by-name/{V3_WORKFLOW_NAME}"
+V3_BY_NAME_URL_PATH = f"{API_PREFIX}{WORKFLOW_REVISION_PATH}/by-name/{WORKFLOW_NAME}"
 
 
-def published_v3_workflow_revision(name: str = V3_WORKFLOW_NAME) -> Answer:
-    document = V3_WORKFLOW_DOCUMENT if name == V3_WORKFLOW_NAME else ILLEGAL_V3_DOCUMENT
+def published_workflow_revision(name: str = WORKFLOW_NAME) -> Answer:
+    document = WORKFLOW_DOCUMENT if name == WORKFLOW_NAME else ILLEGAL_V3_DOCUMENT
     return Answer(
         WorkflowRevisionDetailResource(
             workflow_revision_hash=REVISION_HASH,
@@ -1647,9 +1528,7 @@ def published_v3_workflow_revision(name: str = V3_WORKFLOW_NAME) -> Answer:
                 ),
                 loops=(),
                 name=name,
-                description="Review a bound diff."
-                if name == V3_WORKFLOW_NAME
-                else None,
+                description="Review a bound diff." if name == WORKFLOW_NAME else None,
             ),
         )
         .model_dump_json()
@@ -1660,7 +1539,7 @@ def published_v3_workflow_revision(name: str = V3_WORKFLOW_NAME) -> Answer:
 def founded_lineage(revision_number: int = 1) -> Answer:
     return Answer(
         CatalogAdmissionResource(
-            display_name=V3_WORKFLOW_NAME,
+            display_name=WORKFLOW_NAME,
             lineage_id=LINEAGE_ID,
             workflow_revision_hash=REVISION_HASH,
             revision_number=revision_number,
@@ -1671,28 +1550,13 @@ def founded_lineage(revision_number: int = 1) -> Answer:
     )
 
 
-def v3_serving_answers() -> dict[tuple[str, str], list[Answer]]:
-    answers = serving_answers(workflow_revision=published_v3_workflow_revision())
-    answers[("POST", LINEAGES_URL_PATH)] = [founded_lineage()]
-    return answers
-
-
-@pytest.fixture
-def v3_order(tmp_path: Path) -> Iterator[list[str]]:
-    workflow = tmp_path / "workflow.yaml"
-    workflow.write_bytes(V3_WORKFLOW_DOCUMENT)
-    binding = tmp_path / "writer.json"
-    binding.write_bytes(BINDING_DOCUMENT)
-    yield ["run", "--workflow", str(workflow), "--binding", f"{AGENT_ROLE}={binding}"]
-
-
 @pytest.mark.proves("a-cli-published-v3-workflow-is-named-and-then-run-by-that-name")
 def test_publishing_a_v3_document_names_it_through_the_admission_door(
-    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     """Publication stays POST /workflow-revisions; naming is the second act."""
-    with ScriptedService(v3_serving_answers()) as service:
-        exit_code = run_command(v3_order, service)
+    with ScriptedService(serving_answers()) as service:
+        exit_code = run_command(order, service)
         founded = json.loads(service.sent("POST", LINEAGES_URL_PATH)[0])
         asked = [(call.method, call.path) for call in service.calls]
 
@@ -1715,16 +1579,16 @@ def test_publishing_a_v3_document_names_it_through_the_admission_door(
 
 @pytest.mark.proves("a-cli-published-v3-workflow-is-named-and-then-run-by-that-name")
 def test_a_named_run_starts_the_revision_the_just_published_name_holds(
-    v3_order: list[str],
+    order: list[str],
     named_order: list[str],
     capsysbinary: pytest.CaptureFixture[bytes],
 ) -> None:
-    answers = v3_serving_answers()
+    answers = serving_answers()
     answers[("GET", V3_BY_NAME_URL_PATH)] = [
         Answer(
             json.dumps(
                 {
-                    "display_name": V3_WORKFLOW_NAME,
+                    "display_name": WORKFLOW_NAME,
                     "lineage_id": LINEAGE_ID,
                     "workflow_revision_hash": REVISION_HASH,
                     "revision_number": 1,
@@ -1733,26 +1597,13 @@ def test_a_named_run_starts_the_revision_the_just_published_name_holds(
         )
     ]
     with ScriptedService(answers) as service:
-        published = run_command(v3_order, service)
-        named = run_command(
-            ["run", "--name", V3_WORKFLOW_NAME, *named_order[3:]], service
-        )
+        published = run_command(order, service)
+        named = run_command(["run", "--name", WORKFLOW_NAME, *named_order[3:]], service)
         published_again = service.sent("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
 
     assert (published, named) == (0, 0)
     assert len(published_again) == 1
     assert capsysbinary.readouterr().out == AGENT_OUTPUT + AGENT_OUTPUT
-
-
-def test_a_v2_document_run_does_not_found_a_lineage(
-    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
-) -> None:
-    with ScriptedService(serving_answers()) as service:
-        exit_code = run_command(order, service)
-        founded = service.sent("POST", LINEAGES_URL_PATH)
-
-    assert (exit_code, founded) == (0, [])
-    assert capsysbinary.readouterr().out == AGENT_OUTPUT
 
 
 def test_an_illegal_catalog_name_still_starts_and_founds_nothing(
@@ -1763,7 +1614,7 @@ def test_an_illegal_catalog_name_still_starts_and_founds_nothing(
     binding = tmp_path / "writer.json"
     binding.write_bytes(BINDING_DOCUMENT)
     answers = serving_answers(
-        workflow_revision=published_v3_workflow_revision(ILLEGAL_V3_NAME)
+        workflow_revision=published_workflow_revision(ILLEGAL_V3_NAME)
     )
     with ScriptedService(answers) as service:
         exit_code = run_command(
@@ -1783,7 +1634,7 @@ def test_an_illegal_catalog_name_still_starts_and_founds_nothing(
 
 
 def test_an_admission_invalid_request_is_a_named_refusal_and_starts_nothing(
-    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     """A founding invalid-request is not the catalog-name skip.
 
@@ -1794,7 +1645,7 @@ def test_an_admission_invalid_request_is_a_named_refusal_and_starts_nothing(
     problem = problem_resource(
         "invalid-request", "activated_at is not a catalog activation instant"
     )
-    answers = v3_serving_answers()
+    answers = serving_answers()
     answers[("POST", LINEAGES_URL_PATH)] = [
         Answer(
             problem.model_dump_json().encode(),
@@ -1803,7 +1654,7 @@ def test_an_admission_invalid_request_is_a_named_refusal_and_starts_nothing(
         )
     ]
     with ScriptedService(answers) as service:
-        exit_code = run_command(v3_order, service)
+        exit_code = run_command(order, service)
         founded = service.sent("POST", LINEAGES_URL_PATH)
         started = service.sent("POST", RUNS_URL_PATH)
 
@@ -1816,10 +1667,10 @@ def test_an_admission_invalid_request_is_a_named_refusal_and_starts_nothing(
 
 
 def test_an_already_owned_revision_skips_founding_and_still_starts(
-    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     problem = problem_resource("catalog-revision-owned")
-    answers = v3_serving_answers()
+    answers = serving_answers()
     answers[("POST", LINEAGES_URL_PATH)] = [
         Answer(
             problem.model_dump_json().encode(),
@@ -1828,7 +1679,7 @@ def test_an_already_owned_revision_skips_founding_and_still_starts(
         )
     ]
     with ScriptedService(answers) as service:
-        exit_code = run_command(v3_order, service)
+        exit_code = run_command(order, service)
         started = service.sent("POST", RUNS_URL_PATH)
         members = service.sent("POST", MEMBERS_URL_PATH)
 
@@ -1838,9 +1689,9 @@ def test_an_already_owned_revision_skips_founding_and_still_starts(
 
 
 def test_a_held_name_admits_the_new_revision_into_that_lineage(
-    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
-    answers = v3_serving_answers()
+    answers = serving_answers()
     answers[("POST", LINEAGES_URL_PATH)] = [
         problem_answer(
             HTTPStatus.CONFLICT,
@@ -1853,7 +1704,7 @@ def test_a_held_name_admits_the_new_revision_into_that_lineage(
         Answer(
             json.dumps(
                 {
-                    "display_name": V3_WORKFLOW_NAME,
+                    "display_name": WORKFLOW_NAME,
                     "lineage_id": LINEAGE_ID,
                     "workflow_revision_hash": REVISION_HASH,
                     "revision_number": 1,
@@ -1863,7 +1714,7 @@ def test_a_held_name_admits_the_new_revision_into_that_lineage(
     ]
     answers[("POST", MEMBERS_URL_PATH)] = [founded_lineage(revision_number=2)]
     with ScriptedService(answers) as service:
-        exit_code = run_command(v3_order, service)
+        exit_code = run_command(order, service)
         members = json.loads(service.sent("POST", MEMBERS_URL_PATH)[0])
 
     assert exit_code == 0

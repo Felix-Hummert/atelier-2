@@ -1,7 +1,12 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/88"
 
-# Four sentences. Residues named rather than quietly folded in:
+# Four sentences. A fifth, "the-v1-event-vocabulary-is-spelled-once-and-refuses-
+# by-name", was retired with the V1/V2 API wire it described (#904, operator
+# ruling 30.08.2026): the set of kinds a V1 run cannot carry has no owner to
+# spell once when no V1 run can exist.
+#
+# Residues named rather than quietly folded in:
 #
 #   - Hygiene-4, the page limit. Closed: `PageLimit` / `MAXIMUM_PAGE_ITEMS` is
 #     the one owner; the event page, the HTTP `limit`, and the durable query
@@ -43,10 +48,6 @@ text = "A bound the product persists or admits at its edge is written once at th
 [[sentence]]
 id = "a-durable-id-keeps-the-exact-form-it-was-minted-in"
 text = "The audited bootstrap, logical-effect, effect-workflow and reconcile-workflow identities are pinned as whole literal strings rather than only by their prefixes, so a changed digest, separator or encoding turns identical work into a second identity loudly instead of silently."
-
-[[sentence]]
-id = "the-v1-event-vocabulary-is-spelled-once-and-refuses-by-name"
-text = "The set of event kinds a V1 run cannot carry has one owner that both the published schema and the projection read, so every unpublished kind is refused by name instead of leaving the closed union through a fall-through assertion."
 
 [[sentence]]
 id = "a-schema-check-cannot-silently-narrow-an-owned-vocabulary"

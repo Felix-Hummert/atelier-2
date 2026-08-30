@@ -38,13 +38,19 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_run_events import ReadRunEventsResult, read_run_events
-from atelier2.contracts.agents import AgentConfigurationRevision, AuthProfileRevision
+from atelier2.contracts.agents import (
+    AgentBindingSet,
+    AgentConfigurationRevision,
+    AuthProfileRevision,
+)
 from atelier2.contracts.host_configuration import ProjectId, ProviderModelCheck
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
-from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.host_configuration import (
     ProviderModelDiscovery,
@@ -265,11 +271,17 @@ def unused_attention_event_page(
     raise AssertionError("attention feed was not under test")
 
 
-STREAM_DOCUMENT = b"""format_version: 1
-start: agent
+STREAM_DOCUMENT = b"""format_version: 3
+name: One agent, streamed
 nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: agent, type: agent, job: test, output: payload, next: final}
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Produce the payload this stream carries.
+    outputs:
+      - name: payload
+        schema: {ref: workspace_candidate, revision: schema-candidate}
 """
 
 
@@ -283,7 +295,17 @@ def stream_run_projection(run_id: str) -> RunProjection:
 
     revision = WorkflowRevision(STREAM_DOCUMENT)
     return RunProjection(
-        Run(RunId(run_id), revision.revision_hash, RunState.STARTED, "agent", 0, 0),
+        RunV3(
+            RunId(run_id),
+            revision.revision_hash,
+            AgentBindingSet(()).binding_set_hash,
+            (),
+            RunState.STARTED,
+            "agent",
+            0,
+            0,
+            RunConfigurationRevisionHash("c" * 64),
+        ),
         parse_executable_workflow_document(STREAM_DOCUMENT),
         None,
     )

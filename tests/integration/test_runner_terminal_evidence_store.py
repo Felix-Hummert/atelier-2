@@ -26,10 +26,7 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
-from atelier2.api.wire.events import (
-    AgentFailedEventResourceV2,
-    AgentFailedEventResourceV3,
-)
+from atelier2.api.wire.events import AgentFailedEventResourceV3
 from atelier2.application.converge_runner_terminal_evidence import (
     converge_runner_terminal_evidence,
 )
@@ -565,7 +562,7 @@ def test_real_v2_runner_failures_project_the_exact_new_event_code(
             node_rail_resources(project_node_rail(found.projection, page.events)),
         )
 
-        assert isinstance(resource, AgentFailedEventResourceV2)
+        assert isinstance(resource, AgentFailedEventResourceV3)
         assert resource.failure_code == failure_code.value
     finally:
         runtime.close()

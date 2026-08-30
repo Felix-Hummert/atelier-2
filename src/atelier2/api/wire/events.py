@@ -1,8 +1,8 @@
-"""The schemas an event stream frames, in each workflow format version."""
+"""The schemas an event stream frames for the runs this API serves."""
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import Field
 
@@ -22,189 +22,6 @@ from atelier2.api.wire.resources import (
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 
 
-class RunEventBaseResource(ApiModel):
-    cursor: str = Field(pattern=EVENT_CURSOR_PATTERN)
-    sequence: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    node_id: str = Field(min_length=1)
-    node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    event_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class AgentCompletedEventResource(RunEventBaseResource):
-    event: Literal["AGENT_COMPLETED"]
-    output: str
-    payload_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class ActionReconciliationRequiredEventResource(RunEventBaseResource):
-    event: Literal["ACTION_RECONCILIATION_REQUIRED"]
-    request_base64: str
-    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class ActionReconciliationResolvedEventResource(RunEventBaseResource):
-    event: Literal["ACTION_RECONCILIATION_RESOLVED"]
-    receipt: EffectReceiptResource
-
-
-class ActionCompletedEventResource(RunEventBaseResource):
-    event: Literal["ACTION_COMPLETED"]
-    receipt: EffectReceiptResource
-
-
-class WaitingInputEventResource(RunEventBaseResource):
-    event: Literal["WAITING_INPUT"]
-    answer_type: Literal["integer"]
-
-
-class WaitAnsweredEventResource(RunEventBaseResource):
-    event: Literal["WAIT_ANSWERED"]
-    answer: str
-    answer_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class SubworkflowCompletedEventResource(RunEventBaseResource):
-    event: Literal["SUBWORKFLOW_COMPLETED"]
-    result: int
-    result_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-RunEventResource = Annotated[
-    AgentCompletedEventResource
-    | ActionReconciliationRequiredEventResource
-    | ActionReconciliationResolvedEventResource
-    | ActionCompletedEventResource
-    | WaitingInputEventResource
-    | WaitAnsweredEventResource
-    | SubworkflowCompletedEventResource,
-    Field(discriminator="event"),
-]
-
-
-class RunEventBaseResourceV2(ApiModel):
-    workflow_format_version: Literal[2]
-    cursor: str = Field(pattern=EVENT_CURSOR_PATTERN)
-    sequence: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    node_id: str = Field(min_length=1)
-    node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    event_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
-    """Where the whole run stands once this event is folded into the snapshot.
-
-    A reader of one event needs the run, not the node: a finished node hands its
-    successor work, and answering that from the event alone is the derivation
-    this rail exists to end. V1 events cannot carry it — their resource is
-    byte-frozen — so a V1 cockpit keeps deriving until the V3 cutover (#63).
-    """
-
-
-class AgentCompletedEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["AGENT_COMPLETED"]
-    output_base64: str
-    output_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_ordinal: Literal[1, 2]
-
-
-class AgentFailedEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["AGENT_FAILED"]
-    failure_code: Literal[
-        "PROCESS_EXITED_UNSUCCESSFULLY",
-        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-        "PROCESS_SUPERVISION_FAILED",
-    ]
-    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_ordinal: Literal[1, 2]
-
-
-class AgentExecutorBindingUnavailableEventResourceV2(RunEventBaseResourceV2):
-    """An Agent node stopped before any provider attempt could be claimed."""
-
-    event: Literal["AGENT_FAILED"]
-    reason: Literal["agent-executor-binding-unavailable"]
-
-
-class AgentCancelRequestedEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["AGENT_CANCEL_REQUESTED"]
-    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_ordinal: Literal[1, 2]
-    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    replacement: Literal["NONE", "ONE"]
-
-
-class AgentCancelledEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["AGENT_CANCELLED"]
-    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_ordinal: Literal[1, 2]
-    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    replacement: Literal["NONE", "ONE"]
-    disposition: CancellationDispositionName
-    replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class AgentInterruptedEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["AGENT_INTERRUPTED"]
-    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_ordinal: Literal[1, 2]
-    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    replacement: Literal["NONE", "ONE"]
-    disposition: CancellationDispositionName
-    replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class ActionReconciliationRequiredEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["ACTION_RECONCILIATION_REQUIRED"]
-    request_base64: str
-    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class ActionReconciliationResolvedEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["ACTION_RECONCILIATION_RESOLVED"]
-    receipt: EffectReceiptResource
-
-
-class ActionCompletedEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["ACTION_COMPLETED"]
-    receipt: EffectReceiptResource
-
-
-class WaitingInputEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["WAITING_INPUT"]
-    answer_type: Literal["integer"]
-
-
-class WaitAnsweredEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["WAIT_ANSWERED"]
-    answer: str
-    answer_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class SubworkflowCompletedEventResourceV2(RunEventBaseResourceV2):
-    event: Literal["SUBWORKFLOW_COMPLETED"]
-    result: int
-    result_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-RunEventResourceV2 = (
-    AgentCompletedEventResourceV2
-    | AgentFailedEventResourceV2
-    | AgentExecutorBindingUnavailableEventResourceV2
-    | AgentCancelRequestedEventResourceV2
-    | AgentCancelledEventResourceV2
-    | AgentInterruptedEventResourceV2
-    | ActionReconciliationRequiredEventResourceV2
-    | ActionReconciliationResolvedEventResourceV2
-    | ActionCompletedEventResourceV2
-    | WaitingInputEventResourceV2
-    | WaitAnsweredEventResourceV2
-    | SubworkflowCompletedEventResourceV2
-)
-
-
 class RunEventBaseResourceV3(ApiModel):
     workflow_format_version: Literal[3]
     cursor: str = Field(pattern=EVENT_CURSOR_PATTERN)
@@ -217,12 +34,10 @@ class RunEventBaseResourceV3(ApiModel):
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     """Where the whole run stands once this event is folded into the snapshot.
 
-    A format-3 line writes agent events through the same attempt store as V2 and
-    its pauses through the same wait path, so the rail travels with all of them
-    the same way. A linear Action persists the same durable-effect kinds V2
-    already names, so those receipts travel here with the rail. V1 stays
-    byte-frozen and cannot carry it. Subworkflow V3 resources are not invented
-    here: no format-3 run persists that kind today.
+    A reader of one event needs the run, not the node: a finished node hands its
+    successor work, and answering that from the event alone is the derivation
+    this rail exists to end. Subworkflow resources are not invented here: no
+    format-3 run persists that kind today.
     """
 
 
@@ -294,8 +109,7 @@ class AgentInterruptedEventResourceV3(RunEventBaseResourceV3):
 class WaitingInputEventResourceV3(RunEventBaseResourceV3):
     """A format-3 run has stopped at a Wait node and is owed an answer.
 
-    It carries no `answer_type`. The V1 and V2 shapes name one because their Wait
-    node declares one; a V3 Wait node declares an output with a schema instead, so
+    It carries no `answer_type`. A Wait node declares an output with a schema, so
     the honest answer to "what may I send" is the published schema that node
     pinned, reachable from the workflow revision this event names -- and stating
     `integer` here would be a shape nothing enforces.
@@ -360,5 +174,3 @@ RunEventResourceV3 = (
     | WaitAnsweredEventResourceV3
     | WaitCancelledEventResourceV3
 )
-
-AnyRunEventResource = RunEventResource | RunEventResourceV2 | RunEventResourceV3

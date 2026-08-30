@@ -201,8 +201,11 @@ describe("the served vocabulary", () => {
   });
 
   it("decodes exactly the agent attempt states the document serves", () => {
+    // The rail's attempt is where the served document spells this vocabulary,
+    // and it is nullable there because a succeeded attempt carries no state.
     expect([...PUBLIC_ATTEMPT_STATES]).toEqual(
-      servedDocument.components.schemas.AgentAttemptResourceV2?.properties?.state?.enum
+      servedDocument.components.schemas.NodeRailAttemptResource?.properties?.state
+        ?.anyOf?.[0]?.enum
     );
   });
 

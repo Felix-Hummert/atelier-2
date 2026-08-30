@@ -34,36 +34,17 @@ from atelier2.api.references import (
 )
 from atelier2.api.stream import STREAM_FAILURE_CODES
 from atelier2.api.wire.events import (
-    ActionCompletedEventResource,
-    ActionCompletedEventResourceV2,
     ActionCompletedEventResourceV3,
-    ActionReconciliationRequiredEventResource,
-    ActionReconciliationRequiredEventResourceV2,
     ActionReconciliationRequiredEventResourceV3,
-    ActionReconciliationResolvedEventResource,
-    ActionReconciliationResolvedEventResourceV2,
     ActionReconciliationResolvedEventResourceV3,
-    AgentCancelledEventResourceV2,
     AgentCancelledEventResourceV3,
-    AgentCancelRequestedEventResourceV2,
     AgentCancelRequestedEventResourceV3,
-    AgentCompletedEventResource,
-    AgentCompletedEventResourceV2,
     AgentCompletedEventResourceV3,
-    AgentExecutorBindingUnavailableEventResourceV2,
     AgentExecutorBindingUnavailableEventResourceV3,
-    AgentFailedEventResourceV2,
     AgentFailedEventResourceV3,
-    AgentInterruptedEventResourceV2,
     AgentInterruptedEventResourceV3,
-    SubworkflowCompletedEventResource,
-    SubworkflowCompletedEventResourceV2,
-    WaitAnsweredEventResource,
-    WaitAnsweredEventResourceV2,
     WaitAnsweredEventResourceV3,
     WaitCancelledEventResourceV3,
-    WaitingInputEventResource,
-    WaitingInputEventResourceV2,
     WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.resources import (
@@ -71,10 +52,6 @@ from atelier2.api.wire.resources import (
     StreamFailureResource,
 )
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
-from atelier2.contracts.executions import (
-    KINDS_NO_V1_RUN_CARRIES,
-    RunEventKind,
-)
 from atelier2.contracts.workflow_documents import WORKFLOW_DOCUMENT_FORMATS
 
 API_PREFIX = "/atelier/api/v1"
@@ -117,29 +94,6 @@ LIBRARY_RECOGNITIONS_PATH = API_PREFIX + "/library/recognitions"
 LIBRARY_ADDITIONS_PATH = API_PREFIX + "/library/additions"
 LIBRARY_ADDITION_PATH = LIBRARY_ADDITIONS_PATH + "/{intake_id}"
 
-EVENT_MODELS = (
-    AgentCompletedEventResource,
-    ActionReconciliationRequiredEventResource,
-    ActionReconciliationResolvedEventResource,
-    ActionCompletedEventResource,
-    WaitingInputEventResource,
-    WaitAnsweredEventResource,
-    SubworkflowCompletedEventResource,
-)
-EVENT_MODELS_V2 = (
-    AgentCompletedEventResourceV2,
-    AgentFailedEventResourceV2,
-    AgentExecutorBindingUnavailableEventResourceV2,
-    AgentCancelRequestedEventResourceV2,
-    AgentCancelledEventResourceV2,
-    AgentInterruptedEventResourceV2,
-    ActionReconciliationRequiredEventResourceV2,
-    ActionReconciliationResolvedEventResourceV2,
-    ActionCompletedEventResourceV2,
-    WaitingInputEventResourceV2,
-    WaitAnsweredEventResourceV2,
-    SubworkflowCompletedEventResourceV2,
-)
 EVENT_MODELS_V3 = (
     AgentCompletedEventResourceV3,
     AgentFailedEventResourceV3,
@@ -154,10 +108,6 @@ EVENT_MODELS_V3 = (
     WaitAnsweredEventResourceV3,
     WaitCancelledEventResourceV3,
 )
-EVENT_NAMES = tuple(
-    kind.value for kind in RunEventKind if kind not in KINDS_NO_V1_RUN_CARRIES
-)
-
 OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/health", "get"): ("internal-error",),
     (API_PREFIX + "/auth-profile-revisions", "post"): (
@@ -703,7 +653,7 @@ def install_custom_openapi(app: FastAPI, limits: ApiLimits) -> None:
         _install_opaque_document_limits(schema, limits)
         _install_event_components(schema)
         _install_parameter_contracts(schema)
-        _install_versioned_run_unions(schema)
+        _install_closed_start_union(schema)
         _install_sse_contract(schema)
         OpenAPI.model_validate(schema)
         app.openapi_schema = schema
@@ -1015,43 +965,6 @@ def _run_projection_corrupt_component() -> dict[str, Any]:
 
 def _install_event_components(schema: dict[str, Any]) -> None:
     components = schema.setdefault("components", {}).setdefault("schemas", {})
-    for model in EVENT_MODELS:
-        generated = model.model_json_schema(
-            mode="serialization", ref_template="#/components/schemas/{model}"
-        )
-        definitions = generated.pop("$defs", {})
-        components.update(definitions)
-        components[model.__name__] = generated
-    components["RunEventResource"] = {
-        "oneOf": [
-            {"$ref": f"#/components/schemas/{model.__name__}"} for model in EVENT_MODELS
-        ],
-        "discriminator": {
-            "propertyName": "event",
-            "mapping": {
-                name: f"#/components/schemas/{model.__name__}"
-                for name, model in zip(EVENT_NAMES, EVENT_MODELS, strict=True)
-            },
-        },
-    }
-    for model in EVENT_MODELS_V2:
-        generated = model.model_json_schema(
-            mode="serialization", ref_template="#/components/schemas/{model}"
-        )
-        definitions = generated.pop("$defs", {})
-        components.update(definitions)
-        components[model.__name__] = generated
-    components["RunEventResourceV2"] = {
-        "oneOf": [
-            {"$ref": f"#/components/schemas/{model.__name__}"}
-            for model in EVENT_MODELS_V2
-        ],
-        "description": (
-            "The AGENT_FAILED forms are closed by their required shape: an "
-            "attempt failure names failure_code and an attempt; a pre-claim "
-            "executor refusal names only its product reason."
-        ),
-    }
     for model in EVENT_MODELS_V3:
         generated = model.model_json_schema(
             mode="serialization", ref_template="#/components/schemas/{model}"
@@ -1071,11 +984,7 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         ),
     }
     components["VersionedRunEventResource"] = {
-        "oneOf": [
-            {"$ref": "#/components/schemas/RunEventResource"},
-            {"$ref": "#/components/schemas/RunEventResourceV2"},
-            {"$ref": "#/components/schemas/RunEventResourceV3"},
-        ]
+        "oneOf": [{"$ref": "#/components/schemas/RunEventResourceV3"}]
     }
     components[StreamFailureResource.__name__] = _stream_failure_component()
     components[RunProjectionCorruptResource.__name__] = (
@@ -1253,43 +1162,22 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
         )
 
 
-def _install_versioned_run_unions(schema: dict[str, Any]) -> None:
-    start_operation = schema["paths"][API_PREFIX + "/runs"]["post"]
-    _rename_any_of_to_one_of(
-        start_operation["requestBody"]["content"]["application/json"]["schema"]
-    )
-    for path, method, statuses in (
-        (API_PREFIX + "/runs", "post", ("200", "201")),
-        (API_PREFIX + "/runs/{public_ref}", "get", ("200",)),
-        (CANCELLATION_PATH, "post", ("200", "202")),
-        (RUN_CANCELLATION_PATH, "post", ("200", "202")),
-        (API_PREFIX + "/runs/{public_ref}/answers", "post", ("202",)),
-        (
-            API_PREFIX + "/runs/{public_ref}/reconciliations",
-            "post",
-            ("200", "202"),
-        ),
-    ):
-        for status in statuses:
-            _rename_any_of_to_one_of(
-                schema["paths"][path][method]["responses"][status]["content"][
-                    "application/json"
-                ]["schema"]
-            )
-    schema["paths"][API_PREFIX + "/runs"]["get"]["responses"]["200"]["content"][
+def _install_closed_start_union(schema: dict[str, Any]) -> None:
+    """The start body is a closed set of shapes, not an open list of candidates.
+
+    A caller starts a run in exactly one of the three published shapes, and the
+    shape it sends is what selects the start it asked for. FastAPI generates a
+    Python union as `anyOf`, which says a body may satisfy several at once; the
+    door does not work that way, so the published document says `oneOf`.
+    """
+
+    body = schema["paths"][API_PREFIX + "/runs"]["post"]["requestBody"]["content"][
         "application/json"
-    ]["schema"] = {"$ref": "#/components/schemas/VersionedRunPageResource"}
-    page_items = schema["components"]["schemas"]["VersionedRunPageResource"][
-        "properties"
-    ]["items"]["items"]
-    _rename_any_of_to_one_of(page_items)
-
-
-def _rename_any_of_to_one_of(candidate: dict[str, Any]) -> None:
-    variants = candidate.pop("anyOf", None)
+    ]["schema"]
+    variants = body.pop("anyOf", None)
     if not isinstance(variants, list):
-        raise TypeError("generated OpenAPI omitted a versioned union")
-    candidate["oneOf"] = variants
+        raise TypeError("generated OpenAPI omitted the start union")
+    body["oneOf"] = variants
 
 
 def _replace_parameter_schema(
