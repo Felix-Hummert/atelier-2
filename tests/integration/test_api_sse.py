@@ -489,6 +489,15 @@ def test_sse_emits_every_persisted_event_and_resumes_after_its_cursor(
         _field(streamed, "cursor") for streamed in first
     ]
     assert {_field(streamed, "workflow_format_version") for streamed in first} == {3}
+    # The bytes a person sent come back out of the stream unchanged, spelled
+    # rather than recomputed: asking the answer for its own base64 and hash
+    # would compare the frame with the value that made it.
+    answered = first[STREAMED_HISTORY.index(("approve", "WAIT_ANSWERED"))]
+    assert _field(answered, "answer_base64") == "ImFwcHJvdmVkIg=="
+    assert _field(answered, "answer_hash") == (
+        "70ab47ec8fbd75027e36d5fae28639b51de6e7265220723cc99156dca295fcc5"
+    )
+    assert _field(answered, "actor") == "operator"
     unacknowledged = first[EVENTS_BEFORE_THE_ANSWER:]
     # A resume is compared by event identity rather than whole frame: the node
     # rail a frame carries is folded from the events its own response streamed,
