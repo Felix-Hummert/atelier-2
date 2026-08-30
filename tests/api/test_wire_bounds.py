@@ -37,7 +37,6 @@ from atelier2.api.references import (
     MAXIMUM_RUN_ORDERS,
 )
 from atelier2.api.wire import events, library, requests, resources
-from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
 from atelier2.contracts.agent_definitions import (
     MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
     MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
@@ -77,7 +76,6 @@ WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)
 # durable side already obeys; the fourth is the wire's own, because no durable
 # owner caps how many roles one run binds.
 OWNED_WIRE_BOUNDS: Mapping[str, int] = {
-    "AgentAttemptCancellationResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentDefinitionRevisionDetailResource.system_prompt": (
         MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS
     ),
@@ -97,9 +95,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "NodeProvenanceResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AdmitCatalogMemberRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
-    "AgentCancelRequestedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelRequestedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "AgentCancelledEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "WaitCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogAdmissionResource.display_name": (MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS),
@@ -129,7 +125,6 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentReceiptResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentReceiptResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "AgentReceiptResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "AgentInterruptedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentInterruptedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "RecognizedAgentDefinitionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -153,8 +148,6 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "PublishAuthProfileRevisionRequestResource.provider_id": (
         MAXIMUM_PROVIDER_ID_CHARACTERS
     ),
-    "RunResourceV2.agent_attempts": REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
-    "RunResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "RunResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "RunResourceV3.fork_successors": MAXIMUM_RUN_FORK_SUCCESSORS,
     "RunResourceV3.orders": MAXIMUM_RUN_ORDERS,

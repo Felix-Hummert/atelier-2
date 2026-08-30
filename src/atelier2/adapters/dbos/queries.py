@@ -43,7 +43,7 @@ from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     event_from_record,
     load_graph,
-    run_from_record_with_bindings,
+    runs_from_records_with_bindings,
     validate_run_graph_binding,
 )
 from atelier2.adapters.dbos.schema import (
@@ -1634,9 +1634,7 @@ class DbosQueries:
     ) -> tuple[RunProjection, ...]:
         if not records:
             return ()
-        loaded_runs = tuple(
-            run_from_record_with_bindings(connection, record) for record in records
-        )
+        loaded_runs = runs_from_records_with_bindings(connection, records)
         run_ids = tuple(run.run_id.value for run in loaded_runs)
         successor_fork_records = tuple(
             connection.execute(

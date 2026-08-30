@@ -51,7 +51,7 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
-from atelier2.api.openapi import API_PREFIX
+from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
@@ -97,7 +97,6 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
 )
 from tests.scenarios.agents import (
-    CLAUDE_SUBSCRIPTION_WORKFLOW,
     MEASURED_CLAUDE_VERSION,
     agent_attempt_execution,
     claude_subscription_attempt,
@@ -108,6 +107,7 @@ from tests.scenarios.agents import (
     runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 REAL_CLAUDE_EXECUTABLE_VARIABLE = "ATELIER2_REAL_CLAUDE_EXECUTABLE"
 REAL_CLAUDE_CREDENTIAL_DIRECTORY_VARIABLE = "ATELIER2_REAL_CLAUDE_CONFIG_DIR"
@@ -1085,6 +1085,23 @@ def test_a_node_demanding_interactive_is_refused_before_any_run_exists(
     assert refused_bindings == 0
 
 
+INTERACTIVE_REFUSAL_WORKFLOW = b"""format_version: 3
+name: Build with a subscription agent
+nodes:
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build the one thing this chain is for.
+""" + declared_output()
+"""The one-agent line the HTTP refusal below starts, executable once its schema is published.
+
+Executability has to be out of the way for that refusal to mean anything: a
+document the start would refuse for its own shape would answer with a different
+`409` and prove nothing about the capability.
+"""
+
+
 def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1095,8 +1112,11 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
     catalog binds a configuration to an executor key rather than to a
     capability, and that acceptance is what leaves the refusal to the start.
     The registry answering both calls is immutable and attests only headless,
-    so the executor key that resolved for the `201` still resolves at start --
-    the capability is the only thing left that this `409` can be about.
+    so the executor key that resolved for the `201` still resolves at start.
+    Every gate the start applies before that one is cleared over the same wire
+    -- the schema the document pins, so the revision reads back executable, and
+    the model registry entry, so the role casts -- which is what leaves the
+    capability as the only thing this `409` can be about.
 
     It arrives before the run row, the binding row, the run event, the attempt,
     the receipt, the durable queue, and any launch of the provider at all. The
@@ -1116,6 +1136,11 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
     monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
     try:
         client = durable_api_client(runtime)
+        schema = client.post(
+            API_PREFIX + "/schema-revisions",
+            content=ANY_JSON_SCHEMA.document,
+            headers={"content-type": "application/json"},
+        )
         auth = client.post(
             API_PREFIX + "/auth-profile-revisions",
             json={
@@ -1136,15 +1161,29 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
                 "requested_capability": "interactive",
             },
         )
+        registry = client.put(
+            MODEL_REGISTRY_PATH.replace("{provider_id}", "anthropic"),
+            json={
+                "revision_number": 1,
+                "entries": [
+                    {
+                        "model_id": "claude-haiku-4-5",
+                        "agent_configuration_revision_hash": configuration.json()[
+                            "agent_configuration_revision_hash"
+                        ],
+                    }
+                ],
+            },
+        )
         workflow = client.post(
             API_PREFIX + "/workflow-revisions",
-            content=CLAUDE_SUBSCRIPTION_WORKFLOW,
+            content=INTERACTIVE_REFUSAL_WORKFLOW,
             headers={"content-type": "application/yaml"},
         )
         refused = client.post(
             API_PREFIX + "/runs",
             json={
-                "workflow_format_version": 2,
+                "workflow_format_version": 3,
                 "run_id": "claude-interactive-over-http",
                 "workflow_revision_hash": workflow.json()["workflow_revision_hash"],
                 "agent_bindings": [
@@ -1155,6 +1194,7 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
                         ],
                     }
                 ],
+                "orders": [],
             },
         )
         with runtime.engine.connect() as connection:
@@ -1171,11 +1211,14 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
     finally:
         runtime.close()
 
+    assert schema.status_code == 201
     assert auth.status_code == 201
     assert configuration.status_code == 201
     assert configuration.json()["requested_capability"] == "interactive"
+    assert registry.status_code == 201
     assert workflow.status_code == 201
-    assert refused.status_code == 409
+    assert workflow.json()["graph"]["executable"] is True
+    assert refused.status_code == 409, refused.text
     assert refused.json()["type"].endswith(":agent-executor-binding-unavailable")
     assert written == (0, 0, 0, 0, 0)
     assert not (deployment / PROBE_RECORD_NAME).exists()

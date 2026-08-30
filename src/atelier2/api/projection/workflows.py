@@ -2,31 +2,16 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from atelier2.api.references import (
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     encode_canonical_base64,
 )
 from atelier2.api.wire.resources import (
-    ActionNodeResource,
-    AgentNodeResource,
-    AgentNodeResourceV2,
     EffectReceiptResource,
-    NodeResource,
-    NodeResourceV2,
-    OperatorAuthoritativeAbsenceDeterminationResource,
-    OperatorFoundDeterminationResource,
-    ReconciliationCommandResource,
-    ReconciliationDeterminationResource,
-    SubworkflowNodeResource,
     VersionedWorkflowRevisionPageResource,
     WaitAnswerSchemaResourceV3,
-    WaitNodeResource,
     WorkflowDeclaredOrderResourceV3,
     WorkflowDeclaredSchemaResourceV3,
-    WorkflowGraphResource,
-    WorkflowGraphResourceV2,
     WorkflowGraphResourceV3,
     WorkflowLoopResourceV3,
     WorkflowLoopVerdictResourceV3,
@@ -42,19 +27,6 @@ from atelier2.application.read_workflow_revisions import (
 )
 from atelier2.contracts.effects import (
     EffectReceipt,
-    OperatorAuthoritativeAbsence,
-    OperatorFoundEffect,
-    ReconcileCommand,
-)
-from atelier2.contracts.workflows import (
-    ActionNode,
-    AgentNode,
-    AgentNodeV2,
-    SubworkflowNode,
-    WaitNode,
-    WorkflowGraph,
-    WorkflowNode,
-    WorkflowNodeV2,
 )
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
@@ -66,43 +38,13 @@ from atelier2.contracts.workflows_v3 import (
 )
 
 
-def node_resource(node: WorkflowNode | WorkflowNodeV2) -> NodeResource | NodeResourceV2:
-    if isinstance(node, AgentNode):
-        return AgentNodeResource(
-            type="agent",
-            node_id=node.id,
-            job=node.job,
-            output=node.output,
-            next_node_id=node.next,
-        )
-    if isinstance(node, AgentNodeV2):
-        return AgentNodeResourceV2(
-            type="agent",
-            node_id=node.id,
-            role=node.role,
-            job=node.job,
-            next_node_id=node.next,
-        )
-    if isinstance(node, ActionNode):
-        return ActionNodeResource(
-            type="action", node_id=node.id, next_node_id=node.next
-        )
-    if isinstance(node, WaitNode):
-        return WaitNodeResource(
-            type="wait",
-            node_id=node.id,
-            answer_type=node.answer_type,
-            next_node_id=node.next,
-        )
-    if isinstance(node, SubworkflowNode):
-        return SubworkflowNodeResource(
-            type="subworkflow",
-            node_id=node.id,
-            operation=node.operation,
-            operands=node.operands,
-            next_node_id=None,
-        )
-    raise AssertionError("closed workflow node union was extended without API mapping")
+class UnservedWorkflowFormat(ValueError):
+    """Durable state names a workflow format this API has no wire shape for.
+
+    A `ValueError` because that is what the stream and the command routes already
+    treat as corrupt durable state; naming it keeps the reason readable where it
+    is raised and where it is caught.
+    """
 
 
 def _node_preview(node: WorkflowNodeV3) -> WorkflowNodePreviewResourceV3:
@@ -186,63 +128,49 @@ def graph_resource(
     graph: AnyWorkflowDocument,
     not_executable_reason: str | None,
     wait_answer_classifications: tuple[WaitAnswerClassification, ...] = (),
-) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
+) -> WorkflowGraphResourceV3:
     """The graph on the wire; executability is the application's verdict, carried.
 
     The API derives and never decides which documents run: the reason arrives
     from the one rule the start path applies, so this projection cannot drift
     from the starter the first time either moves.
     """
-    if isinstance(graph, WorkflowGraphV3):
-        classified_by_node_id = {
-            classification.node_id: classification
-            for classification in wait_answer_classifications
-        }
-        return WorkflowGraphResourceV3(
-            workflow_format_version=3,
-            executable=not_executable_reason is None,
-            not_executable_reason=not_executable_reason,
-            node_count=len(graph.nodes),
-            agent_roles=tuple(
-                sorted(
-                    {node.role for node in graph.nodes if isinstance(node, AgentNodeV3)}
-                )
-            ),
-            orders=tuple(
-                WorkflowDeclaredOrderResourceV3(
-                    name=entry.name,
-                    schema=WorkflowDeclaredSchemaResourceV3(
-                        ref=entry.schema_reference.ref,
-                        revision=entry.schema_reference.revision,
-                    ),
-                )
-                for entry in graph.graph_inputs
-            ),
-            wait_answer_schemas=tuple(
-                _wait_answer_schema(node, classified_by_node_id.get(node.id))
-                for node in graph.nodes
-                if isinstance(node, WaitNodeV3)
-            ),
-            node_previews=tuple(_node_preview(node) for node in graph.nodes),
-            loops=tuple(_loop_resource(loop) for loop in graph.loops),
-            name=graph.name,
-            description=graph.description,
+    if not isinstance(graph, WorkflowGraphV3):
+        raise UnservedWorkflowFormat(
+            f"the API projects format-3 documents only, not format "
+            f"{graph.format_version}"
         )
-    ordered = sorted(graph.nodes, key=lambda item: item.id.encode("utf-8"))
-    if isinstance(graph, WorkflowGraph):
-        return WorkflowGraphResource(
-            workflow_format_version=1,
-            start_node_id=graph.start,
-            nodes=cast(
-                tuple[NodeResource, ...], tuple(node_resource(item) for item in ordered)
-            ),
-        )
-    return WorkflowGraphResourceV2(
-        workflow_format_version=2,
-        start_node_id=graph.start,
-        nodes=cast(
-            tuple[NodeResourceV2, ...], tuple(node_resource(item) for item in ordered)
+    classified_by_node_id = {
+        classification.node_id: classification
+        for classification in wait_answer_classifications
+    }
+    return WorkflowGraphResourceV3(
+        workflow_format_version=3,
+        executable=not_executable_reason is None,
+        not_executable_reason=not_executable_reason,
+        node_count=len(graph.nodes),
+        agent_roles=tuple(
+            sorted({node.role for node in graph.nodes if isinstance(node, AgentNodeV3)})
         ),
+        orders=tuple(
+            WorkflowDeclaredOrderResourceV3(
+                name=entry.name,
+                schema=WorkflowDeclaredSchemaResourceV3(
+                    ref=entry.schema_reference.ref,
+                    revision=entry.schema_reference.revision,
+                ),
+            )
+            for entry in graph.graph_inputs
+        ),
+        wait_answer_schemas=tuple(
+            _wait_answer_schema(node, classified_by_node_id.get(node.id))
+            for node in graph.nodes
+            if isinstance(node, WaitNodeV3)
+        ),
+        node_previews=tuple(_node_preview(node) for node in graph.nodes),
+        loops=tuple(_loop_resource(loop) for loop in graph.loops),
+        name=graph.name,
+        description=graph.description,
     )
 
 
@@ -291,30 +219,6 @@ def workflow_revision_detail_resource(
             read.not_executable_reason,
             read.wait_answer_classifications,
         ),
-    )
-
-
-def determination_resource(
-    determination: OperatorFoundEffect | OperatorAuthoritativeAbsence,
-) -> ReconciliationDeterminationResource:
-    if isinstance(determination, OperatorFoundEffect):
-        return OperatorFoundDeterminationResource(
-            type="operator_found",
-            effect_id=determination.effect_id.value,
-            result_base64=encode_canonical_base64(determination.result.payload),
-        )
-    return OperatorAuthoritativeAbsenceDeterminationResource(
-        type="operator_authoritative_absence"
-    )
-
-
-def command_resource(command: ReconcileCommand) -> ReconciliationCommandResource:
-    return ReconciliationCommandResource(
-        command_id=command.command_id.value,
-        actor=command.actor.value,
-        evidence=command.evidence,
-        state="PENDING",
-        determination=determination_resource(command.determination),
     )
 
 

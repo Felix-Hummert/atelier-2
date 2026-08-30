@@ -12,7 +12,7 @@ from atelier2.api.stream import (
     stream_server_events,
 )
 from atelier2.api.wire.events import (
-    AgentCompletedEventResourceV2,
+    AgentCompletedEventResourceV3,
     WaitCancelledEventResourceV3,
 )
 from atelier2.api.wire.resources import NodeRailAttemptResource, NodeRailResource
@@ -39,7 +39,7 @@ from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import (
     PrepareRunEventStreamResult,
 )
-from tests.api.test_agent_attempts import v2_run_projection
+from tests.api.test_agent_attempts import run_projection
 from tests.api.test_run_cancellation import on_the_wait_node
 from tests.scenarios.api import (
     api_limits,
@@ -105,7 +105,7 @@ def agent_completed(projection: RunProjection) -> PersistedRunEvent:
             ),
         ),
         None,
-        WorkflowFormatVersion.V2,
+        WorkflowFormatVersion.V3,
     )
 
 
@@ -158,12 +158,12 @@ def streamed(
 
 
 @pytest.mark.proves("the-browser-derives-no-durable-state-for-a-v2-run")
-def test_a_streamed_v2_event_carries_the_rail_the_run_stands_at_after_it() -> None:
-    projection = v2_run_projection(PublicAgentAttemptState.POSSIBLY_RAN)
+def test_a_streamed_event_carries_the_rail_the_run_stands_at_after_it() -> None:
+    projection = run_projection(PublicAgentAttemptState.POSSIBLY_RAN)
 
     frame = streamed(projection, agent_completed(projection))
 
-    assert isinstance(frame.data, AgentCompletedEventResourceV2)
+    assert isinstance(frame.data, AgentCompletedEventResourceV3)
     assert frame.data.node_rail == (
         NodeRailResource(
             node_id="build",

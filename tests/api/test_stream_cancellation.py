@@ -13,15 +13,20 @@ from atelier2.api.stream import (
     PreparedEventStream,
     stream_server_events,
 )
-from atelier2.contracts.effects import LogicalEffectKey
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
-from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventKind,
+)
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
 )
@@ -58,40 +63,28 @@ class _UnusedAttentionQueries:
         )
 
 
-def persisted_event(
-    sequence: int, kind: RunEventKind, payload: bytes
-) -> PersistedRunEvent:
-    node_id = "final" if kind is RunEventKind.SUBWORKFLOW_COMPLETED else "agent"
+def agent_completed(sequence: int, output: bytes) -> PersistedRunEvent:
+    """One durable completion of the streamed run's only node.
+
+    These tests are about when a page is read and when a frame leaves, so every
+    event is the same shape; which frame ends the stream is the page's own
+    terminal flag, not the kind of the event on it.
+    """
+
     revision_hash = stream_run_projection(RUN_ID.value).run.revision_hash
     return PersistedRunEvent(
         RunEvent(
             RUN_ID,
             revision_hash,
             sequence,
-            node_id,
-            NodeExecutionId.for_node(RUN_ID, revision_hash, node_id),
-            kind,
-            payload,
-            receipt_logical_key=(
-                LogicalEffectKey("receipt-key")
-                if kind
-                in {
-                    RunEventKind.ACTION_RECONCILIATION_RESOLVED,
-                    RunEventKind.ACTION_COMPLETED,
-                }
-                else None
-            ),
-            receipt_result_hash=(
-                Sha256Hash.of(payload)
-                if kind
-                in {
-                    RunEventKind.ACTION_RECONCILIATION_RESOLVED,
-                    RunEventKind.ACTION_COMPLETED,
-                }
-                else None
-            ),
+            "agent",
+            NodeExecutionId.for_node(RUN_ID, revision_hash, "agent"),
+            RunEventKind.AGENT_COMPLETED,
+            output,
+            attempt_binding=RunEventAgentAttemptBinding(AgentAttemptId("a" * 64), 1),
         ),
         None,
+        WorkflowFormatVersion.V3,
     )
 
 
@@ -218,10 +211,7 @@ def test_poll_backoff_resets_to_initial_delay_immediately_after_progress() -> No
             del run_id, limit
             self.calls += 1
             if self.calls == 3:
-                return RunEventPage(
-                    (persisted_event(1, RunEventKind.AGENT_COMPLETED, b"one"),),
-                    False,
-                )
+                return RunEventPage((agent_completed(1, b"one"),), False)
             assert after_sequence in {0, 1}
             return RunEventPage((), False)
 
@@ -518,16 +508,10 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
             self.calls.append(after_sequence)
             if after_sequence == 0:
                 return RunEventPage(
-                    (
-                        persisted_event(1, RunEventKind.AGENT_COMPLETED, b"one"),
-                        persisted_event(2, RunEventKind.AGENT_COMPLETED, b"two"),
-                    ),
+                    (agent_completed(1, b"one"), agent_completed(2, b"two")),
                     False,
                 )
-            return RunEventPage(
-                (persisted_event(3, RunEventKind.SUBWORKFLOW_COMPLETED, b"3"),),
-                True,
-            )
+            return RunEventPage((agent_completed(3, b"three"),), True)
 
     async def scenario() -> None:
         queries = PagedQueries()

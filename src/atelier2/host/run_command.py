@@ -45,15 +45,10 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import decode_canonical_base64
 from atelier2.api.wire.events import (
-    ActionReconciliationRequiredEventResource,
-    ActionReconciliationRequiredEventResourceV2,
-    AgentCompletedEventResource,
-    AgentCompletedEventResourceV2,
+    ActionReconciliationRequiredEventResourceV3,
     AgentCompletedEventResourceV3,
-    AgentFailedEventResourceV2,
     AgentFailedEventResourceV3,
-    WaitingInputEventResource,
-    WaitingInputEventResourceV2,
+    WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.requests import (
     AdmitCatalogMemberRequestResource,
@@ -71,13 +66,13 @@ from atelier2.api.wire.requests import (
 )
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
-    AnyRunResource,
     ArtifactResource,
     AuthProfileRevisionResource,
     CatalogAdmissionResource,
     CatalogNameResolutionResource,
     NodeDetailResource,
     ProblemResource,
+    RunResourceV3,
     StreamFailureResource,
     WorkflowRevisionDetailResource,
 )
@@ -107,27 +102,19 @@ OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 RUN_IDENTITY_DOMAIN = "atelier2-command-line-run"
 
 ActedEventResource = (
-    AgentCompletedEventResource
-    | AgentCompletedEventResourceV2
-    | AgentCompletedEventResourceV3
-    | AgentFailedEventResourceV2
+    AgentCompletedEventResourceV3
     | AgentFailedEventResourceV3
-    | WaitingInputEventResource
-    | WaitingInputEventResourceV2
-    | ActionReconciliationRequiredEventResource
-    | ActionReconciliationRequiredEventResourceV2
+    | WaitingInputEventResourceV3
+    | ActionReconciliationRequiredEventResourceV3
 )
 """Every event form this command must read to report a run it started.
 
 The resources are the served wire's own, imported rather than restated: a second
 vocabulary in the host is how this command came to refuse what the service had
-already learned to say. It is narrower than `AnyRunEventResource` on purpose --
+already learned to say. It is narrower than the served event union on purpose --
 only the kinds in `ACTED_EVENT_NAMES` reach the decoder, so a form this command
-passes over needs no entry here.
-
-The V3 forms joined when the service began answering with them (#249). Until
-then a format-3 line ended with its whole history unread and exit 1 while the run
-itself completed, which is the one promise this command exists to keep.
+passes over needs no entry here, and a kind it cannot act on alone reaches the
+operator as a refusal rather than as a silent pass.
 """
 ACTED_EVENT_NAMES = frozenset(
     {
@@ -146,7 +133,7 @@ _agent_configuration_resource = TypeAdapter(AgentConfigurationRevisionResource)
 _workflow_revision_resource = TypeAdapter(WorkflowRevisionDetailResource)
 _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
 _catalog_admission_resource = TypeAdapter(CatalogAdmissionResource)
-_run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
+_run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
 _acted_event_resource = TypeAdapter[ActedEventResource](ActedEventResource)
 _stream_failure_resource = TypeAdapter(StreamFailureResource)
 _node_detail_resource = TypeAdapter(NodeDetailResource)
@@ -755,19 +742,7 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                 continue
             event = _decoded(_acted_event_resource, data.encode(), "a run event")
             match event:
-                case AgentCompletedEventResource():
-                    outputs.append(
-                        AgentOutput(
-                            node_id=event.node_id,
-                            output=event.output.encode(),
-                            output_hash=event.payload_hash,
-                            attempt_id=None,
-                        )
-                    )
-                case AgentCompletedEventResourceV2() | AgentCompletedEventResourceV3():
-                    # One arm for both: a format-3 completion carries its output
-                    # in the same three fields, so telling them apart here would
-                    # be a distinction the reader does not have.
+                case AgentCompletedEventResourceV3():
                     outputs.append(
                         AgentOutput(
                             node_id=event.node_id,
@@ -776,13 +751,14 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                             attempt_id=event.attempt_id,
                         )
                     )
-                case AgentFailedEventResourceV2() | AgentFailedEventResourceV3():
+                case AgentFailedEventResourceV3():
                     raise _why_the_run_stops(api, public_run_reference, event)
-                case WaitingInputEventResource() | WaitingInputEventResourceV2():
+                case WaitingInputEventResourceV3():
+                    # The node's answer schema lives on the workflow revision, not
+                    # on the event, so the refusal names the node and stops there.
                     raise RunNeedsAnotherActor(
-                        f"node {event.node_id} is waiting for an "
-                        f"{event.answer_type} answer; this command carries no "
-                        "answer"
+                        f"node {event.node_id} is waiting for an answer; this "
+                        "command carries no answer"
                     )
                 case _:
                     raise RunNeedsAnotherActor(
@@ -796,18 +772,17 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
 def _why_the_run_stops(
     api: str,
     public_run_reference: str,
-    event: AgentFailedEventResourceV2 | AgentFailedEventResourceV3,
+    event: AgentFailedEventResourceV3,
 ) -> RunNeedsAnotherActor:
     """The failure an operator is handed, with the reason read where it lives.
 
-    A V3 failure carries the stored `node-receipt/v3` words on the event
-    itself — the same sentence, not a second vocabulary. A V2 event, or a V3
-    event whose receipt nobody wrote, still asks the node resource the console
-    panel reads. An attempt whose reason nothing recorded is reported as
-    exactly that.
+    A failure carries the stored `node-receipt/v3` words on the event itself --
+    the same sentence, not a second vocabulary. An event whose receipt nobody
+    wrote still asks the node resource the console panel reads. An attempt whose
+    reason nothing recorded is reported as exactly that.
     """
 
-    if isinstance(event, AgentFailedEventResourceV3) and event.reason is not None:
+    if event.reason is not None:
         named = f"failed with {event.failure_code}: {event.reason}"
         return RunNeedsAnotherActor(
             f"agent attempt {event.attempt_id} of node {event.node_id} {named}; "

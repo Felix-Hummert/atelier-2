@@ -37,7 +37,7 @@ from atelier2.ports.run_queries import (
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
 )
-from tests.api.test_agent_attempts import v2_run_projection
+from tests.api.test_agent_attempts import run_projection
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 
@@ -61,7 +61,7 @@ class _RunQueries:
         projection_limit: DurableProjectionLimit | None = None,
     ) -> GetRunResult:
         del run_id, projection_limit
-        return RunFound(v2_run_projection(PublicAgentAttemptState.PREPARED))
+        return RunFound(run_projection(PublicAgentAttemptState.PREPARED))
 
     def list_runs(
         self,
@@ -84,7 +84,7 @@ class _RunQueries:
 
 
 def _attempt() -> AgentAttempt:
-    projection = v2_run_projection(PublicAgentAttemptState.PREPARED)
+    projection = run_projection(PublicAgentAttemptState.PREPARED)
     projected = projection.current_agent_attempt
     assert projected is not None
     run = projection.run

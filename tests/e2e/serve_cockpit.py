@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from starlette.types import ASGIApp, Lifespan, Message, Receive, Scope, Send
 
 from atelier2.adapters.dbos import workflow as dbos_workflow
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
@@ -69,6 +70,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageFounded,
 )
 from atelier2.contracts.effects import (
+    AdapterOperationName,
     AdapterRevision,
     EffectAdapterBinding,
     EffectDestination,
@@ -80,7 +82,11 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
@@ -108,21 +114,63 @@ from atelier2.ports.issue_observation import (
     TrackerItemUnknown,
     WorkItemRevisionObserved,
 )
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 from atelier2.ports.queue_projection import QueueItemsObserved
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
 )
-from tests.scenarios.runs import start_published_v1_run
+from tests.scenarios.runs import start_published_v3_run
+from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
-WORKFLOW = b"""format_version: 1
-start: agent
+WORKFLOW_NAME = "Prove one reconciliation"
+OPEN_PR_OPERATION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION,
+    json.dumps({"operation": AdapterOperationName.OPEN_PR.value}).encode("utf-8"),
+)
+BASELINE_AGENT_OUTPUT = b'"exact-request"'
+"""What the seeded agent writes: one JSON value, judged by the any-JSON schema."""
+
+
+def baseline_agent_executor_factory() -> RecordingAgentExecutorFactoryV2:
+    """The executor key the two baseline runs stand bound to.
+
+    Every runtime that opens over the seeded stores must register this key: the
+    baseline runs are nonterminal on purpose, and the durable-binding guard
+    refuses a registry that could not run what the store still owes.
+    """
+
+    return RecordingAgentExecutorFactoryV2(
+        "exact", "exact/v1", "exact-operation", BASELINE_AGENT_OUTPUT
+    )
+
+
+WORKFLOW = f"""format_version: 3
+name: {WORKFLOW_NAME}
 nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: wait, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: wait}
-  - {id: agent, type: agent, job: prove-reconciliation, output: exact-request, next: action}
-"""
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: prove-reconciliation
+    outputs:
+      - name: request
+        schema: {{ref: request-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
+  - id: action
+    type: action
+    operation: {{ref: open-pr, revision: {OPEN_PR_OPERATION.revision_hash.value}}}
+    depends_on: [agent]
+  - id: wait
+    type: wait
+    prompt: Accept the executed effect, or name what is wrong with it.
+    depends_on: [action]
+    outputs:
+      - name: answer
+        schema: {{ref: answer-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
+""".encode()
 RUN_IDS = ("found-run", "absent-run")
 # Deadlock brake for in-process Event and thread waits. Not a latency
 # contract: the work is a local thread rendezvous, a fake decode, or a
@@ -1107,22 +1155,41 @@ def seed_boot_baseline(database: Path, effects: Path, application_version: str) 
         AdapterRevision("loopback-v1"),
         EffectDestination("r3-phase5-e2e"),
     )
+    # A registered LOCAL_PROCESS executor demands a scratch root even though
+    # the recording executor runs in-process. It must lie outside every git
+    # worktree, so the seed borrows the same out-of-tree temporary shape the
+    # served generations use, and removes it once the baseline stands.
+    seed_scratch = BrowserScratchRoot.create()
     prepare = DbosRuntime(
-        DbosRuntimeSettings(database, application_version),
+        DbosRuntimeSettings(
+            database, application_version, agent_scratch_root=seed_scratch.path
+        ),
         UnknownReadbackFactory(binding),
         ExactOutputAgentExecutorFactory(),
+        (baseline_agent_executor_factory(),),
     )
     try:
         prepare.initialize_storage()
+        catalog_store = DbosCatalogStore(prepare.engine)
+        for published_revision in (ANY_JSON_SCHEMA, OPEN_PR_OPERATION):
+            published = catalog_store.publish_revision(published_revision)
+            assert isinstance(
+                published, (PublishedRevisionCreated, PublishedRevisionExisting)
+            ), published
         revision = WorkflowRevision(WORKFLOW)
         for run_id in RUN_IDS:
-            start_published_v1_run(
-                prepare.engine, prepare.settings, RunId(run_id), revision
+            start_published_v3_run(
+                prepare.engine,
+                prepare.settings,
+                RunId(run_id),
+                revision,
+                prepare.agent_executor_registry,
             )
         prepare.launch()
         wait_for_reconciliation(prepare)
     finally:
         prepare.close()
+        seed_scratch.close()
 
 
 def reset_to_boot_baseline(
@@ -1199,13 +1266,23 @@ def main() -> None:
         capability_set=frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS}),
     )
 
+    baseline = baseline_agent_executor_factory()
+
     def runtime(
         settings: DbosRuntimeSettings,
         effect_factory: EffectAdapterFactory,
         agent_factory: AgentExecutorFactory,
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
-        factories = (*agent_factories_v2, factory, immediate, delayed, held, conductor)
+        factories = (
+            *agent_factories_v2,
+            baseline,
+            factory,
+            immediate,
+            delayed,
+            held,
+            conductor,
+        )
         # The e2e runtime root lives inside the repository checkout, which no
         # scratch root may, so the leased workspaces stand outside it.
         return DbosRuntime(
@@ -1299,13 +1376,23 @@ def main() -> None:
     try:
         app, live_runtime = compose()
         runtime_to_close = live_runtime
+
+        def reset_state() -> None:
+            # The drain that precedes a reset seals the served generation, and
+            # the reseed's own baseline attempts run through the tracked
+            # execute path -- they belong to the incoming generation, so it is
+            # minted before the seed writes. `compose_next_generation` minting
+            # again afterwards is harmless: the seed's decodes have returned.
+            holds.start_generation()
+            reset_to_boot_baseline(database, effects, application_version)
+
         harness = BrowserProofHarness(
             app,
             live_runtime,
             factory,
             compose_next_generation,
             request_restart,
-            lambda: reset_to_boot_baseline(database, effects, application_version),
+            reset_state,
             drain_inflight,
         )
         runtime_to_close = harness

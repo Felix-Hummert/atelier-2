@@ -47,12 +47,11 @@ from atelier2.api.wire.requests import (
     WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
-    AnyRunPageResource,
-    AnyRunResource,
     InvalidFieldResource,
     NodeDetailResource,
     OperatorFoundDeterminationResource,
     RunReceiptResource,
+    RunResourceV3,
     UncastRoleResource,
     VersionedRunPageResource,
 )
@@ -229,9 +228,9 @@ def _authored_order(order: AnyStartRunOrderResource) -> AuthoredOrder:
 
 @router.post(
     API_PREFIX + "/runs",
-    response_model=AnyRunResource,
+    response_model=RunResourceV3,
     status_code=HTTPStatus.CREATED,
-    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+    responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def start_run_route(
     body: AnyStartRunRequestResource,
@@ -324,13 +323,13 @@ async def start_run_route(
     return resource_response(await _run_resource_of(run_id, context), status)
 
 
-@router.get(API_PREFIX + "/runs", response_model=AnyRunPageResource)
+@router.get(API_PREFIX + "/runs", response_model=VersionedRunPageResource)
 async def list_runs(
     after: str | None = None,
     limit: str = "50",
     state: str | None = None,
     context: ApiContext = api_context_dependency,
-) -> AnyRunPageResource:
+) -> VersionedRunPageResource:
     boundary = None
     if after is not None:
         boundary = decode_public_reference(after, context.limits)
@@ -374,10 +373,10 @@ async def list_runs(
             assert_never(unreachable)
 
 
-@router.get(API_PREFIX + "/runs/{public_ref}", response_model=AnyRunResource)
+@router.get(API_PREFIX + "/runs/{public_ref}", response_model=RunResourceV3)
 async def get_run_route(
     public_ref: str, context: ApiContext = api_context_dependency
-) -> AnyRunResource:
+) -> RunResourceV3:
     return await _run_resource_of(
         decode_public_reference(public_ref, context.limits), context
     )
@@ -385,9 +384,9 @@ async def get_run_route(
 
 @router.post(
     API_PREFIX + "/runs/{public_ref}/forks",
-    response_model=AnyRunResource,
+    response_model=RunResourceV3,
     status_code=HTTPStatus.CREATED,
-    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+    responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def fork_run_route(
     public_ref: str,
@@ -506,9 +505,9 @@ async def get_run_receipt_route(
 
 @router.post(
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations",
-    response_model=AnyRunResource,
+    response_model=RunResourceV3,
     status_code=HTTPStatus.ACCEPTED,
-    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+    responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def cancel_agent_attempt_route(
     public_ref: str,
@@ -577,9 +576,9 @@ async def cancel_agent_attempt_route(
 
 @router.post(
     API_PREFIX + "/runs/{public_ref}/answers",
-    response_model=AnyRunResource,
+    response_model=RunResourceV3,
     status_code=HTTPStatus.ACCEPTED,
-    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+    responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def answer_run_route(
     public_ref: str,
@@ -640,9 +639,9 @@ async def answer_run_route(
 
 @router.post(
     API_PREFIX + "/runs/{public_ref}/reconciliations",
-    response_model=AnyRunResource,
+    response_model=RunResourceV3,
     status_code=HTTPStatus.ACCEPTED,
-    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+    responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def reconcile_run_route(
     public_ref: str,
@@ -710,9 +709,9 @@ async def reconcile_run_route(
 
 @router.post(
     API_PREFIX + "/runs/{public_ref}/cancellations",
-    response_model=AnyRunResource,
+    response_model=RunResourceV3,
     status_code=HTTPStatus.ACCEPTED,
-    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+    responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def cancel_run_route(
     public_ref: str,
@@ -773,7 +772,7 @@ async def cancel_run_route(
     return resource_response(await _run_resource_of(run_id, context), status)
 
 
-async def _run_resource_of(run_id: RunId, context: ApiContext) -> AnyRunResource:
+async def _run_resource_of(run_id: RunId, context: ApiContext) -> RunResourceV3:
     return await load_run_resource(
         run_id,
         context.use_cases.get_run,

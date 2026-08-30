@@ -207,36 +207,41 @@ def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
     baseline_effect_calls = _effect_call_count(effects)
 
     settings = _served_settings(tmp_path, database, effects, application_version)
+    scratch_root = harness.BrowserScratchRoot.create()
 
     def compose() -> tuple:
-        return harness.serving.compose_application(settings)
+        return _compose_with_scratch(settings, scratch_root)
 
     app, runtime = compose()
     # `harness` is loaded dynamically (`load_harness`), so pyright cannot know
     # `BrowserProofHarness`'s real type here -- `Any` names that honestly.
     proof: Any = None
     try:
-        # Mutates BOTH stores: a third v1 run's own start (the `runs` table,
-        # the DBOS database) and its action node's attempted effect (the
-        # `loopback_effect_calls` table, the effect store) -- the same two
-        # files `seed_boot_baseline` owns. Unlike the boot fixture's own
-        # temporary runtime, this live, `compose_application`-built one proves
-        # its effect adapter can confirm its own readback, so the run clears
-        # its action node instead of parking on it -- irrelevant here, since
-        # this test only needs the effect store's own row, not that specific
-        # run state.
-        mutation_run_id = "harness-reset-mutation"
-        harness.start_published_v1_run(
-            runtime.engine,
-            runtime.settings,
-            harness.RunId(mutation_run_id),
-            harness.WorkflowRevision(harness.WORKFLOW),
-        )
+        # Mutates BOTH stores through the one door the browser's own Absent
+        # flow drives: resolving a baseline reconciliation executes the exact
+        # request once (the `loopback_effect_calls` table, the effect store)
+        # and advances the run off WAITING_RECONCILIATION (the `runs` table,
+        # the DBOS database) -- the same two files `seed_boot_baseline` owns.
+        with TestClient(app) as mutate_client:
+            resolved = mutate_client.post(
+                "/atelier/api/v1/runs/run1.Zm91bmQtcnVu/reconciliations",
+                json={
+                    "command_id": "reset-test-mutation",
+                    "expected_intent_state_version": 1,
+                    "actor": "reset-test",
+                    "evidence": "mutating past the cold-boot baseline",
+                    "determination": {"type": "operator_authoritative_absence"},
+                },
+            )
+            assert resolved.status_code in (200, 202), resolved.text
         harness.wait_until(
             lambda: _effect_call_count(effects) == baseline_effect_calls + 1,
-            "the mutation run to write one loopback effect",
+            "the absent resolution to write one loopback effect",
         )
-        assert _run_states(database) != baseline_runs
+        harness.wait_until(
+            lambda: _run_states(database) != baseline_runs,
+            "the resolved run to advance off the baseline state",
+        )
         assert _effect_call_count(effects) == baseline_effect_calls + 1
 
         factory = harness.BlockingAgentExecutorFactory(
@@ -288,6 +293,7 @@ def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
             proof.runtime.close()
         else:
             runtime.close()
+        scratch_root.close()
 
 
 def _leftover_attempt_directory(scratch_root: Path) -> Path:
@@ -315,7 +321,7 @@ def _compose_with_scratch(settings: object, scratch_root: ScratchRootWithPath):
             harness.replace(runtime_settings, agent_scratch_root=scratch_root.path),
             effect_factory,
             agent_factory,
-            (*agent_factories_v2, factory),
+            (*agent_factories_v2, factory, harness.baseline_agent_executor_factory()),
         )
 
     with patch.object(harness.serving, "DbosRuntime", side_effect=build_runtime):
@@ -673,7 +679,12 @@ def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
             harness.replace(runtime_settings, agent_scratch_root=scratch["root"].path),
             effect_factory,
             agent_factory,
-            (*agent_factories_v2, blocking, v2),
+            (
+                *agent_factories_v2,
+                blocking,
+                v2,
+                harness.baseline_agent_executor_factory(),
+            ),
         )
 
     def compose() -> tuple:
