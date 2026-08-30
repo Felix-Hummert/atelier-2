@@ -143,6 +143,13 @@ def _decode_frame_body(body: bytes) -> tuple[bytes, ...]:
     try:
         return unframe(body, RUNNER_SESSION_FRAME_DOMAIN.decode("ascii"))
     except FrameTruncated as error:
+        # `unframe` bounds no field length; it only reports the one the payload
+        # declared. Naming a declaration above the session bound "oversized"
+        # rather than "truncated" is exact only because
+        # `runner_session_body_length` already bounded this body by the same
+        # number, so a field that large cannot fit and the shared reader is
+        # certain to raise. A caller reaching this codec without that prior
+        # bound would get the two names the other way round.
         declared = error.declared_field_length
         raise RunnerSessionCodecError(
             "runner-session-oversized"

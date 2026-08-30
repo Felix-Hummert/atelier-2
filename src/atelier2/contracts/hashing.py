@@ -71,9 +71,11 @@ def unframe(payload: bytes, domain: str) -> tuple[bytes, ...]:
     """Read back the exact fields `frame` encoded under this domain.
 
     The inverse of `frame`: `unframe(frame(domain, *fields), domain) == fields`,
-    and no other byte sequence is admitted. This is the only reader of the
-    layout, so a payload framed under a different domain is refused here rather
-    than mistaken for a short frame of this one.
+    and no byte sequence outside `frame`'s image is admitted -- a declared
+    length that runs past the payload is refused rather than clipped to the
+    bytes that happen to be there. This is the only reader of the layout, so a
+    payload framed under a different domain is refused here rather than
+    mistaken for a short frame of this one.
 
     Callers keep their own refusal vocabulary: `FrameError` says the bytes are
     not this domain's frame, never what a particular protocol calls that.
@@ -87,7 +89,8 @@ def unframe(payload: bytes, domain: str) -> tuple[bytes, ...]:
     domain_length = struct.unpack_from(_DOMAIN_LENGTH_FORMAT, payload, cursor)[0]
     cursor += _DOMAIN_LENGTH_BYTES
     domain_end = cursor + domain_length
-    if payload[cursor:domain_end] != domain.encode("utf-8"):
+    expected_domain = domain.encode("utf-8")
+    if domain_end > len(payload) or payload[cursor:domain_end] != expected_domain:
         raise FrameDomainMismatch(f"payload is not framed under {domain}")
     cursor = domain_end
     fields: list[bytes] = []

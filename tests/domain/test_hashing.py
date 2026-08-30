@@ -82,6 +82,12 @@ def test_the_frame_layout_every_stored_hash_stands_over_is_these_exact_bytes() -
     )
 
 
+def _domain_length_inflated_by(domain: str, extra: int) -> bytes:
+    """A header promising `extra` more domain bytes than the payload carries."""
+    promised = frame(domain + "x" * extra)
+    return promised[: len(promised) - extra]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -89,11 +95,25 @@ def test_the_frame_layout_every_stored_hash_stands_over_is_these_exact_bytes() -
         b"\x00" + frame(_FRAME_DOMAIN, b"field"),
         frame("another-domain/v1", b"field"),
         frame(_FRAME_DOMAIN)[:15],
+        _domain_length_inflated_by(_FRAME_DOMAIN, 83),
     ],
+    ids=(
+        "no-prefix",
+        "shifted-prefix",
+        "another-domain",
+        "cut-domain",
+        "inflated-domain-length",
+    ),
 )
 def test_unframe_refuses_bytes_no_frame_of_this_domain_could_be(
     payload: bytes,
 ) -> None:
+    """Only `frame`'s own image is admitted. A header declaring more domain
+    bytes than the payload holds is outside that image -- `frame` would have
+    written the true length -- so it is refused rather than read against the
+    bytes that happen to be there, which would otherwise let a payload with an
+    absurd domain length decode as a well-formed frame carrying no fields."""
+
     with pytest.raises(FrameDomainMismatch):
         unframe(payload, _FRAME_DOMAIN)
 

@@ -205,6 +205,12 @@ def _wire(body: bytes) -> bytes:
     return struct.pack(">I", len(body)) + body
 
 
+def _domain_length_inflated_by(domain: str, extra: int) -> bytes:
+    """A body promising `extra` more domain bytes than it carries."""
+    promised = hashing_frame(domain + "x" * extra)
+    return promised[: len(promised) - extra]
+
+
 @pytest.mark.parametrize(
     ("body", "code"),
     [
@@ -217,7 +223,19 @@ def _wire(body: bytes) -> bytes:
             + struct.pack(">Q", MAXIMUM_RUNNER_SESSION_BODY_BYTES + 1),
             "runner-session-oversized",
         ),
+        (
+            _domain_length_inflated_by(_FRAME_DOMAIN, 83),
+            "runner-session-noncanonical",
+        ),
     ],
+    ids=(
+        "another-domain",
+        "shifted-prefix",
+        "cut-domain-length",
+        "cut-field-length",
+        "field-above-the-session-bound",
+        "inflated-domain-length",
+    ),
 )
 def test_a_broken_frame_body_keeps_this_codec_s_own_refusal_names(
     body: bytes, code: str
