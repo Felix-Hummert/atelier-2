@@ -1027,11 +1027,11 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
             )
         )
 
-    def unexpected_materialization(_record: object) -> object:
+    def unexpected_materialization(_session: object, _records: object) -> object:
         raise AssertionError("oversized durable run text reached the run mapper")
 
     monkeypatch.setattr(
-        queries_module, "run_from_record_with_bindings", unexpected_materialization
+        queries_module, "runs_from_records_with_bindings", unexpected_materialization
     )
     run_selects: list[str] = []
 

@@ -14,7 +14,7 @@ owns that row. What belongs here is the run's own state.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import sqlalchemy as sa
@@ -134,7 +134,107 @@ def run_from_record(record: Mapping[Any, Any]) -> Run:
     )
 
 
+def _agent_binding_select() -> sa.Select[Any]:
+    """The one shape a run's agent bindings are read in, for one run or many.
+
+    The caller adds the `run_id` predicate: `load_run` reads one run, a page read
+    reads every run it lists in the same statement.
+    """
+
+    return (
+        sa.select(
+            run_agent_bindings.c.run_id,
+            run_agent_bindings.c.revision_hash.label("run_revision_hash"),
+            run_agent_bindings.c.binding_set_hash,
+            run_agent_bindings.c.role,
+            run_agent_bindings.c.agent_configuration_revision_hash,
+            agent_configuration_revisions.c.revision_hash.label(
+                "configuration_revision_hash"
+            ),
+            agent_configuration_revisions.c.model,
+            agent_configuration_revisions.c.auth_profile_revision_hash,
+            agent_configuration_revisions.c.executor_revision,
+            agent_configuration_revisions.c.revision_format_version,
+            agent_configuration_revisions.c.requested_capability,
+            auth_profile_revisions.c.revision_hash.label("auth_revision_hash"),
+            auth_profile_revisions.c.profile_id,
+            auth_profile_revisions.c.revision_number,
+            auth_profile_revisions.c.provider_id,
+            auth_profile_revisions.c.auth_mode,
+        )
+        .join(
+            agent_configuration_revisions,
+            agent_configuration_revisions.c.revision_hash
+            == run_agent_bindings.c.agent_configuration_revision_hash,
+        )
+        .join(
+            auth_profile_revisions,
+            auth_profile_revisions.c.revision_hash
+            == agent_configuration_revisions.c.auth_profile_revision_hash,
+        )
+        .order_by(
+            run_agent_bindings.c.run_id,
+            sa.cast(run_agent_bindings.c.role, sa.LargeBinary()),
+        )
+    )
+
+
 def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> AnyRun:
+    """One run, reading the agent bindings it stands on."""
+
+    if _binds_agent_roles(record):
+        run_id = str(record["run_id"])
+        rows = tuple(
+            session.execute(
+                _agent_binding_select().where(run_agent_bindings.c.run_id == run_id)
+            ).mappings()
+        )
+    else:
+        rows = ()
+    return run_from_record_and_binding_rows(record, rows)
+
+
+def _binds_agent_roles(record: Mapping[Any, Any]) -> bool:
+    """Whether this row's format reads agent bindings at all."""
+
+    return WorkflowFormatVersion(int(record["workflow_format_version"])) is not (
+        WorkflowFormatVersion.V1
+    )
+
+
+def runs_from_records_with_bindings(
+    session: Any, records: Sequence[Mapping[Any, Any]]
+) -> tuple[AnyRun, ...]:
+    """Every run of a page, reading all their agent bindings in one statement.
+
+    A page that asked per run would issue one statement per listed run, which is
+    the read a listing cannot afford: the same rows arrive here grouped instead.
+    """
+
+    binding_run_ids = tuple(
+        str(record["run_id"]) for record in records if _binds_agent_roles(record)
+    )
+    rows_by_run: dict[str, list[Mapping[Any, Any]]] = {}
+    if binding_run_ids:
+        for row in session.execute(
+            _agent_binding_select().where(
+                run_agent_bindings.c.run_id.in_(binding_run_ids)
+            )
+        ).mappings():
+            rows_by_run.setdefault(str(row["run_id"]), []).append(row)
+    return tuple(
+        run_from_record_and_binding_rows(
+            record, tuple(rows_by_run.get(str(record["run_id"]), ()))
+        )
+        for record in records
+    )
+
+
+def run_from_record_and_binding_rows(
+    record: Mapping[Any, Any], rows: Sequence[Mapping[Any, Any]]
+) -> AnyRun:
+    """One run built from its own row and the binding rows already read for it."""
+
     version = WorkflowFormatVersion(int(record["workflow_format_version"]))
     if version is WorkflowFormatVersion.V1:
         return run_from_record(record)
@@ -148,41 +248,6 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
     run_id = RunId(str(record["run_id"]))
     revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
     binding_set_hash = AgentBindingSetHash(str(record["agent_binding_set_hash"]))
-    rows = tuple(
-        session.execute(
-            sa.select(
-                run_agent_bindings.c.revision_hash.label("run_revision_hash"),
-                run_agent_bindings.c.binding_set_hash,
-                run_agent_bindings.c.role,
-                run_agent_bindings.c.agent_configuration_revision_hash,
-                agent_configuration_revisions.c.revision_hash.label(
-                    "configuration_revision_hash"
-                ),
-                agent_configuration_revisions.c.model,
-                agent_configuration_revisions.c.auth_profile_revision_hash,
-                agent_configuration_revisions.c.executor_revision,
-                agent_configuration_revisions.c.revision_format_version,
-                agent_configuration_revisions.c.requested_capability,
-                auth_profile_revisions.c.revision_hash.label("auth_revision_hash"),
-                auth_profile_revisions.c.profile_id,
-                auth_profile_revisions.c.revision_number,
-                auth_profile_revisions.c.provider_id,
-                auth_profile_revisions.c.auth_mode,
-            )
-            .join(
-                agent_configuration_revisions,
-                agent_configuration_revisions.c.revision_hash
-                == run_agent_bindings.c.agent_configuration_revision_hash,
-            )
-            .join(
-                auth_profile_revisions,
-                auth_profile_revisions.c.revision_hash
-                == agent_configuration_revisions.c.auth_profile_revision_hash,
-            )
-            .where(run_agent_bindings.c.run_id == run_id.value)
-            .order_by(sa.cast(run_agent_bindings.c.role, sa.LargeBinary()))
-        ).mappings()
-    )
     resolved: list[ResolvedAgentBinding] = []
     for row in rows:
         if (
