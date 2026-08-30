@@ -9,22 +9,15 @@ already owns the write. It does not invent a second publication.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import assert_never
 
+from atelier2.application.publish_document_revision import publish_document_revision
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.adapter_operations_v3 import (
     AdapterOperationRefused,
     read_adapter_operation_document,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
-from atelier2.ports.durable_runs import DurableWriteUnavailable
-from atelier2.ports.published_revisions import (
-    PublishedRevisionCollision,
-    PublishedRevisionCreated,
-    PublishedRevisionExisting,
-    PublishedRevisionRegistry,
-)
+from atelier2.ports.published_revisions import PublishedRevisionRegistry
 
 
 @dataclass(frozen=True)
@@ -63,18 +56,10 @@ def publish_adapter_operation_revision(
     verdict = read_adapter_operation_document(document)
     if isinstance(verdict, AdapterOperationRefused):
         return AdapterOperationPublicationInvalid(verdict)
-    revision = PublishedRevision(RevisionKind.ADAPTER_OPERATION, document)
-    result = registry.publish_revision(revision)
-    match result:
-        case PublishedRevisionCreated(stored):
-            return AdapterOperationPublicationCreated(stored)
-        case PublishedRevisionExisting(stored):
-            return AdapterOperationPublicationExisting(stored)
-        case PublishedRevisionCollision():
-            return AdapterOperationPublicationCollision()
-        case DurableWriteUnavailable():
-            return WriteUnavailable()
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
+    return publish_document_revision(
+        PublishedRevision(RevisionKind.ADAPTER_OPERATION, document),
+        registry,
+        created=AdapterOperationPublicationCreated,
+        existing=AdapterOperationPublicationExisting,
+        collision=AdapterOperationPublicationCollision,
+    )
