@@ -10,7 +10,12 @@ from atelier2.contracts.agent_attempts import (
     RunnerManifestId,
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash
-from atelier2.contracts.hashing import frame
+from atelier2.contracts.hashing import (
+    FrameDomainMismatch,
+    FrameTruncated,
+    frame,
+    unframe,
+)
 from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
 from atelier2.contracts.runner_terminal_evidence_codec import (
     MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
@@ -53,7 +58,6 @@ MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES = (
 # longer the payload's last field, only the last one every PREPARE carries
 # unconditionally.
 PREPARE_AUTH_REFERENCE_FIELD = 18
-_FRAME_PREFIX = b"ATELIER2\x00"
 
 # The whole session protocol's own identity, not just PREPARE's field count:
 # #672 widened PREPARE from 19 to 21 fields, so a wire frame's domain now
@@ -69,6 +73,7 @@ _FRAME_PREFIX = b"ATELIER2\x00"
 # amendment, #672).
 RUNNER_SESSION_FRAME_DOMAIN = b"runner-session/v2"
 _RETIRED_FRAME_DOMAIN_V1 = b"runner-session/v1"
+_RETIRED_FRAME_HEADER_V1 = frame(_RETIRED_FRAME_DOMAIN_V1.decode("ascii"))
 
 
 class RunnerSessionCodecError(ValueError):
@@ -131,36 +136,21 @@ def decode_runner_session_frame(wire: bytes) -> RunnerSessionFrame:
 
 
 def _decode_frame_body(body: bytes) -> tuple[bytes, ...]:
-    if not body.startswith(_FRAME_PREFIX):
-        raise RunnerSessionCodecError("runner-session-noncanonical")
-    cursor = len(_FRAME_PREFIX)
-    if len(body) < cursor + 4:
-        raise RunnerSessionCodecError("runner-session-truncated")
-    domain_length = struct.unpack(">I", body[cursor : cursor + 4])[0]
-    cursor += 4
-    domain_end = cursor + domain_length
-    if domain_end > len(body):
-        raise RunnerSessionCodecError("runner-session-noncanonical")
-    domain = body[cursor:domain_end]
-    if domain == _RETIRED_FRAME_DOMAIN_V1:
+    """Read the session frame's fields, naming every defect in session terms."""
+
+    if body.startswith(_RETIRED_FRAME_HEADER_V1):
         raise RunnerSessionCodecError("runner-session-incompatible-revision")
-    if domain != RUNNER_SESSION_FRAME_DOMAIN:
-        raise RunnerSessionCodecError("runner-session-noncanonical")
-    cursor = domain_end
-    fields: list[bytes] = []
-    while cursor < len(body):
-        if len(body) - cursor < 8:
-            raise RunnerSessionCodecError("runner-session-truncated")
-        field_length = struct.unpack(">Q", body[cursor : cursor + 8])[0]
-        cursor += 8
-        if field_length > MAXIMUM_RUNNER_SESSION_BODY_BYTES:
-            raise RunnerSessionCodecError("runner-session-oversized")
-        field_end = cursor + field_length
-        if field_end > len(body):
-            raise RunnerSessionCodecError("runner-session-truncated")
-        fields.append(body[cursor:field_end])
-        cursor = field_end
-    return tuple(fields)
+    try:
+        return unframe(body, RUNNER_SESSION_FRAME_DOMAIN.decode("ascii"))
+    except FrameTruncated as error:
+        declared = error.declared_field_length
+        raise RunnerSessionCodecError(
+            "runner-session-oversized"
+            if declared is not None and declared > MAXIMUM_RUNNER_SESSION_BODY_BYTES
+            else "runner-session-truncated"
+        ) from error
+    except FrameDomainMismatch as error:
+        raise RunnerSessionCodecError("runner-session-noncanonical") from error
 
 
 def _ascii(value: bytes) -> str:
