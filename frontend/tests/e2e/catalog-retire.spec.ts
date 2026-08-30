@@ -59,11 +59,19 @@ async function checkedAgentConfiguration(page: Page, stem: string): Promise<stri
       }
     : null;
   expect([200, 404]).toContain(current.status());
+  // The registry's read resource carries fields its write resource refuses,
+  // so entries this spec keeps are projected back down to what a PUT accepts.
+  const keptEntries = (currentRegistry?.entries ?? [])
+    .filter((entry) => entry.model_id !== `${stem}-model`)
+    .map((entry) => ({
+      model_id: entry.model_id,
+      agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+    }));
   const registry = await page.request.put(`/atelier/api/v1/model-registries/${providerId}`, {
     data: {
       revision_number: (currentRegistry?.revision_number ?? 0) + 1,
       entries: [
-        ...(currentRegistry?.entries ?? []).filter((entry) => entry.model_id !== `${stem}-model`),
+        ...keptEntries,
         { model_id: `${stem}-model`, agent_configuration_revision_hash: configurationHash }
       ]
     }

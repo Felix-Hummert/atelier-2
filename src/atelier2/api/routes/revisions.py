@@ -177,6 +177,7 @@ from atelier2.contracts.library_recognition import (
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
+
 router = APIRouter()
 
 

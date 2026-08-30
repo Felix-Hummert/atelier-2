@@ -226,7 +226,12 @@ def test_retiring_a_lineage_removes_its_name_but_keeps_its_published_revision(
     [
         ("a" * 64, retirement(), 404, "catalog-lineage-missing"),
         ("not-a-lineage", retirement(), 404, "catalog-lineage-missing"),
-        ("a" * 64, {"actor": "", "activated_at": "2026-08-17T00:02:00Z"}, 422, "invalid-request"),
+        (
+            "a" * 64,
+            {"actor": "", "activated_at": "2026-08-17T00:02:00Z"},
+            422,
+            "invalid-request",
+        ),
     ],
 )
 def test_retirement_route_names_missing_and_invalid_requests(
@@ -236,7 +241,9 @@ def test_retirement_route_names_missing_and_invalid_requests(
     status: int,
     problem_type: str,
 ) -> None:
-    response = client(runtime).post(f"{LINEAGES}/{lineage_id}/retirements", json=payload)
+    response = client(runtime).post(
+        f"{LINEAGES}/{lineage_id}/retirements", json=payload
+    )
 
     assert response.status_code == status, response.text
     assert response.json()["type"].endswith(problem_type)
