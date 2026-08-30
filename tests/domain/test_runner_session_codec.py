@@ -82,6 +82,25 @@ def test_a_session_body_carries_the_largest_record_the_journal_may_hold() -> Non
     assert len(largest) == MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES
 
 
+@pytest.mark.proves("what-may-be-stored-can-be-delivered")
+def test_a_record_past_the_journal_bound_is_refused_at_the_frame_not_on_the_wire() -> (
+    None
+):
+    """One byte past what the journal may hold, and the session will not frame
+    it: `runner-session-oversized`, before any of it reaches the wire.
+
+    This is the encoder `RunnerSession._deliver` hands its record to, with the
+    message and payload arity a real delivery uses, so the refusal asserted
+    here is the one a live session raises. It cannot be driven through a real
+    Runner: no journal admits a record this wide, which is exactly what the
+    derived bound buys.
+    """
+    unframeable = b"x" * (MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES + 1)
+
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-oversized"):
+        _terminal_record_frame(unframeable)
+
+
 def test_session_frame_round_trips_as_one_canonical_wire_record() -> None:
     encoded = encode_runner_session_frame(_frame())
 
