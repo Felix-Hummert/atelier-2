@@ -585,6 +585,11 @@ export interface CatalogAdmissionInput {
   activated_at: string;
 }
 
+export interface CatalogRetirementInput {
+  actor: string;
+  activated_at: string;
+}
+
 const authProfileInputSchema = z
   .object({
     profile_id: z.string().min(1).max(1_024),
@@ -3038,6 +3043,10 @@ export interface CockpitApi {
     lineageId: string,
     input: CatalogAdmissionInput,
   ): Promise<HttpResult<CatalogAdmission>>;
+  retireCatalogLineage(
+    lineageId: string,
+    input: CatalogRetirementInput,
+  ): Promise<void>;
   publish(
     mutation: PublishMutation,
   ): Promise<HttpResult<WorkflowRevisionDetail>>;
@@ -3489,6 +3498,21 @@ export function createCockpitApi(
         },
         [200, 201],
         catalogAdmissionSchema,
+      ),
+    retireCatalogLineage: (lineageId, input) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/workflow-lineages/${encodeURIComponent(lineageId)}/retirements`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            actor: input.actor,
+            activated_at: input.activated_at,
+          }),
+        },
+        [204],
+        z.undefined(),
       ),
     publish: async (mutation) =>
       requestJsonResult(

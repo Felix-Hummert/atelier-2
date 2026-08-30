@@ -126,6 +126,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
     API_PREFIX + "/workflow-lineages",
     API_PREFIX + "/workflow-lineages/{lineage_id}/members",
+    API_PREFIX + "/workflow-lineages/{lineage_id}/retirements",
     PROJECTS_PATH,
     PROJECT_PATH,
     MODEL_REGISTRY_PATH,
@@ -238,6 +239,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "admit_catalog_member_route",
     ),
     (
+        "POST",
+        API_PREFIX + "/workflow-lineages/{lineage_id}/retirements",
+        "retire_catalog_lineage_route",
+    ),
+    (
         "GET",
         API_PREFIX + "/workflow-revisions/by-name/{name}",
         "get_revision_by_name",
@@ -322,6 +328,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (LIBRARY_ADDITION_PATH, "get"): {"200"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
+    (API_PREFIX + "/workflow-lineages/{lineage_id}/retirements", "post"): {"204"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
     (PROJECTS_PATH, "get"): {"200"},
     (PROJECT_PATH, "get"): {"200"},

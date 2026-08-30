@@ -5,6 +5,7 @@
   import BackLink from "../components/BackLink.svelte";
   import ProofAnchor from "../components/ProofAnchor.svelte";
   import ReadState from "../components/ReadState.svelte";
+  import RetireCatalogLineageSheet from "../components/RetireCatalogLineageSheet.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import WorkflowNodePreviewPanel from "../components/WorkflowNodePreviewPanel.svelte";
   import WorkflowStartSheet from "../components/WorkflowStartSheet.svelte";
@@ -24,6 +25,7 @@
   import { summarizeOrderSchema, typeLabel, type OrderSchemaSummary } from "../lib/orderSchema";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
   import { catalogPageCopy, catalogStateNote, workflowDetailCopy } from "../lib/catalogPageCopy";
+  import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR } from "../lib/catalogAdmission";
 
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
@@ -62,6 +64,9 @@
   let failureMessage: string | null = null;
   let selectedNodeId: string | null = null;
   let startSheetOpen = false;
+  let retireSheetOpen = false;
+  let retiring = false;
+  let retireFailure: string | null = null;
 
   $: found = detail.confirmed?.kind === "found" ? detail.confirmed : null;
   $: graph = found?.detail.graph ?? null;
@@ -164,6 +169,29 @@
   function goToStart(): void {
     startSheetOpen = true;
   }
+
+  function openRetireSheet(): void {
+    retireFailure = null;
+    retireSheetOpen = true;
+  }
+
+  async function retire(): Promise<void> {
+    if (found === null || found.catalogState.kind !== "admitted") return;
+    retiring = true;
+    retireFailure = null;
+    try {
+      await cockpitApi.retireCatalogLineage(found.catalogState.lineageId, {
+        actor: COCKPIT_CATALOG_ACTOR,
+        activated_at: catalogActivatedAt()
+      });
+      retireSheetOpen = false;
+      navigate(catalog.path);
+    } catch (error) {
+      retireFailure = humanErrorMessage(error, workflowDetailCopy.retireFailed);
+    } finally {
+      retiring = false;
+    }
+  }
 </script>
 
 <section class="surface" aria-labelledby="workflow-detail-title">
@@ -183,12 +211,14 @@
           <p class="note">{wrapDisplayCopy(catalogNote)}</p>
         {/if}
       </div>
-      <button
-        type="button"
-        class="primary"
-        disabled={!admitted || retired || (graph.workflow_format_version === 3 && !graph.executable)}
-        onclick={goToStart}
-      >{wrapDisplayCopy(catalogPageCopy.start)}</button>
+      {#if !retired}
+        <button
+          type="button"
+          class="primary"
+          disabled={!admitted || (graph.workflow_format_version === 3 && !graph.executable)}
+          onclick={goToStart}
+        >{wrapDisplayCopy(catalogPageCopy.start)}</button>
+      {/if}
     </header>
 
     {#if retired}
@@ -241,6 +271,11 @@
           value={revisionHash}
         />
       </div>
+      {#if admitted && !retired}
+        <div class="technical-action">
+          <button class="danger" type="button" onclick={openRetireSheet}>{wrapDisplayCopy(workflowDetailCopy.retire)}</button>
+        </div>
+      {/if}
     </details>
 
     {#if startSheetOpen && found !== null}
@@ -252,6 +287,15 @@
         {navigate}
         {createRunId}
         onClose={() => { startSheetOpen = false; }}
+      />
+    {/if}
+    {#if retireSheetOpen}
+      <RetireCatalogLineageSheet
+        {name}
+        submitting={retiring}
+        failure={retireFailure}
+        onConfirm={() => { void retire(); }}
+        onDismiss={() => { retireSheetOpen = false; }}
       />
     {/if}
   {/if}
@@ -312,6 +356,16 @@
     padding: var(--space-3);
     border-left: var(--edge-mark) solid var(--ink-dim);
     background: color-mix(in srgb, currentColor 4%, transparent);
+  }
+
+  .technical-action {
+    margin-top: var(--space-3);
+  }
+
+  .danger {
+    border-color: var(--signal-failure);
+    color: var(--signal-failure);
+    background: transparent;
   }
 
   .declared-orders {
