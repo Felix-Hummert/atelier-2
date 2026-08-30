@@ -159,6 +159,24 @@ describe("grouping revisions of one lineage into one card", () => {
   });
 });
 
+describe("what a retired lineage leaves on the shelf", () => {
+  const LIVE_NAME = "iterate-docs";
+  const LIVE_HASH = "d".repeat(64);
+
+  it("shows the live lineage and no revision of the retired one", () => {
+    const rows = catalogWorkflowRows(
+      [
+        summary(),
+        summary({ workflow_revision_hash: OTHER_HASH }),
+        summary({ name: LIVE_NAME, workflow_revision_hash: LIVE_HASH })
+      ],
+      { [NAME]: { kind: "retired" } }
+    );
+
+    expect(rows.map((row) => row.name)).toEqual([LIVE_NAME]);
+  });
+});
+
 describe("what the catalog says about an agent", () => {
   function item(
     overrides: Partial<AgentDefinitionRevisionListItem> = {}
