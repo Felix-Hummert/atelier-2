@@ -37,9 +37,6 @@ export const workbenchQuestions = {
 export type WorkbenchQuestion = (typeof workbenchQuestions)[keyof typeof workbenchQuestions];
 
 export const workbenchQuestionAttribute = "data-workbench-question";
-export const workbenchStageSelector = ".workbench";
-export const workbenchInteractiveSelector = 'a[href], button, [role="button"], [role="link"]';
-
 export type WorkbenchControlFacts = {
   questionId: string | null;
   href: string | null;
@@ -47,22 +44,9 @@ export type WorkbenchControlFacts = {
   tag: string;
 };
 
-export function workbenchControlFacts(element: Element): WorkbenchControlFacts {
-  return {
-    questionId: element.getAttribute(workbenchQuestionAttribute),
-    href: element.getAttribute("href"),
-    ariaLabel: element.getAttribute("aria-label"),
-    tag: element.tagName.toLowerCase()
-  };
-}
-
 export function describeWorkbenchControlFacts(facts: WorkbenchControlFacts): string {
   const name = facts.ariaLabel ?? facts.questionId ?? "";
   return `${facts.tag}${facts.href === null ? "" : `[href="${facts.href}"]`} ${name}`.trim();
-}
-
-export function describeWorkbenchControl(element: Element): string {
-  return describeWorkbenchControlFacts(workbenchControlFacts(element));
 }
 
 export function questionForWorkbenchControlFacts(
@@ -81,16 +65,6 @@ export function questionForWorkbenchControlFacts(
     return workbenchQuestions.reloadWorkbenchRuns;
   }
   return null;
-}
-
-export function questionForWorkbenchControl(element: Element): WorkbenchQuestion | null {
-  return questionForWorkbenchControlFacts(workbenchControlFacts(element));
-}
-
-export function unansweredWorkbenchControls(root: ParentNode): Element[] {
-  return [...root.querySelectorAll(workbenchInteractiveSelector)].filter(
-    (element) => questionForWorkbenchControl(element) === null
-  );
 }
 
 function questionById(id: string): WorkbenchQuestion | null {

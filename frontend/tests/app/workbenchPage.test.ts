@@ -5,14 +5,14 @@ import type { AnyRun, CockpitApi, RunV3, WorkflowRevisionDetail } from "../../sr
 import { railCopy } from "../../src/lib/railCopy";
 import { retryLabel } from "../../src/lib/readStateCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
+import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
 import {
   describeWorkbenchControl,
   questionForWorkbenchControl,
+  unansweredWorkbenchControls,
   workbenchInteractiveSelector,
-  workbenchQuestions,
-  workbenchStageSelector,
-  unansweredWorkbenchControls
-} from "../../src/lib/workbenchQuestions";
+  workbenchStageSelector
+} from "../support/workbenchControls";
 import { FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import { cancellableBlock } from "../support/runV3";
 import {

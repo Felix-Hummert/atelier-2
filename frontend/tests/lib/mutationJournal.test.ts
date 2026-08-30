@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MutationJournal,
   cancelMutation,
-  startMutationV3,
+  startMutation,
   type MutationEnvelope,
   type MutationEvidence
 } from "../../src/lib/mutationJournal";
@@ -38,7 +38,7 @@ describe("MutationJournal exact transport truth", () => {
       { ...publish(), target: "/atelier/api/v1/runs" },
       { ...publish(), content_type: "application/json" },
       { ...start(), mutation_id: "start:other" },
-      { ...start(), body_base64: utf8Base64('{"run_id":"other","workflow_revision_hash":"' + revisionHash + '"}') },
+      { ...start(), body_base64: startMutation("other", revisionHash, [], []).body_base64 },
       { ...wait(), target: "/atelier/api/v1/runs/run1.b3RoZXI/answers" },
       { ...wait(), body_base64: utf8Base64(waitBody("other")) },
       { ...reconciliation(), mutation_id: `reconciliation:${publicReference}:other` },
@@ -282,7 +282,7 @@ describe("MutationJournal exact transport truth", () => {
   });
 
   it("retains a V3 start that carries the exact order bytes", async () => {
-    const envelope = startMutationV3(
+    const envelope = startMutation(
       "run-1",
       revisionHash,
       [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }],
@@ -307,12 +307,12 @@ describe("MutationJournal exact transport truth", () => {
     const bound = [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }];
     await expect(
       journal.prepare(
-        startMutationV3("run-1", revisionHash, bound, [{ name: "portions", value: "" }])
+        startMutation("run-1", revisionHash, bound, [{ name: "portions", value: "" }])
       )
     ).rejects.toThrow(/invalid start mutation order/);
     await expect(
       journal.prepare(
-        startMutationV3("run-1", revisionHash, bound, [
+        startMutation("run-1", revisionHash, bound, [
           { name: "portions", value: "1" },
           { name: "portions", value: "2" }
         ])
@@ -348,15 +348,7 @@ function publish(): MutationEnvelope {
 }
 
 function start(): MutationEnvelope {
-  return {
-    mutation_id: "start:run-1",
-    kind: "start",
-    target: "/atelier/api/v1/runs",
-    content_type: "application/json",
-    body_base64: utf8Base64(
-      JSON.stringify({ run_id: "run-1", workflow_revision_hash: revisionHash })
-    )
-  };
+  return startMutation("run-1", revisionHash, [], []);
 }
 
 function wait(): MutationEnvelope {

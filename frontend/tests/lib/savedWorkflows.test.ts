@@ -3,9 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { WorkflowRevisionDetail, WorkflowRevisionSummary } from "../../src/api/client";
 import {
   agentRolesOf,
-  groupSavedWorkflows,
-  revisionChoiceLabel,
-  selectedRevisionOf
+  groupSavedWorkflows
 } from "../../src/lib/savedWorkflows";
 
 function named(
@@ -53,7 +51,6 @@ describe("grouping saved workflows by the name the listing already publishes", (
       newest.workflow_revision_hash,
       older.workflow_revision_hash
     ]);
-    expect(selectedRevisionOf(rows[0]!).workflow_revision_hash).toBe(newest.workflow_revision_hash);
   });
 
   it("does not invent a submenu for a name that has one revision", () => {
@@ -97,26 +94,8 @@ describe("grouping saved workflows by the name the listing already publishes", (
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.revisions).toEqual([first, second]);
-    expect(selectedRevisionOf(rows[0]!).workflow_revision_hash).toBe(first.workflow_revision_hash);
   });
 
-  it("follows an explicit selection instead of the default head", () => {
-    const older = named("a", "shared");
-    const newest = named("b", "shared");
-    const row = groupSavedWorkflows([older, newest], { shared: newest.workflow_revision_hash })[0];
-
-    expect(selectedRevisionOf(row!, older.workflow_revision_hash).workflow_revision_hash).toBe(
-      older.workflow_revision_hash
-    );
-  });
-
-  it("labels the catalog head as Latest and every other member as Earlier", () => {
-    const older = named("a", "shared");
-    const newest = named("b", "shared");
-
-    expect(revisionChoiceLabel(newest, newest.workflow_revision_hash)).toBe("Latest");
-    expect(revisionChoiceLabel(older, newest.workflow_revision_hash)).toBe("Earlier");
-  });
 });
 
 describe("the authored agent roles a second consumer may edit", () => {
