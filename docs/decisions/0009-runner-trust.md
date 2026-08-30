@@ -688,10 +688,20 @@ to exactly 43 base64url characters, and the Runner builds its evidence envelope
 from the same binding and invocation the frame carries. Under those real
 identities the widest record is a provider failure with the longer admitted
 failure code, a fixed-width exit code, 49,152 bytes of standard error and a full
-1,048,576-byte transcript document: 1,098,307 bytes. The widest record today's
-Runner actually originates is a provider result with 49,152 output bytes and the
-same transcript, 1,098,269 bytes, because `runner/session.py` still refuses to
-publish a failure transcript.
+1,048,576-byte transcript document: 1,098,307 bytes. That is the one number the
+transport is sized against, and it is the largest record a session can ever be
+asked to carry.
+
+Today's Runner does not originate it, and today's Runner is not what sizes the
+transport. `runner/session.py` refuses to publish a provider failure carrying a
+transcript, and the one registered runner-side executor
+(`FreeRunnerCandidateExecutor`) returns no transcript under any job while
+reading its child's answer under a 49,152-byte bound, so the widest record a
+live provider child can cause today is 49,691 bytes. Sizing session transport
+at that number would reopen the same silent gap from the other side the moment
+a second executor lands: what a session must deliver is what may be durably
+stored, and the record codec and `RunnerJournal` own that, not the current
+executor catalogue.
 
 The codec's 1,106,413-byte maximum stands 8,106 bytes above that, and the whole
 gap is identity width: `RunnerGenerationId` and `RunnerInvocationId` bound
@@ -703,10 +713,10 @@ Which bound moves is readable in the code rather than a matter of taste.
 `TERMINAL_RECORD` hands the journal's canonical record over verbatim as its
 single payload field: `RunnerJournal.publish` stores exactly the bytes the
 session later sends. The two numbers are therefore not two budgets but one plus
-a fixed envelope, and the live maximum had already crossed the old one. That
+a fixed envelope, and the storable maximum had already crossed the old one. That
 envelope is 404 bytes, fixed because every identity a session frame carries has
-a pinned width, so delivering the live maximum needed a 1,098,673-byte body
-against a 1,078,291-byte limit -- short by 20,382 bytes, and short in the way
+a pinned width, so delivering that maximum needed a 1,098,711-byte body
+against a 1,078,291-byte limit -- short by 20,420 bytes, and short in the way
 that surfaces only on the rarest run, as `runner-session-oversized`: a transport
 word for a contract fault.
 
@@ -729,12 +739,18 @@ Where each number comes from, so the next reader need not re-derive it:
 - both session bounds --
   `test_a_session_body_carries_the_largest_record_the_journal_may_hold` shows the
   largest journal-legal record filling a `TERMINAL_RECORD` body exactly.
-- the live path --
-  `test_runner_core_transport_delivers_the_largest_originable_record_over_tls`
-  publishes the widest originable envelope through the real `RunnerJournal`,
-  resumes it in the production candidate session, carries it over genuine TLS
-  through the production transport and `CoreRunnerSession`, and completes commit,
-  ACK tombstone, RELEASE and journal removal.
+- 1,098,307 bytes and the full path --
+  `test_the_largest_record_the_journal_may_hold_reaches_core_over_tls` builds
+  that record under a session's own 43-character identities, publishes it
+  through the real `RunnerJournal` under the production journal bound, resumes
+  it in the production candidate session, and carries it over genuine TLS
+  through the production transport and `CoreRunnerSession` to commit, ACK
+  tombstone, RELEASE and journal removal.
+- 49,691 bytes, what a Runner originates today --
+  `test_a_real_runner_originates_its_widest_terminal_record_and_delivers_it_over_tls`
+  plants nothing: a real candidate subprocess answers at its executor's own
+  bound, the session decodes that child's exit into the evidence envelope
+  itself, journals it, and the same production path delivers it.
 
 The 8,106 bytes of transport headroom are what one identity contract admitting
 widths another refuses costs. Narrowing `RunnerGenerationId` and

@@ -62,9 +62,12 @@ from atelier2.application.run_runner_session import (
     encode_runner_prepare_payload,
 )
 from atelier2.contracts.agent_attempts import (
+    MAXIMUM_RUNNER_STANDARD_ERROR_BYTES,
+    AgentAttemptFailureCode,
     AgentAttemptId,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
+    ProcessExitSignature,
     RunId,
     RunnerGenerationBinding,
     RunnerGenerationId,
@@ -110,6 +113,7 @@ from atelier2.contracts.runner_session_codec import (
 from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
 from atelier2.contracts.runner_terminal_evidence_codec import (
     decode_runner_terminal_evidence_record,
+    encode_runner_terminal_evidence_record,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _status_field
@@ -612,28 +616,65 @@ def _prepared_session(
     )
 
 
-def _largest_originable_terminal_envelope(
+_LARGEST_RECORD_UNDER_SESSION_IDENTITIES_BYTES = 1_098_307
+"""The widest terminal record a session can ever be asked to carry.
+
+Below `MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES`, which is measured under
+`MAXIMUM_AGENT_FIELD_CHARACTERS`-wide generation and invocation ids where a
+session frame pins both to 43 base64url characters. The 8,106-byte difference
+is transport headroom the journal may spend on identity width and a session
+never can.
+"""
+
+_LARGEST_FREE_RUNNER_ANSWER_CHARACTERS = MAXIMUM_AGENT_OUTPUT_BYTES_V2 - 1
+"""What a live candidate child may answer, to the character.
+
+`FreeRunnerCandidateExecutor` reads its child's standard output under
+`MAXIMUM_AGENT_OUTPUT_BYTES_V2`, and the fixed candidate program `print`s its
+job text, so the newline spends the last admitted byte.
+"""
+
+_LARGEST_RECORD_A_LIVE_CHILD_CAN_CAUSE_BYTES = 49_691
+"""The widest terminal record today's Runner can originate -- not a bound.
+
+`runner/session.py` refuses to publish a provider failure carrying a transcript,
+and `FreeRunnerCandidateExecutor`, the one registered runner-side executor,
+returns no transcript under any job, so the whole distance to
+`_LARGEST_RECORD_UNDER_SESSION_IDENTITIES_BYTES` is transcript the current
+executor catalogue cannot produce and a later one will. What a session must
+deliver is what may be durably stored -- owned by the record codec and
+`RunnerJournal` -- so transport is sized there and never here; sizing it here
+would reopen the same silent gap from the other side.
+"""
+
+
+def _largest_record_a_session_may_carry(
     prepared: _PreparedSession,
 ) -> RunnerTerminalEvidenceEnvelope:
-    """The biggest terminal fact a real Runner can hand over on this session.
+    """The widest record the journal may hold under a session's own identities.
 
-    Every width is the real one: the session pins its generation and invocation
-    tokens to 43 base64url characters, the provider answer is as wide as the V2
-    output bound allows and the transcript fills the document bound. A provider
-    *failure* carrying the same transcript would encode 38 bytes larger and is
-    equally journal-legal, but `runner/session.py` still refuses to publish a
-    failure transcript, so it is not a record this path can originate today.
+    A provider failure is that widest form -- the longer admitted failure code,
+    a fixed-width exit code, standard error at its bound and a transcript
+    filling the document bound -- and it encodes 38 bytes above the success
+    record carrying the same transcript.
     """
 
-    return RunnerTerminalEvidenceEnvelope(
+    envelope = RunnerTerminalEvidenceEnvelope(
         prepared.binding,
         prepared.invocation,
-        RunnerProviderResult(
-            AgentExecutionResult(
-                b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2, largest_attempt_transcript()
-            ),
+        RunnerProviderFailure(
+            ProcessExitSignature(-9, b"e" * MAXIMUM_RUNNER_STANDARD_ERROR_BYTES),
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+            largest_attempt_transcript(),
         ),
     )
+    encoded = len(encode_runner_terminal_evidence_record(envelope))
+    if encoded != _LARGEST_RECORD_UNDER_SESSION_IDENTITIES_BYTES:
+        raise AssertionError(
+            "this is no longer the widest record a session may carry: "
+            f"{encoded} of {_LARGEST_RECORD_UNDER_SESSION_IDENTITIES_BYTES} bytes"
+        )
+    return envelope
 
 
 def test_both_wire_ends_derive_the_free_runner_auth_reference_from_one_owner() -> None:
@@ -1145,17 +1186,54 @@ def test_runner_core_transport_drives_a_real_candidate_session_to_released_over_
 
 
 @pytest.mark.proves("what-may-be-stored-can-be-delivered")
-def test_runner_core_transport_delivers_the_largest_originable_record_over_tls(
+def test_a_real_runner_originates_its_widest_terminal_record_and_delivers_it_over_tls(
     tmp_path: Path,
 ) -> None:
-    """What the journal admits, the session hands over. The Runner publishes its
-    widest terminal fact, and the production transport carries it the whole way
-    -- real subprocess, real TLS, real `CoreRunnerSession` -- through commit,
-    ACK tombstone, RELEASE and journal removal. A transport bound below the
-    record bound stops this at `runner-session-oversized` instead."""
+    """The Runner's own widest terminal fact goes the whole way to Core.
+
+    Nothing is planted here: a real candidate subprocess runs the live
+    candidate program on the widest answer its executor admits, the session
+    decodes that child's exit into the evidence envelope itself, journals it,
+    and the production transport carries it over genuine TLS through commit,
+    ACK tombstone, RELEASE and journal removal. This is what a Runner can
+    originate today -- far below the transport bound, which is why the bound is
+    proven separately against what the journal may hold."""
+
+    answer = "x" * _LARGEST_FREE_RUNNER_ANSWER_CHARACTERS
+    prepared = _prepared_session(
+        tmp_path, job_bytes=encode_free_runner_job(FreeRunnerPrintJob(answer))
+    )
+
+    returncode = _run_tls_candidate_to_released(tmp_path, prepared)
+
+    originated = RunnerTerminalEvidenceEnvelope(
+        prepared.binding,
+        prepared.invocation,
+        RunnerProviderResult(AgentExecutionResult(answer.encode("ascii"))),
+    )
+    assert returncode == 0
+    assert prepared.core.committed_envelope == originated
+    assert prepared.core.acknowledged == 1
+    assert not (prepared.journal_directory / "terminal-record").exists()
+    assert len(encode_runner_terminal_evidence_record(originated)) == (
+        _LARGEST_RECORD_A_LIVE_CHILD_CAN_CAUSE_BYTES
+    )
+
+
+@pytest.mark.proves("what-may-be-stored-can-be-delivered")
+def test_the_largest_record_the_journal_may_hold_reaches_core_over_tls(
+    tmp_path: Path,
+) -> None:
+    """What the journal admits, the session hands over -- at the widest record a
+    session's own identities allow, not at a convenient smaller one. The record
+    enters through the production `RunnerJournal` under the production journal
+    bound, and the production transport carries it the whole way from a real
+    Runner subprocess over genuine TLS through commit, ACK tombstone, RELEASE
+    and journal removal. A transport bound below the record bound stops this at
+    `runner-session-oversized` instead."""
 
     prepared = _prepared_session(tmp_path)
-    envelope = _largest_originable_terminal_envelope(prepared)
+    envelope = _largest_record_a_session_may_carry(prepared)
     RunnerJournal(prepared.journal_directory).publish(envelope, CANDIDATE_JOURNAL_BYTES)
 
     returncode = _run_tls_candidate_to_released(tmp_path, prepared)
