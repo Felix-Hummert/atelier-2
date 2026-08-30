@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -947,7 +948,7 @@ def _seed_runs(
             [
                 {
                     "run_id": run_id.value,
-                    "bootstrap_workflow_id": f"workflow-{index}",
+                    "bootstrap_workflow_id": f"workflow-{run_id.value}",
                     "revision_hash": revision.revision_hash.value,
                     "workflow_format_version": 3,
                     "run_configuration_revision_hash": configuration_hashes[
@@ -961,7 +962,7 @@ def _seed_runs(
                     "last_event_sequence": 0,
                     "terminal_hash": None,
                 }
-                for index, (run_id, revision) in enumerate(assignments)
+                for run_id, revision in assignments
             ],
         )
         connection.execute(
@@ -1241,31 +1242,45 @@ def test_run_page_query_uses_primary_index_without_scan_or_temp_sort(
     assert all("SCAN" not in detail and "TEMP B-TREE" not in detail for detail in plan)
 
 
-def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
-    engine: Engine, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    first_revision = WorkflowRevision(_v3_workflow_document("first"))
-    second_revision = WorkflowRevision(_v3_workflow_document("second"))
-    assignments = tuple(
-        (
-            RunId(f"batch-{index:03d}"),
-            first_revision if index % 2 == 0 else second_revision,
-        )
-        for index in range(10)
-    )
-    _seed_runs(engine, assignments)
-    parse_calls = 0
+RUN_PAGE_STATEMENTS = (
+    "agent_attempts",
+    "run_agent_bindings",
+    "run_forks",
+    "run_forks",
+    "run_inputs_v3",
+    "run_instants",
+    "runs",
+    "workflow_revisions",
+)
+"""Every statement one run page costs, named so a ninth cannot arrive quietly.
+
+Six of them a page costs whatever format its runs are: the page of `runs`, the
+`run_forks` it may be an origin or a successor of, the `workflow_revisions` it
+parses once per distinct document, the `run_instants` it is stamped with, and
+the `run_inputs_v3` it was started with. The other two are what a format-3 page
+reads besides -- the `run_agent_bindings` its roles resolve to, and the
+`agent_attempts` its rail names on the node each run stands at.
+
+Sorted, and carrying `run_forks` twice, because that is what makes a repeated
+read show up here as a repeated name instead of as a number nobody can argue
+with.
+"""
+
+
+def _page_read(engine: Engine) -> tuple[tuple[str, ...], int]:
+    """The statements one run-page read costs, and the documents it parsed."""
+
+    parsed = 0
     original_parse = queries_module.parse_workflow_document
 
-    def count_parse(document: bytes):
-        nonlocal parse_calls
-        parse_calls += 1
+    def count_parse(document: bytes) -> object:
+        nonlocal parsed
+        parsed += 1
         return original_parse(document)
 
-    monkeypatch.setattr(queries_module, "parse_workflow_document", count_parse)
-    selects = 0
+    read_tables: list[str] = []
 
-    def count_selects(
+    def capture(
         _connection: Any,
         _cursor: Any,
         statement: str,
@@ -1273,20 +1288,53 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
         _context: Any,
         _executemany: bool,
     ) -> None:
-        nonlocal selects
-        if statement.lstrip().upper().startswith("SELECT"):
-            selects += 1
+        if not statement.lstrip().upper().startswith("SELECT"):
+            return
+        named = re.search(r"FROM ([a-zA-Z_0-9]+)", statement)
+        read_tables.append(named.group(1) if named is not None else statement)
 
-    event.listen(engine, "before_cursor_execute", count_selects)
+    queries_module.parse_workflow_document = count_parse
+    event.listen(engine, "before_cursor_execute", capture)
     try:
         page = durable_queries(engine).list_runs(None, 100)
     finally:
-        event.remove(engine, "before_cursor_execute", count_selects)
-
+        event.remove(engine, "before_cursor_execute", capture)
+        queries_module.parse_workflow_document = original_parse
     assert isinstance(page, RunPage)
-    assert len(page.runs) == len(assignments)
-    assert parse_calls == 2
-    assert selects <= 6
+    return tuple(sorted(read_tables)), parsed
+
+
+def test_run_page_costs_the_same_named_statements_however_many_runs_it_lists(
+    engine: Engine,
+) -> None:
+    """A page reads each table once, and reads the same tables at any size.
+
+    Both halves carry weight. Growth with the page is the N+1 this exists to
+    catch -- a per-run binding read showed up here as ten `run_agent_bindings`
+    against one. The named budget is what stops a ninth statement arriving
+    unexplained, because a constancy assertion alone would be as happy at a
+    constant eight hundred as at eight.
+    """
+
+    first_revision = WorkflowRevision(_v3_workflow_document("first"))
+    second_revision = WorkflowRevision(_v3_workflow_document("second"))
+    _seed_runs(
+        engine,
+        tuple((RunId(f"batch-{index:03d}"), first_revision) for index in range(2)),
+    )
+
+    two_runs, parsed_one_document = _page_read(engine)
+
+    _seed_runs(
+        engine,
+        tuple((RunId(f"batch-{index:03d}"), second_revision) for index in range(2, 10)),
+    )
+
+    ten_runs, parsed_two_documents = _page_read(engine)
+
+    assert two_runs == ten_runs
+    assert ten_runs == RUN_PAGE_STATEMENTS
+    assert (parsed_one_document, parsed_two_documents) == (1, 2)
 
 
 def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empty(
