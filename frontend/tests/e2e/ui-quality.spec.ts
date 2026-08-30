@@ -149,7 +149,9 @@ const surfaces: readonly {
       path: `/atelier/runs/${foundReference}`,
       ready: async (page) => {
         await expect(page.getByRole("navigation", { name: backLinkCopy.whereYouAre })).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
+        await expect(
+          page.getByRole("heading", { name: "Prove one reconciliation" })
+        ).toBeVisible();
       }
     },
     {
