@@ -12,6 +12,10 @@ human entry point to those owners.
 Repository edits use the globally installed `agent-claim` CLI. A subagent stays
 within its parent head's current claimed scope; the CLI owns the protocol.
 
+Never run `git stash` in a worktree: one stash stack is shared by every worktree
+of a repository, so a pop can land another lane's changes in your tree. Commit
+on the lane branch instead.
+
 ## Growth
 
 Grow the repository only to remove a named problem, preserve a real invariant,
