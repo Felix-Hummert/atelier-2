@@ -1,8 +1,8 @@
-import { CockpitRequestError, isRunV3, type CockpitApi, type RunV3 } from "../api/client";
+import { CockpitRequestError, type CockpitApi, type RunV3 } from "../api/client";
 import { humanErrorMessage } from "./humanRefusal";
 import {
   MutationJournal,
-  v3WaitMutation,
+  waitMutation,
   waitMutationId,
   type WaitMutation
 } from "./mutationJournal";
@@ -33,7 +33,7 @@ export async function prepareWaitAnswer(
   expectedNodeExecutionId: string,
   typedOrExactAnswer: string
 ): Promise<WaitMutation> {
-  const mutation = await v3WaitMutation(
+  const mutation = await waitMutation(
     publicRunReference,
     workflowRevisionHash,
     nodeId,
@@ -74,9 +74,6 @@ export async function deliverWaitAnswer(
     }
     if (result.status === 202 && resolved) {
       throw new Error("Your answer was reported as stored while it is still pending.");
-    }
-    if (!isRunV3(result.value)) {
-      throw new Error("The workshop answered with a run in a format this page cannot read.");
     }
     if (result.value.public_run_reference !== mutation.public_run_reference) {
       throw new CockpitRequestError(

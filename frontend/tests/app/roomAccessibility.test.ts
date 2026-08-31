@@ -19,12 +19,11 @@ import {
   WORKFLOW_NAME_PLACEHOLDER,
   type CockpitRoute
 } from "../../src/lib/route";
-import { runHeaderCopy } from "../../src/lib/runPages";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub } from "../support/cockpitApi";
-import { publicReference, startedRun, workflowRevision } from "../support/workflowV1";
+import { publicReference, startedRun, workflowName, workflowRevision } from "../support/runV3";
 
 /**
  * REQ-UIQ-05: the core surfaces meet WCAG 2.2 AA, or the violation
@@ -106,7 +105,7 @@ function headingName(page: ServedPage): string {
   if (page === "catalog") return catalogPageCopy.title;
   if (page === "history") return historyPageCopy.title;
   if (page === "settings") return THE_ONE_PROJECT;
-  if (page === "run") return runHeaderCopy.unnamedWorkflow;
+  if (page === "run") return workflowName;
   if (page === "workflow") return SAMPLE_WORKFLOW_NAME;
   const exhaustive: never = page;
   return exhaustive;

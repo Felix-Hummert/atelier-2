@@ -19,8 +19,13 @@ import { runPath } from "../../src/lib/route";
 import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
-import { cancellableBlock, notCancellableBlock } from "../support/runV3";
-import { eventCursor, publicReference, revisionHash as digest } from "../support/workflowV1";
+import {
+  cancellableBlock,
+  eventCursor,
+  notCancellableBlock,
+  publicReference,
+  revisionHash as digest
+} from "../support/runV3";
 
 const configurationHash = "c".repeat(64);
 const terminalHash = "d".repeat(64);

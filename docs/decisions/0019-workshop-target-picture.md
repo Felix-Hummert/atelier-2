@@ -255,9 +255,13 @@ Surfaces that exist today and are **removed** by this picture:
 | `WorkflowGraphDrawing` legend "What the shapes mean" | vocabulary is learned once (§01 of the picture); a help place is a later decision, not a disclosure on every graph |
 | `InfoHint` "Why …" buttons, `ProofAnchor` "Copy" buttons | tooltips and the hash itself as the copy target on the back |
 
-Not drawn and **not removed** — a technical surface with no room:
-`ReconciliationActionCard` (found/absent determination of an exact effect).
-It is operator-level repair; where it lives is an open decision, see *Open*.
+Not drawn and, at the time of this decision, **not removed** — a technical
+surface with no room: `ReconciliationActionCard` (found/absent determination
+of an exact effect). It is operator-level repair; where it lives is an open
+decision, see *Open*. (31.08.2026, #901 slice 4/#924: the card fell with the
+V1/V2 run surface it lived on, so until the blessed V3 resolve surface exists
+a run parked in WAITING_RECONCILIATION is resolvable only through the raw
+API; the open decision below still owns where that surface goes.)
 
 ### 5. Owner sentences this picture contradicts, and their successors
 
@@ -372,9 +376,10 @@ approval line has a field for neither, so this table is where both are named.
 1. **The door from the workbench to the conversation's run view** ("The
    conversation is a run" frame) is not drawn — "open the run" exists only on
    a decision's stage. Candidate: the "Atelier" label in the transcript.
-2. **Where reconciliation lives.** `ReconciliationActionCard` has no room in
-   this picture; it is repair, not work. Candidate: a stage raised by the run
-   that owns the effect, with the written-answer form.
+2. **Where reconciliation lives.** `ReconciliationActionCard` had no room in
+   this picture and fell with the V1/V2 surface (#924); it is repair, not
+   work. Candidate: a stage raised by the run that owns the effect, with the
+   written-answer form.
 3. **Autonomy and login** (#82, #106) — the rail reserves no place until they
    are decided; #557's settings layer is the Settings room as far as model
    defaults go.

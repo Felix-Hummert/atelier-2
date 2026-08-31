@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { AnyRun, CockpitApi, NodeDetail } from "../api/client";
+  import type { CockpitApi, NodeDetail, RunV3 } from "../api/client";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
@@ -46,7 +46,7 @@
   const catalogPath = WORKSHOP_DESTINATION.catalog.path;
 
   interface HistorySnapshot {
-    runs: AnyRun[];
+    runs: RunV3[];
     workflowNames: ReadonlyMap<string, string>;
   }
 

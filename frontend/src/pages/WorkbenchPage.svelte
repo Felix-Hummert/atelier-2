@@ -2,11 +2,10 @@
   import { onMount, tick } from "svelte";
 
   import {
-    isRunV3,
-    type AnyRun,
     type CockpitApi,
     type RunEvent,
-    type RunEventSubscription
+    type RunEventSubscription,
+    type RunV3
   } from "../api/client";
   import PinnedDecision from "../components/PinnedDecision.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
@@ -80,7 +79,7 @@
   export let navigate: (path: string) => void;
 
   type WorkbenchRuns = {
-    runs: AnyRun[];
+    runs: RunV3[];
     /** Null when the described catalog could not be read this round: enrichment, not a gate. */
     workflowNames: ReadonlyMap<string, string | null> | null;
   };
@@ -304,7 +303,7 @@
   }
 
   /** The rail's ochre count: the last confirmed read, and no earlier. */
-  function publishCount(runs: readonly AnyRun[]): void {
+  function publishCount(runs: readonly RunV3[]): void {
     runsWaitingForYou.set(runs.filter((run) => runStanding(run.state) === "waiting").length);
   }
 
@@ -323,7 +322,7 @@
    * moment a read confirms.
    */
   // Returns whether the read could be taken in; see the note above.
-  function absorbRun(read: AnyRun): boolean {
+  function absorbRun(read: RunV3): boolean {
     const confirmed = live.confirmed;
     if (confirmed === null) return false;
     const runs = absorbAttentionRun(confirmed.runs, read);
@@ -385,7 +384,7 @@
       run,
       standing: runStanding(run.state),
       name: resolveWorkflowName(run, snapshot?.workflowNames ?? null),
-      at: isRunV3(run) ? run.current_node_id : run.current_node.node_id,
+      at: run.current_node_id,
       move: humanMove(run.state)
     }));
 </script>

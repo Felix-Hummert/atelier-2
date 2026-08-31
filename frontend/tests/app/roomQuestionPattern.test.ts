@@ -28,7 +28,7 @@ import {
  * prove they share one Stage or Sheet. A `createElement` overlay, a
  * question in a `.ts` module, a dynamic `role={...}`, a sheet that is
  * not a dialog, and an in-page decision stage that is not a dialog or
- * confirm (PinnedDecision, V3AnswerCard, HumanActionCard, the Workbench
+ * confirm (PinnedDecision, V3AnswerCard, the Workbench
  * ear) are outside what the templates and script tags show.
  */
 
@@ -46,7 +46,6 @@ const NAMED_RESIDUAL_FILES = [
   "components/CatalogImportSheet.svelte",
   "components/ConnectSourceSheet.svelte",
   "components/DisconnectSourceSheet.svelte",
-  "components/ReconciliationActionCard.svelte",
   "components/RenewSourceTokenSheet.svelte",
   "components/RetireCatalogLineageSheet.svelte",
   "components/RunCancelCard.svelte",
@@ -659,8 +658,6 @@ describe("a question is the shared component, not markup a host composed", () =>
         "components/RunForkSheet.svelte",
         "components/V3AnswerCard.svelte",
         "components/PinnedDecision.svelte",
-        "components/HumanActionCard.svelte",
-        "components/ReconciliationActionCard.svelte",
         "components/RunCancelCard.svelte",
         "components/V3RunView.svelte"
       ])

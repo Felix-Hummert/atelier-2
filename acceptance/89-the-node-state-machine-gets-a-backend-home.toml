@@ -1,17 +1,26 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/89"
 
-# One sentence of #89 is deliberately absent: "the V1 wire is unchanged" is a
-# standing guard of every head rather than an outcome of one, and
-# tests/api/test_v1_wire_freeze.py already holds it without this gate.
+# One sentence of #89 is deliberately absent: "the V1 wire is unchanged" was a
+# standing guard of every head rather than an outcome of one, and it ended when
+# the V1/V2 wire itself fell (#904, PR #920; its freeze test went with it).
 #
-# The last sentence below is the one head C's ruling narrowed in writing
-# (https://github.com/FlexOr2/atelier-2/issues/89#issuecomment-5304715493),
-# quoted as it was ruled. Its named exception is a debt with an owner, not a
-# quiet retreat: `v1SnapshotNodeState` in frontend/src/lib/runProjection.ts is
-# the only place a browser still derives a durable state, it exists because the
-# V1 run resource and the V1 event schema are byte-frozen, and it dies with the
-# V3 cutover in #63. Nobody may read the sentence as covering a V1 run.
+# Two sentences were retired on 31.08.2026 (#901 slice 4, #924), in the same
+# landing that deleted the surface they measured -- the discipline
+# acceptance/131 already used:
+#
+#   "the-browser-derives-no-durable-state-for-a-v2-run" -- head C's ruled
+#   sentence (https://github.com/FlexOr2/atelier-2/issues/89#issuecomment-5304715493)
+#   with its one named exception, `v1SnapshotNodeState` for the byte-frozen V1
+#   resource, promised to die with the V3 cutover. That promise is now kept:
+#   the function, the whole browser-side rail derivation, and the V1/V2 run
+#   and event decoders are deleted, so no browser derives any durable state
+#   for any run and there is no V2 run left to prove the sentence against.
+#
+#   "the-interaction-overlay-lifts-and-stills-under-separate-gates" -- the
+#   client-owned overlay was the last state rule in the browser, and it lived
+#   only on the deleted V1/V2 cockpit; the V3 view renders the rail the server
+#   walked.
 #
 # This file therefore does not list every sentence of #89.
 
@@ -31,10 +40,3 @@ text = "A served V2 run names the state of every node of the revision it is boun
 id = "the-browser-and-the-served-contract-know-the-same-node-states"
 text = "The browser and the served contract know exactly the same set of node states: a member added on one side alone fails a test."
 
-[[sentence]]
-id = "the-browser-derives-no-durable-state-for-a-v2-run"
-text = "Der Browser leitet für V2-Runs keinen durablen Zustand mehr ab; die eine benannte Ausnahme ist `v1SnapshotNodeState` für die eingefrorene V1-Ressource, und sie stirbt mit dem V3-Cutover (#63)."
-
-[[sentence]]
-id = "the-interaction-overlay-lifts-and-stills-under-separate-gates"
-text = "The only state rule left in the browser is the interaction overlay, it is client-owned, and its two rules are gated separately: a node is lifted to working only when it needs the operator and his form is open, while it is stilled by the open form alone."

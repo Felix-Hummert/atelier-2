@@ -7,13 +7,12 @@ import {
   runActivityAt,
   workflowNamesOf
 } from "../../src/lib/runList";
-import { notCancellableBlock } from "../support/runV3";
 import {
+  notCancellableBlock,
   publicReference,
   revisionHash,
-  startedRun,
-  workflowRevision
-} from "../support/workflowV1";
+  startedRun
+} from "../support/runV3";
 
 function v3Run(changes: Partial<RunV3> = {}): RunV3 {
   return {
@@ -181,8 +180,25 @@ describe("the project run list reads published workflow names", () => {
   });
 
   it("refuses a non-V3 revision as the name of a V3 run", async () => {
+    const v1Revision = {
+      workflow_revision_hash: revisionHash,
+      document_base64: "",
+      graph: {
+        workflow_format_version: 1 as const,
+        start_node_id: "final",
+        nodes: [
+          {
+            type: "subworkflow" as const,
+            node_id: "final",
+            operation: "add" as const,
+            operands: [2, 3] as [number, number],
+            next_node_id: null
+          }
+        ]
+      }
+    };
     await expect(
-      workflowNamesOf([v3Run()], async () => workflowRevision())
+      workflowNamesOf([v3Run()], async () => v1Revision)
     ).rejects.toThrow("a V3 run referenced a workflow revision of another format");
   });
 

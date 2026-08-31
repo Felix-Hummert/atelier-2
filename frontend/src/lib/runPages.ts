@@ -3,7 +3,7 @@ import type {
   AgentConfigurationRevisionPage,
   AuthProfileRevision,
   AuthProfileRevisionPage,
-  AnyRun,
+  RunV3,
   RunPage,
   WorkflowRevisionPage,
   WorkflowRevisionSummary
@@ -28,8 +28,8 @@ import type {
  * take the surface down instead of letting it report what went wrong.
  */
 export type RunReading =
-  | { complete: true; runs: AnyRun[] }
-  | { complete: false; runs: AnyRun[]; unreadable: string };
+  | { complete: true; runs: RunV3[] }
+  | { complete: false; runs: RunV3[]; unreadable: string };
 
 export type RevisionReading =
   | { complete: true; revisions: WorkflowRevisionSummary[] }
@@ -161,18 +161,10 @@ function failureText(error: unknown): string {
 /**
  * The run header names the workflow, never the raw run id (Constitution law 8).
  *
- * Only a V3 document declares a name -- a V1 or V2 revision has none to read at
- * all, not merely one this client failed to fetch. The header says that
- * honestly instead of falling back to the run id as though an id were a title.
  * The run id still anchors the page beside the title, through the same
  * ProofAnchor pattern every other identifier on a run page already uses.
  */
 export const runHeaderCopy = {
-  unnamedWorkflow: "Unnamed workflow",
   runIdLabel: "Run id",
   sealsRunId: "the name this run answers to when the store is asked for it"
 } as const;
-
-export function runHeaderTitle(workflowName: string | null): string {
-  return workflowName ?? runHeaderCopy.unnamedWorkflow;
-}
