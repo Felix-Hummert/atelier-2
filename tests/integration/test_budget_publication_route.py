@@ -32,7 +32,6 @@ from atelier2.contracts.run_configuration_v3 import ReferenceSite, ResolvedRefer
 from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.published_revisions import PublishedRevisionMissing
 from tests.scenarios.api import durable_api_client
-from tests.scenarios.runtime import exact_output_runtime
 
 BUDGET_PATH = f"{API_PREFIX}/budget-revisions"
 WORKFLOW_PATH = f"{API_PREFIX}/workflow-revisions"
@@ -47,7 +46,7 @@ BUILD_BUDGET = json.dumps(
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    started = exact_output_runtime(
+    started = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "budget-door-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",

@@ -334,56 +334,6 @@ class AgentExecutorOperationalIdentity(AgentExecutorIdentifier):
 
 
 @dataclass(frozen=True)
-class AgentExecutorBinding:
-    adapter_revision: AgentExecutorRevision
-    operational_identity: AgentExecutorOperationalIdentity
-
-
-@dataclass(frozen=True)
-class ExactOutputContract:
-    output_bytes: bytes
-
-
-@dataclass(frozen=True)
-class AgentExecutionRequest:
-    node_execution_id: NodeExecutionId
-    run_id: RunId
-    workflow_revision_hash: WorkflowRevisionHash
-    node_id: str
-    job_bytes: bytes
-    exact_output: ExactOutputContract
-    request_hash: AgentExecutionRequestHash = field(init=False)
-
-    def __post_init__(self) -> None:
-        if self.node_id == "":
-            raise ValueError("agent request node id must be nonempty")
-        if self.job_bytes == b"":
-            raise ValueError("agent request job bytes must be nonempty")
-        expected_execution = NodeExecutionId.for_node(
-            self.run_id, self.workflow_revision_hash, self.node_id
-        )
-        if self.node_execution_id != expected_execution:
-            raise ValueError(
-                "agent request execution identity differs from its binding"
-            )
-        object.__setattr__(
-            self,
-            "request_hash",
-            AgentExecutionRequestHash.of(
-                frame(
-                    "agent-execution-request/v1",
-                    self.node_execution_id.value.encode("ascii"),
-                    self.run_id.value.encode("utf-8"),
-                    self.workflow_revision_hash.value.encode("ascii"),
-                    self.node_id.encode("utf-8"),
-                    self.job_bytes,
-                    self.exact_output.output_bytes,
-                )
-            ),
-        )
-
-
-@dataclass(frozen=True)
 class AgentExecutionResult:
     """What one execution answered, and what it did to get there where that is known.
 

@@ -122,7 +122,6 @@ from tests.scenarios.api import (
     event_poll_backoff,
 )
 from tests.scenarios.runs import publish_revision
-from tests.scenarios.runtime import exact_output_runtime
 
 PROJECT = ProjectId("project1")
 BINDING_FREE_WORKFLOW = b"""format_version: 1
@@ -133,7 +132,7 @@ nodes:
 
 
 def _runtime(database_path: Path) -> DbosRuntime:
-    return exact_output_runtime(
+    return DbosRuntime(
         DbosRuntimeSettings(database_path, "phase-d-admission-test"),
         LoopbackEffectAdapterFactory(
             database_path.parent / "external.sqlite",

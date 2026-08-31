@@ -43,9 +43,8 @@ without ambient variables or a mutable checkout. It removes only this
 candidate's container, network, volume and local project image; errors and
 interrupts attempt that same cleanup and preserve the descriptor for retry when
 it fails. Successful teardown removes it. Other containers and services are not
-selected or changed. A rerun creates a new disposable candidate. The current Core
-`ExactOutput` executor can still serve its fixture; this package supplies no
-external provider or Runner. The entrypoint can carry an operator-declared
+selected or changed. A rerun creates a new disposable candidate. This package
+supplies no external provider or Runner. The entrypoint can carry an operator-declared
 Runner-lease deployment from `ATELIER2_RUNNER_*` environment variables ("Serve
 as the lease writer", below); this candidate declares none of them and starts
 runner-free.
@@ -731,8 +730,8 @@ unaltered and said to be already current.
 
 - **Live cutover.** The candidate selects no existing process, port, container,
   network or volume; it is not a replacement action.
-- **Runner or provider execution.** The image supplies neither. A Start may
-  reach existing Core `ExactOutput` behavior, but A.0 proves no external call.
+- **Runner or provider execution.** The image supplies neither; A.0 proves no
+  external call.
 - **CI image build.** CI checks the cheap recipe contract. The release/local
   gate, after a reviewed clean commit, builds, inspects, browses, restarts and
   tears down the candidate. Network hardening beyond its loopback publication

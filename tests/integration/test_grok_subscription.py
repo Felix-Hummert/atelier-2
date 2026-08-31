@@ -28,7 +28,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.grok_subscription import (
     CONFORMANT_GROK_VERSIONS,
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
@@ -1554,7 +1553,6 @@ def grok_subscription_runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("grok-subscription-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (
             GrokSubscriptionExecutorFactory(settings),
             *((GrokWorkspaceToolExecutorFactory(settings),) if workspace_tools else ()),

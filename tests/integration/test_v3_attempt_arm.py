@@ -44,7 +44,6 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.workflow import _node_binding
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
 from atelier2.application.project_node_rail import NodeRailAttempt, project_node_rail
@@ -112,7 +111,6 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()

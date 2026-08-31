@@ -24,7 +24,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
@@ -121,7 +120,6 @@ def _runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (recording,),
     )
     runtime.initialize_storage()

@@ -29,7 +29,6 @@ from atelier2.adapters.dbos.agent_attempt_store import (
 from atelier2.adapters.dbos.run_store import ToolRedemptionConflict
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import agent_attempts, tool_redemptions
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import AgentExecutionResult
@@ -72,7 +71,6 @@ def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntim
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()

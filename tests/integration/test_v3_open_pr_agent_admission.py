@@ -6,7 +6,6 @@ from pathlib import Path
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github import GitHubEffectAdapterFactory
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -56,7 +55,6 @@ def test_an_agent_open_pr_grant_is_admitted_without_proving_absence(
                 EffectDestination("platform"),
             )
         ),
-        ExactOutputAgentExecutorFactory(),
         (open_pr_agent_executor_factory(PR_SPEC),),
     )
     runtime.initialize_storage()

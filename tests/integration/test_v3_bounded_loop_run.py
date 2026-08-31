@@ -43,7 +43,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     replacement_workflow_id_for,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import (
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
@@ -162,7 +161,6 @@ def runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (recording,),
     )
     started.initialize_storage()

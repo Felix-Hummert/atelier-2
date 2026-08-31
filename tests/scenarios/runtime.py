@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.ports.effects import EffectAdapterFactory
 from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
 from tests.scenarios.runs import (
@@ -9,16 +8,6 @@ from tests.scenarios.runs import (
     V3_OPERATIONAL_IDENTITY,
     V3_PROVIDER,
 )
-
-
-def exact_output_runtime(
-    settings: DbosRuntimeSettings, effect_adapter_factory: EffectAdapterFactory
-) -> DbosRuntime:
-    return DbosRuntime(
-        settings,
-        effect_adapter_factory,
-        ExactOutputAgentExecutorFactory(),
-    )
 
 
 def recording_exact_runtime(
@@ -35,7 +24,6 @@ def recording_exact_runtime(
     return DbosRuntime(
         settings,
         effect_adapter_factory,
-        ExactOutputAgentExecutorFactory(),
         (
             RecordingAgentExecutorFactoryV2(
                 V3_PROVIDER.value,
