@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeGuard
 
@@ -199,12 +200,32 @@ class PublishedRevisionResolver(Protocol):
     ) -> ResolvePublishedRevisionResult: ...
 
 
+class PublishedRevisionResolverWithSession(PublishedRevisionResolver, Protocol):
+    """A resolver that can also open one connection reused by many lookups.
+
+    A composed read that must resolve many references for one answer -- a page
+    of described revisions judging every listed item's executability -- opens
+    exactly one of these and calls `resolve` on the resolver it yields for
+    every reference the page needs, instead of paying a fresh connection per
+    reference (#937). A caller that only ever resolves one reference has no
+    reason to carry this, so the plain `PublishedRevisionResolver` stays the
+    port most single-lookup callers ask for; this is mandatory only where a
+    caller genuinely composes many lookups into one read.
+    """
+
+    def resolver_session(self) -> AbstractContextManager[PublishedRevisionResolver]: ...
+
+
 class PublishedRevisionRegistry(PublishedRevisionResolver, Protocol):
     """Publication and lineage-free lookup of exact immutable revisions.
 
     ADR 0007 keeps this lookup for callers whose immutable input already pins a
     revision without claiming lineage membership. A declared V3 reference instead
     uses `CatalogResolver.resolve_reference` once the catalog store implements it.
+    Deliberately *not* `PublishedRevisionResolverWithSession`: every other
+    caller of this registry resolves or publishes one revision at a time, so
+    widening it with a session concept only one composed read needs would be
+    exactly the dishonest widening #937 ruled against.
     """
 
     def publish_revision(
