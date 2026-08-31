@@ -43,6 +43,10 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.budgets_v3 import (
+    BudgetRevisionAccepted,
+    read_budget_revision_document,
+)
 from atelier2.contracts.effect_requests import (
     GitCommitIdentity,
     OpenPullRequest,
@@ -90,6 +94,7 @@ from tests.scenarios.api import durable_api_client
 from tests.scenarios.runs import submit_reconcile_command
 
 WORKFLOW_PATH = Path("workflows/push-before-open-pr.yaml")
+BUDGET_PATH = Path("workflows/budgets/push-implement.json")
 PROJECT = ProjectId("push-before-open-pr-workflow")
 ITEM = TrackerItemReference("gh:883")
 RUN = RunId("v3/repository-push-before-open-pr")
@@ -188,11 +193,13 @@ def _publish_workflow(
             separators=(",", ":"),
         ).encode(),
     )
+    budget = PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_PATH.read_bytes())
     revisions = (
         PublishedRevision(
             RevisionKind.SCHEMA,
             Path("workflows/schemas/nonempty_string.json").read_bytes(),
         ),
+        budget,
         PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
         push_operation,
         PublishedRevision(RevisionKind.ADAPTER_OPERATION, b'{"operation":"open-pr"}'),
@@ -207,6 +214,7 @@ def _publish_workflow(
 
     shipped_document = WORKFLOW_PATH.read_bytes()
     assert push_grant.revision_hash.value.encode() in shipped_document
+    assert budget.revision_hash.value.encode() in shipped_document
     (pushing_node,) = (
         node
         for node in parse_workflow_document(shipped_document).nodes
@@ -243,6 +251,14 @@ def _publish_workflow(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
     )
     return workflow, bindings, (author, committer)
+
+
+def _pinned_turn_bound() -> int:
+    budget = read_budget_revision_document(BUDGET_PATH.read_bytes())
+    assert isinstance(budget, BudgetRevisionAccepted)
+    turns = budget.content.maximum_assistant_turns
+    assert turns is not None
+    return turns
 
 
 def _wait_for_state(runtime: DbosRuntime, expected: RunState) -> None:
@@ -365,6 +381,9 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         assert receipt_count == 0
         assert current_node == "implement"
         assert github.recorded_pull_requests() == ()
+        assert executor.opened is not None
+        (implement_request,) = executor.opened.requests
+        assert implement_request.maximum_assistant_turns == _pinned_turn_bound()
 
         push_intent = intents[0]
         submit_reconcile_command(
