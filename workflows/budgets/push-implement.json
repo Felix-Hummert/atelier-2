@@ -1,0 +1,4 @@
+{
+  "attempt_deadline_seconds": 1800,
+  "maximum_assistant_turns": 40
+}

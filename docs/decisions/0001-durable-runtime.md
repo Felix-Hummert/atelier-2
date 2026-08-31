@@ -1,6 +1,9 @@
 # ADR 0001: DBOS owns durable execution behind an Atelier adapter
 
-- Status: accepted for the first product slice
+- Status: accepted for the first product slice; the format-version-1 Agent
+  execution mechanism (exact-output executor commit, `AgentReceipt`) amended
+  out 2026-08-31 (operator ruling 30.08.2026 on issue #901, built in #923) —
+  the paragraphs describing it are rewritten in place
 - Date: 2026-08-10
 - Evidence: H0/AD0 probe for board item `fc45ff2cff8d46e397c16ea12d94affa`
 
@@ -51,12 +54,13 @@ datasource transaction without making the cockpit lie. Atelier's immutable
 `WorkflowRevisionHash` is a product identity and remains distinct from DBOS
 `application_version`, which fences executor compatibility.
 
-An Agent node delegates its exact request through an injected, provider-neutral
-executor port. Its successful result commits one immutable `AgentReceipt`, the
-existing `AGENT_COMPLETED` event, and the configured successor transition in one
-canonical transaction. The first executor implements the format-version-1 exact
-output contract; provider attempts, streams, failures, and cancellation remain
-outside this slice.
+The format-version-1 Agent execution path — an injected exact-output executor
+whose successful result committed one immutable `AgentReceipt`, the
+`AGENT_COMPLETED` event, and the configured successor transition in one
+canonical transaction — was removed 2026-08-31 (issue #901 slice 1b): no live
+run or stored document ever used it. V2 and V3 Agent nodes execute through the
+attempt store below; the empty `agent_receipts` table remains until the next
+schema hop drops it.
 
 Format-version-2 Agent nodes name roles rather than providers. Start resolves
 every role to immutable, secret-free auth-profile and agent-configuration
@@ -165,7 +169,7 @@ provider contract.
 | Production proof | What it establishes |
 | --- | --- |
 | Atomic start, advance, and answer | Run/bootstrap enqueue, the prepared effect intent, and exact Wait answer/enqueue each commit or roll back together; exact retries do not enqueue again. |
-| Agent result | Pinned request and receipt vectors bind the invocation, executor, and exact output; receipt, `AGENT_COMPLETED`, and successor commit together, exact recovery remains singular, and binding drift is refused before executor open. |
+| Agent result | A V2/V3 attempt's pinned binding, receipt, and `AGENT_COMPLETED` event commit through the attempt store in one canonical transaction; crash recovery replays the recorded attempt exactly once rather than calling the provider again. |
 | Bootstrap recovery | A matching application version fills the outer DBOS ledger after a datasource commit without changing or regressing the product run. |
 | Effect recovery | Real subprocess kills after recorded observation (C1), after external commit (C2), and after product confirmation converge with one external call, one receipt, and the configured Wait successor. |
 | Unknown outcome | A committed unknown remains waiting across restart and provider-state change; no effect occurs until an operator command owns the intent. |

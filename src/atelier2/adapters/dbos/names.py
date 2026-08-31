@@ -36,7 +36,6 @@ RUNNER_LEASE_QUEUE_NAME = "atelier2-runner-lease"
 
 BOOTSTRAP_STEP_NAME = "bootstrap-run-binding"
 NODE_BINDING_STEP_NAME = "node-binding/0"
-AGENT_COMMIT_STEP_NAME = "agent-commit/1"
 ACTION_PREPARE_STEP_NAME = "action-prepare/1"
 ACTION_CHECKPOINT_STEP_NAME = "action-checkpoint/0"
 WAIT_COMMIT_STEP_NAME = "wait-commit/1"

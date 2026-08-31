@@ -131,28 +131,6 @@ def publish_revision(engine: Engine, revision: WorkflowRevision) -> None:
     assert isinstance(result, (PublicationCreated, PublicationExisting)), result
 
 
-def start_published_v1_run(
-    engine: Engine,
-    settings: DbosRuntimeSettings,
-    run_id: RunId,
-    revision: WorkflowRevision,
-    agent_executor_registry: AgentExecutorRegistry = NO_AGENT_EXECUTORS,
-) -> AnyRun:
-    publish_revision(engine, revision)
-    result = start_published_run(
-        run_id,
-        revision.revision_hash,
-        None,
-        DbosDurableRunStarter(
-            engine,
-            settings,
-            agent_executor_registry,
-        ),
-    )
-    assert isinstance(result, (RunCreated, RunExisting)), result
-    return result.run
-
-
 def publish_v3_agent_bindings(
     engine: Engine,
     agent_executor_registry: AgentExecutorRegistry,
@@ -203,8 +181,7 @@ def start_published_v3_run(
 ) -> AnyRun:
     """Publish a format-3 document with its bindings and start its run.
 
-    The V3 twin of `start_published_v1_run`, through the same use case the API
-    calls. `roles` names every role the document declares; the caller says which
+    It goes through the same use case the API calls. `roles` names every role the document declares; the caller says which
     they are because only the document knows. A document declaring no role at
     all publishes no binding and starts with an empty set.
     """

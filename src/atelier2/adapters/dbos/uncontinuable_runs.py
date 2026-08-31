@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     reconcile_commands,
     runs,
+    wait_answers,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import (
@@ -403,7 +404,7 @@ def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, 
     """Every workflow that could still owe this apparent gap its next move.
 
     A gap is dead only once nothing is going to move the run, so every driver
-    the run can have belongs here, and three families can. The node and
+    the run can have belongs here, and four families can. The node and
     replacement workflows of its own nodes are one. Its effect workflows are
     another (#645): an Action node prepares its effect and returns, so the
     node workflow that would name it is already SUCCESS while the effect is
@@ -412,7 +413,11 @@ def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, 
     still going to be performed. The Runner-lease slot is the third, for the
     same reason (#636): a lease-carried Agent node hands its Attempt to the
     slot's queue and returns, so its node workflow reads SUCCESS while the
-    Attempt is still waiting its turn or running.
+    Attempt is still waiting its turn or running. The answer workflows of its
+    submitted Wait answers are the fourth (#923): `durable_answer` commits
+    WAIT_ANSWERED and only then starts the heir, so between those two steps
+    the run already stands STARTED on a node whose only driver is the pending
+    answer workflow.
 
     Naming a workflow that turns out not to owe anything only makes this sweep
     wait for a status read to say so, so a family is named whenever it *can*
@@ -448,6 +453,7 @@ def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, 
             named.add(node_workflow_id_for(execution_id))
         named.update(_runner_lease_workflow_ids(execution_id))
     named.update(_effect_workflow_ids(connection, run_id))
+    named.update(_wait_answer_workflow_ids(connection, run_id))
     return tuple(named)
 
 
@@ -462,6 +468,24 @@ def _runner_lease_workflow_ids(execution_id: NodeExecutionId) -> tuple[str, ...]
     return tuple(
         runner_lease_workflow_id_for(execution_id, ordinal)
         for ordinal in (AGENT_ATTEMPT_ORDINAL, REPLACEMENT_AGENT_ATTEMPT_ORDINAL)
+    )
+
+
+def _wait_answer_workflow_ids(connection: Any, run_id: RunId) -> tuple[str, ...]:
+    """Every answer workflow that can still carry this run onto an heir.
+
+    The row keeps the workflow id its answer was enqueued under, so it is read
+    rather than derived, and an id whose workflow already finished simply
+    stands in no driving status.
+    """
+
+    return tuple(
+        str(value)
+        for value in connection.scalars(
+            sa.select(wait_answers.c.answer_workflow_id).where(
+                wait_answers.c.run_id == run_id.value
+            )
+        )
     )
 
 

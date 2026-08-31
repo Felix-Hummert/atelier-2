@@ -25,16 +25,12 @@ from atelier2.adapters.claude_subscription import (
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
-from atelier2.adapters.dbos.run_store import commit_agent_completed, load_graph
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import (
-    EXACT_OUTPUT_EXECUTOR_BINDING,
-    ExactOutputAgentExecutorFactory,
-)
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -57,7 +53,6 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
-    AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
@@ -65,7 +60,6 @@ from atelier2.contracts.agents import (
     AgentRole,
     AuthMode,
     AuthProfileRevision,
-    ExactOutputContract,
     ProviderId,
     ResolvedAgentBinding,
 )
@@ -73,7 +67,6 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
-    TransitionSnapshot,
 )
 from atelier2.contracts.host_configuration import (
     ModelRegistryEntry,
@@ -83,7 +76,6 @@ from atelier2.contracts.host_configuration import (
 )
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
-from atelier2.contracts.workflows import AgentNode
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
@@ -262,39 +254,6 @@ def process_invocation(
             standard_output_frame_bytes=standard_output_frame_bytes,
         ),
         leased_directory_identity(attempt_id, working_directory),
-    )
-
-
-def configured_agent_request(
-    session: Any,
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
-) -> AgentExecutionRequest:
-    node = load_graph(session, revision_hash).node(node_id)
-    assert isinstance(node, AgentNode)
-    return AgentExecutionRequest(
-        NodeExecutionId.for_node(run_id, revision_hash, node_id),
-        run_id,
-        revision_hash,
-        node_id,
-        node.job.encode("utf-8"),
-        ExactOutputContract(node.output.encode("utf-8")),
-    )
-
-
-def commit_configured_agent(
-    session: Any,
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
-) -> TransitionSnapshot:
-    request = configured_agent_request(session, run_id, revision_hash, node_id)
-    return commit_agent_completed(
-        session,
-        request,
-        EXACT_OUTPUT_EXECUTOR_BINDING,
-        AgentExecutionResult(request.exact_output.output_bytes),
     )
 
 

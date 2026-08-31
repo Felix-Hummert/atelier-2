@@ -28,14 +28,6 @@ from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 
 
 @dataclass(frozen=True)
-class AgentNodeBinding:
-    """A V1 Agent node: the job it was given, and the output it must match exactly."""
-
-    job: str
-    output: str
-
-
-@dataclass(frozen=True)
 class AgentNodeBindingV2:
     """A V2 or V3 Agent node: the binding its role reached, and what it pinned.
 
@@ -116,9 +108,5 @@ class SubworkflowNodeBinding:
 
 
 type NodeBinding = (
-    AgentNodeBinding
-    | AgentNodeBindingV2
-    | ActionNodeBinding
-    | WaitNodeBinding
-    | SubworkflowNodeBinding
+    AgentNodeBindingV2 | ActionNodeBinding | WaitNodeBinding | SubworkflowNodeBinding
 )
