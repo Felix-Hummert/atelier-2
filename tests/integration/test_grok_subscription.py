@@ -50,6 +50,7 @@ from atelier2.adapters.grok_subscription import (
     verify_grok_capability,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
@@ -75,9 +76,12 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
+from atelier2.contracts.orders import InlineOrderValue
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
+    MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     InstanceAccepted,
     InstanceRefused,
     SchemaAccepted,
@@ -99,10 +103,12 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 from atelier2.ports.durable_runs import (
+    AuthoredOrder,
     DurableAgentExecutorCapabilityUnavailable,
     DurablePublishedRunResult,
     DurableRunCreated,
     StartPublishedRunRequestV2,
+    StartPublishedRunRequestV3,
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
@@ -1991,6 +1997,21 @@ def test_a_grok_job_above_the_measured_bound_is_refused_before_any_provider_laun
     operational_identity: AgentExecutorOperationalIdentity,
     workspace_tools: bool,
 ) -> None:
+    """A composed job over the 30_000-byte prompt bound is refused before launch.
+
+    MAXIMUM_INSTRUCTION_BYTES (16_384) is the document's own authoring bound
+    on one node's instruction text, deliberate and unrelated to this test's
+    subject; it is not relaxed here. Under V3 the bytes an agent reads are the
+    instruction plus its orders (compose_node_job.node_job), so a job past
+    _MEASURED_INLINE_PROMPT_BYTES (30_000) is reached legally by adding one
+    order near the door's own MAXIMUM_INSTANCE_DOCUMENT_BYTES bound rather
+    than by growing the instruction alone (#901 slice 5, #934).
+    """
+    order_name = "context"
+    instruction = "x" * 15_000
+    order_value = json.dumps("a" * 16_000).encode("utf-8")
+    assert len(order_value) <= MAXIMUM_INSTANCE_DOCUMENT_BYTES
+
     settings = grok_subscription_deployment(
         tmp_path, "raise AssertionError('a Grok process was launched')\n"
     )
@@ -2002,13 +2023,89 @@ def test_a_grok_job_above_the_measured_bound_is_refused_before_any_provider_laun
     )
     runtime.initialize_storage()
     try:
-        execution = grok_subscription_attempt(
-            runtime,
-            f"grok/prelaunch-bound/{requested_capability.value}",
-            requested_capability=requested_capability,
-            executor_revision=executor_revision,
-            operational_identity=operational_identity,
-            job=b"x" * 30_001,
+        catalog = DbosAgentConfigurationCatalog(
+            runtime.engine, runtime.agent_executor_registry
+        )
+        auth = AuthProfileRevision(
+            "grok-tools", 1, ProviderId("xai"), AuthMode.SUBSCRIPTION
+        )
+        catalog.publish_auth_profile_revision(auth)
+        configuration = AgentConfigurationRevision(
+            "grok-4",
+            auth.revision_hash,
+            executor_revision,
+            requested_capability,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        catalog.publish_agent_configuration_revision(configuration)
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("xai"), (configuration,)
+        )
+        DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
+        workflow = WorkflowRevision(
+            f"""format_version: 3
+name: Grok subscription prelaunch-bound document
+graph_inputs:
+  - name: {order_name}
+    schema: {{ref: result-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
+nodes:
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: {instruction}
+    inputs:
+      - name: {order_name}
+        from: {{graph_input: {order_name}}}
+    outputs:
+      - name: result
+        schema: {{ref: result-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
+""".encode()
+        )
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+        run_name = f"grok/prelaunch-bound/{requested_capability.value}"
+        run_id = RunId(run_name)
+        started = DbosDurableRunStarter(
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
+        ).start_published(
+            StartPublishedRunRequestV3(
+                run_id,
+                workflow.revision_hash,
+                AgentBindingSet(
+                    (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+                ),
+                orders=(AuthoredOrder(order_name, InlineOrderValue(order_value)),),
+            )
+        )
+        assert isinstance(started, DurableRunCreated)
+        assert isinstance(started.run, RunV3)
+
+        job = node_job(
+            instruction,
+            orders=(
+                RunInput(
+                    order_name,
+                    ANY_JSON_SCHEMA.revision_hash,
+                    order_value,
+                    schema_kind=RunInputSchemaKind.JSON,
+                ),
+            ),
+            composition_version=NodeJobCompositionVersion.CURRENT,
+        ).encode("utf-8")
+        assert len(job) > 30_000  # grok_subscription._MEASURED_INLINE_PROMPT_BYTES
+
+        execution = agent_attempt_execution(
+            AgentExecutionRequestV2(
+                NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
+                run_id,
+                workflow.revision_hash,
+                "build",
+                started.run.agent_bindings[0],
+                operational_identity,
+                job,
+            )
         )
         executor = (
             GrokWorkspaceToolExecutorFactory(settings).open()
