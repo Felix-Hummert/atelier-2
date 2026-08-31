@@ -1,4 +1,4 @@
-import { isRunV3, type AnyRun } from "../api/client";
+import type { RunV3 } from "../api/client";
 import { newestActivityFirst, resolveWorkflowName, runActivityAt } from "./runList";
 import { trackerItemLabel } from "./trackerItem";
 import { parseUtc } from "./when";
@@ -35,7 +35,7 @@ export type HistoryWhenLabel = {
 };
 
 export type HistoryRow = {
-  run: AnyRun;
+  run: RunV3;
   /**
    * The purpose of a History row is the workflow: the name
    * `resolveWorkflowName` already owns, including its honest run-id fallback.
@@ -50,9 +50,9 @@ export type HistoryRow = {
    */
   workItem: HistoryWorkItem | null;
   result: HistoryRowResult;
-  /** Only ever a real V3 pair with both stamps present -- never guessed for V1/V2 or a partial V3 row. */
+  /** Only ever a real pair with both stamps present -- never guessed for a partial row. */
   span: { startedAt: string; endedAt: string } | null;
-  /** The same "last known movement" stamp `runList.ts` orders by; null for a run with no V3 timestamp. */
+  /** The same "last known movement" stamp `runList.ts` orders by; null for a run with no timestamp. */
   activityAt: string | null;
 };
 
@@ -66,7 +66,7 @@ export type HistoryRow = {
  * fallback -- not a second implementation of the same lookup.
  */
 export function projectHistoryRows(
-  runs: readonly AnyRun[],
+  runs: readonly RunV3[],
   workflowNames: ReadonlyMap<string, string | null> | null,
   extrasByReference?: ReadonlyMap<string, HistoryRowExtras>
 ): HistoryRow[] {
@@ -77,7 +77,7 @@ export function projectHistoryRows(
 }
 
 export function presentHistoryRow(
-  run: AnyRun,
+  run: RunV3,
   workflowNames: ReadonlyMap<string, string | null> | null,
   extras?: HistoryRowExtras | null
 ): HistoryRow {
@@ -104,42 +104,36 @@ function historyWorkItem(extras?: HistoryRowExtras | null): HistoryWorkItem | nu
   return workItem;
 }
 
-function historyResult(run: AnyRun, sentence: string | null): HistoryRowResult {
+function historyResult(run: RunV3, sentence: string | null): HistoryRowResult {
   if (run.state === "FAILED") {
     return { kind: "failed", nodeId: historyFailedNodeId(run), sentence };
   }
   return { kind: "completed", sentence };
 }
 
-function historySpan(run: AnyRun): { startedAt: string; endedAt: string } | null {
-  if (!isRunV3(run) || run.started_at == null || run.ended_at == null) return null;
+function historySpan(run: RunV3): { startedAt: string; endedAt: string } | null {
+  if (run.started_at == null || run.ended_at == null) return null;
   return { startedAt: run.started_at, endedAt: run.ended_at };
 }
 
 /**
  * The node whose extras History fetches for the Result cell.
  *
- * Failed runs use the failed-node helper; a completed V3 run names the node
- * by `current_node_id`, and a completed V1/V2 run by `current_node.node_id`.
+ * Failed runs use the failed-node helper; a completed run names the node by
+ * `current_node_id`.
  */
-export function historyResultNodeId(run: AnyRun): string {
+export function historyResultNodeId(run: RunV3): string {
   if (run.state === "FAILED") return historyFailedNodeId(run);
-  return isRunV3(run) ? run.current_node_id : run.current_node.node_id;
+  return run.current_node_id;
 }
 
 /**
- * The node a failed run failed at.
- *
- * `node_rail` names the failed node directly for a V2/V3 run; a V1 run carries
- * no rail, so the current node is read instead -- true because this engine only
- * reaches FAILED by failing the node the run's cursor was sitting on.
+ * The node a failed run failed at: the rail names it directly, with the
+ * current node as the honest fallback for a rail no entry of which failed.
  */
-function historyFailedNodeId(run: AnyRun): string {
-  if ("node_rail" in run) {
-    const failed = run.node_rail.find((entry) => entry.state === "failed");
-    if (failed !== undefined) return failed.node_id;
-  }
-  return isRunV3(run) ? run.current_node_id : run.current_node.node_id;
+function historyFailedNodeId(run: RunV3): string {
+  const failed = run.node_rail.find((entry) => entry.state === "failed");
+  return failed?.node_id ?? run.current_node_id;
 }
 
 /**

@@ -6,7 +6,7 @@ import {
   workbenchDecisionPins
 } from "../../src/lib/workbenchAttention";
 import { cancellableBlock } from "../support/runV3";
-import { publicReference, revisionHash } from "../support/workflowV1";
+import { publicReference, revisionHash } from "../support/runV3";
 
 function waitingRun(changes: Partial<RunV3> = {}): RunV3 {
   return {

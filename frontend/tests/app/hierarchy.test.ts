@@ -7,7 +7,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
-import { publicReference, startedRun, workflowRevision } from "../support/workflowV1";
+import { publicReference, startedRun, workflowRevision } from "../support/runV3";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -53,13 +53,13 @@ function open(pathname: string, overrides: Partial<CockpitApi> = {}) {
 describe("every page carries one way back and does not repeat its own title", () => {
   it("leads a run back to the Workbench, the room living work belongs to", async () => {
     open(RUN_PATH);
-    await screen.findByRole("heading", { name: "Unnamed workflow" });
+    await screen.findByRole("heading", { name: "Four steps in a line" });
 
     const back = screen.getByRole("navigation", { name: backLinkCopy.whereYouAre });
     expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
       "←Workbench"
     ]);
-    expect(within(back).queryByText("Unnamed workflow")).toBeNull();
+    expect(within(back).queryByText("Four steps in a line")).toBeNull();
 
     await fireEvent.click(within(back).getByRole("link", { name: "Workbench" }));
 

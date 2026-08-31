@@ -3,11 +3,7 @@
 
   import { createCockpitApi, type CockpitApi } from "./api/client";
   import { watchConnectionRecovery } from "./lib/connectionState";
-  import {
-    MutationJournal,
-    createReconcileCommandId as makeReconcileCommandId,
-    createRunId as makeRunId
-  } from "./lib/mutationJournal";
+  import { MutationJournal, createRunId as makeRunId } from "./lib/mutationJournal";
   import { PRODUCT_NAME } from "./lib/productName";
   import { cockpitRoute } from "./lib/route";
   import { WORKSHOP_DESTINATION } from "./lib/workshop";
@@ -23,7 +19,6 @@
   export let cockpitApi: CockpitApi = createCockpitApi();
   export let mutationJournal: MutationJournal = new MutationJournal(sessionStorage);
   export let createRunId: () => string = makeRunId;
-  export let createReconcileCommandId: () => string = makeReconcileCommandId;
 
   let route = cockpitRoute(window.location.pathname + window.location.search);
   let workshopShell: WorkshopShell;
@@ -81,7 +76,6 @@
       {mutationJournal}
       publicReference={route.publicReference}
       {navigate}
-      {createReconcileCommandId}
       {inAppFromPath}
     />
     {/key}

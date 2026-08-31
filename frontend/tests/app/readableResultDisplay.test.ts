@@ -13,7 +13,7 @@ import { runResultCopy } from "../../src/lib/runResultCopy";
 import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
-import { publicReference, revisionHash as digest } from "../support/workflowV1";
+import { publicReference, revisionHash as digest } from "../support/runV3";
 
 /**
  * A finished run's own result lives on the node's Result tab (#666 / #716):

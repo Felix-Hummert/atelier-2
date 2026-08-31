@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import { encodePublicRunReference, type RunV1 } from "../../src/api/client";
+import { encodePublicRunReference, type RunV3 } from "../../src/api/client";
 import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
@@ -19,7 +19,7 @@ import {
   waitingInputRun,
   waitingReconciliationRun,
   workflowRevision
-} from "../support/workflowV1";
+} from "../support/runV3";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -54,14 +54,14 @@ function open(pathname: string) {
   });
 }
 
-function listRunsByState(runs: RunV1[]) {
+function listRunsByState(runs: RunV3[]) {
   return vi.fn(async (_after?: string, state?: string) => ({
     items: state === undefined ? runs : runs.filter((run) => run.state === state),
     next_after: null
   }));
 }
 
-function listedRun(runId: string, factory: (changes?: Partial<RunV1>) => RunV1, extra: Partial<RunV1> = {}): RunV1 {
+function listedRun(runId: string, factory: (changes?: Partial<RunV3>) => RunV3, extra: Partial<RunV3> = {}): RunV3 {
   return factory({
     run_id: runId,
     public_run_reference: encodePublicRunReference(runId),
@@ -70,18 +70,12 @@ function listedRun(runId: string, factory: (changes?: Partial<RunV1>) => RunV1, 
   });
 }
 
-function populatedWorkbenchRuns(): RunV1[] {
-  const reconciliation = waitingReconciliationRun();
-  if (reconciliation.waiting.type !== "WAITING_RECONCILIATION") {
-    throw new Error("waiting reconciliation fixture must wait for reconciliation");
-  }
+function populatedWorkbenchRuns(): RunV3[] {
   return [
     listedRun("run-a", startedRun),
     listedRun("run-b", startedRun),
     listedRun("wait-a", waitingInputRun),
-    listedRun("wait-b", waitingReconciliationRun, {
-      waiting: { ...reconciliation.waiting, node_id: reconciliation.current_node.node_id }
-    }),
+    listedRun("wait-b", waitingReconciliationRun),
     listedRun("fail-a", startedRun, { state: "FAILED", terminal_hash: revisionHash }),
     listedRun("done-a", completedRun)
   ];
@@ -201,12 +195,15 @@ describe("core surfaces read owned display strings", () => {
   it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): the Workbench renders its row moves through the display transform, and never lists a terminal run (#667)", async () => {
     openWorkbenchPseudoLocale(listRunsByState(populatedWorkbenchRuns()));
 
-    const answer = humanMove("WAITING_INPUT");
     const reconcile = humanMove("WAITING_RECONCILIATION");
-    expect(answer).not.toBeNull();
     expect(reconcile).not.toBeNull();
-    expect((await screen.findByText(`${wrapDisplayCopy(answer ?? "")} →`)).isConnected).toBe(true);
-    expect(screen.getByText(`${wrapDisplayCopy(reconcile ?? "")} →`).isConnected).toBe(true);
+    expect((await screen.findByText(`${wrapDisplayCopy(reconcile ?? "")} →`)).isConnected).toBe(true);
+    // The waiting-for-an-answer run stands pinned in the Open-decisions
+    // region rather than as a shelf row with a move of its own.
+    const pinnedRegion = await screen.findByRole("region", {
+      name: wrapDisplayCopy(workbenchPageCopy.pinnedDecisionsLabel)
+    });
+    expect(within(pinnedRegion).getAllByRole("listitem")).toHaveLength(1);
 
     // The fail-a and done-a fixtures in this same set are terminal: the
     // Workbench never lists their state at all, so they leave nothing behind
@@ -245,7 +242,7 @@ describe("core surfaces read owned display strings", () => {
 
   it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): Run page rail uses the owner, not a hardcoded copy", async () => {
     open(`/atelier/runs/${publicReference}?pseudo-locale=1`);
-    await screen.findByRole("heading", { name: "Unnamed workflow" });
+    await screen.findByRole("heading", { name: "Four steps in a line" });
     await railShowsOwnedPseudoLocale();
   });
 

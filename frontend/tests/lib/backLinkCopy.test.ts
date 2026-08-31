@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { backLinkCopy, inAppRoomOrigin, runBackLink } from "../../src/lib/backLinkCopy";
 import { cockpitRoute, runPath, workflowPath } from "../../src/lib/route";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
-import { publicReference } from "../support/workflowV1";
+import { publicReference } from "../support/runV3";
 
 describe("the trail back from a run", () => {
   it("leads an ended run with no in-app origin to History", () => {

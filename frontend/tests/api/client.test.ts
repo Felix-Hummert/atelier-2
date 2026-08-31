@@ -6,12 +6,10 @@ import {
   assistantTurnEventSchema,
   createCockpitApi,
   decodeProblem,
-  decodeRun,
   decodeRunEvent,
   decodeStreamFrame,
   decodeWorkflowRevisionDetail,
   executableGraph,
-  isRunV3,
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   nodeDetailSchema,
   projectSourceConnectionRevisionSchema,
@@ -23,7 +21,6 @@ import {
 } from "../../src/api/client";
 import { cancelMutation } from "../../src/lib/mutationJournal";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
-import { workflowRevision } from "../support/workflowV1";
 
 const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
 
@@ -166,14 +163,6 @@ function event(event: string, fields: Record<string, unknown> = {}) {
   };
 }
 
-function v2Event(eventName: string, fields: Record<string, unknown> = {}) {
-  return {
-    ...event(eventName, fields),
-    workflow_format_version: 2,
-    node_rail: [{ node_id: "agent", state: "working", attempt: null }]
-  };
-}
-
 function v3Event(eventName: string, fields: Record<string, unknown> = {}) {
   return {
     ...event(eventName, fields),
@@ -183,11 +172,10 @@ function v3Event(eventName: string, fields: Record<string, unknown> = {}) {
 }
 
 const v2Attempt = { attempt_id: digest, attempt_ordinal: 1 };
-const v2Cancellation = { ...v2Attempt, command_id: "cancel-1", replacement: "ONE" };
 
 describe("closed API decoders", () => {
   it("decodes all four graph node variants and refuses unknown fields", () => {
-    const decoded = decodeWorkflowRevisionDetail(workflowRevision());
+    const decoded = decodeWorkflowRevisionDetail(v1Revision());
 
     expect(executableGraph(decoded.graph).nodes.map((node) => node.type)).toEqual([
       "agent",
@@ -295,76 +283,6 @@ describe("closed API decoders", () => {
     }
   );
 
-  it("decodes a state-consistent waiting run and refuses an open waiting union", () => {
-    const run = {
-      run_id: "run-1",
-      public_run_reference: publicReference,
-      workflow_revision_hash: digest,
-      state_version: 2,
-      state: "WAITING_INPUT",
-      current_node: {
-        type: "wait",
-        node_id: "wait",
-        answer_type: "integer",
-        next_node_id: "final"
-      },
-      waiting: { type: "WAITING_INPUT", node_id: "wait", answer_type: "integer" },
-      terminal_hash: null,
-      latest_event_cursor: "event1.cnVuLTE.2"
-    };
-
-    expect(decodeRun(run).state).toBe("WAITING_INPUT");
-    expect(() => decodeRun({ ...run, waiting: { type: "SOMETHING_NEW" } })).toThrow();
-  });
-
-  it.each(["", "run2.YQ", "run1._w", "run1.YQ==", "run1.", "run1.@@", "run1.YQ="])(
-    "refuses a malformed or noncanonical public reference: %s",
-    (public_run_reference) => {
-      expect(() => decodeRun(startedRun({ public_run_reference }))).toThrow();
-    }
-  );
-
-  it("binds the public reference to exact UTF-8 run_id and the latest cursor", () => {
-    expect(decodeRun(startedRun()).run_id).toBe("run-1");
-    expect(() => decodeRun(startedRun({ run_id: "other" }))).toThrow();
-    expect(() =>
-      decodeRun(startedRun({ latest_event_cursor: "event1.b3RoZXI.1" }))
-    ).toThrow();
-    expect(
-      decodeRun(
-        startedRun({
-          run_id: "Grüße-東京",
-          public_run_reference: "run1.R3LDvMOfZS3mnbHkuqw",
-          latest_event_cursor: "event1.R3LDvMOfZS3mnbHkuqw.1"
-        })
-      ).run_id
-    ).toBe("Grüße-東京");
-  });
-
-  it.each(["PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"])(
-    "decodes a failed V2 run snapshot carrying the Runner failure code: %s",
-    (failureCode) => {
-      const decoded = decodeRun(failedV2Run(failureCode));
-
-      expect(decoded.state).toBe("FAILED");
-      expect("agent_attempts" in decoded && decoded.agent_attempts[0]?.failure_code).toBe(
-        failureCode
-      );
-    }
-  );
-
-  it.each([
-    event("AGENT_COMPLETED", { output: "answer", payload_hash: digest }),
-    event("ACTION_RECONCILIATION_REQUIRED", { request_base64: "eA==", request_hash: digest }),
-    event("ACTION_RECONCILIATION_RESOLVED", { receipt: receipt() }),
-    event("ACTION_COMPLETED", { receipt: receipt() }),
-    event("WAITING_INPUT", { answer_type: "integer" }),
-    event("WAIT_ANSWERED", { answer: "17", answer_hash: digest }),
-    event("SUBWORKFLOW_COMPLETED", { result: 5, result_hash: digest })
-  ])("decodes the closed durable event union: $event", (value) => {
-    expect(decodeRunEvent(value).event).toBe(value.event);
-  });
-
   it.each([
     v3Event("ACTION_RECONCILIATION_REQUIRED", { request_base64: "eA==", request_hash: digest }),
     v3Event("ACTION_RECONCILIATION_RESOLVED", { receipt: receipt() }),
@@ -373,43 +291,13 @@ describe("closed API decoders", () => {
     expect(decodeRunEvent(value).event).toBe(value.event);
   });
 
-  it.each([
-    v2Event("AGENT_COMPLETED", { ...v2Attempt, output_base64: "YW5zd2Vy", output_hash: digest }),
-    v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "PROCESS_EXITED_UNSUCCESSFULLY" }),
-    v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "PROCESS_OUTPUT_LIMIT_EXCEEDED" }),
-    v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "PROCESS_SUPERVISION_FAILED" }),
-    v2Event("AGENT_CANCEL_REQUESTED", v2Cancellation),
-    v2Event("AGENT_CANCELLED", {
-      ...v2Cancellation,
-      disposition: "REAPED_AFTER_TERM",
-      replacement_attempt_id: "b".repeat(64)
-    }),
-    v2Event("AGENT_INTERRUPTED", {
-      ...v2Cancellation,
-      replacement: "NONE",
-      disposition: "OWNER_LOST_AFTER_PARENT_DEATH",
-      replacement_attempt_id: null
-    }),
-    v2Event("ACTION_RECONCILIATION_REQUIRED", { request_base64: "eA==", request_hash: digest }),
-    v2Event("ACTION_RECONCILIATION_RESOLVED", { receipt: receipt() }),
-    v2Event("ACTION_COMPLETED", { receipt: receipt() }),
-    v2Event("WAITING_INPUT", { answer_type: "integer" }),
-    v2Event("WAIT_ANSWERED", { answer: "17", answer_hash: digest }),
-    v2Event("SUBWORKFLOW_COMPLETED", { result: 5, result_hash: digest })
-  ])("decodes every public V2 event member: $event", (value) => {
-    expect(decodeRunEvent(value).event).toBe(value.event);
-  });
-
-  it("refuses an unknown V2 event member instead of dropping it", () => {
-    expect(() => decodeRunEvent(v2Event("NODE_PROGRESS", { percent: 50 }))).toThrow();
+  it("refuses an unknown durable event kind instead of dropping it", () => {
+    expect(() => decodeRunEvent(v3Event("NODE_PROGRESS", { percent: 50 }))).toThrow();
   });
 
   it.each(["PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"])(
-    "decodes the new runner failure in both public event families: %s",
+    "decodes the runner failure the served event family names: %s",
     (failureCode) => {
-      expect(
-        decodeRunEvent(v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: failureCode })).event
-      ).toBe("AGENT_FAILED");
       expect(
         decodeRunEvent(
           v3Event("AGENT_FAILED", {
@@ -424,21 +312,17 @@ describe("closed API decoders", () => {
 
   it("refuses a failure code outside the published vocabulary", () => {
     expect(() =>
-      decodeRunEvent(v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "RUNNER_BROKE" }))
+      decodeRunEvent(
+        v3Event("AGENT_FAILED", { ...v2Attempt, failure_code: "RUNNER_BROKE", reason: null })
+      )
     ).toThrow();
   });
 
   it("decodes the attempt-less executor refusal and refuses a forged attempt", () => {
     const refusal = { reason: "agent-executor-binding-unavailable" as const };
 
-    expect(decodeRunEvent(v2Event("AGENT_FAILED", refusal))).toMatchObject(refusal);
     expect(decodeRunEvent(v3Event("AGENT_FAILED", refusal))).toMatchObject(refusal);
-    expect(() => decodeRunEvent(v2Event("AGENT_FAILED", { ...refusal, ...v2Attempt }))).toThrow();
     expect(() => decodeRunEvent(v3Event("AGENT_FAILED", { ...refusal, ...v2Attempt }))).toThrow();
-  });
-
-  it("refuses an unknown durable event kind", () => {
-    expect(() => decodeRunEvent(event("NODE_PROGRESS", { percent: 50 }))).toThrow();
   });
 
   it("decodes the attention feed's per-run corruption frame", () => {
@@ -470,21 +354,12 @@ describe("closed API decoders", () => {
     ).toThrow();
   });
 
-  it.each(["01", "+1", "-0", " 1", "1 ", "1.0", ""])(
-    "refuses a noncanonical WAIT_ANSWERED integer: %s",
-    (answer) => {
-      expect(() =>
-        decodeRunEvent(event("WAIT_ANSWERED", { answer, answer_hash: digest }))
-      ).toThrow();
-    }
-  );
-
   it.each(["YQ", "YQ===", "Y Q==", "YQ-_", "===="])(
     "refuses noncanonical standard base64 in nested request/results: %s",
     (encoded) => {
       expect(() =>
         decodeRunEvent(
-          event("ACTION_RECONCILIATION_REQUIRED", {
+          v3Event("ACTION_RECONCILIATION_REQUIRED", {
             request_base64: encoded,
             request_hash: digest
           })
@@ -492,7 +367,7 @@ describe("closed API decoders", () => {
       ).toThrow();
       expect(() =>
         decodeRunEvent(
-          event("ACTION_COMPLETED", {
+          v3Event("ACTION_COMPLETED", {
             receipt: { ...receipt(), result_base64: encoded }
           })
         )
@@ -500,30 +375,12 @@ describe("closed API decoders", () => {
     }
   );
 
-  it("accepts only exactly representable integers at every numeric boundary", () => {
-    expect(
-      decodeRunEvent(
-        event("SUBWORKFLOW_COMPLETED", {
-          result: Number.MAX_SAFE_INTEGER,
-          result_hash: digest
-        })
-      ).event
-    ).toBe("SUBWORKFLOW_COMPLETED");
-    for (const invalid of [Number.MAX_SAFE_INTEGER + 1, true, 1.5]) {
-      expect(() =>
-        decodeRunEvent(
-          event("SUBWORKFLOW_COMPLETED", { result: invalid, result_hash: digest })
-        )
-      ).toThrow();
-    }
-  });
-
   it("refuses a cursor whose run or sequence disagrees with the event", () => {
     expect(() =>
-      decodeRunEvent({ ...event("WAITING_INPUT", { answer_type: "integer" }), cursor: "event1.b3RoZXI.1" })
+      decodeRunEvent({ ...v3Event("WAITING_INPUT"), cursor: "event1.b3RoZXI.1" })
     ).toThrow();
     expect(() =>
-      decodeRunEvent({ ...event("WAITING_INPUT", { answer_type: "integer" }), cursor: "event1.cnVuLTE.2" })
+      decodeRunEvent({ ...v3Event("WAITING_INPUT"), cursor: "event1.cnVuLTE.2" })
     ).toThrow();
   });
 
@@ -537,45 +394,7 @@ describe("closed API decoders", () => {
     "event1..1"
   ])("refuses a malformed or noncanonical event cursor: %s", (cursor) => {
     expect(() =>
-      decodeRunEvent({ ...event("WAITING_INPUT", { answer_type: "integer" }), cursor })
-    ).toThrow();
-  });
-
-  it("validates base64 inside waiting projections and pending found commands", () => {
-    const waiting = {
-      ...startedRun(),
-      state: "WAITING_RECONCILIATION",
-      current_node: { type: "action", node_id: "action", next_node_id: "final" },
-      waiting: {
-        type: "WAITING_RECONCILIATION",
-        node_id: "action",
-        logical_effect_key: "effect",
-        request_hash: digest,
-        request_base64: "not-base64",
-        intent_state_version: 1,
-        pending_command: null
-      }
-    };
-    expect(() => decodeRun(waiting)).toThrow();
-    expect(() =>
-      decodeRun({
-        ...waiting,
-        waiting: {
-          ...waiting.waiting,
-          request_base64: "eA==",
-          pending_command: {
-            command_id: "command",
-            actor: "operator",
-            evidence: "inspected",
-            state: "PENDING",
-            determination: {
-              type: "operator_found",
-              effect_id: "effect",
-              result_base64: "YQ"
-            }
-          }
-        }
-      })
+      decodeRunEvent({ ...v3Event("WAITING_INPUT"), cursor })
     ).toThrow();
   });
 
@@ -720,62 +539,20 @@ describe("agent configuration publication", () => {
   });
 });
 
-function startedRun(changes: Record<string, unknown> = {}) {
+function v1Revision() {
   return {
-    run_id: "run-1",
-    public_run_reference: publicReference,
     workflow_revision_hash: digest,
-    state_version: 1,
-    state: "STARTED",
-    current_node: {
-      type: "agent",
-      node_id: "agent",
-      job: "work",
-      output: "output",
-      next_node_id: "final"
-    },
-    waiting: { type: "NONE" },
-    terminal_hash: null,
-    latest_event_cursor: "event1.cnVuLTE.1",
-    ...changes
-  };
-}
-
-function failedV2Run(failure_code: string) {
-  return {
-    workflow_format_version: 2,
-    run_id: "run-1",
-    public_run_reference: publicReference,
-    workflow_revision_hash: digest,
-    agent_binding_set_hash: digest,
-    agent_bindings: [],
-    state_version: 2,
-    state: "FAILED",
-    current_node: {
-      type: "agent",
-      node_id: "agent",
-      role: "builder",
-      job: "work",
-      next_node_id: "done"
-    },
-    node_rail: [
-      { node_id: "agent", state: "failed", attempt: { ordinal: 1, state: "FAILED" } },
-      { node_id: "done", state: "queued", attempt: null }
-    ],
-    agent_attempts: [
-      {
-        attempt_id: digest,
-        node_execution_id: digest,
-        request_hash: digest,
-        attempt_ordinal: 1,
-        state: "FAILED",
-        failure_code,
-        cancellation: null
-      }
-    ],
-    waiting: { type: "NONE" },
-    terminal_hash: digest,
-    latest_event_cursor: "event1.cnVuLTE.1"
+    document_base64: "",
+    graph: {
+      workflow_format_version: 1,
+      start_node_id: "agent",
+      nodes: [
+        { type: "agent", node_id: "agent", job: "Build it", output: "candidate", next_node_id: "action" },
+        { type: "action", node_id: "action", next_node_id: "wait" },
+        { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
+        terminal("final")
+      ]
+    }
   };
 }
 
@@ -1432,7 +1209,7 @@ describe("the graph a run is allowed to hold", () => {
   });
 
   it("hands back an executable graph unchanged", () => {
-    const graph = executableGraph(workflowRevision().graph);
+    const graph = executableGraph(decodeWorkflowRevisionDetail(v1Revision()).graph);
 
     expect(graph.workflow_format_version).toBe(1);
     expect(executableGraph(graph)).toBe(graph);
@@ -1503,25 +1280,12 @@ describe("the run listing the studio opens on", () => {
 
     expect(page.items).toHaveLength(1);
     const run = page.items[0];
-    if (!run || !isRunV3(run)) {
-      throw new Error("expected a decoded V3 run");
+    if (!run) {
+      throw new Error("expected a decoded run");
     }
     expect(run.orders).toEqual([
       { name: "headline", bytes: 19, schema_revision_hash: "d".repeat(64) }
     ]);
-  });
-
-  it("still lists a version 2 run beside it", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({ items: [v3Run, startedRun()], next_after: null }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      )
-    );
-
-    const page = await createCockpitApi(fetcher).listRuns();
-
-    expect(page.items.map((run) => run.state)).toEqual(["STARTED", "STARTED"]);
   });
 
   it("asks the list for one durable state when the studio names that state", async () => {
