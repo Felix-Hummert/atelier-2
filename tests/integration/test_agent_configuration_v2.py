@@ -1534,7 +1534,6 @@ def test_completed_v2_history_reopens_without_process_supervision(
         restarted.close()
 
 
-@pytest.mark.proves("existing-runtime-lines-survive-the-binder-deletion")
 def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
     tmp_path: Path,
 ) -> None:

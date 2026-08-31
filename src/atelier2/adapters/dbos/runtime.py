@@ -36,7 +36,6 @@ from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_configuration_revisions,
-    agent_receipts,
     auth_profile_revisions,
     effect_intents,
     initialize_schema,
@@ -101,7 +100,6 @@ from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutorBinding,
-    AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AuthProfileRevision,
     ProviderId,
@@ -912,20 +910,6 @@ def _open_binding(
             engine, settings.project_id, settings.database_path
         )
         with engine.connect() as connection:
-            durable_agent_bindings = {
-                AgentExecutorBinding(
-                    AgentExecutorRevision(str(record.executor_adapter_revision)),
-                    AgentExecutorOperationalIdentity(
-                        str(record.executor_operational_identity)
-                    ),
-                )
-                for record in connection.execute(
-                    sa.select(
-                        agent_receipts.c.executor_adapter_revision,
-                        agent_receipts.c.executor_operational_identity,
-                    ).distinct()
-                )
-            }
             durable_bindings = {
                 EffectAdapterBinding(
                     AdapterRevision(str(record.adapter_revision)),
@@ -982,10 +966,6 @@ def _open_binding(
                     .distinct()
                 )
             }
-        if durable_agent_bindings and durable_agent_bindings != {agent_binding}:
-            raise DbosRuntimeBindingConflict(
-                "runtime agent binding differs from durable agent receipts"
-            )
         if not durable_bindings.issubset(set(effect_bindings)):
             raise DbosRuntimeBindingConflict(
                 "runtime adapter binding differs from durable effect intents"

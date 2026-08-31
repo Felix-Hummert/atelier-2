@@ -45,7 +45,6 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
-    AgentNodeBinding,
     AgentNodeBindingV2,
     NodeBinding,
     SubworkflowNodeBinding,
@@ -56,12 +55,6 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
-
-
-class EncodedAgentBinding(TypedDict):
-    type: Literal["agent"]
-    job: str
-    output: str
 
 
 class EncodedAgentBindingV2(TypedDict):
@@ -104,8 +97,7 @@ class EncodedSubworkflowBinding(TypedDict):
 
 
 type EncodedNodeBinding = (
-    EncodedAgentBinding
-    | EncodedAgentBindingV2
+    EncodedAgentBindingV2
     | EncodedActionBinding
     | EncodedWaitBinding
     | EncodedSubworkflowBinding
@@ -113,7 +105,6 @@ type EncodedNodeBinding = (
 
 _FORM_ONLY_KEYS = frozenset({"type"})
 _WAIT_OPTIONAL_KEYS = frozenset({"round_ordinal", "question"})
-_AGENT_KEYS = frozenset({"type", "job", "output"})
 _SUBWORKFLOW_KEYS = frozenset({"type", "left", "right"})
 _AGENT_V2_KEYS = frozenset(
     [
@@ -148,8 +139,6 @@ _AGENT_V2_OPTIONAL_KEYS = frozenset(
 def encode_node_binding(binding: NodeBinding) -> EncodedNodeBinding:
     """The durable form of this binding, in the shape every recorded row carries."""
     match binding:
-        case AgentNodeBinding(job=job, output=output):
-            return {"type": "agent", "job": job, "output": output}
         case AgentNodeBindingV2():
             return _encode_agent_v2(binding)
         case ActionNodeBinding():
@@ -171,9 +160,6 @@ def encode_node_binding(binding: NodeBinding) -> EncodedNodeBinding:
 def decode_node_binding(encoded: Mapping[str, object]) -> NodeBinding:
     """What a recorded step output binds, or the named refusal that it binds nothing."""
     match encoded.get("type"):
-        case "agent":
-            _refuse_foreign_keys(encoded, _AGENT_KEYS)
-            return AgentNodeBinding(_text(encoded, "job"), _text(encoded, "output"))
         case "agent-v2":
             return _decode_agent_v2(encoded)
         case "action":
