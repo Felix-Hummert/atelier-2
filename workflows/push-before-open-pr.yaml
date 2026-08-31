@@ -13,13 +13,16 @@ nodes:
   - id: implement
     type: agent
     role: builder
+    # The pinned grant carries Grok 4.6's committer identity, so the node
+    # pins the model -- receipt committer and pushing model cannot diverge.
+    model: grok-4.6
     mode: headless
     instruction: >-
       Implement the named work item and return a concise JSON string summarizing
       the candidate you produced.
     tools:
       - ref: push-atelier-commit
-        revision: "<push-atelier-commit-grant-revision>"
+        revision: "32eb46fb44f23c97a7b978a9de08c8a764281e6944426bb823329cfc7f9c5b1a"
     inputs:
       - name: work_item
         from:

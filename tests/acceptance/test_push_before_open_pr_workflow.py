@@ -28,6 +28,7 @@ from atelier2.adapters.git_transport.effects import (
     GitTransportEffectAdapterFactory,
 )
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agents import (
@@ -68,6 +69,7 @@ from atelier2.contracts.work_items import (
     WorkItemChangeMarker,
     WorkItemKind,
 )
+from atelier2.contracts.workflows_v3 import AgentNodeV3
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -88,7 +90,6 @@ from tests.scenarios.api import durable_api_client
 from tests.scenarios.runs import submit_reconcile_command
 
 WORKFLOW_PATH = Path("workflows/push-before-open-pr.yaml")
-GRANT_REVISION_PLACEHOLDER = b"<push-atelier-commit-grant-revision>"
 PROJECT = ProjectId("push-before-open-pr-workflow")
 ITEM = TrackerItemReference("gh:883")
 RUN = RunId("v3/repository-push-before-open-pr")
@@ -152,12 +153,15 @@ def _publish_workflow(
     AgentBindingSet,
     tuple[GitCommitIdentity, GitCommitIdentity],
 ]:
-    author = GitCommitIdentity(
-        "Repository Workflow Test Author", "workflow-author@example.test"
-    )
-    committer = GitCommitIdentity(
-        "Repository Workflow Test Committer", "workflow-committer@example.test"
-    )
+    # The published live revisions pin the operator as author and the pushing
+    # node's model as committer (issue #883, operator ruling 30.08.2026); the
+    # shipped document binds difficulty 2, which the project defaults answer
+    # with grok-4.6. Reproducing that exact pair is what makes the derived
+    # grant hash equal the one the shipped document pins.
+    connected_account_address = "44832414+FlexOr2@users.noreply.github.com"
+    author = GitCommitIdentity("Felix Hummert", connected_account_address)
+    pushing_model = "grok-4.6"
+    committer = GitCommitIdentity("Grok 4.6", connected_account_address)
     push_operation = PublishedRevision(
         RevisionKind.ADAPTER_OPERATION,
         json.dumps(
@@ -201,12 +205,15 @@ def _publish_workflow(
             published, (PublishedRevisionCreated, PublishedRevisionExisting)
         ), published
 
-    authored_document = WORKFLOW_PATH.read_bytes()
-    assert authored_document.count(GRANT_REVISION_PLACEHOLDER) == 1
-    resolved_document = authored_document.replace(
-        GRANT_REVISION_PLACEHOLDER, push_grant.revision_hash.value.encode()
+    shipped_document = WORKFLOW_PATH.read_bytes()
+    assert push_grant.revision_hash.value.encode() in shipped_document
+    (pushing_node,) = (
+        node
+        for node in parse_workflow_document(shipped_document).nodes
+        if isinstance(node, AgentNodeV3)
     )
-    workflow = WorkflowRevision(resolved_document)
+    assert pushing_node.model == pushing_model
+    workflow = WorkflowRevision(shipped_document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
 
     catalog = DbosAgentConfigurationCatalog(
@@ -398,7 +405,9 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         push_receipt = PushAtelierCommitReceipt.from_result_bytes(
             bytes(receipts[0].result)
         )
-        assert push_receipt.commit_oid == _git(remote, "rev-parse", push_receipt.full_ref)
+        assert push_receipt.commit_oid == _git(
+            remote, "rev-parse", push_receipt.full_ref
+        )
         assert push_receipt.parent == base
         assert push_receipt.candidate_tree == _git(
             remote, "rev-parse", f"{push_receipt.commit_oid}^{{tree}}"
