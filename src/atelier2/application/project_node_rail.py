@@ -42,27 +42,23 @@ from atelier2.contracts.run_projections import (
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
-    AgentNode,
-    AgentNodeV2,
-    AnyWorkflowNode,
     RunContinues,
     completion_after_node,
 )
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
-    WorkflowGraphV3,
     WorkflowNodeV3,
     is_sink_node,
     linear_successor_id,
 )
 
-type _RailNode = AnyWorkflowNode | WorkflowNodeV3
-"""Every node a rail can stand on, across the formats a run may be bound to.
+type _RailNode = WorkflowNodeV3
+"""Every node a rail can stand on.
 
-The rail is the one place that walks nodes without caring which format authored
-them, so the union it walks lives here rather than in the contracts: a shared
-alias with one consumer would claim a generality nothing else asked for.
+The rail is the one place that walks nodes without caring which contract module
+declares them, so the alias it walks lives here rather than in the contracts: a
+shared alias with one consumer would claim a generality nothing else asked for.
 """
 
 
@@ -347,7 +343,7 @@ class _RailDerivation:
 def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[_RailNode, ...]:
     """Every node in graph order; the graph's own validator proved the walk ends.
 
-    A V3 graph is walked along the one edge its author declared: entry, then each
+    The graph is walked along the one edge its author declared: entry, then each
     node's single dependent, to the sink. That is not an order chosen here -- it
     is the same edge `durable_node` follows when it hands a finished node on, so
     the rail describes the run's real path rather than inventing one. Only a line
@@ -355,21 +351,13 @@ def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[_RailNode, ...]:
     a run exists: choosing between them is the ready set (#86), and no rail is
     asked to decide it.
     """
-    if isinstance(graph, WorkflowGraphV3):
-        walked_v3: list[_RailNode] = []
-        node_id = graph.entry_node_ids[0]
-        while True:
-            walked_v3.append(graph.node(node_id))
-            if is_sink_node(graph, node_id):
-                return tuple(walked_v3)
-            node_id = linear_successor_id(graph, node_id)
     walked: list[_RailNode] = []
-    node: _RailNode = graph.node(graph.start)
-    while node.next is not None:
-        walked.append(node)
-        node = graph.node(node.next)
-    walked.append(node)
-    return tuple(walked)
+    node_id = graph.entry_node_ids[0]
+    while True:
+        walked.append(graph.node(node_id))
+        if is_sink_node(graph, node_id):
+            return tuple(walked)
+        node_id = linear_successor_id(graph, node_id)
 
 
 def never_launched_cleanup_on_failed_run(
@@ -388,7 +376,7 @@ def never_launched_cleanup_on_failed_run(
 
 
 def _is_agent(node: _RailNode) -> bool:
-    return isinstance(node, AgentNode | AgentNodeV2 | AgentNodeV3)
+    return isinstance(node, AgentNodeV3)
 
 
 def _state_the_event_ended_in(

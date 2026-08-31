@@ -1,4 +1,4 @@
-"""`resolve_start_bindings`: the one binding decision a V2 or V3 start makes."""
+"""`resolve_start_bindings`: the one binding decision a start makes."""
 
 from __future__ import annotations
 
@@ -38,7 +38,6 @@ from atelier2.contracts.host_configuration import (
     ProjectModelDefaultsRevision,
     ProviderModelCheck,
 )
-from atelier2.contracts.workflows import AgentNodeV2, SubworkflowNode, WorkflowGraphV2
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     BindingConstraint,
@@ -149,19 +148,18 @@ def _registry(
     return AgentExecutorRegistry(tuple(build(factory) for factory in factories))
 
 
-def _v2_graph(role: str = "builder") -> WorkflowGraphV2:
-    """agent -> final: the shortest V2 graph, with one role to bind."""
-    return WorkflowGraphV2(
-        format_version=2,
-        start="agent",
+def _single_role_graph(role: str = "builder") -> WorkflowGraphV3:
+    """One agent node, one role to bind."""
+    return WorkflowGraphV3(
+        format_version=3,
+        name="One role to bind",
         nodes=(
-            AgentNodeV2(id="agent", type="agent", role=role, job="Build", next="final"),
-            SubworkflowNode(
-                id="final",
-                type="subworkflow",
-                operation="add",
-                operands=(2, 3),
-                next=None,
+            AgentNodeV3(
+                id="agent",
+                type="agent",
+                role=role,
+                mode="headless",
+                instruction="Build",
             ),
         ),
     )
@@ -861,14 +859,14 @@ def test_without_project_defaults_every_open_role_is_named_uncast() -> None:
 def test_role_completeness_refuses_before_any_read(bindings: AgentBindingSet) -> None:
     reads = ScriptedBindingReads({})
 
-    result = resolve_start_bindings(_v2_graph(), bindings, reads, _registry())
+    result = resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
 
     assert result == DurableInvalidAgentBindings()
     assert reads.calls == []
 
 
 def test_agent_role_completeness_refusal_is_the_same_decision_standalone() -> None:
-    graph = _v2_graph()
+    graph = _single_role_graph()
     complete = AgentBindingSet(
         (AgentBinding(AgentRole("builder"), AgentConfigurationRevisionHash("a" * 64)),)
     )
@@ -884,7 +882,7 @@ def test_missing_agent_configuration_refuses() -> None:
     bindings = AgentBindingSet((AgentBinding(AgentRole("builder"), missing_hash),))
     reads = ScriptedBindingReads({})
 
-    result = resolve_start_bindings(_v2_graph(), bindings, reads, _registry())
+    result = resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
 
     assert result == DurableAgentConfigurationRevisionMissing()
 
@@ -904,7 +902,7 @@ def test_missing_auth_profile_fails_loud_rather_than_refusing() -> None:
     )
 
     with pytest.raises(AuthProfileMissingForConfiguration):
-        resolve_start_bindings(_v2_graph(), bindings, reads, _registry())
+        resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
 
 
 def test_unregistered_executor_refuses() -> None:
@@ -915,7 +913,7 @@ def test_unregistered_executor_refuses() -> None:
     )
     reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
 
-    result = resolve_start_bindings(_v2_graph(), bindings, reads, _registry())
+    result = resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
 
     assert result == DurableAgentExecutorBindingUnavailable()
 
@@ -934,7 +932,7 @@ def test_undeclared_capability_refuses() -> None:
         )
     )
 
-    result = resolve_start_bindings(_v2_graph(), bindings, reads, registry)
+    result = resolve_start_bindings(_single_role_graph(), bindings, reads, registry)
 
     assert result == DurableAgentExecutorCapabilityUnavailable()
 
@@ -948,12 +946,12 @@ def test_declared_but_unstartable_executor_refuses() -> None:
     reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
     registry = _registry(FakeExecutorFactory("exact"), unavailable=True)
 
-    result = resolve_start_bindings(_v2_graph(), bindings, reads, registry)
+    result = resolve_start_bindings(_single_role_graph(), bindings, reads, registry)
 
     assert result == DurableAgentExecutorBindingUnavailable()
 
 
-def test_resolves_every_binding_for_a_v2_graph() -> None:
+def test_resolves_every_binding_for_a_single_role_graph() -> None:
     auth = _auth()
     configuration = _configuration(auth)
     bindings = AgentBindingSet(
@@ -962,7 +960,7 @@ def test_resolves_every_binding_for_a_v2_graph() -> None:
     reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
     registry = _registry(FakeExecutorFactory("exact"))
 
-    result = resolve_start_bindings(_v2_graph(), bindings, reads, registry)
+    result = resolve_start_bindings(_single_role_graph(), bindings, reads, registry)
 
     assert result == (ResolvedAgentBinding(AgentRole("builder"), configuration, auth),)
 

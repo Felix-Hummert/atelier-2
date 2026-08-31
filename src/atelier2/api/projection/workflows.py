@@ -30,7 +30,6 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
-    AnyWorkflowDocument,
     LoopDeclaration,
     WaitNodeV3,
     WorkflowGraphV3,
@@ -125,7 +124,7 @@ def _loop_resource(loop: LoopDeclaration) -> WorkflowLoopResourceV3:
 
 
 def graph_resource(
-    graph: AnyWorkflowDocument,
+    graph: WorkflowGraphV3,
     not_executable_reason: str | None,
     wait_answer_classifications: tuple[WaitAnswerClassification, ...] = (),
 ) -> WorkflowGraphResourceV3:
@@ -135,11 +134,6 @@ def graph_resource(
     from the one rule the start path applies, so this projection cannot drift
     from the starter the first time either moves.
     """
-    if not isinstance(graph, WorkflowGraphV3):
-        raise UnservedWorkflowFormat(
-            f"the API projects format-3 documents only, not format "
-            f"{graph.format_version}"
-        )
     classified_by_node_id = {
         classification.node_id: classification
         for classification in wait_answer_classifications
@@ -177,22 +171,16 @@ def graph_resource(
 def workflow_revision_summary_resource(
     described: DescribedWorkflowRevision,
 ) -> WorkflowRevisionSummaryResourceV2:
-    """What a listing may say about one revision, and no more than that.
-
-    Only a V3 document declares a name or a description, so for every other
-    format both are absent here. That absence is the record's own answer, not a
-    gap this projection fills in (ADR 0007 decision 4).
-    """
+    """What a listing may say about one revision, and no more than that."""
 
     graph = described.projection.graph
-    authored = isinstance(graph, WorkflowGraphV3)
     return WorkflowRevisionSummaryResourceV2(
         workflow_revision_hash=described.projection.revision.revision_hash.value,
         workflow_format_version=graph.format_version,
         executable=described.not_executable_reason is None,
         not_executable_reason=described.not_executable_reason,
-        name=graph.name if authored else None,
-        description=graph.description if authored else None,
+        name=graph.name,
+        description=graph.description,
     )
 
 

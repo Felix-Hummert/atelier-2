@@ -20,8 +20,7 @@ from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentInvalid,
     WorkflowRefusal,
 )
-from atelier2.contracts.workflows import AgentNode, AgentNodeV2, SubworkflowNode
-from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
@@ -83,27 +82,6 @@ class WorkflowPublicationLimits:
     def validate_graph(self, graph: AnyWorkflowDocument) -> None:
         if len(graph.nodes) > self.maximum_nodes:
             raise ProjectionLimitExceeded("workflow exceeds its node limit")
-        if any(
-            len(value) > self.maximum_string_characters
-            for value in _projected_strings(graph)
-        ):
-            raise ProjectionLimitExceeded("workflow string exceeds its character limit")
-
-
-def _projected_strings(graph: AnyWorkflowDocument) -> tuple[str, ...]:
-    """Every string the revision projection renders; a V3 projection renders none."""
-    if isinstance(graph, WorkflowGraphV3):
-        return ()
-    values = [graph.start]
-    for node in graph.nodes:
-        values.append(node.id)
-        if isinstance(node, AgentNode):
-            values.extend((node.job, node.output))
-        if isinstance(node, AgentNodeV2):
-            values.extend((node.role, node.job))
-        if not isinstance(node, SubworkflowNode):
-            values.append(node.next)
-    return tuple(values)
 
 
 @dataclass(frozen=True)

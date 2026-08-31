@@ -46,85 +46,6 @@ const invalidFieldSchema = z
   .strict();
 export type InvalidField = z.infer<typeof invalidFieldSchema>;
 
-const agentNodeV1Schema = z
-  .object({
-    type: z.literal("agent"),
-    node_id: z.string().min(1),
-    job: z.string().min(1),
-    output: z.string().min(1),
-    next_node_id: z.string().min(1),
-  })
-  .strict();
-
-const agentNodeV2Schema = z
-  .object({
-    type: z.literal("agent"),
-    node_id: z.string().min(1),
-    role: z.string().min(1),
-    job: z.string().min(1),
-    next_node_id: z.string().min(1),
-  })
-  .strict();
-
-const actionNodeSchema = z
-  .object({
-    type: z.literal("action"),
-    node_id: z.string().min(1),
-    next_node_id: z.string().min(1),
-  })
-  .strict();
-
-const waitNodeSchema = z
-  .object({
-    type: z.literal("wait"),
-    node_id: z.string().min(1),
-    answer_type: z.literal("integer"),
-    next_node_id: z.string().min(1),
-  })
-  .strict();
-
-const subworkflowNodeSchema = z
-  .object({
-    type: z.literal("subworkflow"),
-    node_id: z.string().min(1),
-    operation: z.literal("add"),
-    operands: z.tuple([safeInteger, safeInteger]),
-    next_node_id: z.null(),
-  })
-  .strict();
-
-export const nodeSchema = z.discriminatedUnion("type", [
-  agentNodeV1Schema,
-  actionNodeSchema,
-  waitNodeSchema,
-  subworkflowNodeSchema,
-]);
-
-const nodeV2Schema = z.discriminatedUnion("type", [
-  agentNodeV2Schema,
-  actionNodeSchema,
-  waitNodeSchema,
-  subworkflowNodeSchema,
-]);
-
-const workflowGraphV1Schema = z
-  .object({
-    workflow_format_version: z.literal(1),
-    start_node_id: z.string().min(1),
-    nodes: z.array(nodeSchema),
-  })
-  .strict()
-  .superRefine(validateWorkflowGraph);
-
-const workflowGraphV2Schema = z
-  .object({
-    workflow_format_version: z.literal(2),
-    start_node_id: z.string().min(1),
-    nodes: z.array(nodeV2Schema),
-  })
-  .strict()
-  .superRefine(validateWorkflowGraph);
-
 /**
  * A published V3 revision says what it is and whether this build runs it.
  *
@@ -249,96 +170,6 @@ const workflowGraphV3Schema = z
   })
   .strict();
 
-const workflowGraphSchema = z.discriminatedUnion("workflow_format_version", [
-  workflowGraphV1Schema,
-  workflowGraphV2Schema,
-  workflowGraphV3Schema,
-]);
-
-function validateWorkflowGraph(
-  graph: {
-    start_node_id: string;
-    nodes: Array<z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>>;
-  },
-  context: z.RefinementCtx,
-): void {
-  const byId = new Map(graph.nodes.map((node) => [node.node_id, node]));
-  if (graph.nodes.length === 0 || byId.size !== graph.nodes.length) {
-    context.addIssue({
-      code: "custom",
-      message: "workflow nodes must be nonempty and unique",
-    });
-    return;
-  }
-  const start = byId.get(graph.start_node_id);
-  if (start === undefined || start.type === "action") {
-    context.addIssue({
-      code: "custom",
-      message: "workflow start is missing or invalid",
-    });
-    return;
-  }
-  const terminalCount = graph.nodes.filter(
-    (node) => node.type === "subworkflow",
-  ).length;
-  const actions = graph.nodes.filter((node) => node.type === "action");
-  if (terminalCount !== 1 || actions.length > 1) {
-    context.addIssue({
-      code: "custom",
-      message: "workflow terminal or Action count is invalid",
-    });
-    return;
-  }
-  const predecessors = new Map<string, typeof graph.nodes>();
-  for (const node of graph.nodes) predecessors.set(node.node_id, []);
-  for (const node of graph.nodes) {
-    if (node.next_node_id === null) continue;
-    const successor = byId.get(node.next_node_id);
-    if (successor === undefined) {
-      context.addIssue({
-        code: "custom",
-        message: "workflow successor is missing",
-      });
-      return;
-    }
-    predecessors.get(successor.node_id)?.push(node);
-  }
-  for (const action of actions) {
-    const incoming = predecessors.get(action.node_id) ?? [];
-    if (incoming.length !== 1 || incoming[0]?.type !== "agent") {
-      context.addIssue({
-        code: "custom",
-        message: "Action requires one Agent predecessor",
-      });
-      return;
-    }
-  }
-  const visited = new Set<string>();
-  let current:
-    z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema> | undefined =
-    start;
-  while (current !== undefined) {
-    if (visited.has(current.node_id)) {
-      context.addIssue({
-        code: "custom",
-        message: "workflow graph contains a cycle",
-      });
-      return;
-    }
-    visited.add(current.node_id);
-    current =
-      current.next_node_id === null
-        ? undefined
-        : byId.get(current.next_node_id);
-  }
-  if (visited.size !== graph.nodes.length) {
-    context.addIssue({
-      code: "custom",
-      message: "workflow graph contains unreachable nodes",
-    });
-  }
-}
-
 /**
  * The cockpit asks for the described listing, because a picker has to offer a
  * name rather than a hash. These fields mirror `WorkflowRevisionSummaryResourceV2`
@@ -349,11 +180,7 @@ function validateWorkflowGraph(
 export const workflowRevisionSummarySchema = z
   .object({
     workflow_revision_hash: sha256,
-    workflow_format_version: z.union([
-      z.literal(1),
-      z.literal(2),
-      z.literal(3),
-    ]),
+    workflow_format_version: z.literal(3),
     executable: z.boolean(),
     not_executable_reason: z.string().nullable(),
     name: z.string().nullable(),
@@ -365,7 +192,7 @@ export const workflowRevisionDetailSchema = z
   .object({
     workflow_revision_hash: sha256,
     document_base64: standardBase64,
-    graph: workflowGraphSchema,
+    graph: workflowGraphV3Schema,
   })
   .strict();
 
@@ -539,7 +366,7 @@ export const catalogAdmissionSchema = z
 export const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("workflow"),
-    workflow_format_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    workflow_format_version: z.literal(3),
     name: z.string().nullable(),
     description: z.string().nullable(),
   }).strict(),
@@ -2412,9 +2239,7 @@ export type StreamFrame = z.infer<typeof streamFrameSchema>;
 export type RunV3 = z.infer<typeof runV3Schema>;
 export type RunCancellability = z.infer<typeof runCancellabilitySchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
-export type WorkflowGraph = z.infer<typeof workflowGraphSchema>;
-export type WorkflowNode =
-  z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>;
+export type WorkflowGraph = z.infer<typeof workflowGraphV3Schema>;
 export type WorkflowRevisionDetail = z.infer<
   typeof workflowRevisionDetailSchema
 >;
@@ -2468,38 +2293,6 @@ export interface ExactProjectModelDefaultsRevisionWrite {
   body: string;
 }
 
-/**
- * The graph of a revision a run can hold. Only an executable format carries
- * nodes to walk, so everything that walks them asks for this rather than
- * re-deciding what a published V3 revision does not have.
- */
-export type ExecutableWorkflowGraph = Extract<
-  WorkflowRevisionDetail["graph"],
-  { start_node_id: string }
->;
-
-/**
- * Narrow a revision's graph to the one a run can hold.
- *
- * The refusal is an impossibility guard, not a reason an operator is meant to
- * read. A run cannot exist on a non-executable revision: the durable starter
- * parses the named revision with the executable parser and answers
- * `DurableRunFormatNotExecutable` before any run is written, so by the time a
- * cockpit holds a run, its revision is V1 or V2. The guard exists so this
- * narrowing is a checked fact rather than a cast, and so a store that ever
- * contradicted that contract would say which contract it broke instead of
- * rendering a workflow with no nodes as an empty one.
- *
- * That is also why the call site in the run cockpit's markup needs no fallback:
- * it narrows the revision of an existing run, and an existing run has already
- * passed the refusal above.
- */
-export function executableGraph(graph: WorkflowGraph): ExecutableWorkflowGraph {
-  if (graph.workflow_format_version === 3) {
-    throw new Error("a run cannot hold a revision no run can start");
-  }
-  return graph;
-}
 export type AuthProfileInput = z.infer<typeof authProfileInputSchema>;
 export type AuthProfileRevision = z.infer<typeof authProfileRevisionSchema>;
 export type AuthProfileRevisionPage = z.infer<

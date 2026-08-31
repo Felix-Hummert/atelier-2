@@ -48,11 +48,7 @@ export function groupSavedWorkflows(
 
 /** The roles authored by an executable workflow document, once each. */
 export function agentRolesOf(graph: WorkflowRevisionDetail["graph"]): string[] {
-  if (graph.workflow_format_version === 3) return [...new Set(graph.agent_roles)];
-  if (graph.workflow_format_version === 2) {
-    return [...new Set(graph.nodes.filter((node) => node.type === "agent").map((node) => node.role))];
-  }
-  return [];
+  return [...new Set(graph.agent_roles)];
 }
 
 function withHeadFirst(

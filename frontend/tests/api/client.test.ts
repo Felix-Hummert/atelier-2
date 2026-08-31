@@ -9,7 +9,6 @@ import {
   decodeRunEvent,
   decodeStreamFrame,
   decodeWorkflowRevisionDetail,
-  executableGraph,
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   nodeDetailSchema,
   projectSourceConnectionRevisionSchema,
@@ -174,15 +173,10 @@ function v3Event(eventName: string, fields: Record<string, unknown> = {}) {
 const v2Attempt = { attempt_id: digest, attempt_ordinal: 1 };
 
 describe("closed API decoders", () => {
-  it("decodes all four graph node variants and refuses unknown fields", () => {
-    const decoded = decodeWorkflowRevisionDetail(v1Revision());
+  it("decodes a published revision and refuses an unknown field on it", () => {
+    const decoded = decodeWorkflowRevisionDetail(v3RevisionWithLoop());
 
-    expect(executableGraph(decoded.graph).nodes.map((node) => node.type)).toEqual([
-      "agent",
-      "action",
-      "wait",
-      "subworkflow"
-    ]);
+    expect(decoded.graph.workflow_format_version).toBe(3);
     expect(() => decodeWorkflowRevisionDetail({ ...decoded, invented: true })).toThrow();
   });
 
@@ -224,60 +218,13 @@ describe("closed API decoders", () => {
     ).toThrow();
   });
 
-  it.each([
-    ["duplicate node", { start_node_id: "final", nodes: [terminal("final"), terminal("final")] }],
-    ["missing start", { start_node_id: "missing", nodes: [terminal("final")] }],
-    [
-      "missing successor",
-      {
-        start_node_id: "agent",
-        nodes: [
-          { type: "agent", node_id: "agent", job: "work", output: "result", next_node_id: "missing" },
-          terminal("final")
-        ]
-      }
-    ],
-    [
-      "unreachable node",
-      {
-        start_node_id: "wait",
-        nodes: [
-          { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
-          { type: "wait", node_id: "lost", answer_type: "integer", next_node_id: "final" },
-          terminal("final")
-        ]
-      }
-    ]
-  ])("refuses a structurally invalid projected graph: %s", (_case, graph) => {
-    expect(() =>
-      decodeWorkflowRevisionDetail({
-        workflow_revision_hash: digest,
-        document_base64: "",
-        graph: { workflow_format_version: 1, ...graph }
-      })
-    ).toThrow();
-  });
-
   it.each(["not-base64", "YQ", "YQ===", "Y Q==", "YQ-_", "===="])(
     "refuses a noncanonical document base64 value: %s",
     (document_base64) => {
       expect(() =>
         decodeWorkflowRevisionDetail({
-          workflow_revision_hash: digest,
-          document_base64,
-          graph: {
-            workflow_format_version: 1,
-            start_node_id: "final",
-            nodes: [
-              {
-                type: "subworkflow",
-                node_id: "final",
-                operation: "add",
-                operands: [2, 3],
-                next_node_id: null
-              }
-            ]
-          }
+          ...v3RevisionWithoutLoop(),
+          document_base64
         })
       ).toThrow();
     }
@@ -539,23 +486,6 @@ describe("agent configuration publication", () => {
   });
 });
 
-function v1Revision() {
-  return {
-    workflow_revision_hash: digest,
-    document_base64: "",
-    graph: {
-      workflow_format_version: 1,
-      start_node_id: "agent",
-      nodes: [
-        { type: "agent", node_id: "agent", job: "Build it", output: "candidate", next_node_id: "action" },
-        { type: "action", node_id: "action", next_node_id: "wait" },
-        { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
-        terminal("final")
-      ]
-    }
-  };
-}
-
 function receipt() {
   return {
     logical_effect_key: "effect-key",
@@ -565,16 +495,6 @@ function receipt() {
     result_base64: "",
     confirmation_source: "OPERATOR_FOUND",
     reconcile_command_id: "command"
-  };
-}
-
-function terminal(node_id: string) {
-  return {
-    type: "subworkflow",
-    node_id,
-    operation: "add",
-    operands: [2, 3],
-    next_node_id: null
   };
 }
 
@@ -1176,43 +1096,6 @@ describe("the one-step catalog import", () => {
     );
     expect(addition.status).toBe(201);
     expect(addition.value).toEqual({ intake_id: digest, kind: "workflow" });
-  });
-});
-
-describe("the graph a run is allowed to hold", () => {
-  it("refuses a published V3 graph by name instead of reading it as an empty workflow", () => {
-    const published = {
-      workflow_format_version: 3 as const,
-      executable: false as const,
-      not_executable_reason: "agent forms nothing binds yet: outputs" as const,
-      agent_roles: [],
-      orders: [],
-      wait_answer_schemas: [],
-      node_count: 1,
-      node_previews: [
-        {
-          id: "only",
-          kind: "agent" as const,
-          role: "builder",
-          instruction_start: "Sweep the suite.",
-          depends_on: []
-        }
-      ],
-      loops: [],
-      name: "Nightly regression sweep",
-      description: null
-    };
-
-    expect(() => executableGraph(published)).toThrow(
-      "a run cannot hold a revision no run can start"
-    );
-  });
-
-  it("hands back an executable graph unchanged", () => {
-    const graph = executableGraph(decodeWorkflowRevisionDetail(v1Revision()).graph);
-
-    expect(graph.workflow_format_version).toBe(1);
-    expect(executableGraph(graph)).toBe(graph);
   });
 });
 

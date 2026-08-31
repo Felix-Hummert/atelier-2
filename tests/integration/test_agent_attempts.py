@@ -72,15 +72,19 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, PageLimit
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runner_manifests import runner_manifest_id
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows import (
-    AgentNodeV2,
     RunCompletes,
     RunContinues,
-    WorkflowGraphV2,
+)
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    NodeOutput,
+    VersionedReference,
+    WorkflowGraphV3,
 )
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -115,17 +119,34 @@ from tests.scenarios.agents import (
     launching,
     prepared_agent_attempt,
     process_exit,
+    publish_checked_model_registry,
     runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_queries
 from tests.scenarios.runners import free_runner_candidate_manifest
+from tests.scenarios.runs import publish_pinned_revisions
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
-_DOCUMENT = b"""format_version: 2
-start: build
+_DOCUMENT = (
+    b"""format_version: 3
+name: Build then close it out
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
 """
+    + declared_output()
+    + b"""  - id: done
+    type: agent
+    role: builder
+    mode: headless
+    instruction: close it out
+    depends_on: [build]
+"""
+    + declared_output(name="closed")
+)
 
 
 def attempt_runtime(
@@ -173,6 +194,10 @@ def attempt_request(
         catalog.publish_agent_configuration_revision(configuration),
         (AgentConfigurationRevisionCreated, AgentConfigurationRevisionExisting),
     )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("anthropic"), (configuration,)
+    )
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA)
     workflow = WorkflowRevision(_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     run_id = RunId(run_name)
@@ -190,7 +215,7 @@ def attempt_request(
         )
     )
     assert isinstance(started, DurableRunCreated)
-    assert isinstance(started.run, RunV2)
+    assert isinstance(started.run, RunV3)
     resolved = started.run.agent_bindings[0]
     return AgentExecutionRequestV2(
         NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
@@ -299,7 +324,7 @@ def _observing_durable_process_phase(runtime: DbosRuntime) -> AgentCompletionDec
 
 
 def inspecting_executor(
-    runtime: DbosRuntime, output: bytes = b"done", delay_seconds: float = 0
+    runtime: DbosRuntime, output: bytes = b'"done"', delay_seconds: float = 0
 ) -> RecordingAgentExecutorV2:
     return RecordingAgentExecutorV2(
         command=emitting(output, delay_seconds=delay_seconds),
@@ -351,7 +376,7 @@ def test_thirty_two_claims_invoke_one_controlled_executor(tmp_path: Path) -> Non
     runtime.initialize_storage()
     try:
         request = attempt_request(runtime, "attempt/concurrent")
-        executor = inspecting_executor(runtime, b"once", 0.25)
+        executor = inspecting_executor(runtime, b'"once"', 0.25)
         store = DbosAgentAttemptStore(runtime.engine)
         execution = agent_attempt_execution(request)
         with ThreadPoolExecutor(max_workers=32) as pool:
@@ -415,18 +440,31 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
 def _stage_agent_sink_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stage the one graph shape that drives a terminal agent completion.
 
-    V1 and V2 deliberately cannot publish an Agent sink -- their agent nodes
-    always carry a successor -- and V3 is not executable yet, so no document
-    reaches this branch today. Keep that product boundary closed while
-    exercising the real store transaction at the exact graph seam H1a opens.
+    A single Agent node with nothing depending on it is its own sink, staged
+    here rather than published and started through the real bootstrap so the
+    test exercises the real store transaction at the exact graph seam H1a
+    opens without also depending on that bootstrap.
     """
 
-    terminal_graph = WorkflowGraphV2.model_construct(
-        format_version=2,
-        start="build",
+    terminal_graph = WorkflowGraphV3(
+        format_version=3,
+        name="One agent, its own sink",
         nodes=(
-            AgentNodeV2.model_construct(
-                id="build", type="agent", role="builder", job="build", next=None
+            AgentNodeV3(
+                id="build",
+                type="agent",
+                role="builder",
+                mode="headless",
+                instruction="build",
+                outputs=(
+                    NodeOutput(
+                        name="result",
+                        schema=VersionedReference(
+                            ref="result-schema",
+                            revision=ANY_JSON_SCHEMA.revision_hash.value,
+                        ),
+                    ),
+                ),
             ),
         ),
     )
@@ -501,7 +539,7 @@ def test_terminal_agent_success_is_one_durable_write_and_exact_reentry(
             "build",
             execution.attempt_id.value,
             1,
-            b"done",
+            b'"done"',
             "COMPLETED",
             "build",
             1,
@@ -586,7 +624,7 @@ TRANSCRIPT_RECORDED_AT = RecordedAt("2026-08-29T12:00:00Z")
     ("verdict", "steps"),
     [
         pytest.param(
-            AgentExecutionResult(b"done", AttemptTranscript.of(_DECODED_STEPS)),
+            AgentExecutionResult(b'"done"', AttemptTranscript.of(_DECODED_STEPS)),
             _DECODED_STEPS,
             id="a success keeps what reached the answer",
         ),
@@ -599,7 +637,7 @@ TRANSCRIPT_RECORDED_AT = RecordedAt("2026-08-29T12:00:00Z")
             id="a failure keeps what was printed instead of an answer",
         ),
         pytest.param(
-            AgentExecutionResult(b"done"),
+            AgentExecutionResult(b'"done"'),
             None,
             id="an executor that decoded nothing keeps nothing",
         ),
@@ -764,7 +802,7 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
                     AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
                 )
                 if known_failure
-                else AgentExecutionResult(b"done")
+                else AgentExecutionResult(b'"done"')
             ),
         )
 
@@ -892,7 +930,7 @@ def test_each_terminal_write_failpoint_rolls_back_the_whole_attempt(
         with pytest.raises(refusal, match="failpoint"):
             if terminal == "success":
                 store.complete_success(
-                    agent_attempt_execution(request), AgentExecutionResult(b"done")
+                    agent_attempt_execution(request), AgentExecutionResult(b'"done"')
                 )
             else:
                 store.complete_known_failure(
@@ -978,7 +1016,7 @@ def test_attempt_trigger_rejects_terminal_rewrite_and_mismatched_receipt(
         store.prepare(agent_attempt_execution(completed_request))
         store.claim(agent_attempt_execution(completed_request))
         completed = store.complete_success(
-            agent_attempt_execution(completed_request), AgentExecutionResult(b"wrong")
+            agent_attempt_execution(completed_request), AgentExecutionResult(b'"wrong"')
         )
         assert completed.attempt.receipt_hash is not None
 

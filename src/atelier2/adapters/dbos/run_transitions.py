@@ -72,15 +72,11 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
-from atelier2.contracts.workflows import (
-    AgentNodeV2,
-    WorkflowGraphV2,
-)
 from atelier2.contracts.workflows_v3 import (
-    ANY_ACTION_NODE_KINDS,
-    ANY_WAIT_NODE_KINDS,
+    ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocument,
+    WaitNodeV3,
     WorkflowGraphV3,
     is_sink_node,
 )
@@ -328,9 +324,9 @@ def load_run(session: Any, run_id: RunId) -> AnyRun:
 
 
 def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
-    # A V3 graph binds roles the way a V2 one does and is carried by the same run
-    # shape, so both are the bound side of this check; only V1 has no bindings.
-    bound_graph = isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3))
+    # Every graph is V3, which binds roles and is carried by a bound run shape;
+    # only the bare V1 run shape has no bindings.
+    bound_graph = isinstance(graph, WorkflowGraphV3)
     bound_run = isinstance(run, (RunV2, RunV3))
     if bound_run != bound_graph:
         raise RunTransitionConflict("run version differs from workflow graph version")
@@ -338,9 +334,7 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
         raise RunTransitionConflict("run format differs from workflow graph format")
     if isinstance(run, (RunV2, RunV3)):
         expected_roles = {
-            node.role
-            for node in graph.nodes
-            if isinstance(node, (AgentNodeV2, AgentNodeV3))
+            node.role for node in graph.nodes if isinstance(node, AgentNodeV3)
         }
         if expected_roles != {binding.role.value for binding in run.agent_bindings}:
             raise RunTransitionConflict("run agent roles differ from workflow graph")
@@ -350,12 +344,10 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
         raise RunTransitionConflict(
             "run current node is absent from its workflow graph"
         ) from error
-    if run.state is RunState.WAITING_INPUT and not isinstance(
-        node, ANY_WAIT_NODE_KINDS
-    ):
+    if run.state is RunState.WAITING_INPUT and not isinstance(node, WaitNodeV3):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
     if run.state is RunState.WAITING_RECONCILIATION and not isinstance(
-        node, (*ANY_ACTION_NODE_KINDS, AgentNodeV3)
+        node, (ActionNodeV3, AgentNodeV3)
     ):
         raise RunTransitionConflict(
             "WAITING_RECONCILIATION must name an effect-owning node"
@@ -663,11 +655,11 @@ def _commit_event(
     graph = load_graph(session, revision_hash)
     target_node = graph.node(target_node_id)
     if target_state is RunState.WAITING_INPUT and not isinstance(
-        target_node, ANY_WAIT_NODE_KINDS
+        target_node, WaitNodeV3
     ):
         raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
     if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
-        target_node, (*ANY_ACTION_NODE_KINDS, AgentNodeV3)
+        target_node, (ActionNodeV3, AgentNodeV3)
     ):
         raise RunTransitionConflict(
             "WAITING_RECONCILIATION target is not an effect-owning node"

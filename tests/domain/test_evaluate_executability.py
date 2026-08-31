@@ -31,11 +31,6 @@ from atelier2.ports.published_revisions import (
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, V3_DOCUMENT, declared_output
 
-V1_DOCUMENT = b"""format_version: 1
-start: final
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}
-"""
 GRANT = PublishedRevision(
     RevisionKind.TOOL,
     json.dumps(
@@ -113,14 +108,6 @@ class RegistryNobodyMayAsk:
         self, kind: RevisionKind, revision_hash: PublishedRevisionHash
     ) -> ResolvePublishedRevisionResult:
         raise AssertionError(f"the evaluation asked the registry for {kind.value}")
-
-
-def test_a_v1_document_is_executable_without_asking_the_registry() -> None:
-    evaluated = evaluate_executability(
-        parse_workflow_document(V1_DOCUMENT), RegistryNobodyMayAsk()
-    )
-
-    assert evaluated == ExecutableDocument()
 
 
 def test_a_form_nothing_binds_is_refused_before_any_reference_is_asked() -> None:

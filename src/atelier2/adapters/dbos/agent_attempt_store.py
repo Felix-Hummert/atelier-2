@@ -161,11 +161,9 @@ from atelier2.contracts.schemas_v3 import (
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.verdicts import Verdict, read_verdict
 from atelier2.contracts.workflows import (
-    AgentNodeV2,
     NodeCompletion,
     RunCompletes,
     RunContinues,
-    WorkflowGraphV2,
     completion_after_node,
 )
 from atelier2.contracts.workflows_v3 import (
@@ -396,12 +394,10 @@ def _load_attempt(session: Any, attempt_id: AgentAttemptId) -> AgentAttempt:
     return attempt_from_record(record)
 
 
-def _agent_node_for_attempt(
-    graph: WorkflowGraphV2 | WorkflowGraphV3, node_id: str
-) -> AgentNodeV2 | AgentNodeV3:
+def _agent_node_for_attempt(graph: WorkflowGraphV3, node_id: str) -> AgentNodeV3:
     """Return the declared Agent node an attempt is allowed to name."""
     node = graph.node(node_id)
-    if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
+    if not isinstance(node, AgentNodeV3):
         raise RunTransitionConflict("agent attempt request differs from durable graph")
     return node
 
@@ -559,7 +555,7 @@ def _validate_request(
     request: AgentExecutionRequestV2,
     target_attempt_id: AgentAttemptId,
     target_attempt_ordinal: int,
-) -> tuple[RunV2 | RunV3, WorkflowGraphV2 | WorkflowGraphV3]:
+) -> tuple[RunV2 | RunV3, WorkflowGraphV3]:
     """The run and graph one attempt request must exactly describe.
 
     A V3 agent node runs here too. Its role binding, its attempt identity and its
@@ -573,9 +569,7 @@ def _validate_request(
     """
     run = load_run(session, request.run_id)
     graph = load_graph(session, request.workflow_revision_hash)
-    if not isinstance(run, (RunV2, RunV3)) or not isinstance(
-        graph, (WorkflowGraphV2, WorkflowGraphV3)
-    ):
+    if not isinstance(run, (RunV2, RunV3)) or not isinstance(graph, WorkflowGraphV3):
         raise RunTransitionConflict("agent attempt requires a bound run")
     if run.revision_hash != request.workflow_revision_hash:
         raise RunTransitionConflict("agent attempt request names another revision")
@@ -584,47 +578,42 @@ def _validate_request(
     # wrote, plus the orders this run was started with, through the one owner
     # that decides what an agent is handed. A second spelling here would let a
     # request claim a job the document and the run never agreed on.
-    if isinstance(node, AgentNodeV2):
-        authored_job = node.job.encode("utf-8")
-    else:
-        schema_revision = PublishedRevisionHash(
-            node.outputs[0].schema_reference.revision
-        )
-        prior_receipt = load_prior_output_schema_refusal_receipt(
-            session,
-            target_attempt_id=target_attempt_id,
-            target_node_execution_id=request.node_execution_id,
-            target_attempt_ordinal=target_attempt_ordinal,
-            expected_schema_revision=schema_revision,
-        )
-        orders = load_run_inputs(session, request.run_id, node)
-        results = load_node_outputs(
-            session,
-            request.run_id,
-            request.workflow_revision_hash,
-            graph,
-            node,
-            request.round_ordinal,
-        )
+    schema_revision = PublishedRevisionHash(node.outputs[0].schema_reference.revision)
+    prior_receipt = load_prior_output_schema_refusal_receipt(
+        session,
+        target_attempt_id=target_attempt_id,
+        target_node_execution_id=request.node_execution_id,
+        target_attempt_ordinal=target_attempt_ordinal,
+        expected_schema_revision=schema_revision,
+    )
+    orders = load_run_inputs(session, request.run_id, node)
+    results = load_node_outputs(
+        session,
+        request.run_id,
+        request.workflow_revision_hash,
+        graph,
+        node,
+        request.round_ordinal,
+    )
+    authored_job = compose_agent_node_job_for_attempt(
+        node,
+        orders,
+        results,
+        base_composition_version=NodeJobCompositionVersion.CURRENT,
+        target_node_execution_id=request.node_execution_id,
+        target_attempt_ordinal=target_attempt_ordinal,
+        prior_refusal_receipt=prior_receipt,
+    )
+    if prior_receipt is None and authored_job != request.job_bytes:
         authored_job = compose_agent_node_job_for_attempt(
             node,
             orders,
             results,
-            base_composition_version=NodeJobCompositionVersion.CURRENT,
+            base_composition_version=NodeJobCompositionVersion.LEGACY,
             target_node_execution_id=request.node_execution_id,
             target_attempt_ordinal=target_attempt_ordinal,
-            prior_refusal_receipt=prior_receipt,
+            prior_refusal_receipt=None,
         )
-        if prior_receipt is None and authored_job != request.job_bytes:
-            authored_job = compose_agent_node_job_for_attempt(
-                node,
-                orders,
-                results,
-                base_composition_version=NodeJobCompositionVersion.LEGACY,
-                target_node_execution_id=request.node_execution_id,
-                target_attempt_ordinal=target_attempt_ordinal,
-                prior_refusal_receipt=None,
-            )
     if (
         node.role != request.resolved_binding.role.value
         or authored_job != request.job_bytes
@@ -648,7 +637,7 @@ def _validate_request(
 def _output_schema_repair_request(
     connection: Any,
     request: AgentExecutionRequestV2,
-    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    graph: WorkflowGraphV3,
     node: AgentNodeV3,
     prior_receipt: OutputSchemaRefusalReceipt,
 ) -> AgentExecutionRequestV2:
@@ -799,7 +788,7 @@ def _require_confirmed_effect_receipt_for_completed_attempt(
 
 
 def _agent_platform_effect_completion_is_deferred(
-    connection: Any, node: AgentNodeV2 | AgentNodeV3
+    connection: Any, node: AgentNodeV3
 ) -> bool:
     """Whether this node's kept output must wait for platform-effect settlement.
 
@@ -809,9 +798,7 @@ def _agent_platform_effect_completion_is_deferred(
     a missing or invalid document is therefore durable corruption, not an
     absence that could make a completed run honest.
     """
-    return isinstance(node, AgentNodeV3) and agent_node_redeems_platform_effect(
-        connection, node
-    )
+    return agent_node_redeems_platform_effect(connection, node)
 
 
 def _kept_transcript_values(
@@ -1064,7 +1051,7 @@ def _store_output_schema_refusal_receipt(
 
 def _kept_verdict(
     session: Any,
-    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    graph: WorkflowGraphV3,
     request: AgentExecutionRequestV2,
 ) -> Verdict | None:
     """The verdict a finished execution of this node steers its loop with.
@@ -2142,7 +2129,7 @@ class DbosAgentAttemptStore:
         execution: AgentAttemptExecution,
         durable: AgentAttempt,
         run: RunV2 | RunV3,
-        graph: WorkflowGraphV2 | WorkflowGraphV3,
+        graph: WorkflowGraphV3,
         result: AgentExecutionResult,
         *,
         redemption: ToolRedemptionReceipt | None = None,
@@ -2150,64 +2137,63 @@ class DbosAgentAttemptStore:
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         request = execution.request
         node = _agent_node_for_attempt(graph, request.node_id)
-        if isinstance(node, AgentNodeV3):
-            declared = node.outputs[0]
-            if declared.refusal is not None:
-                named = agent_refusal_reason(result.output_bytes)
-                if named is not None:
-                    failed = _fail_current_attempt(
-                        connection,
-                        execution,
-                        durable,
-                        AgentAttemptFailureCode.AGENT_REFUSED,
-                        node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
-                        AGENT_REFUSAL_SCHEMA.revision_hash,
-                        result.output_bytes,
-                        runner_evidence_hash,
-                        result.transcript,
-                        _proof_of_a_passed_check(redemption),
-                    )
-                    return failed
-            refusal = _declared_output_schema_refusal(
-                connection, node.id, declared, result.output_bytes
-            )
-            if refusal is not None:
-                reason = _compact_schema_refusal(refusal, result.output_bytes)
-                receipt_reason = node_receipt_reason(
-                    NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, reason
-                )
-                refusal_receipt = _store_output_schema_refusal_receipt(
-                    connection,
-                    durable.attempt_id,
-                    receipt_reason,
-                    PublishedRevisionHash(declared.schema_reference.revision),
-                    result.output_bytes,
-                )
-                if execution.ordinal == 1:
-                    return self._begin_output_schema_repair(
-                        connection,
-                        execution,
-                        durable,
-                        graph,
-                        node,
-                        result,
-                        refusal_receipt,
-                        redemption,
-                        runner_evidence_hash,
-                    )
+        declared = node.outputs[0]
+        if declared.refusal is not None:
+            named = agent_refusal_reason(result.output_bytes)
+            if named is not None:
                 failed = _fail_current_attempt(
                     connection,
                     execution,
                     durable,
-                    AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
-                    receipt_reason,
-                    PublishedRevisionHash(declared.schema_reference.revision),
+                    AgentAttemptFailureCode.AGENT_REFUSED,
+                    node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
+                    AGENT_REFUSAL_SCHEMA.revision_hash,
                     result.output_bytes,
                     runner_evidence_hash,
                     result.transcript,
                     _proof_of_a_passed_check(redemption),
                 )
                 return failed
+        refusal = _declared_output_schema_refusal(
+            connection, node.id, declared, result.output_bytes
+        )
+        if refusal is not None:
+            reason = _compact_schema_refusal(refusal, result.output_bytes)
+            receipt_reason = node_receipt_reason(
+                NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, reason
+            )
+            refusal_receipt = _store_output_schema_refusal_receipt(
+                connection,
+                durable.attempt_id,
+                receipt_reason,
+                PublishedRevisionHash(declared.schema_reference.revision),
+                result.output_bytes,
+            )
+            if execution.ordinal == 1:
+                return self._begin_output_schema_repair(
+                    connection,
+                    execution,
+                    durable,
+                    graph,
+                    node,
+                    result,
+                    refusal_receipt,
+                    redemption,
+                    runner_evidence_hash,
+                )
+            failed = _fail_current_attempt(
+                connection,
+                execution,
+                durable,
+                AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
+                receipt_reason,
+                PublishedRevisionHash(declared.schema_reference.revision),
+                result.output_bytes,
+                runner_evidence_hash,
+                result.transcript,
+                _proof_of_a_passed_check(redemption),
+            )
+            return failed
         if redemption is not None and redemption.exit_code != 0:
             return _fail_current_attempt(
                 connection,
@@ -2242,22 +2228,20 @@ class DbosAgentAttemptStore:
                 "durable V2 agent receipt differs from exact result"
             )
         _keep_tool_redemption(connection, execution, redemption)
-        if isinstance(node, AgentNodeV3):
-            declared = node.outputs[0]
-            keep_node_receipt(
-                connection,
+        keep_node_receipt(
+            connection,
+            request.node_execution_id,
+            PersistedReceiptDisposition.SUCCEEDED,
+            node_receipt_reason(NodeReceiptReason.OUTPUT_ACCEPTED),
+            NodeArtifact(
+                request.run_id,
+                node.id,
                 request.node_execution_id,
-                PersistedReceiptDisposition.SUCCEEDED,
-                node_receipt_reason(NodeReceiptReason.OUTPUT_ACCEPTED),
-                NodeArtifact(
-                    request.run_id,
-                    node.id,
-                    request.node_execution_id,
-                    declared.name,
-                    PublishedRevisionHash(declared.schema_reference.revision),
-                    result.output_bytes,
-                ),
-            )
+                declared.name,
+                PublishedRevisionHash(declared.schema_reference.revision),
+                result.output_bytes,
+            ),
+        )
         values: dict[str, object] = {
             "state": AgentAttemptState.SUCCEEDED.value,
             "state_version": durable.state_version + 1,
@@ -2345,7 +2329,7 @@ class DbosAgentAttemptStore:
         connection: Any,
         execution: AgentAttemptExecution,
         durable: AgentAttempt,
-        graph: WorkflowGraphV2 | WorkflowGraphV3,
+        graph: WorkflowGraphV3,
         node: AgentNodeV3,
         result: AgentExecutionResult,
         refusal_receipt: OutputSchemaRefusalReceipt,
@@ -3001,7 +2985,7 @@ class DbosAgentAttemptStore:
 
             graph = load_graph(connection, run.revision_hash)
             current_node = graph.node(run.current_node_id)
-            if not isinstance(current_node, (AgentNodeV2, AgentNodeV3)):
+            if not isinstance(current_node, AgentNodeV3):
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.NODE_RUNS_NO_AGENT
                 )

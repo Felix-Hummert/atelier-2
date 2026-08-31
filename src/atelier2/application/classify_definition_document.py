@@ -40,7 +40,6 @@ from atelier2.contracts.library_recognition import (
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
-from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 
 _NO_CLOSED_FRONTMATTER = frozenset(
@@ -108,11 +107,7 @@ def _workflow_marker(
         graph = parse_workflow(document)
     except WorkflowDocumentInvalid as refused:
         return _refused(LibraryDocumentKind.WORKFLOW, str(refused))
-    if isinstance(graph, WorkflowGraphV3):
-        return RecognizedWorkflow(
-            WorkflowFormatVersion.V3, graph.name, graph.description
-        )
-    return RecognizedWorkflow(WorkflowFormatVersion(graph.format_version), None, None)
+    return RecognizedWorkflow(WorkflowFormatVersion.V3, graph.name, graph.description)
 
 
 def _read_agent_definition(

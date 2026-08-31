@@ -39,7 +39,12 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
 from tests.scenarios.agents import resolved_agent_binding
-from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    V3_WAIT_LINE_DOCUMENT,
+    V3_WAIT_LINE_NODE_ID,
+    declared_output,
+)
 
 RUN_ID = RunId("bindings/one-run")
 NODE_ID = "build"
@@ -49,22 +54,6 @@ A_GRANT = DeclaredToolGrant(
     ANY_JSON_SCHEMA.revision_hash, ToolGrantCapability.RUN_PROJECT_VERIFICATION
 )
 A_SCHEMA_DOCUMENT = ANY_JSON_SCHEMA.document.decode("utf-8")
-V1_DOCUMENT = b"""format_version: 1
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: pause, type: wait, answer_type: integer, next: done}
-  - {id: act, type: action, next: pause}
-  - {id: build, type: agent, job: build it, output: the draft, next: act}
-"""
-V2_DOCUMENT = b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: pause, type: wait, answer_type: integer, next: done}
-  - {id: act, type: action, next: pause}
-  - {id: build, type: agent, role: builder, job: build it, next: act}
-"""
 V3_DOCUMENT = b"""format_version: 3
 name: One agent in a line
 nodes:
@@ -103,14 +92,18 @@ V3_WAIT_DOCUMENT = (
 )
 
 
-def v1_run(node_id: str = NODE_ID, state: RunState = RunState.STARTED) -> Run:
-    return Run(
-        RUN_ID, WorkflowRevision(V1_DOCUMENT).revision_hash, state, node_id, 0, 0
-    )
+def bare_run(
+    document: bytes = V3_DOCUMENT,
+    node_id: str = NODE_ID,
+    state: RunState = RunState.STARTED,
+) -> Run:
+    """A run bound to no agent role at all -- the shape `bind_node` refuses an
+    Agent node against."""
+    return Run(RUN_ID, WorkflowRevision(document).revision_hash, state, node_id, 0, 0)
 
 
 def v2_run(
-    document: bytes = V2_DOCUMENT,
+    document: bytes = V3_DOCUMENT,
     node_id: str = NODE_ID,
     role: str = "builder",
     round_ordinal: int = FIRST_ROUND_ORDINAL,
@@ -156,45 +149,29 @@ def bound(
     )
 
 
-@pytest.mark.parametrize(
-    ("run", "document", "node_id", "expected"),
-    (
-        (v1_run("act"), V1_DOCUMENT, "act", ActionNodeBinding()),
-        (v1_run("pause"), V1_DOCUMENT, "pause", WaitNodeBinding()),
-        (v1_run("done"), V1_DOCUMENT, "done", SubworkflowNodeBinding((2, 3))),
-        (v2_run(node_id="act"), V2_DOCUMENT, "act", ActionNodeBinding()),
-        (v2_run(node_id="pause"), V2_DOCUMENT, "pause", WaitNodeBinding()),
-        (v2_run(node_id="done"), V2_DOCUMENT, "done", SubworkflowNodeBinding((2, 3))),
-        (
-            v2_run(V3_ACTION_DOCUMENT, node_id="act"),
-            V3_ACTION_DOCUMENT,
-            "act",
-            ActionNodeBinding(),
-        ),
-    ),
-    ids=[
-        "V1 action",
-        "V1 wait",
-        "V1 subworkflow",
-        "V2 action",
-        "V2 wait",
-        "V2 subworkflow",
-        "V3 action",
-    ],
-)
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
-def test_each_node_kind_binds_its_own_form_without_a_store(
-    run: AnyRun, document: bytes, node_id: str, expected: NodeBinding
-) -> None:
-    assert bound(run, document, node_id) == expected
+def test_an_action_node_binds_its_own_form_without_a_store() -> None:
+    run = v2_run(V3_ACTION_DOCUMENT, node_id="act")
+
+    assert bound(run, V3_ACTION_DOCUMENT, "act") == ActionNodeBinding()
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
 def test_a_wait_node_binds_the_round_its_run_is_turning() -> None:
-    """The pause carries the round, so a recovery replays the execution that paused."""
-    run = v2_run(node_id="pause", round_ordinal=A_LATER_ROUND)
+    """The pause carries the round, so a recovery replays the execution that paused.
 
-    assert bound(run, V2_DOCUMENT, "pause") == WaitNodeBinding(A_LATER_ROUND)
+    A Wait with no declared inputs keeps `question` absent, so this is the round
+    alone -- the composed question is `test_a_v3_wait_binds_the_question_...`'s.
+    """
+    run = v2_run(
+        V3_WAIT_LINE_DOCUMENT,
+        node_id=V3_WAIT_LINE_NODE_ID,
+        round_ordinal=A_LATER_ROUND,
+    )
+
+    assert bound(run, V3_WAIT_LINE_DOCUMENT, V3_WAIT_LINE_NODE_ID) == WaitNodeBinding(
+        A_LATER_ROUND
+    )
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
@@ -218,8 +195,8 @@ def test_a_v3_wait_binds_the_question_composed_from_its_declared_material() -> N
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
-def test_a_v2_agent_node_binds_the_role_matrix_its_run_was_started_with() -> None:
-    binding = bound(v2_run(), V2_DOCUMENT, project_source=A_PIN)
+def test_an_agent_node_binds_the_role_matrix_its_run_was_started_with() -> None:
+    binding = bound(v2_run(), V3_DOCUMENT, project_source=A_PIN)
 
     assert binding == AgentNodeBindingV2(
         resolved_agent_binding(), "build it", None, A_PIN
@@ -251,9 +228,9 @@ def test_a_v3_agent_node_binds_through_that_same_form_with_its_material_composed
 @pytest.mark.parametrize(
     ("run", "document", "node_id"),
     (
-        (v1_run(), V1_DOCUMENT, "act"),
-        (v1_run(node_id="pause", state=RunState.WAITING_INPUT), V1_DOCUMENT, "pause"),
-        (v1_run(), V2_DOCUMENT, NODE_ID),
+        (bare_run(), V3_DOCUMENT, "act"),
+        (bare_run(node_id="pause", state=RunState.WAITING_INPUT), V3_DOCUMENT, "pause"),
+        (bare_run(), V3_ACTION_DOCUMENT, NODE_ID),
     ),
     ids=["another node", "not started", "another revision"],
 )
@@ -268,10 +245,10 @@ def test_a_node_the_run_does_not_stand_on_refuses_before_anything_is_read(
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
-def test_an_agent_node_on_a_v1_run_refuses_rather_than_binding_no_role() -> None:
+def test_an_agent_node_on_a_bare_run_refuses_rather_than_binding_no_role() -> None:
     run = Run(
         RUN_ID,
-        WorkflowRevision(V2_DOCUMENT).revision_hash,
+        WorkflowRevision(V3_DOCUMENT).revision_hash,
         RunState.STARTED,
         NODE_ID,
         0,
@@ -279,13 +256,13 @@ def test_an_agent_node_on_a_v1_run_refuses_rather_than_binding_no_role() -> None
     )
 
     with pytest.raises(RunBindingConflict, match="belongs to a V1 run"):
-        bound(run, V2_DOCUMENT)
+        bound(run, V3_DOCUMENT)
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
 def test_a_role_the_run_never_bound_refuses_by_the_binding_it_is_missing() -> None:
     with pytest.raises(RunBindingConflict, match="no durable binding"):
-        bound(v2_run(role="reviewer"), V2_DOCUMENT)
+        bound(v2_run(role="reviewer"), V3_DOCUMENT)
 
 
 def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None:
@@ -557,7 +534,7 @@ def test_a_capability_the_running_executor_does_not_attest_reaches_no_provider()
         agent_execution_request_v2(
             binding,
             RUN_ID,
-            WorkflowRevision(V2_DOCUMENT).revision_hash,
+            WorkflowRevision(V3_DOCUMENT).revision_hash,
             NODE_ID,
             AgentExecutorOperationalIdentity("executor/headless-only"),
             frozenset({AgentExecutionCapability.HEADLESS}),

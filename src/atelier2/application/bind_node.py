@@ -25,7 +25,6 @@ from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
     AgentNodeBindingV2,
     NodeBinding,
-    SubworkflowNodeBinding,
     WaitNodeBinding,
 )
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
@@ -33,13 +32,7 @@ from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.run_bindings import AnyRun, RunBindingConflict, RunV2, RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
-from atelier2.contracts.workflows import (
-    ActionNode,
-    AgentNodeV2,
-    SubworkflowNode,
-)
 from atelier2.contracts.workflows_v3 import (
-    ANY_WAIT_NODE_KINDS,
     ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocumentNode,
@@ -84,7 +77,7 @@ def bind_node(
     here rather than at launch, so a commit landing in between cannot change what
     a started run works on.
     """
-    if isinstance(node, (AgentNodeV2, AgentNodeV3)):
+    if isinstance(node, AgentNodeV3):
         if not isinstance(run, (RunV2, RunV3)):
             raise RunBindingConflict("Agent node belongs to a V1 run")
         resolved = next(
@@ -97,11 +90,7 @@ def bind_node(
         )
         if resolved is None:
             raise RunBindingConflict("V2 Agent role has no durable binding")
-        job = (
-            node.job
-            if isinstance(node, AgentNodeV2)
-            else node_job(node.instruction, orders, results)
-        )
+        job = node_job(node.instruction, orders, results)
         return AgentNodeBindingV2(
             resolved,
             job,
@@ -111,17 +100,11 @@ def bind_node(
             run.current_round_ordinal,
             maximum_assistant_turns,
         )
-    if isinstance(node, (ActionNode, ActionNodeV3)):
+    if isinstance(node, ActionNodeV3):
         return ActionNodeBinding()
-    if isinstance(node, ANY_WAIT_NODE_KINDS):
-        question = (
-            node_job(node.prompt, orders, results)
-            if isinstance(node, WaitNodeV3) and node.inputs
-            else None
-        )
+    if isinstance(node, WaitNodeV3):
+        question = node_job(node.prompt, orders, results) if node.inputs else None
         return WaitNodeBinding(run.current_round_ordinal, question)
-    if isinstance(node, SubworkflowNode):
-        return SubworkflowNodeBinding(node.operands)
     raise AssertionError("closed WorkflowNode union was not exhaustive")
 
 

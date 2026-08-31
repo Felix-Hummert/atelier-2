@@ -568,7 +568,7 @@ describe("the workbench is the room the workshop opens on", () => {
           items: [
             {
               workflow_revision_hash: "b".repeat(64),
-              workflow_format_version: 1 as const,
+              workflow_format_version: 3 as const,
               executable: true,
               not_executable_reason: null,
               name: "Preview door",

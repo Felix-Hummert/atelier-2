@@ -364,26 +364,11 @@ def test_get_run_answers_a_v3_agent_run_with_no_attempt_rows(
     assert found.projection.agent_attempts == ()
 
 
-@pytest.mark.parametrize(
-    ("needle", "restored"),
-    (
-        (
-            (
-                "graphs[run.revision_hash].node(run.current_node_id),\n"
-                "                (AgentNodeV2, AgentNodeV3),"
-            ),
-            "graphs[run.revision_hash].node(run.current_node_id), AgentNodeV2",
-        ),
-        (
-            "if not isinstance(run, (RunV2, RunV3)):",
-            "if not isinstance(run, RunV2):",
-        ),
-    ),
-    ids=("collect-v2-only", "refuse-non-run-v2"),
-)
-def test_restoring_v2_only_query_reds_the_prepared_v3_attempt(
-    runtime: DbosRuntime, tmp_path: Path, needle: str, restored: str
+def test_restoring_a_run_v2_only_query_reds_the_prepared_v3_attempt(
+    runtime: DbosRuntime, tmp_path: Path
 ) -> None:
+    needle = "if not isinstance(run, (RunV2, RunV3)):"
+    restored = "if not isinstance(run, RunV2):"
     _workflow, execution = started_v3_attempt(runtime)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     store.prepare(execution)
