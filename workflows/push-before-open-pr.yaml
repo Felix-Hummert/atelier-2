@@ -19,8 +19,15 @@ nodes:
     model: grok-4.6
     mode: headless_with_tools
     instruction: >-
-      Implement the named work item and return a concise JSON string summarizing
-      the candidate you produced.
+      You are working in an isolated snapshot of the repository at the pinned
+      commit: deliberately no .git directory, no gh, no agent-claim, and no
+      board access. The lane claim is already held outside this workspace, so
+      the repository's guidance about claiming and pushing does not apply
+      here. Implement the named work item by editing the files in this
+      workspace. When the change is complete, publish it exactly once through
+      the push-atelier-commit tool -- the only door out; it commits and
+      pushes your captured candidate. Then return a concise JSON string
+      summarizing the candidate you produced.
     tools:
       - ref: push-atelier-commit
         revision: "32eb46fb44f23c97a7b978a9de08c8a764281e6944426bb823329cfc7f9c5b1a"
