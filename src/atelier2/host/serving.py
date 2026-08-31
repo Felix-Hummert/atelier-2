@@ -58,7 +58,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.github import (
     live_github_effect_registry,
@@ -1115,7 +1114,6 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
     runtime = DbosRuntime(
         settings.runtime_settings(),
         _effect_adapters(settings, source_connection),
-        ExactOutputAgentExecutorFactory(),
         subscription_executors,
     )
     try:

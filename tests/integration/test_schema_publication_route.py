@@ -33,7 +33,6 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionMissing,
 )
 from tests.scenarios.api import durable_api_client
-from tests.scenarios.runtime import exact_output_runtime
 
 SCHEMA_PATH = f"{API_PREFIX}/schema-revisions"
 WORKFLOW_PATH = f"{API_PREFIX}/workflow-revisions"
@@ -44,7 +43,7 @@ MEAL_SCHEMA = json.dumps(
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    started = exact_output_runtime(
+    started = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "schema-door-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",

@@ -33,7 +33,6 @@ from atelier2.ports.workflow_revisions import (
 )
 from tests.scenarios.api import api_limits, durable_api_client, durable_queries
 from tests.scenarios.runs import publish_revision
-from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import V3_DOCUMENT, V3_NODE_COUNT
 
 V1_DOCUMENT = b"""format_version: 1
@@ -66,7 +65,7 @@ nodes:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    configured = exact_output_runtime(
+    configured = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "catalog-description-tests"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",

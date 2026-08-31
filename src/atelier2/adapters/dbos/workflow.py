@@ -112,7 +112,6 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
-    AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.budgets_v3 import (
@@ -175,7 +174,6 @@ from atelier2.ports.agent_attempts import (
 )
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceOwner,
-    AgentExecutor,
     AgentExecutorCarrier,
     AgentExecutorKey,
     AgentExecutorV2,
@@ -645,8 +643,6 @@ def _declared_output_schema_document(
 
 def register_durable_run_workflow(
     datasource: SQLAlchemyDatasource,
-    agent_executor: AgentExecutor,
-    agent_binding: AgentExecutorBinding,
     agent_executors_v2: Mapping[
         AgentExecutorKey,
         tuple[

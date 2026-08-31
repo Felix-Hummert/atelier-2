@@ -21,7 +21,11 @@ from atelier2.adapters.dbos.host_configuration import (
     project_root_for,
     publish_project_root_revision,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntimeSettings, create_canonical_engine
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntime,
+    DbosRuntimeSettings,
+    create_canonical_engine,
+)
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     auth_profile_revisions,
@@ -83,7 +87,6 @@ from atelier2.ports.host_configuration import (
 from tests.host.test_local_host import serve_arguments, served_settings
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 from tests.scenarios.projects import declaring_verification, git_project
-from tests.scenarios.runtime import exact_output_runtime
 
 
 def opened_channel(tmp_path: Path) -> Engine:
@@ -351,7 +354,7 @@ def test_the_runtime_reads_the_mapping_from_the_channel(tmp_path: Path) -> None:
     append_project_root(engine, ProjectId("studio"), root)
     engine.dispose()
 
-    runtime = exact_output_runtime(
+    runtime = DbosRuntime(
         DbosRuntimeSettings(
             database, "host-config-read", project_id=ProjectId("studio")
         ),
@@ -373,7 +376,7 @@ def test_the_runtime_refuses_a_project_whose_root_is_not_in_the_channel(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ProjectUnknown, match=PROJECT_UNKNOWN):
-        exact_output_runtime(
+        DbosRuntime(
             DbosRuntimeSettings(
                 tmp_path / "atelier.sqlite",
                 "host-config-missing",

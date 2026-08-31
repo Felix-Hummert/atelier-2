@@ -19,7 +19,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerExecutorFactory,
     FreeRunnerHoldJob,
@@ -390,7 +389,6 @@ def free_runner_core_runtime(root: Path) -> DbosRuntime:
             AdapterRevision("execute-agent-attempt-on-runner-test/v1"),
             EffectDestination("execute-agent-attempt-on-runner-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (FreeRunnerExecutorFactory(),),
     )
     runtime.initialize_storage()

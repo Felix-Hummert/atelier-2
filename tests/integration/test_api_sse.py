@@ -43,7 +43,6 @@ from atelier2.adapters.dbos.runtime import (
 )
 from atelier2.adapters.dbos.schema import effect_intents, run_events
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.references import encode_public_run_reference
@@ -180,7 +179,6 @@ def _agent_runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (factory,),
     )
     runtime.initialize_storage()

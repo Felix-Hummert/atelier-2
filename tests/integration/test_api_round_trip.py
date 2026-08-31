@@ -40,7 +40,6 @@ from atelier2.adapters.dbos.schema import (
     host_model_registry_revisions,
     host_project_model_defaults_revisions,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
 from atelier2.api.references import (
@@ -164,7 +163,6 @@ def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntim
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (
             RecordingAgentExecutorFactoryV2(
                 "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT

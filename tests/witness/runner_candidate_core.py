@@ -44,7 +44,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerExecutorFactory,
     FreeRunnerHoldJob,
@@ -285,7 +284,6 @@ def _runtime(root: Path) -> DbosRuntime:
             AdapterRevision("runner-candidate/v1"),
             EffectDestination("runner-candidate"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (),
     )
 

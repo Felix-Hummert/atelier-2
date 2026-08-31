@@ -18,7 +18,6 @@ from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
 from atelier2.contracts.adapter_operations_v3 import (
@@ -58,7 +57,6 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", b'"done"'),),
     )
     started.initialize_storage()
