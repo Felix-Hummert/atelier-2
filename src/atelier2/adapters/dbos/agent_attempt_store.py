@@ -110,6 +110,7 @@ from atelier2.contracts.agent_refusals import (
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -958,7 +959,16 @@ def _declared_output_schema_refusal(
             f"the schema node {node_id!r} pinned for output "
             f"{declared.name!r} is not one: {schema}"
         )
-    verdict = read_instance_document(payload, schema)
+    # The byte bound belongs to the route the value arrived by
+    # (schemas_v3.py's read_instance_document docstring), and an agent output
+    # arrives through the provider frame, not an inline order: its route bound
+    # is MAXIMUM_AGENT_OUTPUT_BYTES_V2, not read_instance_document's inline
+    # default. #901 slice 5's V3 schema validation newly applied the inline
+    # door's bound to outputs the provider frame legally admits, refusing a
+    # legal answer before the schema itself was ever consulted.
+    verdict = read_instance_document(
+        payload, schema, maximum_bytes=MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    )
     return verdict if isinstance(verdict, InstanceRefused) else None
 
 
