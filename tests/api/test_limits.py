@@ -27,8 +27,11 @@ from atelier2.api.references import (
     encode_event_cursor,
     encode_public_run_reference,
 )
-from atelier2.api.wire.resources import AgentAttemptResourceV2
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
+from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    AgentExecutionRequestHash,
+)
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -42,10 +45,15 @@ from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
 from atelier2.contracts.run_projections import (
-    PublicAgentAttemptState,
     RunProjection,
 )
-from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    Run,
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.host.serving import api_limits as deployed_api_limits
 from atelier2.ports.catalog_intakes import CatalogIntakeStored
 from atelier2.ports.durable_runs import (
@@ -119,36 +127,56 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
 
 
 def test_agent_attempt_public_fields_use_the_shared_field_bound() -> None:
+    """The attempt id the wire publishes is measured, minted by its own owner.
+
+    Derived rather than spelled: an attempt id is whatever `AgentAttemptId`
+    mints, so a host that lowered the field bound below that width refuses it
+    however wide the digest becomes.
+    """
+
     limits = api_limits(maximum_field_characters=63)
-    attempt = AgentAttemptResourceV2(
-        attempt_id="0" * 64,
-        node_execution_id="1" * 64,
-        request_hash="2" * 64,
-        attempt_ordinal=1,
-        state=PublicAgentAttemptState.POSSIBLY_RAN,
-        failure_code=None,
-        cancellation=None,
+    attempt_id = AgentAttemptId.for_execution(
+        NodeExecutionId.for_node(
+            RunId("attempt/api"), WorkflowRevisionHash("a" * 64), "build"
+        ),
+        AgentExecutionRequestHash("1" * 64),
     )
 
     with pytest.raises(ApiLimitExceeded):
-        limits.require_field(attempt.attempt_id)
+        limits.require_field(attempt_id.value)
 
 
 def workflow_document(*, job: str = "work", include_agent: bool = False) -> bytes:
-    if include_agent:
-        return (
-            "format_version: 1\n"
-            "start: agent\n"
-            "nodes:\n"
-            f"  - {{id: agent, type: agent, job: {job}, output: done, next: final}}\n"
-            "  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
-        ).encode()
-    return (
-        b"format_version: 1\n"
-        b"start: final\n"
-        b"nodes:\n"
-        b"  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
+    """A publishable document; `include_agent` is the second node past a node bound."""
+
+    second_node = (
+        "  - id: check\n"
+        "    type: agent\n"
+        "    role: reviewer\n"
+        "    mode: headless\n"
+        f"    instruction: {job}\n"
+        "    depends_on: [draft]\n"
+        "    inputs:\n"
+        "      - name: candidate\n"
+        "        from: {node: draft, output: candidate}\n"
+        "    outputs:\n"
+        "      - name: findings\n"
+        "        schema: {ref: review_verdict, revision: schema-verdict}\n"
     )
+    return (
+        "format_version: 3\n"
+        "name: bounded-document\n"
+        "nodes:\n"
+        "  - id: draft\n"
+        "    type: agent\n"
+        "    role: builder\n"
+        "    mode: headless\n"
+        f"    instruction: {job}\n"
+        "    outputs:\n"
+        "      - name: candidate\n"
+        "        schema: {ref: workspace_candidate, revision: schema-candidate}\n"
+        + (second_node if include_agent else "")
+    ).encode()
 
 
 def assert_problem(response: Response, status: int, code: str) -> None:

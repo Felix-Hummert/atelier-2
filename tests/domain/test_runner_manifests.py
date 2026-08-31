@@ -5,7 +5,9 @@ from pathlib import PurePosixPath
 
 import pytest
 
+from atelier2.contracts.hashing import frame
 from atelier2.contracts.runner_manifests import (
+    CANDIDATE_JOURNAL_BYTES,
     AbsentProviderCli,
     MeasuredProviderCli,
     NoProviderCliPin,
@@ -19,6 +21,15 @@ from atelier2.contracts.runner_manifests import (
     encode_runner_manifest,
     runner_manifest_id,
 )
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
+)
+
+
+def test_candidate_journal_admits_the_published_v2_terminal_record_bound() -> None:
+    assert CANDIDATE_JOURNAL_BYTES == 2_097_152
+    assert MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES <= CANDIDATE_JOURNAL_BYTES
+
 
 _CREDENTIALS = PurePosixPath("/run/atelier2-provider-config")
 _GRANTS = (
@@ -199,3 +210,20 @@ def test_an_unpinned_executor_admits_only_an_absent_measurement() -> None:
 
     assert pin.admits(AbsentProviderCli())
     assert not pin.admits(MeasuredProviderCli((2, 1, 233)))
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        b"\x00" + encode_runner_manifest(_manifest()),
+        frame("runner-manifest/v2", *[b""] * 25),
+        encode_runner_manifest(_manifest())[:-2],
+    ],
+    ids=("foreign-prefix", "another-domain", "truncated-field"),
+)
+def test_a_broken_frame_is_refused_by_the_manifest_s_own_name(encoded: bytes) -> None:
+    """The manifest reads the shared frame layout but keeps its single name for
+    every byte sequence that is not one of its manifests."""
+
+    with pytest.raises(ValueError, match="runner-manifest-mismatch"):
+        decode_runner_manifest(encoded)

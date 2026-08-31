@@ -46,6 +46,7 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
     getRevisionByName: vi.fn(),
     foundCatalogLineage: vi.fn(),
     admitCatalogMember: vi.fn(),
+    retireCatalogLineage: vi.fn(),
     publish: vi.fn(),
     publishAuthProfile: vi.fn(),
     publishAgentConfiguration: vi.fn(),

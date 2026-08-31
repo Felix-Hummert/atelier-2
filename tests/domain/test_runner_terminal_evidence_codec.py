@@ -8,11 +8,11 @@ import pytest
 
 from atelier2.contracts.agent_attempts import (
     MAXIMUM_RUNNER_STANDARD_ERROR_BYTES,
+    AgentAttemptFailureCode,
     AgentAttemptId,
     ProcessExitSignature,
     RunnerCancellation,
     RunnerCancellationObservation,
-    RunnerEvidenceCannotCarryTranscript,
     RunnerGenerationBinding,
     RunnerGenerationId,
     RunnerInvocationId,
@@ -29,20 +29,28 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
     RunnerTerminalEvidenceReadback,
 )
-from atelier2.contracts.agent_transcripts import AssistantTurn, AttemptTranscript
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentExecutionRequestHash,
     AgentExecutionResult,
 )
+from atelier2.contracts.hashing import frame
+from atelier2.contracts.runner_manifests import CANDIDATE_JOURNAL_BYTES
 from atelier2.contracts.runner_terminal_evidence_codec import (
     MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
+    RunnerTerminalEvidenceExchangeVersionRefused,
     RunnerTerminalEvidenceRecordCorrupt,
     RunnerTerminalEvidenceRecordMissing,
     RunnerTerminalEvidenceRecordOversized,
     decode_runner_terminal_evidence_record,
     encode_runner_terminal_evidence_record,
 )
+from tests.scenarios.transcripts import largest_attempt_transcript
 
 _INVOCATION = RunnerInvocationId("invocation-1")
 
@@ -92,15 +100,6 @@ def _variants() -> tuple[RunnerTerminalEvidenceEnvelope, ...]:
             )
         ),
         _envelope(RunnerInvocationLost()),
-    )
-
-
-def _ack_tombstone() -> RunnerTerminalEvidenceAckTombstone:
-    envelope = _variants()[0]
-    return RunnerTerminalEvidenceAckTombstone(
-        envelope.binding,
-        envelope.invocation_id,
-        RunnerTerminalEvidenceHash.for_envelope(envelope),
     )
 
 
@@ -229,6 +228,77 @@ def test_all_six_envelopes_round_trip_as_one_canonical_self_checking_record(
     assert encode_runner_terminal_evidence_record(decoded) == encoded
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        RunnerProviderResult(
+            AgentExecutionResult(
+                b"answer",
+                AttemptTranscript.of([AssistantTurn("I read the file.")]),
+            )
+        ),
+        RunnerProviderFailure(
+            ProcessExitSignature(0, b"refusal stderr"),
+            AgentAttemptFailureCode.AGENT_REFUSED,
+            AttemptTranscript.of([AssistantTurn("I could not comply.")]),
+        ),
+        RunnerProviderFailure(
+            ProcessExitSignature(17, b"process stderr"),
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+            AttemptTranscript.of([AssistantTurn("The process stopped.")]),
+        ),
+    ),
+    ids=("result", "agent-refused", "process-exited-unsuccessfully"),
+)
+def test_each_transcript_carrying_provider_outcome_round_trips_byte_canonically(
+    evidence: RunnerProviderResult | RunnerProviderFailure,
+) -> None:
+    envelope = _envelope(evidence)
+
+    encoded = encode_runner_terminal_evidence_record(envelope)
+    decoded = decode_runner_terminal_evidence_record(encoded)
+
+    assert decoded == envelope
+    assert isinstance(decoded, RunnerTerminalEvidenceEnvelope)
+    assert encode_runner_terminal_evidence_record(decoded) == encoded
+
+
+def test_largest_admissible_v2_record_equals_its_codec_bound_and_fits_journal() -> None:
+    maximum_utf8_identity = chr(0x10FFFF) * MAXIMUM_AGENT_FIELD_CHARACTERS
+    binding = _binding(maximum_utf8_identity)
+    invocation = RunnerInvocationId(maximum_utf8_identity)
+    transcript = largest_attempt_transcript()
+    result_envelope = _envelope(
+        RunnerProviderResult(
+            AgentExecutionResult(
+                b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+                transcript,
+            )
+        ),
+        binding=binding,
+        invocation=invocation,
+    )
+    failure_envelope = _envelope(
+        RunnerProviderFailure(
+            ProcessExitSignature(-(2**63), b"x" * MAXIMUM_RUNNER_STANDARD_ERROR_BYTES),
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+            transcript,
+        ),
+        binding=binding,
+        invocation=invocation,
+    )
+
+    result_record = encode_runner_terminal_evidence_record(result_envelope)
+    failure_record = encode_runner_terminal_evidence_record(failure_envelope)
+
+    assert len(result_record) < len(failure_record)
+    assert len(failure_record) == MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES
+    assert len(result_record) <= CANDIDATE_JOURNAL_BYTES
+    assert len(failure_record) <= CANDIDATE_JOURNAL_BYTES
+    assert decode_runner_terminal_evidence_record(result_record) == result_envelope
+    assert decode_runner_terminal_evidence_record(failure_record) == failure_envelope
+
+
 def test_ack_tombstone_round_trips_without_the_provider_payload() -> None:
     provider_payload = b"answer\x00bytes"
     envelope = _envelope(RunnerProviderResult(AgentExecutionResult(provider_payload)))
@@ -245,25 +315,10 @@ def test_ack_tombstone_round_trips_without_the_provider_payload() -> None:
     assert provider_payload not in encoded
 
 
-def test_the_frozen_largest_legal_v1_record_is_exactly_57_761_bytes() -> None:
-    maximum_utf8_identity = chr(0x10FFFF) * MAXIMUM_AGENT_FIELD_CHARACTERS
-    envelope = _envelope(
-        RunnerProviderFailure(
-            ProcessExitSignature(-(2**63), b"x" * MAXIMUM_RUNNER_STANDARD_ERROR_BYTES)
-        ),
-        binding=_binding(maximum_utf8_identity),
-        invocation=RunnerInvocationId(maximum_utf8_identity),
+def test_one_byte_past_the_v2_bound_refuses_before_record_parsing() -> None:
+    record = b"not a frame".ljust(
+        MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES + 1, b"x"
     )
-
-    encoded = encode_runner_terminal_evidence_record(envelope)
-
-    assert MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES == 57_761
-    assert len(encoded) == MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES
-    assert decode_runner_terminal_evidence_record(encoded) == envelope
-
-
-def test_57_762_bytes_refuse_as_oversized_before_record_parsing() -> None:
-    record = b"not a frame".ljust(57_762, b"x")
 
     assert decode_runner_terminal_evidence_record(record) == (
         RunnerTerminalEvidenceRecordOversized()
@@ -308,27 +363,8 @@ def _replace_field(record: bytes, field: int, payload: bytes) -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("record", "golden_hex", "expected_evidence_fields"),
-    tuple(
-        zip(
-            (*_variants(), _ack_tombstone()),
-            _FROZEN_V1_RECORD_HEX,
-            (
-                (b"provider-result", b"answer\x00bytes", b""),
-                (b"provider-failure", struct.pack(">q", -9), b"stderr\x00bytes"),
-                (
-                    b"output-limit-exceeded",
-                    b"STANDARD_ERROR",
-                    b"STANDARD_OUTPUT",
-                ),
-                (b"process-boundary-failure", b"", b""),
-                (b"cancellation", "cancel-ä".encode(), b"REAPED_AFTER_TERM"),
-                (b"invocation-lost", b"", b""),
-                (b"", b"", b""),
-            ),
-            strict=True,
-        )
-    ),
+    "golden_hex",
+    _FROZEN_V1_RECORD_HEX,
     ids=(
         "provider-result",
         "provider-failure",
@@ -339,33 +375,20 @@ def _replace_field(record: bytes, field: int, payload: bytes) -> bytes:
         "ack-tombstone",
     ),
 )
-def test_frozen_v1_golden_vectors_fix_the_exact_ten_field_wire_records(
-    record: RunnerTerminalEvidenceReadback,
+@pytest.mark.proves("runner-evidence-v2-is-unambiguous")
+def test_every_frozen_v1_golden_vector_is_refused_without_parallel_decode(
     golden_hex: str,
-    expected_evidence_fields: tuple[bytes, bytes, bytes],
 ) -> None:
     golden = bytes.fromhex(golden_hex)
-    fields = tuple(golden[start:end] for start, end in _fields(golden))
 
-    assert encode_runner_terminal_evidence_record(record) == golden
-    assert len(fields) == 10
-    assert fields[:6] == (
-        b"envelope"
-        if isinstance(record, RunnerTerminalEvidenceEnvelope)
-        else b"ack-tombstone",
-        b"a" * 64,
-        b"b" * 64,
-        b"generation-1",
-        b"c" * 64,
-        b"invocation-1",
+    refusal = decode_runner_terminal_evidence_record(golden)
+
+    assert isinstance(refusal, RunnerTerminalEvidenceExchangeVersionRefused)
+    assert refusal.refused_exchange == "runner-terminal-evidence-exchange/v1"
+    assert refusal.reason == (
+        "runner-terminal-evidence-exchange/v1 was refused because only "
+        "runner-terminal-evidence-exchange/v2 is supported"
     )
-    assert fields[6] == (
-        RunnerTerminalEvidenceHash.for_envelope(record).value.encode("ascii")
-        if isinstance(record, RunnerTerminalEvidenceEnvelope)
-        else record.evidence_hash.value.encode("ascii")
-    )
-    assert fields[7:] == expected_evidence_fields
-    assert decode_runner_terminal_evidence_record(golden) == record
 
 
 def test_semantically_valid_but_unsorted_output_limit_record_is_corrupt() -> None:
@@ -387,7 +410,7 @@ def test_envelope_frame_owns_the_exact_domain_field_order_and_tags() -> None:
     fields = tuple(encoded[start:end] for start, end in _fields(encoded))
 
     assert encoded.startswith(
-        b"ATELIER2\x00\x00\x00\x00$runner-terminal-evidence-exchange/v1"
+        b"ATELIER2\x00\x00\x00\x00$runner-terminal-evidence-exchange/v2"
     )
     assert fields == (
         b"envelope",
@@ -400,6 +423,79 @@ def test_envelope_frame_owns_the_exact_domain_field_order_and_tags() -> None:
         b"provider-result",
         b"answer",
         b"",
+        b"",
+        b"",
+        b"",
+        b"absent",
+        b"",
+    )
+
+
+def test_transcript_failure_frame_freezes_every_v2_evidence_slot() -> None:
+    transcript = AttemptTranscript.of([AssistantTurn("The provider refused.")])
+    envelope = _envelope(
+        RunnerProviderFailure(
+            ProcessExitSignature(17, b"provider stderr"),
+            AgentAttemptFailureCode.AGENT_REFUSED,
+            transcript,
+        )
+    )
+    encoded = encode_runner_terminal_evidence_record(envelope)
+    fields = tuple(encoded[start:end] for start, end in _fields(encoded))
+
+    assert fields == (
+        b"envelope",
+        b"a" * 64,
+        b"b" * 64,
+        b"generation-1",
+        b"c" * 64,
+        b"invocation-1",
+        RunnerTerminalEvidenceHash.for_envelope(envelope).value.encode("ascii"),
+        b"provider-failure",
+        b"",
+        b"",
+        b"AGENT_REFUSED",
+        struct.pack(">q", 17),
+        b"provider stderr",
+        b"present",
+        transcript.document,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "payload"),
+    (
+        (10, b"OUTPUT_SCHEMA_REFUSED"),
+        (13, b"unknown"),
+        (
+            14,
+            (
+                b'{ "kind":"attempt-transcript/v1","events":['
+                b'{"event":"assistant-turn","text":"read","redacted":false}]}'
+            ),
+        ),
+    ),
+    ids=("non-admitted-failure-code", "transcript-presence", "transcript-document"),
+)
+def test_provider_failure_decoder_refuses_each_noncanonical_v2_field(
+    field: int,
+    payload: bytes,
+) -> None:
+    canonical = encode_runner_terminal_evidence_record(
+        _envelope(
+            RunnerProviderFailure(
+                ProcessExitSignature(17, b"provider stderr"),
+                AgentAttemptFailureCode.AGENT_REFUSED,
+                AttemptTranscript.of([AssistantTurn("read")]),
+            )
+        )
+    )
+
+    assert (
+        decode_runner_terminal_evidence_record(
+            _replace_field(canonical, field, payload)
+        )
+        == RunnerTerminalEvidenceRecordCorrupt()
     )
 
 
@@ -438,7 +534,7 @@ def test_every_noncanonical_or_self_inconsistent_mutation_is_corrupt(
     )
 
 
-def test_tombstone_requires_its_exact_tag_and_three_empty_payload_slots() -> None:
+def test_tombstone_requires_its_exact_tag_and_eight_empty_payload_slots() -> None:
     envelope = _variants()[0]
     tombstone = RunnerTerminalEvidenceAckTombstone(
         envelope.binding,
@@ -447,7 +543,7 @@ def test_tombstone_requires_its_exact_tag_and_three_empty_payload_slots() -> Non
     )
     encoded = encode_runner_terminal_evidence_record(tombstone)
 
-    for field in (7, 8, 9):
+    for field in range(7, 15):
         assert (
             decode_runner_terminal_evidence_record(
                 _replace_field(encoded, field, b"unexpected")
@@ -474,30 +570,7 @@ def test_runner_record_text_owners_refuse_non_utf8_encodable_values(
         construct("\ud800")
 
 
-def test_evidence_refuses_a_result_carrying_a_transcript_rather_than_losing_it() -> (
-    None
-):
-    """This record has no room for an attempt's steps, and will not pretend to.
-
-    It is bounded far below one transcript artifact and Core's acceptance chain
-    hashes it, so carrying one would mean re-deciding the bound and what the
-    hash covers. Dropping it instead would record a Runner-carried attempt as
-    having decoded nothing -- the exact silence a transcript exists to end, and
-    one nobody would ever learn about. The refusal is the honest third answer.
-    """
-
-    with pytest.raises(RunnerEvidenceCannotCarryTranscript, match="does not carry"):
-        RunnerProviderResult(
-            AgentExecutionResult(
-                b"answer",
-                AttemptTranscript.of([AssistantTurn("I read the file and stopped.")]),
-            )
-        )
-
-
 def test_a_result_with_no_transcript_still_round_trips_byte_for_byte() -> None:
-    """The refusal above narrows nothing that already crossed this boundary."""
-
     envelope = _envelope(RunnerProviderResult(AgentExecutionResult(b"answer")))
     record = encode_runner_terminal_evidence_record(envelope)
 
@@ -508,3 +581,37 @@ def test_a_result_with_no_transcript_still_round_trips_byte_for_byte() -> None:
     assert isinstance(decoded.evidence, RunnerProviderResult)
     assert decoded.evidence.result.transcript is None
     assert encode_runner_terminal_evidence_record(decoded) == record
+
+
+def _canonical_record() -> bytes:
+    return encode_runner_terminal_evidence_record(
+        _envelope(RunnerProviderResult(AgentExecutionResult(b"answer")))
+    )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        b"\x00" + _canonical_record(),
+        frame("runner-terminal-evidence-exchange/v3", *[b""] * 15),
+        _canonical_record()[:-2],
+        _canonical_record() + b"\x00\x00\x00\x00",
+        _canonical_record() + struct.pack(">Q", 0),
+    ],
+    ids=(
+        "foreign-prefix",
+        "another-domain",
+        "truncated-field",
+        "trailing-bytes",
+        "sixteenth-field",
+    ),
+)
+def test_a_broken_frame_is_refused_as_this_exchange_s_own_corrupt_outcome(
+    record: bytes,
+) -> None:
+    """The exchange reads the shared frame layout but answers a broken frame in
+    its own typed vocabulary, never with the reader's exception."""
+
+    assert decode_runner_terminal_evidence_record(record) == (
+        RunnerTerminalEvidenceRecordCorrupt()
+    )

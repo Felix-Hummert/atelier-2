@@ -201,8 +201,11 @@ describe("the served vocabulary", () => {
   });
 
   it("decodes exactly the agent attempt states the document serves", () => {
+    // The rail's attempt is where the served document spells this vocabulary,
+    // and it is nullable there because a succeeded attempt carries no state.
     expect([...PUBLIC_ATTEMPT_STATES]).toEqual(
-      servedDocument.components.schemas.AgentAttemptResourceV2?.properties?.state?.enum
+      servedDocument.components.schemas.NodeRailAttemptResource?.properties?.state
+        ?.anyOf?.[0]?.enum
     );
   });
 
@@ -568,23 +571,47 @@ describe("the served vocabulary", () => {
       );
     }
 
+    const beforeMoments = { origin: "v1-before-moments" as const };
     const events = [
-      { event: "tool-called" as const, name: "Read", arguments: "{}", redacted: false },
-      { event: "tool-returned" as const, name: "Read", result: "ok", redacted: false },
-      { event: "assistant-turn" as const, text: "done", redacted: false },
+      {
+        event: "tool-called" as const,
+        name: "Read",
+        arguments: "{}",
+        redacted: false,
+        moment: beforeMoments
+      },
+      {
+        event: "tool-returned" as const,
+        name: "Read",
+        result: "ok",
+        redacted: false,
+        moment: beforeMoments
+      },
+      {
+        event: "assistant-turn" as const,
+        text: "done",
+        redacted: false,
+        moment: beforeMoments
+      },
       {
         event: "usage" as const,
         input_tokens: 0,
         output_tokens: 0,
         cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0
+        cache_creation_input_tokens: 0,
+        moment: beforeMoments
       },
       {
         event: "unrecognised-provider-output" as const,
         text: "raw",
-        redacted: true
+        redacted: true,
+        moment: beforeMoments
       },
-      { event: "transcript-truncated" as const, dropped_events: 1 }
+      {
+        event: "transcript-truncated" as const,
+        dropped_events: 1,
+        moment: beforeMoments
+      }
     ];
     expect(events.map((step) => step.event).sort()).toEqual(Object.keys(mapping).sort());
     expect(attemptTranscriptSchema.parse({ events })).toEqual({ events });

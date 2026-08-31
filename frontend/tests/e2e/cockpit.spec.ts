@@ -16,7 +16,7 @@ import { retryLabel } from "../../src/lib/readStateCopy";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
-import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 
@@ -440,7 +440,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   await page.goto("/atelier");
   await expect(page.getByText("Workbench runs unavailable")).toBeVisible();
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
-  const retry = page.getByRole("button", { name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel) });
+  const retry = page.getByRole("button", { name: retryLabel(workbenchPageCopy.runsLabel) });
   await expect(retry).toHaveCount(1);
   const roomUrl = page.url();
 
@@ -472,7 +472,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
 
   readsFail = false;
   observed.length = 0;
-  await page.getByRole("button", { name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel) }).click();
+  await page.getByRole("button", { name: retryLabel(workbenchPageCopy.runsLabel) }).click();
   const room = page.locator(".workbench");
   await expect(page.getByText("Workbench runs unavailable")).toHaveCount(0);
   await expect(room).toBeVisible();
@@ -647,15 +647,15 @@ test("walks the whole workshop: the workbench into the run, and one named way ba
   // The living shelf beneath the pinned decisions: the run rows this room
   // holds, each one click from its graph.
   await page.locator("a.living-row").first().click();
-  // This V1 fixture declares no workflow name; the title says that honestly
-  // instead of leading with the raw run id (#506).
-  await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
+  // A format-3 document always declares a name, and the header leads with it
+  // rather than with the raw run id (#506).
+  await expect(page.getByRole("heading", { name: "Prove one reconciliation" })).toBeVisible();
   // One way back, to the rail destination this page belongs to, and it never
   // repeats the page's own title beside it (operator ruling 23.08.).
   const trail = page.getByRole("navigation", { name: backLinkCopy.whereYouAre });
   await expect(trail.getByRole("link")).toHaveCount(1);
   await expect(trail.getByRole("link", { name: "Workbench" })).toBeVisible();
-  await expect(trail).not.toContainText("Unnamed workflow");
+  await expect(trail).not.toContainText("Prove one reconciliation");
   await page.screenshot({ path: "test-results/run-trail-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
 
@@ -663,120 +663,6 @@ test("walks the whole workshop: the workbench into the run, and one named way ba
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier\/chat$/);
 });
-
-test("mobile Found and Absent reconcile exact durable runs", async ({ browser }) => {
-  const mobile = await browser.newContext({
-    viewport: { width: 390, height: 844 },
-    reducedMotion: "no-preference"
-  });
-  const page = await mobile.newPage();
-
-  await page.goto(`/atelier/runs/${foundReference}`);
-  await expect(page.getByRole("heading", { name: runPageCopy.reconciliation.decisionNeeded })).toBeVisible();
-  await expect(page.getByText("WAITING RECONCILIATION", { exact: false })).toBeVisible();
-  await assertMobileSurface(page);
-  await page.screenshot({
-    path: "test-results/reconciliation-needs-390x844.png",
-    fullPage: true
-  });
-  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
-  await page.screenshot({
-    path: "test-results/reconciliation-needs-grayscale-390x844.png",
-    fullPage: true
-  });
-  await page.locator("style").last().evaluate((element) => element.remove());
-
-  const foundActor = page.getByLabel("Actor");
-  const foundEvidence = page.getByLabel("Evidence", { exact: true });
-  const foundChoice = page.getByRole("radio", { name: "Found" });
-  const foundEffect = page.getByLabel("Effect ID");
-  const foundResult = page.getByLabel("Exact result (base64)");
-  const resolve = page.getByRole("button", { name: "Resolve" });
-  await foundActor.focus();
-  await foundActor.fill("Felix");
-  await page.keyboard.press("Tab");
-  await expect(foundEvidence).toBeFocused();
-  await foundEvidence.fill("Inspected exact destination");
-  await page.keyboard.press("Tab");
-  await expect(foundChoice).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(foundEffect).toBeFocused();
-  await foundEffect.fill("found-empty-effect");
-  await page.keyboard.press("Tab");
-  await expect(foundResult).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(resolve).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { name: /Decision/ })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: runPageCopy.answerNeeded })).toBeVisible();
-
-  await page.goto(`/atelier/runs/${absentReference}`);
-  await expect(page.getByRole("heading", { name: runPageCopy.reconciliation.decisionNeeded })).toBeVisible();
-  const absentActor = page.getByLabel("Actor");
-  const absentEvidence = page.getByLabel("Evidence", { exact: true });
-  const absentChoice = page.getByRole("radio", { name: "Absent" });
-  await absentActor.focus();
-  await absentActor.fill("Felix");
-  await page.keyboard.press("Tab");
-  await expect(absentEvidence).toBeFocused();
-  await absentEvidence.fill("No matching destination effect");
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("radio", { name: "Found" })).toBeFocused();
-  await page.keyboard.press("ArrowRight");
-  await expect(absentChoice).toBeChecked();
-  await expect(absentChoice).toBeFocused();
-  const review = page.getByRole("button", { name: "Review" });
-  await page.keyboard.press("Tab");
-  await expect(review).toBeFocused();
-  await page.keyboard.press("Enter");
-  const cancel = page.getByRole("button", { name: "Cancel" });
-  const execute = page.getByRole("button", { name: "Execute" });
-  await expect(page.getByRole("dialog", { name: "Execute this exact effect?" })).toBeVisible();
-  await expect(cancel).toBeFocused();
-  await expect(page.getByText(`${PRODUCT_NAME} will execute the exact request once.`)).toBeVisible();
-  await page.screenshot({ path: "test-results/absent-confirm-390x844.png", fullPage: true });
-  await page.keyboard.press("Shift+Tab");
-  await expect(execute).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(cancel).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(execute).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(review).toBeFocused();
-  await review.press("Enter");
-  await expect(cancel).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(review).toBeFocused();
-  await review.press("Enter");
-  await expect(cancel).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(execute).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { name: /Sending decision|Decision pending/ })).toBeFocused();
-  await expect(page.getByRole("heading", { name: /Decision/ })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: runPageCopy.answerNeeded })).toBeVisible();
-  await page.getByLabel(runPageCopy.integerAnswer).fill("5");
-  await page.getByRole("button", { name: runPageCopy.answerSubmit }).click();
-  await expect(page.getByText("completed", { exact: true })).toBeVisible();
-  await assertNoSeriousAccessibilityFindings(page);
-  await mobile.close();
-
-  const desktop = await browser.newContext({
-    viewport: { width: 1280, height: 900 },
-    reducedMotion: "reduce"
-  });
-  const desktopPage = await desktop.newPage();
-  await desktopPage.goto(`/atelier/runs/${absentReference}`);
-  await expect(desktopPage.getByText("completed", { exact: true })).toBeVisible();
-  await expect(desktopPage.locator(".connection-complete")).toContainText("Complete");
-  await assertNoSeriousAccessibilityFindings(desktopPage);
-  await desktopPage.screenshot({
-    path: "test-results/complete-desktop-reduced-motion.png",
-    fullPage: true
-  });
-  await desktop.close();
-});
-
 async function assertMobileSurface(page: Page): Promise<void> {
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth

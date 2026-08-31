@@ -128,6 +128,7 @@ from atelier2.application.read_workflow_revisions import (
 )
 from atelier2.application.reconcile_run import reconcile_run
 from atelier2.application.resolve_catalog_name import resolve_catalog_name
+from atelier2.application.retire_catalog_lineage import retire_catalog_lineage
 from atelier2.application.start_published_run import start_published_run
 from atelier2.contracts.host_configuration import ProjectId, ProjectSourceId
 from atelier2.contracts.when import RecordedAt, recorded_instant
@@ -180,6 +181,9 @@ def bound_use_cases(
                 ports.workflow_document_parser,
                 ports.workflow_revision_queries,
             )
+        ),
+        retire_catalog_lineage=lambda lineage_id, actor, at: retire_catalog_lineage(
+            lineage_id, actor, at, ports.catalog_admissions
         ),
         list_workflow_revisions=lambda after, limit: list_workflow_revisions(
             after, limit, ports.workflow_revision_queries

@@ -59,7 +59,7 @@ Source: [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1).
 > Workflow verwendet wird."
 
 [^1]: Owners: [ADR 0019 preamble](decisions/0019-workshop-target-picture.md), [Requirement 0003 Intent](requirements/0003-ziel-ui.md), [Product intent](product/intent.md)
-[^2]: Owners: [HEART §The place](HEART.md), [REQ-UIQ-01](requirements/0003-ziel-ui.md)
+[^2]: Owners: [HEART §The place](HEART.md)
 [^3]: Owners: [ADR 0019 §1](decisions/0019-workshop-target-picture.md), [REQ-UI-20](requirements/0003-ziel-ui.md), [REQ-UI-23](requirements/0003-ziel-ui.md)
 [^4]: Owners: [ADR 0019 §1](decisions/0019-workshop-target-picture.md), [HEART §The place](HEART.md), [REQ-UI-24](requirements/0003-ziel-ui.md)
 [^5]: Owners: [ADR 0019 §1–§2](decisions/0019-workshop-target-picture.md), [REQ-UI-22](requirements/0003-ziel-ui.md), [REQ-UI-05](requirements/0003-ziel-ui.md)

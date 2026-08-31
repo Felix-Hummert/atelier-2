@@ -107,6 +107,9 @@ from atelier2.application.reconstruct_agent_definition import (
     AgentDefinitionRenderer,
 )
 from atelier2.application.resolve_catalog_name import CatalogNameResult
+from atelier2.application.retire_catalog_lineage import (
+    RetireCatalogLineageUseCaseResult,
+)
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
     AuthoredOrder,
@@ -347,6 +350,10 @@ class ApiUseCases:
             CatalogActivatedAt,
         ],
         AdmitMemberResult,
+    ]
+    retire_catalog_lineage: Callable[
+        [CatalogLineageId, CatalogActor, CatalogActivatedAt],
+        RetireCatalogLineageUseCaseResult,
     ]
     get_project_root_revision: Callable[[str], GetProjectRootResult]
     publish_project_root_revision: Callable[

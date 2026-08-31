@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -27,6 +28,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     initialize_schema,
     reconcile_commands,
+    run_agent_bindings,
     run_configuration_revisions,
     run_events,
     run_inputs_v3,
@@ -48,7 +50,13 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptReplacement,
 )
-from atelier2.contracts.agents import AgentExecutionRequestHash
+from atelier2.contracts.agents import (
+    AgentBinding,
+    AgentBindingSet,
+    AgentConfigurationRevisionHash,
+    AgentExecutionRequestHash,
+    AgentRole,
+)
 from atelier2.contracts.effects import EffectIntentState, ReconcileCommandState
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -74,6 +82,7 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
 )
+from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
     RunEventPage,
@@ -88,7 +97,11 @@ from atelier2.ports.workflow_revisions import (
     ReadUnavailable,
     WorkflowRevisionFound,
 )
-from tests.scenarios.agents import agent_attempt_execution, commit_configured_agent
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    commit_configured_agent,
+    failing_agent_executor_factory,
+)
 from tests.scenarios.api import (
     api_limits,
     api_ports,
@@ -98,6 +111,8 @@ from tests.scenarios.api import (
     stream_page_reader,
     stream_run_projection,
 )
+from tests.scenarios.runs import publish_v3_agent_bindings
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 # A checkout the pool cannot serve at once is refused without waiting at all.
 # Zero is what makes the refusal a decision rather than an elapsed measurement,
@@ -128,7 +143,34 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _v3_workflow_document(output: str = "result") -> bytes:
+    """The document a seeded run stands on, in the format the API serves.
+
+    Its role is the one `publish_v3_agent_bindings` binds, because a run whose
+    graph names a role its binding set does not is refused before any read.
+    """
+
+    return (
+        f"""format_version: 3
+name: One agent, seeded for {output}
+nodes:
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Produce the {output} this seeded run stands for.
+""".encode()
+        + declared_output(ANY_JSON_SCHEMA, output)
+    )
+
+
 def _workflow_document(output: str = "result") -> bytes:
+    """The format-1 document the durable-query seeds still stand on.
+
+    The rows those tests measure are read by the store, never projected onto the
+    wire, so they keep the cheaper document. #901 slice 5 collapses the two.
+    """
+
     return f"""format_version: 1
 start: agent
 nodes:
@@ -852,6 +894,27 @@ def test_prepare_rejects_terminal_run_without_terminal_head_event(
 def _seed_runs(
     engine: Engine, assignments: tuple[tuple[RunId, WorkflowRevision], ...]
 ) -> None:
+    """Write the exact run rows a list or page read is measured against.
+
+    The rows are written directly rather than started, because what these tests
+    measure is the SQL a page read emits over an exact set of run ids. The
+    binding matrix each row stands on is published through its own production
+    door, so a seeded run is one the reader accepts rather than one it refuses.
+    """
+
+    registry = AgentExecutorRegistry((failing_agent_executor_factory("exact", []),))
+    bindings = publish_v3_agent_bindings(engine, registry)
+    binding_set = AgentBindingSet(
+        tuple(
+            AgentBinding(
+                AgentRole(binding.role),
+                AgentConfigurationRevisionHash(
+                    binding.agent_configuration_revision_hash
+                ),
+            )
+            for binding in bindings
+        )
+    )
     revisions = {assignment.revision_hash: assignment for _, assignment in assignments}
     with engine.begin() as connection:
         connection.execute(
@@ -864,15 +927,34 @@ def _seed_runs(
                 for revision in revisions.values()
             ],
         )
+        # The schema keeps a V3 row honest: it stands on the configuration
+        # revision it was started under, and the preimage that hash names.
+        configuration_hashes = {
+            run_id.value: _digest(f"configuration-{run_id.value}")
+            for run_id, _ in assignments
+        }
+        connection.execute(
+            run_configuration_revisions.insert(),
+            [
+                {
+                    "revision_hash": configuration_hash,
+                    "preimage": b"seeded run configuration",
+                }
+                for configuration_hash in configuration_hashes.values()
+            ],
+        )
         connection.execute(
             runs.insert(),
             [
                 {
                     "run_id": run_id.value,
-                    "bootstrap_workflow_id": f"workflow-{index}",
+                    "bootstrap_workflow_id": f"workflow-{run_id.value}",
                     "revision_hash": revision.revision_hash.value,
-                    "workflow_format_version": 1,
-                    "agent_binding_set_hash": None,
+                    "workflow_format_version": 3,
+                    "run_configuration_revision_hash": configuration_hashes[
+                        run_id.value
+                    ],
+                    "agent_binding_set_hash": binding_set.binding_set_hash.value,
                     "current_node_id": "agent",
                     "current_round_ordinal": FIRST_ROUND_ORDINAL,
                     "state": RunState.STARTED.value,
@@ -880,7 +962,23 @@ def _seed_runs(
                     "last_event_sequence": 0,
                     "terminal_hash": None,
                 }
-                for index, (run_id, revision) in enumerate(assignments)
+                for run_id, revision in assignments
+            ],
+        )
+        connection.execute(
+            run_agent_bindings.insert(),
+            [
+                {
+                    "run_id": run_id.value,
+                    "revision_hash": revision.revision_hash.value,
+                    "binding_set_hash": binding_set.binding_set_hash.value,
+                    "role": binding.role,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash
+                    ),
+                }
+                for run_id, revision in assignments
+                for binding in bindings
             ],
         )
 
@@ -930,11 +1028,11 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
             )
         )
 
-    def unexpected_materialization(_record: object) -> object:
+    def unexpected_materialization(_session: object, _records: object) -> object:
         raise AssertionError("oversized durable run text reached the run mapper")
 
     monkeypatch.setattr(
-        queries_module, "run_from_record_with_bindings", unexpected_materialization
+        queries_module, "runs_from_records_with_bindings", unexpected_materialization
     )
     run_selects: list[str] = []
 
@@ -977,7 +1075,7 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
 def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
     engine: Engine,
 ) -> None:
-    revision = WorkflowRevision(_workflow_document("pagination"))
+    revision = WorkflowRevision(_v3_workflow_document("pagination"))
     run_ids = tuple(
         RunId(value)
         for value in ("slash/run", "nul\0run", "Grüße-東京", "alpha", "zeta")
@@ -1009,7 +1107,7 @@ def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
 
 
 def test_list_runs_answers_only_the_named_state(engine: Engine) -> None:
-    revision = WorkflowRevision(_workflow_document("state-filter"))
+    revision = WorkflowRevision(_v3_workflow_document("state-filter"))
     first = RunId("alpha-run")
     second = RunId("zeta-run")
     _seed_runs(engine, ((first, revision), (second, revision)))
@@ -1026,7 +1124,7 @@ def test_list_runs_answers_only_the_named_state(engine: Engine) -> None:
 def test_the_run_list_route_filters_by_state_and_names_an_unknown_one(
     engine: Engine,
 ) -> None:
-    revision = WorkflowRevision(_workflow_document("state-route"))
+    revision = WorkflowRevision(_v3_workflow_document("state-route"))
     first = RunId("alpha-run")
     second = RunId("zeta-run")
     _seed_runs(engine, ((first, revision), (second, revision)))
@@ -1071,7 +1169,7 @@ def test_the_run_list_route_filters_by_state_and_names_an_unknown_one(
 def test_run_page_refuses_real_rows_when_sqlite_order_or_boundary_is_wrong(
     engine: Engine, after: RunId | None, source: str, replacement: str
 ) -> None:
-    revision = WorkflowRevision(_workflow_document("wrong-order"))
+    revision = WorkflowRevision(_v3_workflow_document("wrong-order"))
     _seed_runs(
         engine,
         ((RunId("alpha"), revision), (RunId("zeta"), revision)),
@@ -1101,7 +1199,7 @@ def test_run_page_refuses_real_rows_when_sqlite_order_or_boundary_is_wrong(
 def test_run_page_query_uses_primary_index_without_scan_or_temp_sort(
     engine: Engine,
 ) -> None:
-    revision = WorkflowRevision(_workflow_document("query-plan"))
+    revision = WorkflowRevision(_v3_workflow_document("query-plan"))
     _seed_runs(
         engine,
         tuple((RunId(f"run-{index:03d}"), revision) for index in range(20)),
@@ -1144,31 +1242,45 @@ def test_run_page_query_uses_primary_index_without_scan_or_temp_sort(
     assert all("SCAN" not in detail and "TEMP B-TREE" not in detail for detail in plan)
 
 
-def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
-    engine: Engine, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    first_revision = WorkflowRevision(_workflow_document("first"))
-    second_revision = WorkflowRevision(_workflow_document("second"))
-    assignments = tuple(
-        (
-            RunId(f"batch-{index:03d}"),
-            first_revision if index % 2 == 0 else second_revision,
-        )
-        for index in range(10)
-    )
-    _seed_runs(engine, assignments)
-    parse_calls = 0
+RUN_PAGE_STATEMENTS = (
+    "agent_attempts",
+    "run_agent_bindings",
+    "run_forks",
+    "run_forks",
+    "run_inputs_v3",
+    "run_instants",
+    "runs",
+    "workflow_revisions",
+)
+"""Every statement one run page costs, named so a ninth cannot arrive quietly.
+
+Six of them a page costs whatever format its runs are: the page of `runs`, the
+`run_forks` it may be an origin or a successor of, the `workflow_revisions` it
+parses once per distinct document, the `run_instants` it is stamped with, and
+the `run_inputs_v3` it was started with. The other two are what a format-3 page
+reads besides -- the `run_agent_bindings` its roles resolve to, and the
+`agent_attempts` its rail names on the node each run stands at.
+
+Sorted, and carrying `run_forks` twice, because that is what makes a repeated
+read show up here as a repeated name instead of as a number nobody can argue
+with.
+"""
+
+
+def _page_read(engine: Engine) -> tuple[tuple[str, ...], int]:
+    """The statements one run-page read costs, and the documents it parsed."""
+
+    parsed = 0
     original_parse = queries_module.parse_workflow_document
 
-    def count_parse(document: bytes):
-        nonlocal parse_calls
-        parse_calls += 1
+    def count_parse(document: bytes) -> object:
+        nonlocal parsed
+        parsed += 1
         return original_parse(document)
 
-    monkeypatch.setattr(queries_module, "parse_workflow_document", count_parse)
-    selects = 0
+    read_tables: list[str] = []
 
-    def count_selects(
+    def capture(
         _connection: Any,
         _cursor: Any,
         statement: str,
@@ -1176,26 +1288,59 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
         _context: Any,
         _executemany: bool,
     ) -> None:
-        nonlocal selects
-        if statement.lstrip().upper().startswith("SELECT"):
-            selects += 1
+        if not statement.lstrip().upper().startswith("SELECT"):
+            return
+        named = re.search(r"FROM ([a-zA-Z_0-9]+)", statement)
+        read_tables.append(named.group(1) if named is not None else statement)
 
-    event.listen(engine, "before_cursor_execute", count_selects)
+    queries_module.parse_workflow_document = count_parse
+    event.listen(engine, "before_cursor_execute", capture)
     try:
         page = durable_queries(engine).list_runs(None, 100)
     finally:
-        event.remove(engine, "before_cursor_execute", count_selects)
-
+        event.remove(engine, "before_cursor_execute", capture)
+        queries_module.parse_workflow_document = original_parse
     assert isinstance(page, RunPage)
-    assert len(page.runs) == len(assignments)
-    assert parse_calls == 2
-    assert selects <= 6
+    return tuple(sorted(read_tables)), parsed
+
+
+def test_run_page_costs_the_same_named_statements_however_many_runs_it_lists(
+    engine: Engine,
+) -> None:
+    """A page reads each table once, and reads the same tables at any size.
+
+    Both halves carry weight. Growth with the page is the N+1 this exists to
+    catch -- a per-run binding read showed up here as ten `run_agent_bindings`
+    against one. The named budget is what stops a ninth statement arriving
+    unexplained, because a constancy assertion alone would be as happy at a
+    constant eight hundred as at eight.
+    """
+
+    first_revision = WorkflowRevision(_v3_workflow_document("first"))
+    second_revision = WorkflowRevision(_v3_workflow_document("second"))
+    _seed_runs(
+        engine,
+        tuple((RunId(f"batch-{index:03d}"), first_revision) for index in range(2)),
+    )
+
+    two_runs, parsed_one_document = _page_read(engine)
+
+    _seed_runs(
+        engine,
+        tuple((RunId(f"batch-{index:03d}"), second_revision) for index in range(2, 10)),
+    )
+
+    ten_runs, parsed_two_documents = _page_read(engine)
+
+    assert two_runs == ten_runs
+    assert ten_runs == RUN_PAGE_STATEMENTS
+    assert (parsed_one_document, parsed_two_documents) == (1, 2)
 
 
 def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empty(
     engine: Engine,
 ) -> None:
-    revision = WorkflowRevision(_workflow_document())
+    revision = WorkflowRevision(_v3_workflow_document())
     run_ids = tuple(RunId(f"orders-{index:03d}") for index in range(5))
     _seed_runs(engine, tuple((run_id, revision) for run_id in run_ids))
     ordered_run_id = run_ids[0]

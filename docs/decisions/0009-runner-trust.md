@@ -659,6 +659,120 @@ than the backward compatibility proven above (a new peer reading old
 traffic): both directions fail safely, before anything is armed, but only
 one direction fails by name.
 
+**2026-08-29 amendment (#889): terminal evidence has one canonical V2
+record.** `runner-terminal-evidence-exchange/v2` carries all six terminal
+variants and the payload-free ACK tombstone. A decoded provider result carries
+its bounded output and optional canonical `AttemptTranscript`. A decoded
+provider failure carries exactly one of `AGENT_REFUSED` and
+`PROCESS_EXITED_UNSUCCESSFULLY`, its physical signed-int64 exit code and bounded
+standard error, and its optional canonical transcript. Reserved fields are
+empty, so one byte record has one meaning. Its semantic identity uses the
+separate `runner-terminal-evidence/v2` hash domain and binds transcript presence
+apart from transcript bytes; for a provider failure it also binds the named
+failure code and the complete exit signature.
+
+The codec's exact syntactic maximum remains 1,106,413 bytes: the longer admitted
+failure code, a fixed-width exit code, 49,152 bytes of standard error, a
+1,048,576-byte canonical transcript, and maximum-width UTF-8 generation and
+invocation identities. The candidate journal grants 2,097,152 bytes, so
+retained evidence keeps the transcript in that one record under one ACK
+protocol and one durable owner; no second transcript file, evidence channel, or
+acknowledgement protocol is introduced. The V2 decoder recognizes an Exchange
+V1 domain only to return a typed refusal naming V1 and explaining that only V2
+is supported; it never decodes a V1 payload beside V2.
+
+**2026-08-30 amendment (#900): the session bound is derived from the record
+bound.** Measured before moved, because a record that cannot exist is not a
+maximum. `RunnerSessionFrame` pins a session's generation and invocation tokens
+to exactly 43 base64url characters, and the Runner builds its evidence envelope
+from the same binding and invocation the frame carries. Under those real
+identities the widest record is a provider failure with the longer admitted
+failure code, a fixed-width exit code, 49,152 bytes of standard error and a full
+1,048,576-byte transcript document: 1,098,307 bytes. That is the one number the
+transport is sized against, and it is the largest record a session can ever be
+asked to carry.
+
+Today's Runner does not originate it, and today's Runner is not what sizes the
+transport. `runner/session.py` refuses to publish a provider failure carrying a
+transcript, and the one registered runner-side executor
+(`FreeRunnerCandidateExecutor`) returns no transcript under any job while
+reading its child's answer under a 49,152-byte bound, so the widest record a
+live provider child can cause today is 49,691 bytes. Sizing session transport
+at that number would reopen the same silent gap from the other side the moment
+a second executor lands: what a session must deliver is what may be durably
+stored, and the record codec and `RunnerJournal` own that, not the current
+executor catalogue.
+
+The codec's 1,106,413-byte maximum stands 8,106 bytes above that, and the whole
+gap is identity width: `RunnerGenerationId` and `RunnerInvocationId` bound
+themselves to 1,024 *characters*, which is 4,096 bytes each in UTF-8, where a
+session frame admits 43. Those 8,106 bytes are records the journal may hold and
+a session can never carry.
+
+Which bound moves is readable in the code rather than a matter of taste.
+`TERMINAL_RECORD` hands the journal's canonical record over verbatim as its
+single payload field: `RunnerJournal.publish` stores exactly the bytes the
+session later sends. The two numbers are therefore not two budgets but one plus
+a fixed envelope, and the storable maximum had already crossed the old one. That
+envelope is 404 bytes, fixed because every identity a session frame carries has
+a pinned width, so delivering that maximum needed a 1,098,711-byte body
+against a 1,078,291-byte limit -- short by 20,420 bytes, and short in the way
+that surfaces only on the rarest run, as `runner-session-oversized`: a transport
+word for a contract fault.
+
+So the transport side moves, and it moves by construction rather than by choice.
+`MAXIMUM_RUNNER_SESSION_BODY_BYTES` is now
+`MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES + TERMINAL_RECORD_ENVELOPE_BYTES`
+(1,106,817 bytes), and `MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES` adds the
+four-byte length prefix (1,106,821 bytes). Raising the record bound now raises
+the transport bound with it; a second literal beside the first is what let these
+two disagree at all. The terminal-record codec and the session identity contract
+are unchanged.
+
+Where each number comes from, so the next reader need not re-derive it:
+
+- 1,106,413 bytes --
+  `test_largest_admissible_v2_record_equals_its_codec_bound_and_fits_journal`
+  builds the widest encodable record and asserts the constant is exactly it.
+- 404 bytes -- `test_a_terminal_record_body_spends_one_fixed_width_on_its_envelope`
+  measures the envelope from the production encoder.
+- both session bounds --
+  `test_a_session_body_carries_the_largest_record_the_journal_may_hold` shows the
+  largest journal-legal record filling a `TERMINAL_RECORD` body exactly.
+- 1,098,307 bytes and the full path --
+  `test_the_largest_record_the_journal_may_hold_reaches_core_over_tls` builds
+  that record under a session's own 43-character identities, publishes it
+  through the real `RunnerJournal` under the production journal bound, resumes
+  it in the production candidate session, and carries it over genuine TLS
+  through the production transport and `CoreRunnerSession` to commit, ACK
+  tombstone, RELEASE and journal removal.
+- 49,691 bytes, what a Runner originates today --
+  `test_a_real_runner_originates_its_widest_terminal_record_and_delivers_it_over_tls`
+  plants nothing: a real candidate subprocess answers at its executor's own
+  bound, the session decodes that child's exit into the evidence envelope
+  itself, journals it, and the same production path delivers it.
+
+The 8,106 bytes of transport headroom are what one identity contract admitting
+widths another refuses costs. Narrowing `RunnerGenerationId` and
+`RunnerInvocationId` to the session's 43-character token would collapse both
+numbers onto one width and remove the headroom; that touches every minting
+caller and is not this slice.
+
+The wire proof does not cover a live Core store, the Docker/launcher host path,
+or a real crash and restart. A crash after provider start but before terminal
+publication remains an open #301 gap; this slice adds no schema and no second
+durable owner.
+
+`RunnerProviderFailure` still defaults its omitted failure code to
+`PROCESS_EXITED_UNSUCCESSFULLY`: the current session and other pre-integration
+callers construct only the old one-argument physical-failure form. That default
+is a compatibility seam with a named removal path, not an Exchange V2
+ambiguity. A later #301 integration must pass the decoder's actual
+`AGENT_REFUSED` or `PROCESS_EXITED_UNSUCCESSFULLY` code and transcript, then
+delete the default and `RunnerEvidenceCannotCarryTranscript`; until then the
+current Runner does not originate decoded `AGENT_REFUSED` or failure
+transcripts.
+
 ## Refusals
 
 | Name | Raised when | Boundary |
@@ -819,7 +933,8 @@ this record borrows that owner rather than opening a second vocabulary.
 
 This record decides only the local rootful Docker form described in §2. It leaves
 **OPEN on #21** the first remote/CI carrier, its launch/cleanup authority and
-its mutual-authentication mechanism. It also does not decide transport framing;
+its mutual-authentication mechanism. Beyond the versioned session and retained
+terminal-evidence records above, it does not decide carrier transport framing;
 the environment-requirements vocabulary; multi-project or multi-tenant isolation
 (#23); the operator-credential storage backend or cockpit login surface; the
 provider-side sandbox mechanism (#60); durable failure token names (#16); rate

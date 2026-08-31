@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -31,7 +32,6 @@ from atelier2.api.references import (
     SHA256_HASH_PATTERN,
 )
 from atelier2.contracts.agent_attempts import (
-    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptCancellationDisposition,
 )
 from atelier2.contracts.agent_definitions import (
@@ -41,6 +41,7 @@ from atelier2.contracts.agent_definitions import (
 from atelier2.contracts.agent_transcripts import (
     MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
     TranscriptEventKind,
+    TranscriptMomentOrigin,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -470,69 +471,6 @@ class RunReceiptResource(ApiModel):
     items: tuple[AgentReceiptResource, ...]
 
 
-class AgentNodeResource(ApiModel):
-    type: Literal["agent"]
-    node_id: str = Field(min_length=1)
-    job: str = Field(min_length=1)
-    output: str = Field(min_length=1)
-    next_node_id: str = Field(min_length=1)
-
-
-class AgentNodeResourceV2(ApiModel):
-    type: Literal["agent"]
-    node_id: str = Field(min_length=1)
-    role: str = Field(min_length=1)
-    job: str = Field(min_length=1)
-    next_node_id: str = Field(min_length=1)
-
-
-class ActionNodeResource(ApiModel):
-    type: Literal["action"]
-    node_id: str = Field(min_length=1)
-    next_node_id: str = Field(min_length=1)
-
-
-class WaitNodeResource(ApiModel):
-    type: Literal["wait"]
-    node_id: str = Field(min_length=1)
-    answer_type: Literal["integer"]
-    next_node_id: str = Field(min_length=1)
-
-
-class SubworkflowNodeResource(ApiModel):
-    type: Literal["subworkflow"]
-    node_id: str = Field(min_length=1)
-    operation: Literal["add"]
-    operands: tuple[int, int]
-    next_node_id: None
-
-
-NodeResource = Annotated[
-    AgentNodeResource | ActionNodeResource | WaitNodeResource | SubworkflowNodeResource,
-    Field(discriminator="type"),
-]
-
-NodeResourceV2 = Annotated[
-    AgentNodeResourceV2
-    | ActionNodeResource
-    | WaitNodeResource
-    | SubworkflowNodeResource,
-    Field(discriminator="type"),
-]
-
-
-class WorkflowGraphResource(ApiModel):
-    workflow_format_version: Literal[1]
-    start_node_id: str = Field(min_length=1)
-    nodes: tuple[NodeResource, ...]
-
-
-class WorkflowGraphResourceV2(ApiModel):
-    workflow_format_version: Literal[2]
-    start_node_id: str = Field(min_length=1)
-    nodes: tuple[NodeResourceV2, ...]
-
-
 class WorkflowNodePreviewResourceV3(ApiModel):
     """One node of a published V3 revision, as an excerpt, never as the node.
 
@@ -776,12 +714,6 @@ class WorkflowGraphResourceV3(ApiModel):
         return self
 
 
-AnyWorkflowGraphResource = Annotated[
-    WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3,
-    Field(discriminator="workflow_format_version"),
-]
-
-
 class WorkflowRevisionSummaryResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
@@ -789,7 +721,7 @@ class WorkflowRevisionSummaryResource(ApiModel):
 class WorkflowRevisionDetailResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
-    graph: AnyWorkflowGraphResource
+    graph: WorkflowGraphResourceV3
 
 
 class CatalogNameResolutionResource(ApiModel):
@@ -959,85 +891,6 @@ ReconciliationDeterminationResource = Annotated[
 ]
 
 
-class ReconciliationCommandResource(ApiModel):
-    command_id: str = Field(min_length=1)
-    actor: str = Field(min_length=1)
-    evidence: str = Field(min_length=1)
-    state: Literal["PENDING"]
-    determination: ReconciliationDeterminationResource
-
-
-class NoWaitingResource(ApiModel):
-    type: Literal["NONE"]
-
-
-class WaitingInputResource(ApiModel):
-    type: Literal["WAITING_INPUT"]
-    node_id: str = Field(min_length=1)
-    answer_type: Literal["integer"]
-
-
-class WaitingReconciliationResource(ApiModel):
-    type: Literal["WAITING_RECONCILIATION"]
-    node_id: str = Field(min_length=1)
-    logical_effect_key: str = Field(min_length=1)
-    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    request_base64: str
-    intent_state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    pending_command: ReconciliationCommandResource | None
-
-
-WaitingResource = Annotated[
-    NoWaitingResource | WaitingInputResource | WaitingReconciliationResource,
-    Field(discriminator="type"),
-]
-
-
-class RunResource(ApiModel):
-    run_id: str = Field(min_length=1)
-    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    state: Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]
-    current_node: NodeResource
-    waiting: WaitingResource
-    terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
-    latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
-
-    @model_validator(mode="after")
-    def validate_state_shape(self) -> RunResource:
-        if self.state == "STARTED":
-            valid = (
-                isinstance(self.waiting, NoWaitingResource)
-                and self.terminal_hash is None
-            )
-        elif self.state == "WAITING_INPUT":
-            valid = (
-                isinstance(self.current_node, WaitNodeResource)
-                and isinstance(self.waiting, WaitingInputResource)
-                and self.waiting.node_id == self.current_node.node_id
-                and self.terminal_hash is None
-            )
-        elif self.state == "WAITING_RECONCILIATION":
-            valid = (
-                isinstance(self.current_node, ActionNodeResource)
-                and isinstance(self.waiting, WaitingReconciliationResource)
-                and self.waiting.node_id == self.current_node.node_id
-                and self.terminal_hash is None
-            )
-        else:
-            valid = (
-                isinstance(self.current_node, SubworkflowNodeResource)
-                and isinstance(self.waiting, NoWaitingResource)
-                and self.terminal_hash is not None
-            )
-        if not valid:
-            raise ValueError(
-                "run state, current node, waiting reason, and terminal hash disagree"
-            )
-        return self
-
-
 class AgentBindingResourceV2(ApiModel):
     role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
@@ -1050,26 +903,6 @@ class AgentBindingResourceV2(ApiModel):
     executor_revision: str = Field(
         min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
     )
-
-
-class NoWaitingResourceV2(ApiModel):
-    type: Literal["NONE"]
-
-
-class WaitingInputResourceV2(ApiModel):
-    type: Literal["WAITING_INPUT"]
-    node_id: str = Field(min_length=1)
-    answer_type: Literal["integer"]
-
-
-class WaitingReconciliationResourceV2(ApiModel):
-    type: Literal["WAITING_RECONCILIATION"]
-    node_id: str = Field(min_length=1)
-    logical_effect_key: str = Field(min_length=1)
-    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    request_base64: str
-    intent_state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    pending_command: ReconciliationCommandResource | None
 
 
 # The wire names the vocabulary as the closed union of its owner's members rather
@@ -1096,58 +929,6 @@ CancellationDispositionName = Literal[
     AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH,
 ]
 
-
-class AgentAttemptResourceV2(ApiModel):
-    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_ordinal: Literal[1, 2]
-    state: PublicAttemptStateName
-    failure_code: (
-        Literal[
-            "PROCESS_EXITED_UNSUCCESSFULLY",
-            "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-            "PROCESS_SUPERVISION_FAILED",
-        ]
-        | None
-    )
-    cancellation: AgentAttemptCancellationResourceV2 | None
-
-    @model_validator(mode="after")
-    def validate_failure_shape(self) -> AgentAttemptResourceV2:
-        if (self.state is PublicAgentAttemptState.FAILED) != (
-            self.failure_code is not None
-        ):
-            raise ValueError("agent attempt state and failure code disagree")
-        if (
-            self.state
-            in {
-                PublicAgentAttemptState.CANCEL_REQUESTED,
-                PublicAgentAttemptState.CANCELLED,
-                PublicAgentAttemptState.INTERRUPTED,
-            }
-        ) != (self.cancellation is not None):
-            raise ValueError("agent attempt state and cancellation disagree")
-        return self
-
-
-class AgentAttemptCancellationResourceV2(ApiModel):
-    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    replacement: Literal["NONE", "ONE"]
-    redrive_state: Literal["PENDING", "OWNER_NOT_LOCAL", "CLEANUP_ATTESTED"]
-    disposition: CancellationDispositionName | None
-
-    @model_validator(mode="after")
-    def validate_attestation_shape(self) -> AgentAttemptCancellationResourceV2:
-        if (self.redrive_state == "CLEANUP_ATTESTED") != (self.disposition is not None):
-            raise ValueError("cleanup attestation and disposition disagree")
-        return self
-
-
-WaitingResourceV2 = Annotated[
-    NoWaitingResourceV2 | WaitingInputResourceV2 | WaitingReconciliationResourceV2,
-    Field(discriminator="type"),
-]
 
 # Spelled out as the closed union of its owner's members, like the attempt
 # vocabulary above: the served document then names every state where the field
@@ -1285,11 +1066,37 @@ class NodeProvenanceResource(ApiModel):
     receipt_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class TranscriptRecordedMomentResource(ApiModel):
+    """The instant an event entered the transcript and the source of that instant."""
+
+    recorded_at: str = Field(pattern=RECORDED_AT_PATTERN)
+    origin: Literal[TranscriptMomentOrigin.RECORDED]
+
+
+class TranscriptBeforeMomentsOrigin(StrEnum):
+    """The only explicit marker for a transcript that predates event moments."""
+
+    V1 = "v1-before-moments"
+
+
+class TranscriptBeforeMomentsResource(ApiModel):
+    """An event read from a v1 transcript, before event moments existed."""
+
+    origin: Literal[TranscriptBeforeMomentsOrigin.V1]
+
+
+TranscriptMomentResource = Annotated[
+    TranscriptRecordedMomentResource | TranscriptBeforeMomentsResource,
+    Field(discriminator="origin"),
+]
+
+
 class ToolCalledEventResource(ApiModel):
     event: Literal[TranscriptEventKind.TOOL_CALLED]
     name: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     arguments: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class ToolReturnedEventResource(ApiModel):
@@ -1297,12 +1104,14 @@ class ToolReturnedEventResource(ApiModel):
     name: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     result: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class AssistantTurnEventResource(ApiModel):
     event: Literal[TranscriptEventKind.ASSISTANT_TURN]
     text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class UsageEventResource(ApiModel):
@@ -1311,17 +1120,20 @@ class UsageEventResource(ApiModel):
     output_tokens: int = Field(ge=0)
     cache_read_input_tokens: int = Field(ge=0)
     cache_creation_input_tokens: int = Field(ge=0)
+    moment: TranscriptMomentResource
 
 
 class UnrecognisedProviderOutputEventResource(ApiModel):
     event: Literal[TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT]
     text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
     redacted: bool
+    moment: TranscriptMomentResource
 
 
 class TranscriptTruncatedEventResource(ApiModel):
     event: Literal[TranscriptEventKind.TRANSCRIPT_TRUNCATED]
     dropped_events: int = Field(ge=1)
+    moment: TranscriptMomentResource
 
 
 AttemptTranscriptEventResource = Annotated[
@@ -1397,68 +1209,6 @@ class NodeDetailResource(ApiModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
-
-
-class RunResourceV2(ApiModel):
-    workflow_format_version: Literal[2]
-    run_id: str = Field(min_length=1)
-    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    agent_binding_set_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(
-        max_length=MAXIMUM_RUN_AGENT_BINDINGS
-    )
-    state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    state: Literal[
-        "STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"
-    ]
-    current_node: NodeResourceV2
-    node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
-    agent_attempts: tuple[AgentAttemptResourceV2, ...] = Field(
-        max_length=REPLACEMENT_AGENT_ATTEMPT_ORDINAL
-    )
-    waiting: WaitingResourceV2
-    terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
-    latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
-
-    @model_validator(mode="after")
-    def validate_state_shape(self) -> RunResourceV2:
-        if self.state == "STARTED":
-            valid = (
-                isinstance(self.waiting, NoWaitingResourceV2)
-                and self.terminal_hash is None
-            )
-        elif self.state == "WAITING_INPUT":
-            valid = (
-                isinstance(self.current_node, WaitNodeResource)
-                and isinstance(self.waiting, WaitingInputResourceV2)
-                and self.waiting.node_id == self.current_node.node_id
-                and self.terminal_hash is None
-            )
-        elif self.state == "WAITING_RECONCILIATION":
-            valid = (
-                isinstance(self.current_node, ActionNodeResource)
-                and isinstance(self.waiting, WaitingReconciliationResourceV2)
-                and self.waiting.node_id == self.current_node.node_id
-                and self.terminal_hash is None
-            )
-        elif self.state == "FAILED":
-            valid = (
-                isinstance(self.current_node, AgentNodeResourceV2)
-                and isinstance(self.waiting, NoWaitingResourceV2)
-                and self.terminal_hash is not None
-            )
-        else:
-            valid = (
-                isinstance(self.current_node, SubworkflowNodeResource)
-                and isinstance(self.waiting, NoWaitingResourceV2)
-                and self.terminal_hash is not None
-            )
-        if not valid:
-            raise ValueError(
-                "V2 run state, current node, waiting reason, and terminal hash disagree"
-            )
-        return self
 
 
 # The reason vocabulary the wire spells is `RunCancellationRefusal`'s closed set
@@ -1537,28 +1287,24 @@ class RunForkSuccessorResource(ApiModel):
 
 
 class RunResourceV3(ApiModel):
-    """One V3 run as it reads back: its own format, never a V2 one renumbered.
+    """One run as it reads back, ended on the sink its author declared.
 
-    It is a separate resource rather than a widened V2 one because the two
-    disagree about what a state means. `RunResourceV2.validate_state_shape` ties
-    COMPLETED to a subworkflow node and WAITING_INPUT to a Wait node; a V3 run
-    ends on an **agent** sink, because #194 H1b lifted the terminal condition off
-    the subworkflow node onto the run. Rendering a V3 run through those rules
-    would have to call it something it is not.
+    A run ends on an **agent** sink, because #194 H1b lifted the terminal
+    condition off the subworkflow node onto the run; `validate_state_shape`
+    therefore ties the terminal hash to the run's own state and to no node kind.
 
-    Two fields the V2 shape carries are absent on purpose rather than empty. A V3
-    run surfaces no `agent_attempts` array: that field is the V2 listing of every
-    attempt on the current node, and repeating it next to the rail would be a
-    second owner of the same fact. The rail's `attempt` is the one the reader is
-    told -- including on a failed terminal node, where the snapshot keeps the
-    failed attempt so a list read names the same ending the event stream names.
-    Surfacing a V3 `agent_attempts` array is still its own head; it is a named
-    gap here, not a claim.
+    Two fields are absent on purpose rather than empty. There is no
+    `agent_attempts` array listing every attempt on the current node: repeating
+    it next to the rail would be a second owner of the same fact. The rail's
+    `attempt` is the one the reader is told -- including on a failed terminal
+    node, where the snapshot keeps the failed attempt so a list read names the
+    same ending the event stream names. Surfacing an `agent_attempts` array is
+    still its own head; it is a named gap here, not a claim.
 
-    A V3 run does reach WAITING_INPUT, and `current_node_id` with the rail is
-    what says so: the rail marks that node as the one owing a person a move. What
-    is deliberately absent is a `waiting` block restating the question, because a
-    V3 Wait node's prompt and answer schema are the document's and are read from
+    A run does reach WAITING_INPUT, and `current_node_id` with the rail is what
+    says so: the rail marks that node as the one owing a person a move. What is
+    deliberately absent is a `waiting` block restating the question, because a
+    Wait node's prompt and answer schema are the document's and are read from
     the workflow revision this run names, not copied onto the run. Projecting the
     question onto the run resource is a named gap, not a claim.
     """
@@ -1615,25 +1361,9 @@ class RunResourceV3(ApiModel):
         return self
 
 
-AnyRunResource = RunResource | RunResourceV2 | RunResourceV3
-
-
-# No handler builds this: /runs returns VersionedRunPageResource. It stays
-# because ADR 0003 freezes the preexisting V1 named OpenAPI components, and this
-# one reaches the served document only through AnyRunPageResource below. A
-# docstring here would be published as the component's description and break
-# that freeze.
-class RunPageResource(ApiModel):
-    items: tuple[RunResource, ...]
-    next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-
-
 class VersionedRunPageResource(ApiModel):
-    items: tuple[AnyRunResource, ...]
+    items: tuple[RunResourceV3, ...]
     next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-
-
-AnyRunPageResource = RunPageResource | VersionedRunPageResource
 
 
 class EffectReceiptResource(ApiModel):

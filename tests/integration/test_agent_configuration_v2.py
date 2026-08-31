@@ -37,6 +37,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
@@ -79,7 +80,12 @@ from atelier2.contracts.executions import (
     WaitAnswerActor,
 )
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
-from atelier2.contracts.run_bindings import RunBindingConflict, RunV2
+from atelier2.contracts.run_bindings import (
+    AnyBoundRun,
+    RunBindingConflict,
+    RunV2,
+    RunV3,
+)
 from atelier2.contracts.run_projections import (
     RunPage,
 )
@@ -145,6 +151,23 @@ nodes:
   - {id: build, type: agent, role: builder, job: build, next: review}
 """
 
+_V3_DOCUMENT = b"""format_version: 3
+name: One agent
+nodes:
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build the one thing.
+""" + declared_output()
+"""The thinnest executable format-3 line: one agent whose one output is any JSON.
+
+Every scenario below that needs a run to exist wants the smallest run there is.
+What each of them is about -- a refusal, a cleaned attempt, a channel that must
+stay free of provider material -- is not the document, so the document says as
+little as an executable one can.
+"""
+
 
 def _effect_factory(root: Path) -> LoopbackEffectAdapterFactory:
     return LoopbackEffectAdapterFactory(
@@ -168,6 +191,14 @@ def _runtime(
         ExactOutputAgentExecutorFactory(),
         factories,
     )
+
+
+def _publish_output_schema(runtime: DbosRuntime) -> None:
+    """Publish the schema `_V3_DOCUMENT` pins, without which it cannot execute."""
+    published = DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
 
 
 def _api_client(runtime: DbosRuntime) -> TestClient:
@@ -706,26 +737,12 @@ def test_nonterminal_v3_restart_with_an_empty_registry_refuses_before_cgroup_or_
         tmp_path,
         (RecordingAgentExecutorFactoryV2("anthropic", "claude-cli/v1", "seed", b""),),
     )
-    document = b"""format_version: 3
-name: One agent
-nodes:
-  - id: build
-    type: agent
-    role: builder
-    mode: headless
-    instruction: Build the one thing.
-""" + declared_output()
     run_id = RunId("empty-registry/v3-restart")
     try:
         seeded.initialize_storage()
-        published_schema = DbosCatalogStore(seeded.engine).publish_revision(
-            ANY_JSON_SCHEMA
-        )
-        assert isinstance(
-            published_schema, (PublishedRevisionCreated, PublishedRevisionExisting)
-        )
+        _publish_output_schema(seeded)
         workflow, bindings = _publish_single_capability(
-            seeded, AgentExecutionCapability.HEADLESS, document=document
+            seeded, AgentExecutionCapability.HEADLESS, document=_V3_DOCUMENT
         )
         started = DbosDurableRunStarter(
             seeded.engine,
@@ -815,43 +832,26 @@ def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
     assert headless_only.opens == 0
 
 
-def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> RunV2:
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        result = durable_queries(runtime.engine).get_run(run_id)
-        if (
-            isinstance(result, RunFound)
-            and result.projection.run.state is RunState.COMPLETED
-        ):
-            assert isinstance(result.projection.run, RunV2)
-            return result.projection.run
-        time.sleep(0.025)
-    raise AssertionError("V2 run did not complete")
-
-
-def _wait_failed(runtime: DbosRuntime, run_id: RunId) -> RunV2:
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        result = durable_queries(runtime.engine).get_run(run_id)
-        if (
-            isinstance(result, RunFound)
-            and result.projection.run.state is RunState.FAILED
-        ):
-            assert isinstance(result.projection.run, RunV2)
-            return result.projection.run
-        time.sleep(0.025)
-    raise AssertionError("V2 run did not fail")
-
-
-def _wait_for_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> RunV2:
+def _wait_for_state(
+    runtime: DbosRuntime, run_id: RunId, state: RunState
+) -> AnyBoundRun:
+    """Read the run back through the durable query until it stands where told."""
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         result = durable_queries(runtime.engine).get_run(run_id)
         if isinstance(result, RunFound) and result.projection.run.state is state:
-            assert isinstance(result.projection.run, RunV2)
+            assert isinstance(result.projection.run, (RunV2, RunV3))
             return result.projection.run
         time.sleep(0.025)
-    raise AssertionError(f"V2 run did not reach {state.value}")
+    raise AssertionError(f"run did not reach {state.value}")
+
+
+def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> AnyBoundRun:
+    return _wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+
+def _wait_failed(runtime: DbosRuntime, run_id: RunId) -> AnyBoundRun:
+    return _wait_for_state(runtime, run_id, RunState.FAILED)
 
 
 def test_registry_startability_is_one_declared_factory_and_capability_decision() -> (
@@ -992,7 +992,7 @@ nodes:
 
 
 @pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
-def test_bound_unstarted_v2_run_fails_without_an_attempt_when_executor_is_unavailable(
+def test_bound_unstarted_run_fails_without_an_attempt_when_executor_is_unavailable(
     tmp_path: Path,
 ) -> None:
     seeded_factory = RecordingAgentExecutorFactoryV2(
@@ -1002,8 +1002,9 @@ def test_bound_unstarted_v2_run_fails_without_an_attempt_when_executor_is_unavai
     run_id = RunId("unavailable-executor/bound-run")
     try:
         seeded.initialize_storage()
+        _publish_output_schema(seeded)
         workflow, bindings = _publish_single_capability(
-            seeded, AgentExecutionCapability.HEADLESS
+            seeded, AgentExecutionCapability.HEADLESS, document=_V3_DOCUMENT
         )
         started = DbosDurableRunStarter(
             seeded.engine,
@@ -1278,7 +1279,7 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
 
 
 @pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
-def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_unavailable(
+def test_prepared_attempt_is_cleaned_through_durable_node_when_executor_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seeded_factory = RecordingAgentExecutorFactoryV2(
@@ -1288,8 +1289,9 @@ def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_un
     run_id = RunId("unavailable-executor/prepared-durable-node")
     try:
         seeded.initialize_storage()
+        _publish_output_schema(seeded)
         workflow, bindings = _publish_single_capability(
-            seeded, AgentExecutionCapability.HEADLESS
+            seeded, AgentExecutionCapability.HEADLESS, document=_V3_DOCUMENT
         )
         started = DbosDurableRunStarter(
             seeded.engine,
@@ -1299,18 +1301,15 @@ def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_un
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
         assert isinstance(started, DurableRunCreated)
-        auth = AuthProfileRevision(
-            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
-        )
-        configuration = AgentConfigurationRevision(
-            "opus",
-            auth.revision_hash,
-            AgentExecutorRevision("claude-cli/v1"),
-            AgentExecutionCapability.HEADLESS,
-            AgentConfigurationRevisionFormatVersion.V2,
-        )
+        # The attempt the restarted node has to find again is the one that node
+        # composes, so it is prepared from the run's own durable binding rather
+        # than from a request built beside it.
         request = _replayed_request(
-            _encoded_binding(configuration, auth, include_contract=True),
+            dict(
+                _node_binding(
+                    seeded.datasource, run_id, workflow.revision_hash, "build", None
+                )
+            ),
             run_id,
             workflow.revision_hash,
             "build",
@@ -1378,15 +1377,11 @@ def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_un
         listed = client.get(API_PREFIX + "/runs/" + public_ref)
         assert listed.status_code == 200
         listed_body = listed.json()
-        failed_rail = [
-            ("build", "failed", None),
-            ("done", "queued", None),
-        ]
+        failed_rail = [("build", "failed", None)]
         assert [
             (entry["node_id"], entry["state"], entry["attempt"])
             for entry in listed_body["node_rail"]
         ] == failed_rail
-        assert listed_body["agent_attempts"] == []
         detail = client.get(API_PREFIX + "/runs/" + public_ref + "/nodes/build")
         assert detail.status_code == 200
         assert detail.json()["state"] == "failed"
@@ -1616,41 +1611,16 @@ def test_private_factory_canary_never_enters_any_public_or_durable_channel(
 ) -> None:
     canary = "private-provider-material-7f7b0d8b"
     factory = RecordingAgentExecutorFactoryV2(
-        "anthropic", "claude-cli/v1", "public-operation", b"built"
+        "anthropic", "claude-cli/v1", "public-operation", b'"built"'
     )
     factory.__dict__["private_material"] = canary
     runtime = _runtime(tmp_path, (factory,))
     runtime.initialize_storage()
-    catalog = DbosAgentConfigurationCatalog(
-        runtime.engine, runtime.agent_executor_registry
+    _publish_output_schema(runtime)
+    workflow, bindings = _publish_single_capability(
+        runtime, AgentExecutionCapability.HEADLESS, document=_V3_DOCUMENT
     )
-    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
-    assert isinstance(
-        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
-    )
-    configuration = AgentConfigurationRevision(
-        "opus",
-        auth.revision_hash,
-        AgentExecutorRevision("claude-cli/v1"),
-        AgentExecutionCapability.HEADLESS,
-        AgentConfigurationRevisionFormatVersion.V2,
-    )
-    assert isinstance(
-        catalog.publish_agent_configuration_revision(configuration),
-        AgentConfigurationRevisionCreated,
-    )
-    document = b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
-    workflow = WorkflowRevision(document)
-    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     run_id = RunId("secret-free/channels")
-    bindings = AgentBindingSet(
-        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
-    )
     started = DbosDurableRunStarter(
         runtime.engine,
         runtime.settings,
@@ -1693,7 +1663,7 @@ nodes:
                 for table_name in table_names
             }
         assert len(durable_channels["agent_receipts_v2"]) == 1
-        assert len(durable_channels["run_events"]) == 2
+        assert len(durable_channels["run_events"]) == 1
         assert durable_channels["workflow_status"]
         assert durable_channels["operation_outputs"]
         assert all(canary not in repr(rows) for rows in durable_channels.values())
@@ -1706,19 +1676,35 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
     tmp_path: Path,
 ) -> None:
     factory = RecordingAgentExecutorFactoryV2(
-        "anthropic", "claude-cli/v1", "claude-api-test", b"build"
+        "anthropic", "claude-cli/v1", "claude-api-test", b'"build"'
     )
     runtime = _runtime(tmp_path, (factory,))
     runtime.initialize_storage()
     client = _api_client(runtime)
+    auth_profile = AuthProfileRevision(
+        "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+    )
+    catalogued = AgentConfigurationRevision(
+        "opus",
+        auth_profile.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
     try:
+        schema = client.post(
+            API_PREFIX + "/schema-revisions",
+            content=ANY_JSON_SCHEMA.document,
+            headers={"content-type": "application/json"},
+        )
+        assert schema.status_code == 201
         auth = client.post(
             API_PREFIX + "/auth-profile-revisions",
             json={
-                "profile_id": "max",
-                "revision_number": 1,
-                "provider_id": "anthropic",
-                "auth_mode": "subscription",
+                "profile_id": auth_profile.profile_id,
+                "revision_number": auth_profile.revision_number,
+                "provider_id": auth_profile.provider_id.value,
+                "auth_mode": auth_profile.auth_mode.value,
             },
         )
         assert auth.status_code == 201
@@ -1726,28 +1712,28 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
         configuration = client.post(
             API_PREFIX + "/agent-configuration-revisions",
             json={
-                "model": "opus",
+                "model": catalogued.model,
                 "auth_profile_revision_hash": auth_hash,
-                "executor_revision": "claude-cli/v1",
+                "executor_revision": catalogued.executor_revision.value,
             },
         )
         assert configuration.status_code == 201
         configuration_hash = configuration.json()["agent_configuration_revision_hash"]
+        # A start binds a role only to a model the host has checked, so the
+        # registry an operator would have published stands here before the start.
+        publish_checked_model_registry(
+            runtime.engine, auth_profile.provider_id, (catalogued,)
+        )
         workflow = client.post(
             API_PREFIX + "/workflow-revisions",
-            content=b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-""",
+            content=_V3_DOCUMENT,
             headers={"content-type": "application/yaml"},
         )
         assert workflow.status_code == 201
         revision_hash = workflow.json()["workflow_revision_hash"]
         request = {
             "workflow_format_version": 2,
-            "run_id": "api/v2",
+            "run_id": "api/catalog-roundtrip",
             "workflow_revision_hash": revision_hash,
             "agent_bindings": [
                 {
@@ -1764,12 +1750,12 @@ nodes:
         )
         page = client.get(API_PREFIX + "/runs")
 
-        assert created.status_code == 201
+        assert created.status_code == 201, created.text
         assert retry.status_code == 200
         assert found.status_code == 200
         assert page.status_code == 200
         assert created.json() == retry.json() == found.json() == page.json()["items"][0]
-        assert created.json()["workflow_format_version"] == 2
+        assert created.json()["workflow_format_version"] == 3
         assert created.json()["agent_bindings"] == [
             {
                 "role": "builder",
@@ -1999,46 +1985,56 @@ def test_numbered_profile_and_configuration_revisions_are_immutable_and_restart(
         restarted.close()
 
 
-def test_v2_start_refusals_precede_run_queue_event_and_rebind_mutation(
+def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
     tmp_path: Path,
 ) -> None:
     factory = RecordingAgentExecutorFactoryV2(
-        "anthropic", "claude-cli/v1", "claude-refusal", b"build"
+        "anthropic", "claude-cli/v1", "claude-refusal", b'"build"'
     )
     runtime = _runtime(tmp_path, (factory,))
     runtime.initialize_storage()
+    _publish_output_schema(runtime)
     client = _api_client(runtime)
+    auth_profile = AuthProfileRevision(
+        "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+    )
     auth = client.post(
         API_PREFIX + "/auth-profile-revisions",
         json={
-            "profile_id": "max",
-            "revision_number": 1,
-            "provider_id": "anthropic",
-            "auth_mode": "subscription",
+            "profile_id": auth_profile.profile_id,
+            "revision_number": auth_profile.revision_number,
+            "provider_id": auth_profile.provider_id.value,
+            "auth_mode": auth_profile.auth_mode.value,
         },
     ).json()
+    catalogued = tuple(
+        AgentConfigurationRevision(
+            model,
+            auth_profile.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        for model in ("opus", "sonnet")
+    )
     configuration_hashes = []
-    for model in ("opus", "sonnet"):
+    for configuration in catalogued:
         response = client.post(
             API_PREFIX + "/agent-configuration-revisions",
             json={
-                "model": model,
+                "model": configuration.model,
                 "auth_profile_revision_hash": auth["auth_profile_revision_hash"],
-                "executor_revision": "claude-cli/v1",
+                "executor_revision": configuration.executor_revision.value,
             },
         )
         assert response.status_code == 201
         configuration_hashes.append(
             response.json()["agent_configuration_revision_hash"]
         )
+    publish_checked_model_registry(runtime.engine, auth_profile.provider_id, catalogued)
     workflow = client.post(
         API_PREFIX + "/workflow-revisions",
-        content=b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-""",
+        content=_V3_DOCUMENT,
         headers={"content-type": "application/yaml"},
     ).json()
     revision_hash = workflow["workflow_revision_hash"]
@@ -2060,32 +2056,50 @@ nodes:
         )
 
     try:
-        missing = start("missing", "builder", "f" * 64)
+        unregistered = start("unregistered", "builder", "f" * 64)
         wrong_role = start("wrong-role", "reviewer", configuration_hashes[0])
         valid = start("identity", "builder", configuration_hashes[0])
         rebound = start("identity", "builder", configuration_hashes[1])
-        rebound_to_missing = start("identity", "builder", "f" * 64)
-        version_mismatch = client.post(
+        rebound_to_unregistered = start("identity", "builder", "f" * 64)
+        unbound = client.post(
             API_PREFIX + "/runs",
             json={
-                "run_id": "v1-request-v2-graph",
+                "run_id": "no-binding-for-a-declared-role",
                 "workflow_revision_hash": revision_hash,
             },
         )
 
-        assert missing.status_code == 404
-        assert missing.json()["type"].endswith(
-            ":agent-configuration-revision-not-found"
-        )
+        assert unregistered.status_code == 422
+        assert unregistered.json()["type"].endswith(":uncast-agent-roles")
+        # One problem type now answers what three did, so the failing thing is
+        # named in the body rather than in the URN. Asserting the reason is what
+        # keeps "this override is not registered" distinguishable from "this role
+        # has no default at all" -- the distinction the old 404 carried.
+        assert unregistered.json()["uncast_roles"] == [
+            {"role": "builder", "reason": "override-not-registered"}
+        ]
         assert wrong_role.status_code == 422
         assert wrong_role.json()["type"].endswith(":invalid-agent-bindings")
         assert valid.status_code == 201
         assert rebound.status_code == 409
         assert rebound.json()["type"].endswith(":run-identity-conflict")
-        assert rebound_to_missing.status_code == 409
-        assert rebound_to_missing.json()["type"].endswith(":run-identity-conflict")
-        assert version_mismatch.status_code == 422
-        assert version_mismatch.json()["type"].endswith(":invalid-agent-bindings")
+        # This one answered 409 run-identity-conflict before the API narrowed to
+        # format 3: the identity check ran first, so a retry that changed its
+        # configuration still learned the run id was taken. The model cast now
+        # runs first and answers about the configuration instead. A retry sending
+        # the same body it sent before still gets the conflict -- `rebound` above
+        # proves that -- and the durable count below proves no second run is
+        # written either way, which is the protection that matters.
+        assert rebound_to_unregistered.status_code == 422
+        assert rebound_to_unregistered.json()["type"].endswith(":uncast-agent-roles")
+        assert rebound_to_unregistered.json()["uncast_roles"] == [
+            {"role": "builder", "reason": "override-not-registered"}
+        ]
+        assert unbound.status_code == 422
+        assert unbound.json()["type"].endswith(":uncast-agent-roles")
+        assert unbound.json()["uncast_roles"] == [
+            {"role": "builder", "reason": "no-project-default"}
+        ]
         with runtime.engine.connect() as connection:
             assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 1
             assert (
@@ -2112,37 +2126,36 @@ nodes:
         empty_root,
         (
             RecordingAgentExecutorFactoryV2(
-                "anthropic", "claude-cli/v1", "seed-only", b"build"
+                "anthropic", "claude-cli/v1", "seed-only", b'"build"'
             ),
         ),
     )
     seeded.initialize_storage()
+    _publish_output_schema(seeded)
     seeded_client = _api_client(seeded)
     seeded_auth = seeded_client.post(
         API_PREFIX + "/auth-profile-revisions",
         json={
-            "profile_id": "max",
-            "revision_number": 1,
-            "provider_id": "anthropic",
-            "auth_mode": "subscription",
+            "profile_id": auth_profile.profile_id,
+            "revision_number": auth_profile.revision_number,
+            "provider_id": auth_profile.provider_id.value,
+            "auth_mode": auth_profile.auth_mode.value,
         },
     ).json()
     seeded_configuration = seeded_client.post(
         API_PREFIX + "/agent-configuration-revisions",
         json={
-            "model": "opus",
+            "model": catalogued[0].model,
             "auth_profile_revision_hash": seeded_auth["auth_profile_revision_hash"],
-            "executor_revision": "claude-cli/v1",
+            "executor_revision": catalogued[0].executor_revision.value,
         },
     ).json()["agent_configuration_revision_hash"]
+    publish_checked_model_registry(
+        seeded.engine, auth_profile.provider_id, (catalogued[0],)
+    )
     seeded_revision = seeded_client.post(
         API_PREFIX + "/workflow-revisions",
-        content=b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-""",
+        content=_V3_DOCUMENT,
         headers={"content-type": "application/yaml"},
     ).json()["workflow_revision_hash"]
     seeded.close()

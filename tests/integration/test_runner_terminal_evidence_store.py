@@ -26,10 +26,7 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
-from atelier2.api.wire.events import (
-    AgentFailedEventResourceV2,
-    AgentFailedEventResourceV3,
-)
+from atelier2.api.wire.events import AgentFailedEventResourceV3
 from atelier2.application.converge_runner_terminal_evidence import (
     converge_runner_terminal_evidence,
 )
@@ -524,49 +521,6 @@ def test_typed_runner_failures_reach_one_named_product_seam(
                 {"execution": execution.request.node_execution_id.value},
             )
             assert stored_reason is None or stored_reason == reason
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize(
-    ("evidence", "failure_code"),
-    (
-        (
-            RunnerOutputLimitExceeded(frozenset({RunnerOutputStream.STANDARD_OUTPUT})),
-            AgentAttemptFailureCode.PROCESS_OUTPUT_LIMIT_EXCEEDED,
-        ),
-        (
-            RunnerProcessBoundaryFailure(),
-            AgentAttemptFailureCode.PROCESS_SUPERVISION_FAILED,
-        ),
-    ),
-)
-def test_real_v2_runner_failures_project_the_exact_new_event_code(
-    tmp_path: Path,
-    evidence: RunnerTerminalEvidence,
-    failure_code: AgentAttemptFailureCode,
-) -> None:
-    runtime, store, execution, binding, invocation = _armed(
-        tmp_path, f"runner/evidence/v2-wire-{failure_code.value.lower()}"
-    )
-    try:
-        store.commit_runner_terminal_evidence(
-            execution, RunnerTerminalEvidenceEnvelope(binding, invocation, evidence)
-        )
-        queries = durable_queries(runtime.engine)
-        page = queries.read_run_event_page(execution.request.run_id, 0, 5)
-        found = queries.get_run(execution.request.run_id)
-        assert isinstance(page, RunEventPage)
-        assert isinstance(found, RunFound)
-        assert len(page.events) == 1
-
-        resource = run_event_resource(
-            page.events[0],
-            node_rail_resources(project_node_rail(found.projection, page.events)),
-        )
-
-        assert isinstance(resource, AgentFailedEventResourceV2)
-        assert resource.failure_code == failure_code.value
     finally:
         runtime.close()
 

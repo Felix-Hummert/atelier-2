@@ -44,7 +44,10 @@ class StopPolling(Exception):
     """End the never-finishing attention loop after the empty poll."""
 
 
-def _completed(run_id: RunId) -> PersistedRunEvent:
+ATTEMPT_BINDING = RunEventAgentAttemptBinding(AgentAttemptId("a" * 64), 1)
+
+
+def _completed(run_id: RunId, output: bytes = b"done") -> PersistedRunEvent:
     projection = stream_run_projection(run_id.value)
     run = projection.run
     return PersistedRunEvent(
@@ -55,9 +58,11 @@ def _completed(run_id: RunId) -> PersistedRunEvent:
             "agent",
             NodeExecutionId.for_node(run.run_id, run.revision_hash, "agent"),
             RunEventKind.AGENT_COMPLETED,
-            b"done",
+            output,
+            attempt_binding=ATTEMPT_BINDING,
         ),
         None,
+        WorkflowFormatVersion.V3,
     )
 
 
@@ -73,7 +78,7 @@ def _failed_with_overlong_receipt_reason(run_id: RunId) -> PersistedRunEvent:
             NodeExecutionId.for_node(run.run_id, run.revision_hash, "agent"),
             RunEventKind.AGENT_FAILED,
             b"OUTPUT_SCHEMA_REFUSED",
-            attempt_binding=RunEventAgentAttemptBinding(AgentAttemptId("a" * 64), 1),
+            attempt_binding=ATTEMPT_BINDING,
         ),
         None,
         WorkflowFormatVersion.V3,
@@ -186,19 +191,7 @@ def test_the_workbench_stream_names_an_omitted_overlong_receipt_reason() -> None
 
 
 def test_attention_feed_names_an_unrepresentable_event_field() -> None:
-    event = _completed(EARLIER_SORTING_RUN)
-    oversized = PersistedRunEvent(
-        RunEvent(
-            event.event.run_id,
-            event.event.revision_hash,
-            event.event.event_sequence,
-            event.event.node_id,
-            event.event.node_execution_id,
-            event.event.event_kind,
-            b"oversized",
-        ),
-        None,
-    )
+    oversized = _completed(EARLIER_SORTING_RUN, b"oversized")
     pages = ScriptedAttentionPages(
         [AttentionEventsRead((AttentionEvent(oversized, INSTANT),))]
     )
@@ -384,21 +377,21 @@ def test_attention_feed_ends_loudly_on_an_untyped_run_projection_failure() -> No
 
 
 def test_attention_feed_ends_loudly_on_an_untyped_event_resource_failure() -> None:
+    """A V3 failure without its attempt binding is durable state nothing can type."""
+
+    revision_hash = stream_run_projection(HEALTHY_RUN.value).run.revision_hash
     failed = PersistedRunEvent(
         RunEvent(
             HEALTHY_RUN,
-            stream_run_projection(HEALTHY_RUN.value).run.revision_hash,
+            revision_hash,
             1,
             "agent",
-            NodeExecutionId.for_node(
-                HEALTHY_RUN,
-                stream_run_projection(HEALTHY_RUN.value).run.revision_hash,
-                "agent",
-            ),
+            NodeExecutionId.for_node(HEALTHY_RUN, revision_hash, "agent"),
             RunEventKind.AGENT_FAILED,
             b"OUTPUT_SCHEMA_REFUSED",
         ),
         None,
+        WorkflowFormatVersion.V3,
     )
     pages = ScriptedAttentionPages(
         [AttentionEventsRead((AttentionEvent(failed, INSTANT),))]

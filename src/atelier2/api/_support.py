@@ -27,7 +27,7 @@ from atelier2.api.references import (
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
 from atelier2.api.wire.requests import RevisionListingView
-from atelier2.api.wire.resources import AnyRunResource, InvalidFieldResource
+from atelier2.api.wire.resources import InvalidFieldResource, RunResourceV3
 from atelier2.application.read_runs import (
     GetRunResult,
     RunNotFound,
@@ -57,7 +57,7 @@ async def load_run_resource(
     read_run: Callable[[RunId], GetRunResult],
     runner: BoundedQueryRunner,
     limits: ApiLimits,
-) -> AnyRunResource:
+) -> RunResourceV3:
     """Render the run a command just changed, through the one read use-case."""
     return run_resource(await load_run_projection(run_id, read_run, runner, limits))
 

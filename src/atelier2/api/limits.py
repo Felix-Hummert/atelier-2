@@ -25,7 +25,6 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunId
-from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
 def durable_projection_limit(limits: ApiLimits) -> WorkflowPublicationLimits:
@@ -195,15 +194,12 @@ class ApiLimits:
                     projection.node_receipt_reason, "node_receipt_reason"
                 )
         if event.event_kind is not RunEventKind.WAITING_INPUT:
-            # All three public WAITING_INPUT resources omit the private durable
+            # The public WAITING_INPUT resource omits the private durable
             # question payload. The adapter has already read its full bytes and
             # verified both payload_hash and event_hash; this boundary only
             # limits fields the response actually projects.
             self.require_encoded_payload(event.payload, "event_payload")
-        if (
-            event.event_kind is RunEventKind.AGENT_COMPLETED
-            and projection.workflow_format_version is WorkflowFormatVersion.V1
-        ) or event.event_kind is RunEventKind.WAIT_ANSWERED:
+        if event.event_kind is RunEventKind.WAIT_ANSWERED:
             self.require_field(event.payload.decode("utf-8"), "event_payload")
         receipt = projection.receipt
         if receipt is None:

@@ -1331,7 +1331,7 @@ def test_refuse_unavailable_executor_holds_for_a_lease_carried_key(
     blind -- it fires once `executor is None`, before any carrier is ever
     consulted -- so this reaches it the same way
     `tests/integration/test_agent_configuration_v2.py::
-    test_bound_unstarted_v2_run_fails_without_an_attempt_when_executor_is_unavailable`
+    test_bound_unstarted_run_fails_without_an_attempt_when_executor_is_unavailable`
     already proves for a `LOCAL_PROCESS` key, unaffected by C-3.6: bind a run
     to a `RUNNER_LEASE` key while it is startable, then restart the process
     with that same key registered unavailable, and confirm the durable node

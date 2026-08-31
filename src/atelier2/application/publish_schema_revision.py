@@ -9,8 +9,8 @@ does not invent a second publication.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import assert_never
 
+from atelier2.application.publish_document_revision import publish_document_revision
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
@@ -18,12 +18,7 @@ from atelier2.contracts.revisions_v3 import (
     RevisionKind,
 )
 from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
-from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
-from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.published_revisions import (
-    PublishedRevisionCollision,
-    PublishedRevisionCreated,
-    PublishedRevisionExisting,
     PublishedRevisionFound,
     PublishedRevisionRegistry,
     PublishedRevisionResolver,
@@ -66,21 +61,13 @@ def publish_schema_revision(
     verdict = read_schema_document(document)
     if isinstance(verdict, SchemaRefused):
         return SchemaPublicationInvalid(verdict)
-    revision = PublishedRevision(RevisionKind.SCHEMA, document)
-    result = registry.publish_revision(revision)
-    match result:
-        case PublishedRevisionCreated(stored):
-            return SchemaPublicationCreated(stored)
-        case PublishedRevisionExisting(stored):
-            return SchemaPublicationExisting(stored)
-        case PublishedRevisionCollision():
-            return SchemaPublicationCollision()
-        case DurableWriteUnavailable():
-            return WriteUnavailable()
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
+    return publish_document_revision(
+        PublishedRevision(RevisionKind.SCHEMA, document),
+        registry,
+        created=SchemaPublicationCreated,
+        existing=SchemaPublicationExisting,
+        collision=SchemaPublicationCollision,
+    )
 
 
 @dataclass(frozen=True)

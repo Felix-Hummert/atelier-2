@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { IMPORT_SHEET_KINDS } from "../../src/lib/catalogImport";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 
 /**
@@ -184,19 +185,51 @@ test("an unadmitted sibling of an admitted name shows as a newer revision, not a
   await expect(entry(page, workflowName).getByText(catalogPageCopy.newerRevision)).toBeVisible();
 });
 
-test("the catalog names an unrecognized file without adding it", async ({ page }) => {
+async function openUncertainSheet(page: Page, fileName: string, document: string): Promise<void> {
+  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
+    name: fileName,
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from(document)
+  });
+  const sheet = page.getByRole("dialog", { name: catalogPageCopy.import });
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText(fileName)).toBeVisible();
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.cancel })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.close })).toHaveCount(0);
+  const add = sheet.getByRole("button", { name: catalogPageCopy.addToCatalog });
+  await expect(add).toBeDisabled();
+  await expect(add).toHaveAttribute("title", catalogPageCopy.noKindDeclared);
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true })).toBeVisible();
+  await expect(sheet.getByRole("group", { name: catalogPageCopy.kind }).getByRole("button")).toHaveCount(
+    IMPORT_SHEET_KINDS.length
+  );
+}
+
+test("an uncertain file asks for a kind instead of closing", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/atelier/catalog");
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
-
-  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
-    name: "nameless.agent.md",
-    mimeType: "application/octet-stream",
-    buffer: Buffer.from("---\nname: nameless\ndescription: Has a key nobody knows.\ncolor: cyan\n---\n\nBody.\n")
-  });
-
-  await expect(page.getByText(catalogPageCopy.unrecognized)).toBeVisible();
-  await expect(page.getByRole("button", { name: catalogPageCopy.close })).toBeVisible();
+  await openUncertainSheet(page, "notes.md", "a note\n");
   await expect(page.getByText("Choose a file", { exact: true })).toHaveCount(0);
+  const sheet = page.getByRole("dialog", { name: catalogPageCopy.import });
+  await sheet.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }).click();
+  await sheet.getByRole("button", { name: catalogPageCopy.addToCatalog }).click();
+  await expect(sheet.getByText(catalogPageCopy.notAWorkflow)).toBeVisible();
+});
+
+test("a mistaken kind stays on the sheet and leaves the catalog empty", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/atelier/catalog");
+  await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
+  await openUncertainSheet(page, "notes.md", "a note\n");
+  const sheet = page.getByRole("dialog", { name: catalogPageCopy.import });
+  await sheet.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true }).click();
+  await sheet.getByRole("button", { name: catalogPageCopy.addToCatalog }).click();
+  await expect(sheet.getByText(catalogPageCopy.notAWorkflow)).toBeVisible();
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.addToCatalog })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: catalogPageCopy.cancel })).toBeVisible();
+  await expect(entry(page, "notes.md")).toHaveCount(0);
 });
 
 test("the catalog room is composed, not squeezed, at 390 pixels", async ({ page }) => {

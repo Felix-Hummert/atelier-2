@@ -7,20 +7,32 @@ as utf-8 `output` without format or rail, and sent a V3 failure down the V1
 
 from __future__ import annotations
 
-import importlib.util
 from dataclasses import replace
-from pathlib import Path
+from typing import get_args
 
 import pytest
 
-from atelier2.api.projection import events as events_module
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.references import encode_canonical_base64
 from atelier2.api.wire.events import (
     ActionCompletedEventResourceV3,
-    AgentCompletedEventResource,
+    AgentCompletedEventResourceV3,
+    RunEventResourceV3,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.effects import (
+    AdapterOperationalIdentity,
+    AdapterRevision,
+    CanonicalRequest,
+    ConfirmationSource,
+    EffectBinding,
+    EffectDestination,
+    EffectId,
+    EffectIntent,
+    EffectReceipt,
+    EffectResult,
+    LogicalEffectKey,
+)
 from atelier2.contracts.executions import (
     AgentExecutionRefusal,
     NodeExecutionId,
@@ -33,9 +45,7 @@ from atelier2.contracts.run_cancellations import RunCancelCommandId
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
-from tests.api import test_agent_attempts as v2_events
 from tests.api.test_agent_attempts import SERVED_RAIL
-from tests.api.test_v1_event_vocabulary import effect_receipt, v1_projection
 
 RUN_ID = RunId("v3-event-vocabulary")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)
@@ -43,6 +53,23 @@ NODE_ID = "implement"
 ATTEMPT_ID = "a" * 64
 FAILURE_PAYLOAD = b"PROCESS_EXITED_UNSUCCESSFULLY"
 COMPLETED_PAYLOAD = b"hello"
+
+
+def effect_receipt() -> EffectReceipt:
+    binding = EffectBinding(
+        logical_key=LogicalEffectKey("v3-event-vocabulary/effect"),
+        run_id=RUN_ID,
+        workflow_revision_hash=REVISION_HASH,
+        adapter_revision=AdapterRevision("adapter-1"),
+        destination=EffectDestination("destination"),
+        adapter_operational_identity=AdapterOperationalIdentity("installation-1"),
+    )
+    return EffectReceipt(
+        intent=EffectIntent(binding, CanonicalRequest(b"request")),
+        effect_id=EffectId("effect-1"),
+        result=EffectResult(b"result"),
+        confirmation_source=ConfirmationSource.ADAPTER_READBACK,
+    )
 
 
 def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
@@ -88,7 +115,7 @@ def unavailable_v3_projection() -> PersistedRunEvent:
 
 
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
-def test_format_3_agent_completed_is_a_v3_resource_not_the_frozen_v1() -> None:
+def test_format_3_agent_completed_carries_its_output_as_exact_bytes() -> None:
     projection = v3_projection(RunEventKind.AGENT_COMPLETED, COMPLETED_PAYLOAD)
 
     resource = run_event_resource(projection, SERVED_RAIL)
@@ -102,9 +129,7 @@ def test_format_3_agent_completed_is_a_v3_resource_not_the_frozen_v1() -> None:
     ]
     assert dumped["attempt_id"] == ATTEMPT_ID
     assert dumped["attempt_ordinal"] == 1
-    assert "output" not in dumped
-    assert not isinstance(resource, AgentCompletedEventResource)
-    assert type(resource).__name__ == "AgentCompletedEventResourceV3"
+    assert isinstance(resource, AgentCompletedEventResourceV3)
 
 
 @pytest.mark.parametrize(
@@ -116,7 +141,7 @@ def test_format_3_agent_completed_is_a_v3_resource_not_the_frozen_v1() -> None:
     ),
 )
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
-def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path(
+def test_format_3_agent_failed_names_its_failure_code_and_its_attempt(
     failure_code: str,
 ) -> None:
     resource = run_event_resource(
@@ -254,49 +279,6 @@ def test_format_3_action_completed_answers_with_the_v2_receipt_and_the_v3_rail()
     assert isinstance(resource, ActionCompletedEventResourceV3)
 
 
-@pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
-def test_dropping_the_v3_action_mapping_reds_the_open_pr_event(
-    tmp_path: Path,
-) -> None:
-    source = Path(events_module.__file__).read_text(encoding="utf-8")
-    needle = (
-        "    if event.event_kind is RunEventKind.ACTION_COMPLETED:\n"
-        "        if projection.receipt is None:\n"
-        "            raise ValueError("
-        '"completed V3 effect event has no receipt")\n'
-        "        return ActionCompletedEventResourceV3(\n"
-        "            event=event.event_kind.value,\n"
-        "            receipt=receipt_resource(projection.receipt),\n"
-        "            **common,\n"
-        "        )\n"
-    )
-    assert needle in source
-    restored = source.replace(needle, "", 1)
-    mutated = tmp_path / "events_no_v3_action.py"
-    mutated.write_text(restored, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location(
-        "atelier2.api.projection.events_no_v3_action", mutated
-    )
-    assert spec is not None and spec.loader is not None
-    restored_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(restored_module)
-    receipt = effect_receipt()
-    event = RunEvent(
-        RUN_ID,
-        REVISION_HASH,
-        1,
-        "publish",
-        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "publish"),
-        RunEventKind.ACTION_COMPLETED,
-        receipt.result.payload,
-        receipt_logical_key=receipt.intent.binding.logical_key,
-        receipt_result_hash=receipt.result.payload_hash,
-    )
-    projection = PersistedRunEvent(event, receipt, WorkflowFormatVersion.V3)
-    with pytest.raises(ValueError, match="a V3 run cannot carry ACTION_COMPLETED"):
-        restored_module.run_event_resource(projection, SERVED_RAIL)
-
-
 def test_format_3_wait_cancelled_names_the_command_that_ended_the_pause() -> None:
     """The whole attestation an operator's cancel of a resting pause leaves.
 
@@ -320,70 +302,46 @@ def test_format_3_wait_cancelled_names_the_command_that_ended_the_pause() -> Non
     ]
 
 
-def test_a_v1_run_cannot_carry_the_wait_cancellation_its_wire_never_learned() -> None:
-    """The V1 event schema is byte-frozen, so this kind refuses by name there."""
-    with pytest.raises(ValueError, match="a V1 run cannot carry WAIT_CANCELLED"):
-        run_event_resource(v1_projection(RunEventKind.WAIT_CANCELLED), ())
+PUBLISHED_EVENT_NAMES = frozenset(
+    get_args(member.model_fields["event"].annotation)[0]
+    for member in get_args(RunEventResourceV3)
+)
+"""The event names the served union publishes, read from the union itself.
+
+Restating them here is what let the projection and the published schema drift
+apart in the first place, so the vocabulary has one owner and this file derives
+from it.
+"""
 
 
+@pytest.mark.parametrize(
+    "kind",
+    sorted(kind for kind in RunEventKind if kind.value not in PUBLISHED_EVENT_NAMES),
+)
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
-def test_a_v3_run_cannot_answer_with_a_kind_its_nodes_never_write() -> None:
-    """A V3 line is Agent, Wait, or linear Action. Subworkflow completion is a lie."""
-    subworkflow = PersistedRunEvent(
+def test_a_kind_the_served_union_does_not_publish_refuses_by_name(
+    kind: RunEventKind,
+) -> None:
+    """An unmapped kind refuses by name instead of leaving the union silently.
+
+    The mapping and the published union are two spellings of one vocabulary. A
+    kind that reaches the projection without an arm must say which kind it was,
+    because a fall-through would answer some other shape or none at all.
+    """
+
+    unpublished = PersistedRunEvent(
         event=RunEvent(
             run_id=RUN_ID,
             revision_hash=REVISION_HASH,
             event_sequence=1,
-            node_id="done",
-            node_execution_id=NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "done"),
-            event_kind=RunEventKind.SUBWORKFLOW_COMPLETED,
+            node_id=NODE_ID,
+            node_execution_id=NodeExecutionId.for_node(RUN_ID, REVISION_HASH, NODE_ID),
+            event_kind=kind,
             payload=b"5",
         ),
         workflow_format_version=WorkflowFormatVersion.V3,
         receipt=None,
     )
 
-    with pytest.raises(ValueError, match="a V3 run cannot carry SUBWORKFLOW_COMPLETED"):
-        run_event_resource(subworkflow, SERVED_RAIL)
-
-
-def test_format_1_agent_failed_still_raises_the_v1_cannot_carry_path() -> None:
-    with pytest.raises(ValueError, match="a V1 run cannot carry AGENT_FAILED"):
-        run_event_resource(v1_projection(RunEventKind.AGENT_FAILED), ())
-
-
-def test_format_2_mapping_is_unchanged() -> None:
-    v2_events.test_v2_attempt_and_failed_event_have_exact_wire_shape()
-
-
-def test_restoring_the_v2_else_v1_dispatch_reds_the_v3_agent_cases(
-    tmp_path: Path,
-) -> None:
-    """The old `if format == 2 else V1` branch would dress 1 and raise 2."""
-
-    source = Path(events_module.__file__).read_text(encoding="utf-8")
-    restored = source.replace(
-        "    if projection.workflow_format_version is WorkflowFormatVersion.V3:\n"
-        "        return _run_event_resource_v3(projection, node_rail)\n",
-        "",
-    )
-    assert restored != source, "the V3 dispatch the mutation removes is missing"
-    mutated = tmp_path / "events_restored.py"
-    mutated.write_text(restored, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location(
-        "atelier2.api.projection.events_restored", mutated
-    )
-    assert spec is not None and spec.loader is not None
-    restored_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(restored_module)
-
-    completed = restored_module.run_event_resource(
-        v3_projection(RunEventKind.AGENT_COMPLETED, COMPLETED_PAYLOAD), SERVED_RAIL
-    )
-    assert isinstance(completed, AgentCompletedEventResource)
-    assert "workflow_format_version" not in completed.model_dump()
-
-    with pytest.raises(ValueError, match="a V1 run cannot carry AGENT_FAILED"):
-        restored_module.run_event_resource(
-            v3_projection(RunEventKind.AGENT_FAILED, FAILURE_PAYLOAD), SERVED_RAIL
-        )
+    with pytest.raises(ValueError, match=f"a V3 run cannot carry {kind.value}"):
+        run_event_resource(unpublished, SERVED_RAIL)

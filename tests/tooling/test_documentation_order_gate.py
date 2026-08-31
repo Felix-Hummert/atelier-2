@@ -25,6 +25,12 @@ DOCUMENTATION = REQUIREMENTS / "README.md"
 LEGACY_DOCUMENT = REQUIREMENTS / "0008-example.md"
 BOUND_START = "<!-- documentation-order-gate-bound:start -->"
 BOUND_END = "<!-- documentation-order-gate-bound:end -->"
+GIT_IDENTITY = (
+    "-c",
+    "user.name=test-builder",
+    "-c",
+    "user.email=test-builder@invalid",
+)
 
 
 def copied_project(tmp_path: Path) -> Path:
@@ -74,17 +80,7 @@ def commit_project(project: Path) -> str:
     subprocess.run(["git", "init", "--quiet"], cwd=project, check=True)
     subprocess.run(["git", "add", "."], cwd=project, check=True)
     subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=test-builder",
-            "-c",
-            "user.email=test-builder@invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "base requirement shelf",
-        ],
+        ["git", *GIT_IDENTITY, "commit", "--quiet", "-m", "base requirement shelf"],
         cwd=project,
         check=True,
     )
@@ -95,6 +91,31 @@ def commit_project(project: Path) -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
+
+
+def annotated_tag(project: Path, name: str) -> str:
+    subprocess.run(
+        ["git", *GIT_IDENTITY, "tag", "--annotate", name, "--message", name],
+        cwd=project,
+        check=True,
+    )
+    return name
+
+
+def project_with_repinned_legacy_bytes(tmp_path: Path) -> tuple[Path, str]:
+    project = copied_legacy_project(tmp_path)
+    registry = project / REGISTRY
+    registry_text = registry.read_text(encoding="utf-8")
+    registry.unlink()
+    base_revision = commit_project(project)
+    document = project / LEGACY_DOCUMENT
+    old_digest = digest(document.read_bytes())
+    document.write_bytes(document.read_bytes() + b"\n")
+    registry.write_text(
+        registry_text.replace(old_digest, digest(document.read_bytes())),
+        encoding="utf-8",
+    )
+    return project, base_revision
 
 
 def digest(content: bytes) -> str:
@@ -232,7 +253,7 @@ def test_the_current_requirement_contract_passes_both_wrappers(tmp_path: Path) -
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
-        "7 document(s), 74 rule(s), 4 frozen legacy, 3 approval-backed" in result.stdout
+        "7 document(s), 73 rule(s), 4 frozen legacy, 3 approval-backed" in result.stdout
     )
 
 
@@ -253,16 +274,7 @@ def test_the_documentation_wrapper_names_a_contract_refusal(tmp_path: Path) -> N
 def test_same_change_legacy_bytes_and_matching_registry_repin_are_refused(
     tmp_path: Path,
 ) -> None:
-    project = copied_legacy_project(tmp_path)
-    registry = project / REGISTRY
-    registry_text = registry.read_text(encoding="utf-8")
-    registry.unlink()
-    base_revision = commit_project(project)
-    document = project / LEGACY_DOCUMENT
-    old_digest = digest(document.read_bytes())
-    document.write_bytes(document.read_bytes() + b"\n")
-    new_digest = digest(document.read_bytes())
-    registry.write_text(registry_text.replace(old_digest, new_digest), encoding="utf-8")
+    project, base_revision = project_with_repinned_legacy_bytes(tmp_path)
 
     result = run_gate(project, base_revision=base_revision)
 
@@ -270,6 +282,31 @@ def test_same_change_legacy_bytes_and_matching_registry_repin_are_refused(
     assert "requirement 0008" in result.stderr
     assert str(LEGACY_DOCUMENT) in result.stderr
     assert "migrate" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "spell_base",
+    (
+        lambda project, base_revision: "HEAD",
+        lambda project, base_revision: base_revision[:10],
+        lambda project, base_revision: annotated_tag(project, "lane-base"),
+    ),
+    ids=("branch tip", "abbreviated sha", "annotated tag"),
+)
+def test_a_base_revision_is_judged_as_the_commit_git_resolves_it_to(
+    tmp_path: Path, spell_base: Callable[[Path, str], str]
+) -> None:
+    project, base_revision = project_with_repinned_legacy_bytes(tmp_path)
+
+    spelled = run_gate(project, base_revision=spell_base(project, base_revision))
+    exact = run_gate(project, base_revision=base_revision)
+
+    assert spelled.returncode != 0
+    assert (spelled.returncode, spelled.stdout, spelled.stderr) == (
+        exact.returncode,
+        exact.stdout,
+        exact.stderr,
+    )
 
 
 def test_a_legacy_pin_may_be_removed_only_into_a_revision(tmp_path: Path) -> None:
@@ -400,14 +437,26 @@ def test_github_actions_refuses_an_unbound_base_revision(tmp_path: Path) -> None
     result = run_gate(copied_project(tmp_path), github_actions=True)
 
     assert result.returncode != 0
-    assert "exact base revision" in result.stderr
+    assert "supplied no base revision" in result.stderr
 
 
-def test_an_unresolvable_exact_base_revision_fails_closed(tmp_path: Path) -> None:
-    result = run_gate(copied_project(tmp_path), base_revision="0" * 40)
+@pytest.mark.parametrize(
+    "base_revision",
+    ("0" * 40, "origin/main"),
+    ids=("absent commit", "unknown ref"),
+)
+def test_a_base_revision_git_cannot_resolve_fails_closed(
+    tmp_path: Path, base_revision: str
+) -> None:
+    project = copied_project(tmp_path)
+    commit_project(project)
+
+    result = run_gate(project, base_revision=base_revision)
 
     assert result.returncode != 0
-    assert "absent or unresolvable" in result.stderr
+    assert (
+        f"base revision {base_revision!r} does not resolve to a commit" in result.stderr
+    )
 
 
 @pytest.mark.parametrize(

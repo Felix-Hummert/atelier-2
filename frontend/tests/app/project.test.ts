@@ -771,7 +771,6 @@ describe("Settings owns project sources, models, and defaults", () => {
 
     expect(await screen.findByRole("button", { name: settingsPageCopy.addModel })).toBeTruthy();
     expect(screen.getByRole("button", { name: settingsPageCopy.addModel }).closest("table")).toBeNull();
-    expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
     expect(screen.queryByText("No models are registered")).toBeNull();
     expect(screen.queryByText("No source connected")).toBeNull();
     expect(screen.queryByRole("combobox", { name: settingsPageCopy.addModel })).toBeNull();
@@ -801,7 +800,6 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.getByRole("combobox", { name: difficultyLabel(1) })).toBeTruthy();
     expect(screen.queryByText("No source connected")).toBeNull();
     expect(screen.queryByText("No models are registered")).toBeNull();
-    expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
   });
 
   it("does not offer a project switch", async () => {
@@ -822,7 +820,6 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(sources?.textContent).toContain(settingsPageCopy.issues);
     expect(sources?.textContent).not.toContain("@");
     expect(sources?.textContent).not.toContain("personal-access-token");
-    expect(screen.queryByText(settingsPageCopy.sourceAuthMethod)).toBeNull();
     expect(screen.getByRole("button", { name: settingsPageCopy.disconnect })).toBeTruthy();
     expect(screen.getByRole("button", { name: settingsPageCopy.renewToken })).toBeTruthy();
   });
@@ -1410,7 +1407,6 @@ describe("Settings owns project sources, models, and defaults", () => {
       getProjectModelDefaults: vi.fn(async () => defaults([]))
     });
     expect((await screen.findByRole("button", { name: settingsPageCopy.addModel })).isConnected).toBe(true);
-    expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
     view.unmount();
 
     openSettings({ listProjects: vi.fn(async () => { throw new Error("private"); }) });

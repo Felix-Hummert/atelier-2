@@ -1,0 +1,10 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/898"
+
+[[sentence]]
+id = "a-catalog-entry-can-be-taken-off-the-shelf"
+text = "A workflow Catalog entry can be retired from Technical after confirmation: it leaves the Catalog and loses its Start door while its History and immutable revision remain readable."
+
+[[sentence]]
+id = "an-unwanted-catalog-addition-can-be-taken-back"
+text = "A person can retire a workflow added to the Catalog by mistake from Technical after confirmation."

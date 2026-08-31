@@ -51,6 +51,8 @@ from atelier2.contracts.agent_transcripts import (
     AttemptTranscript,
     ToolCalled,
     TranscriptEvent,
+    TranscriptMomentOrigin,
+    TranscriptRecordedMoment,
     UnrecognisedProviderOutput,
 )
 from atelier2.contracts.agents import (
@@ -74,6 +76,7 @@ from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, PageLimit
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runner_manifests import runner_manifest_id
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows import (
     AgentNodeV2,
     RunCompletes,
@@ -578,6 +581,7 @@ _DECODED_STEPS = (
     AssistantTurn("The file names the policy."),
 )
 _UNREADABLE_OUTPUT = (UnrecognisedProviderOutput("fatal: the model never answered"),)
+TRANSCRIPT_RECORDED_AT = RecordedAt("2026-08-29T12:00:00Z")
 
 
 @pytest.mark.parametrize(
@@ -629,6 +633,7 @@ def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            clock=lambda: TRANSCRIPT_RECORDED_AT,
         )
 
         with runtime.engine.connect() as connection:
@@ -641,7 +646,15 @@ def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
         if steps is None:
             assert kept is None
         else:
-            assert stored == AttemptTranscript.of(steps).document
+            expected = AttemptTranscript.of(steps).with_recorded_moment(
+                TRANSCRIPT_RECORDED_AT
+            )
+            assert stored == expected.document
+            assert all(
+                isinstance(event.moment, TranscriptRecordedMoment)
+                and event.moment.origin is TranscriptMomentOrigin.RECORDED
+                for event in expected.events
+            )
     finally:
         runtime.close()
 

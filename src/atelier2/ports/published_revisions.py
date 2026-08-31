@@ -18,7 +18,10 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageId,
     CatalogLineageIdMismatch,
     CatalogLineageQuery,
+    CatalogLineageRetired,
     CatalogMemberAdmitted,
+    CatalogRetirementExisting,
+    CatalogRetirementState,
 )
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
@@ -178,16 +181,6 @@ rather than making the caller ask first and then choose.
 """
 
 
-@dataclass(frozen=True)
-class CatalogLineageRetired:
-    lineage_id: CatalogLineageId
-
-
-@dataclass(frozen=True)
-class CatalogRetirementExisting:
-    lineage_id: CatalogLineageId
-
-
 type RetireCatalogLineageResult = (
     CatalogLineageRetired
     | CatalogRetirementExisting
@@ -258,6 +251,14 @@ class CatalogAdmissions(Protocol):
         actor: CatalogActor,
         activated_at: CatalogActivatedAt,
     ) -> AdmitCatalogMemberResult: ...
+
+    def retire_lineage(
+        self,
+        lineage_id: CatalogLineageId,
+        state: CatalogRetirementState,
+        actor: CatalogActor,
+        activated_at: CatalogActivatedAt,
+    ) -> RetireCatalogLineageResult: ...
 
 
 class LibraryAdditions(Protocol):

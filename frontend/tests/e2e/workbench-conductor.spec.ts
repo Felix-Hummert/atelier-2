@@ -26,19 +26,13 @@ const themes = ["light", "dark"] as const;
 type ReconciliationFixtureRun = {
   public_run_reference: string;
   workflow_revision_hash: string;
-  waiting: {
-    type: "WAITING_RECONCILIATION";
-    intent_state_version: number;
-  };
+  state: string;
 };
 
 type InputFixtureRun = {
   public_run_reference: string;
   workflow_revision_hash: string;
-  waiting: {
-    type: "WAITING_INPUT";
-    node_id: string;
-  };
+  current_node_id: string;
 };
 
 /** Retire the harness's two cold-boot reconciliation examples. This scenario
@@ -53,12 +47,15 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
   expect(items).toHaveLength(2);
 
   for (const run of items) {
-    expect(run.waiting.type).toBe("WAITING_RECONCILIATION");
+    expect(run.state).toBe("WAITING_RECONCILIATION");
     const retired = await page.request.post(`/atelier/api/v1/runs/${run.public_run_reference}/reconciliations`, {
       headers: { "content-type": "application/json" },
       data: {
         command_id: `reconcile-e2e-isolation-${run.public_run_reference}`,
-        expected_intent_state_version: run.waiting.intent_state_version,
+        // The served run resource carries no waiting block -- the question lives
+        // on the durable intent, and a freshly seeded baseline intent stands
+        // at its first version.
+        expected_intent_state_version: 1,
         actor: "Playwright fixture isolation",
         evidence: "This six-decision scenario retires the cold-boot examples.",
         determination: { type: "operator_authoritative_absence" }
@@ -71,7 +68,9 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
     const remaining = await page.request.get("/atelier/api/v1/runs?state=WAITING_RECONCILIATION&limit=50");
     expect(remaining.status()).toBe(200);
     expect(((await remaining.json()) as { items: unknown[] }).items).toHaveLength(0);
-  }).toPass({ timeout: 20_000 });
+    // 60s is a deadlock brake, not a latency contract: the resolutions advance
+    // through the queue, and a loaded box pays for the whole suite before them.
+  }).toPass({ timeout: 60_000 });
 
   // Reconciliation advances the fixtures asynchronously. Follow each captured
   // baseline run through its V1 input wait to completion, rather than merely
@@ -84,7 +83,6 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
       const run = (await current.json()) as InputFixtureRun & { state: string };
       states.push(run.state);
       if (run.state === "WAITING_INPUT") {
-        expect(run.waiting.type).toBe("WAITING_INPUT");
         const fence = await page.request.get(
           `/__e2e/current-wait-execution?public_run_reference=${encodeURIComponent(run.public_run_reference)}`
         );
@@ -95,7 +93,7 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
           headers: { "content-type": "application/json" },
           data: {
             workflow_revision_hash: run.workflow_revision_hash,
-            node_id: run.waiting.node_id,
+            node_id: run.current_node_id,
             expected_node_execution_id: expectedNodeExecutionId,
             actor: "operator",
             answer_base64: "MQ=="
@@ -105,7 +103,7 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
       }
     }
     expect(states).toEqual(["COMPLETED", "COMPLETED"]);
-  }).toPass({ timeout: 20_000 });
+  }).toPass({ timeout: 60_000 });
 }
 
 async function photograph(page: Page, name: string, scrollMobileMainToEnd = false): Promise<void> {
@@ -231,6 +229,19 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
     });
     expect(started.status()).toBe(201);
   }
+
+  // A 201 says the run exists, not that its wait is durable yet: each run
+  // still advances through the queue to its wait node. Barrier on the durable
+  // list -- the event that settles the count -- so the exact assertions below
+  // read a settled store instead of racing the queue on a loaded box (#747).
+  await expect(async () => {
+    const waiting = await page.request.get(
+      "/atelier/api/v1/runs?state=WAITING_INPUT&limit=50"
+    );
+    expect(waiting.status()).toBe(200);
+    const { items } = (await waiting.json()) as { items: unknown[] };
+    expect(items).toHaveLength(6);
+  }).toPass({ timeout: 60_000 });
 
   await page.goto("/atelier/chat");
   await expect(page.getByRole("link", { name: "Workbench 6 needs you" })).toBeVisible({ timeout: 20_000 });

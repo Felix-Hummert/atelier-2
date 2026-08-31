@@ -1,6 +1,11 @@
+import { retryLabel } from "./readStateCopy";
+import { workbenchPageCopy } from "./workbenchPageCopy";
+
 /**
- * The named user question each interactive Workbench control answers
- * (REQ-UIQ-01). This is the Workbench map only — not a workshop-wide registry.
+ * Inventory of interactive Workbench controls: each rendered control has an
+ * entry, and each entry is shaped as a question. This is the Workbench map
+ * only — not a workshop-wide registry, and not a judgement that the question
+ * is the right one.
  */
 export const workbenchQuestions = {
   emptyStart: {
@@ -13,8 +18,7 @@ export const workbenchQuestions = {
   },
   reloadWorkbenchRuns: {
     id: "reload-workbench-runs",
-    question: "Can I read the workbench runs again?",
-    readLabel: "workbench runs"
+    question: "Can I read the workbench runs again?"
   },
   retryProjection: {
     id: "retry-projection",
@@ -27,26 +31,12 @@ export const workbenchQuestions = {
   answerDecision: {
     id: "answer-decision",
     question: "Can I answer, or send again, a decision that waits on me?"
-  },
-  /**
-   * Not a Workbench control of its own: `When.svelte` reuses this hint label
-   * wherever it renders a relative time, on the run page as much as here. It
-   * stays on this map because that is the one place a relative-time label is
-   * named.
-   */
-  lastLandingTime: {
-    id: "last-landing-time",
-    question: "When exactly did this happen?",
-    hintLabel: "Exact time"
   }
 } as const;
 
 export type WorkbenchQuestion = (typeof workbenchQuestions)[keyof typeof workbenchQuestions];
 
 export const workbenchQuestionAttribute = "data-workbench-question";
-export const workbenchStageSelector = ".workbench";
-export const workbenchInteractiveSelector = 'a[href], button, [role="button"], [role="link"]';
-
 export type WorkbenchControlFacts = {
   questionId: string | null;
   href: string | null;
@@ -54,22 +44,9 @@ export type WorkbenchControlFacts = {
   tag: string;
 };
 
-export function workbenchControlFacts(element: Element): WorkbenchControlFacts {
-  return {
-    questionId: element.getAttribute(workbenchQuestionAttribute),
-    href: element.getAttribute("href"),
-    ariaLabel: element.getAttribute("aria-label"),
-    tag: element.tagName.toLowerCase()
-  };
-}
-
 export function describeWorkbenchControlFacts(facts: WorkbenchControlFacts): string {
   const name = facts.ariaLabel ?? facts.questionId ?? "";
   return `${facts.tag}${facts.href === null ? "" : `[href="${facts.href}"]`} ${name}`.trim();
-}
-
-export function describeWorkbenchControl(element: Element): string {
-  return describeWorkbenchControlFacts(workbenchControlFacts(element));
 }
 
 export function questionForWorkbenchControlFacts(
@@ -81,27 +58,13 @@ export function questionForWorkbenchControlFacts(
   if (facts.tag === "a" && facts.href !== null && facts.href.startsWith("/atelier/runs/")) {
     return workbenchQuestions.openRun;
   }
-  if (facts.tag === "button" && facts.ariaLabel === workbenchQuestions.lastLandingTime.hintLabel) {
-    return workbenchQuestions.lastLandingTime;
-  }
   if (
     facts.tag === "button" &&
-    facts.ariaLabel !== null &&
-    facts.ariaLabel.endsWith(` ${workbenchQuestions.reloadWorkbenchRuns.readLabel}`)
+    facts.ariaLabel === retryLabel(workbenchPageCopy.runsLabel)
   ) {
     return workbenchQuestions.reloadWorkbenchRuns;
   }
   return null;
-}
-
-export function questionForWorkbenchControl(element: Element): WorkbenchQuestion | null {
-  return questionForWorkbenchControlFacts(workbenchControlFacts(element));
-}
-
-export function unansweredWorkbenchControls(root: ParentNode): Element[] {
-  return [...root.querySelectorAll(workbenchInteractiveSelector)].filter(
-    (element) => questionForWorkbenchControl(element) === null
-  );
 }
 
 function questionById(id: string): WorkbenchQuestion | null {

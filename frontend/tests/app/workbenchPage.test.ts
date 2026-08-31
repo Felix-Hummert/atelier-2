@@ -5,14 +5,14 @@ import type { AnyRun, CockpitApi, RunV3, WorkflowRevisionDetail } from "../../sr
 import { railCopy } from "../../src/lib/railCopy";
 import { retryLabel } from "../../src/lib/readStateCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
+import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
 import {
   describeWorkbenchControl,
   questionForWorkbenchControl,
+  unansweredWorkbenchControls,
   workbenchInteractiveSelector,
-  workbenchQuestions,
-  workbenchStageSelector,
-  unansweredWorkbenchControls
-} from "../../src/lib/workbenchQuestions";
+  workbenchStageSelector
+} from "../support/workbenchControls";
 import { FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import { cancellableBlock } from "../support/runV3";
 import {
@@ -624,9 +624,7 @@ describe("the workbench is the room the workshop opens on", () => {
     expect((await screen.findByRole("heading", { name: "Catalog" })).isConnected).toBe(true);
   });
 
-  // The identifier stays "studio-elements-answer-named-questions"
-  // (acceptance/435): the stage it measures is the Workbench's.
-  it("proves(studio-elements-answer-named-questions): every interactive Workbench control is listed against one named user question", async () => {
+  it("proves(every-rendered-workbench-control-is-inventoried): every rendered Workbench control is inventoried with a question-shaped entry, and a control without an entry fails", async () => {
     const ids = Object.values(workbenchQuestions).map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const entry of Object.values(workbenchQuestions)) {
@@ -636,7 +634,7 @@ describe("the workbench is the room the workshop opens on", () => {
 
     openRoom([startedRun({ public_run_reference: "run1.YQ" })]);
     await screen.findByRole("link", { name: /run/ });
-    expectWorkbenchControlsAnswerNamedQuestions([
+    expectWorkbenchControlsAreInventoried([
       workbenchQuestions.openRun.id,
       workbenchQuestions.saySomething.id,
       workbenchQuestions.emptyStart.id
@@ -645,16 +643,26 @@ describe("the workbench is the room the workshop opens on", () => {
     testingLibrary.cleanup();
     openRoom([], { listRuns: vi.fn().mockRejectedValue(new Error("wire detail")) });
     await screen.findByRole("button", {
-      name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel)
+      name: retryLabel(workbenchPageCopy.runsLabel)
     });
-    expectWorkbenchControlsAnswerNamedQuestions([
+    expectWorkbenchControlsAreInventoried([
       workbenchQuestions.reloadWorkbenchRuns.id,
       workbenchQuestions.saySomething.id,
       workbenchQuestions.emptyStart.id
     ]);
+
+    const stage = document.querySelector(workbenchStageSelector);
+    if (stage === null) {
+      throw new Error("the Workbench stage is missing");
+    }
+    const stray = document.createElement("button");
+    stray.setAttribute("aria-label", "Exact time");
+    stage.append(stray);
+    const unanswered = unansweredWorkbenchControls(stage).map(describeWorkbenchControl);
+    expect(unanswered).toEqual(["button Exact time"]);
   });
 
-  function expectWorkbenchControlsAnswerNamedQuestions(expected: readonly string[]): void {
+  function expectWorkbenchControlsAreInventoried(expected: readonly string[]): void {
     const stage = document.querySelector(workbenchStageSelector);
     if (stage === null) {
       throw new Error("the Workbench stage is missing");

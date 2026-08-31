@@ -109,6 +109,7 @@ export function catalogWorkflowRows(
 ): CatalogWorkflowRow[] {
   const admittedHeads = catalogHeadsOf(revisions, catalogByName) ?? {};
   return groupSavedWorkflows(revisions, admittedHeads).flatMap((row) => {
+    if (row.name !== null && catalogByName[row.name]?.kind === "retired") return [];
     const isAdmittedName = row.name !== null && admittedHeads[row.name] !== undefined;
     const kept = isAdmittedName ? row.revisions.slice(0, 1) : row.revisions;
     return kept.map((revision, index) => ({

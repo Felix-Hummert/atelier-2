@@ -15,6 +15,7 @@ from atelier2.adapters.markdown_agent_definitions import (
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
+from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.catalog_v3 import (
     CatalogLineageDisplayName,
     CatalogLineageId,
@@ -50,13 +51,14 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.run_projections import (
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
 )
 from atelier2.contracts.runs import (
-    Run,
     RunId,
     RunState,
     WorkflowRevision,
@@ -100,8 +102,10 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCollision,
     PublishedRevisionCreated,
     PublishedRevisionExisting,
+    PublishedRevisionFound,
     PublishedRevisionMissing,
     PublishRevisionResult,
+    ResolvePublishedRevisionResult,
 )
 from atelier2.ports.run_events import (
     CursorAhead,
@@ -140,11 +144,34 @@ from tests.scenarios.api import (
     event_poll_backoff,
     unused_attention_event_page,
 )
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
-DOCUMENT = b"""format_version: 1
-start: final
+AGENT_NODE_ID = "implement"
+WAIT_NODE_ID = "wait"
+DOCUMENT = (
+    f"""format_version: 3
+name: Implement a candidate, then ask whether it stands
 nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - id: {AGENT_NODE_ID}
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+""".encode()
+    + declared_output()
+    + f"""  - id: {WAIT_NODE_ID}
+    type: wait
+    prompt: Does this candidate stand?
+    depends_on: [{AGENT_NODE_ID}]
+""".encode()
+    + declared_output(name="decision")
+)
+"""The document every route in this matrix speaks about.
+
+The matrix is about which application result becomes which status and body, not
+about any document in particular -- so this is the smallest executable line that
+still names each node a request here addresses: the agent the node-detail route
+reads, and the wait the answer route answers.
 """
 REVISION = WorkflowRevision(DOCUMENT)
 SCHEMA_DOCUMENT = b'{"type": "object"}'
@@ -155,13 +182,23 @@ TOOL_GRANT_DOCUMENT = b'{"capability": "run-project-verification"}'
 TOOL_GRANT_REVISION = PublishedRevision(RevisionKind.TOOL, TOOL_GRANT_DOCUMENT)
 GRAPH = parse_executable_workflow_document(DOCUMENT)
 REVISION_PROJECTION = WorkflowRevisionProjection(REVISION, GRAPH)
-RUN = Run(RunId("run"), REVISION.revision_hash, RunState.STARTED, "final", 0, 0)
+RUN = RunV3(
+    RunId("run"),
+    REVISION.revision_hash,
+    AgentBindingSet(()).binding_set_hash,
+    (),
+    RunState.STARTED,
+    AGENT_NODE_ID,
+    0,
+    0,
+    RunConfigurationRevisionHash("c" * 64),
+)
 RUN_PROJECTION = RunProjection(RUN, GRAPH, None)
 ANSWER = WaitAnswer(
     RUN.run_id,
     REVISION.revision_hash,
-    "wait",
-    NodeExecutionId.for_node(RUN.run_id, REVISION.revision_hash, "wait"),
+    WAIT_NODE_ID,
+    NodeExecutionId.for_node(RUN.run_id, REVISION.revision_hash, WAIT_NODE_ID),
     WaitAnswerActor.OPERATOR,
     b"3",
 )
@@ -202,22 +239,42 @@ RECONCILIATION_PROJECTION = RunProjection(
     WaitingReconciliationProjection(INTENT_SNAPSHOT, None),
 )
 RUN_BODY = {
+    "workflow_format_version": 3,
     "run_id": "run",
     "public_run_reference": "run1.cnVu",
     "workflow_revision_hash": hashlib.sha256(DOCUMENT).hexdigest(),
+    "agent_binding_set_hash": RUN.binding_set_hash.value,
+    "run_configuration_revision_hash": RUN.run_configuration_revision_hash.value,
+    "agent_bindings": [],
+    "orders": [],
+    "fork_origin": None,
+    "fork_successors": [],
     "state_version": 0,
     "state": "STARTED",
-    "current_node": {
-        "type": "subworkflow",
-        "node_id": "final",
-        "operation": "add",
-        "operands": [2, 3],
-        "next_node_id": None,
+    "current_node_id": AGENT_NODE_ID,
+    "current_node_execution_id": NodeExecutionId.for_node(
+        RUN.run_id, REVISION.revision_hash, AGENT_NODE_ID
+    ).value,
+    "node_rail": [
+        {"node_id": AGENT_NODE_ID, "state": "working", "attempt": None},
+        {"node_id": WAIT_NODE_ID, "state": "queued", "attempt": None},
+    ],
+    "cancellation": {
+        "cancellable": False,
+        "reason": "between-nodes",
+        "target_node_execution_id": None,
     },
-    "waiting": {"type": "NONE"},
     "terminal_hash": None,
     "latest_event_cursor": None,
+    "started_at": None,
+    "ended_at": None,
 }
+"""The run every route that answers with a run answers with here.
+
+`cancellation` refuses because this snapshot stands on an agent node with no
+live attempt behind it -- the matrix scripts results, not attempts, so there is
+nothing for a cancel to stop.
+"""
 
 
 @dataclass(frozen=True)
@@ -912,11 +969,22 @@ class MatrixRegistry:
         }
         return cast(PublishRevisionResult, self.case.result)
 
-    def resolve(self, kind: object, revision_hash: object) -> object:
-        del kind, revision_hash
-        if self.case.source in {"lineage-found", "lineage-member"}:
-            return PublishedRevisionMissing()
-        raise AssertionError("a publication never resolves")
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        """The one schema this matrix's document pins; nothing else is published.
+
+        Every read of the document resolves its declared outputs before it can
+        say whether the revision is executable, so the registry has to answer
+        that reference for real -- otherwise the whole matrix would read back a
+        document refused for a reference the scenario simply never published.
+        """
+        if (
+            kind is RevisionKind.SCHEMA
+            and revision_hash == ANY_JSON_SCHEMA.revision_hash
+        ):
+            return PublishedRevisionFound(ANY_JSON_SCHEMA)
+        return PublishedRevisionMissing()
 
 
 @dataclass
@@ -1189,7 +1257,7 @@ def _request(client: TestClient, case: RouteResultCase):
             "/atelier/api/v1/runs/run1.cnVu/answers",
             json={
                 "workflow_revision_hash": REVISION.revision_hash.value,
-                "node_id": "wait",
+                "node_id": WAIT_NODE_ID,
                 "expected_node_execution_id": ANSWER.node_execution_id.value,
                 "actor": "operator",
                 "answer_base64": "Mw==",
@@ -1212,7 +1280,7 @@ def _request(client: TestClient, case: RouteResultCase):
             headers={"accept": "text/event-stream"},
         )
     if case.operation == "node-detail":
-        return client.get("/atelier/api/v1/runs/run1.cnVu/nodes/final")
+        return client.get(f"/atelier/api/v1/runs/run1.cnVu/nodes/{AGENT_NODE_ID}")
     if case.operation == "attention":
         return client.get(
             "/atelier/api/v1/events",
@@ -1222,21 +1290,47 @@ def _request(client: TestClient, case: RouteResultCase):
 
 
 def _success_body(operation: str) -> object:
+    schema_revision = ANY_JSON_SCHEMA.revision_hash.value
     revision_body = {
         "workflow_revision_hash": REVISION.revision_hash.value,
         "document_base64": base64.b64encode(DOCUMENT).decode("ascii"),
         "graph": {
-            "workflow_format_version": 1,
-            "start_node_id": "final",
-            "nodes": [
+            "workflow_format_version": 3,
+            "executable": True,
+            "not_executable_reason": None,
+            "node_count": 2,
+            "agent_roles": ["builder"],
+            "orders": [],
+            "wait_answer_schemas": [
                 {
-                    "type": "subworkflow",
-                    "node_id": "final",
-                    "operation": "add",
-                    "operands": [2, 3],
-                    "next_node_id": None,
+                    "node_id": WAIT_NODE_ID,
+                    "schema": {
+                        "ref": "decision-schema",
+                        "revision": schema_revision,
+                    },
+                    "kind": "free",
+                    "values": None,
                 }
             ],
+            "node_previews": [
+                {
+                    "id": AGENT_NODE_ID,
+                    "kind": "agent",
+                    "role": "builder",
+                    "instruction_start": "Do the one thing this chain is for.",
+                    "depends_on": [],
+                },
+                {
+                    "id": WAIT_NODE_ID,
+                    "kind": "wait",
+                    "role": None,
+                    "instruction_start": None,
+                    "depends_on": [AGENT_NODE_ID],
+                },
+            ],
+            "loops": [],
+            "name": "Implement a candidate, then ask whether it stands",
+            "description": None,
         },
     }
     if operation == "publish-schema":
@@ -1360,7 +1454,7 @@ class UnreachedAnswer:
             "/atelier/api/v1/runs/run1.cnVu/answers",
             {
                 "workflow_revision_hash": REVISION.revision_hash.value,
-                "node_id": "wait",
+                "node_id": WAIT_NODE_ID,
                 "expected_node_execution_id": ANSWER.node_execution_id.value,
                 "actor": "operator",
                 "answer_base64": "not base64!!",
@@ -1377,7 +1471,7 @@ class UnreachedAnswer:
             "/atelier/api/v1/runs/run1.cnVu/answers",
             {
                 "workflow_revision_hash": REVISION.revision_hash.value,
-                "node_id": "wait",
+                "node_id": WAIT_NODE_ID,
                 "expected_node_execution_id": ANSWER.node_execution_id.value,
                 "actor": "operator",
                 "answer_base64": "Mw==",
@@ -1392,7 +1486,7 @@ class UnreachedAnswer:
             "/atelier/api/v1/runs/run1.cnVu/answers",
             {
                 "workflow_revision_hash": "not-a-hash",
-                "node_id": "wait",
+                "node_id": WAIT_NODE_ID,
                 "expected_node_execution_id": ANSWER.node_execution_id.value,
                 "actor": "operator",
                 "answer_base64": "not base64!!",
