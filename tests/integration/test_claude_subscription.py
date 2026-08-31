@@ -38,7 +38,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
     ClaudeWorkspaceToolExecutorFactory,
-    _tool_free_output_format_arguments,
+    _output_format_arguments,
     attest_no_managed_policy,
     attest_workspace_tool_invocation,
     verify_claude_capability,
@@ -380,25 +380,36 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert observed["job"] == "draw the owl"
 
 
-def test_the_tool_free_schema_flag_carries_a_constraint_without_the_meta_schema() -> (
-    None
-):
-    declared_schema = (
-        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
-        b'"type":"object","additionalProperties":false}'
-    )
+@pytest.mark.parametrize(
+    "declared_schema",
+    [
+        pytest.param(
+            b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+            b'"type":"object","additionalProperties":false}',
+            id="house-schema-carries-the-dialect-line",
+        ),
+        pytest.param(
+            b'{"type":"object","additionalProperties":false}',
+            id="a-schema-naming-no-dialect-passes-through-unchanged",
+        ),
+    ],
+)
+def test_every_claude_output_vector_carries_the_constraint_never_the_house_dialect(
+    declared_schema: bytes,
+) -> None:
+    """The tool-free, workspace-tool and atelier-doors executors all build their
+    `--json-schema` flag through this one function, so every one of them is
+    proved here at once. Claude's external validator resolves no meta-schema
+    URI offline and refuses the whole call before a model starts if the house
+    dialect line travels with the constraint (#941, live evidence
+    run-fe7eb558)."""
 
-    arguments = _tool_free_output_format_arguments(declared_schema)
+    arguments = _output_format_arguments(declared_schema)
 
     assert arguments[:3] == ("--output-format", "json", "--json-schema")
-    assert json.loads(arguments[3]) == {
-        "type": "object",
-        "additionalProperties": False,
-    }
-    assert declared_schema == (
-        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
-        b'"type":"object","additionalProperties":false}'
-    )
+    constraint = json.loads(arguments[3])
+    assert "$schema" not in constraint
+    assert constraint == {"type": "object", "additionalProperties": False}
 
 
 def test_a_declared_schema_uses_claudes_native_structured_output(
@@ -1793,12 +1804,20 @@ def argument_after(arguments: Sequence[str], flag: str) -> str:
 
 
 def workspace_tool_flags(settings: ClaudeSubscriptionSettings) -> tuple[str, ...]:
-    """Every flag the real workspace-tool invocation carries, read off that invocation."""
+    """Every flag the real workspace-tool invocation carries, read off that invocation.
+
+    Declares a schema so the set also covers `--json-schema`: the startability
+    probe (`attest_workspace_tool_invocation`) always carries one to prove the
+    schema translation at serve start (#941), and a reference built without one
+    would refuse the probe's own vector as an unknown option.
+    """
 
     command = (
         ClaudeWorkspaceToolExecutorFactory(settings)
         .open()
-        .prepare_process(subscription_request())
+        .prepare_process(
+            subscription_request(declared_output_schema=b'{"type":"object"}')
+        )
     )
     return tuple(
         argument for argument in command.arguments if argument.startswith("--")
@@ -2088,6 +2107,51 @@ def test_an_executable_that_starts_this_exact_invocation_is_attested(
     reference = claude_deployment(tmp_path, "reference", INTROSPECTING_CLAUDE)
     settings = claude_deployment(
         tmp_path, "deployment", parsing_claude(workspace_tool_flags(reference))
+    )
+
+    assert attest_workspace_tool_invocation(settings) is None
+
+
+def schema_dialect_checking_claude(known: Iterable[str]) -> str:
+    """A fake CLI shaped like the real external `--json-schema` validator: it
+    refuses a value still carrying the house dialect line exactly as measured
+    live (#941, run-fe7eb558), and otherwise reaches the ordinary jobless
+    refusal every other fake CLI in this module answers with."""
+
+    return (
+        "import sys\n"
+        f"known = {sorted(set(known))!r}\n"
+        "arguments = sys.argv[1:]\n"
+        "for argument in arguments:\n"
+        "    if argument.startswith('--') and argument not in known:\n"
+        '        sys.stderr.write("error: unknown option \'" + argument + "\'\\n")\n'
+        "        raise SystemExit(1)\n"
+        "if '--json-schema' in arguments:\n"
+        "    schema = arguments[arguments.index('--json-schema') + 1]\n"
+        "    if '$schema' in schema:\n"
+        "        sys.stderr.write(\n"
+        "            'Error: --json-schema is not a valid JSON Schema: no schema '\n"
+        "            'with key or ref \"https://json-schema.org/draft/2020-12/schema\"\\n'\n"
+        "        )\n"
+        "        raise SystemExit(1)\n"
+        "sys.stderr.write('Error: Input must be provided when using --print\\n')\n"
+        "raise SystemExit(1)\n"
+    )
+
+
+def test_the_workspace_tool_probes_declared_schema_never_carries_the_house_dialect(
+    tmp_path: Path,
+) -> None:
+    """The startability probe proves the `--json-schema` translation unbilled at
+    every serve start, not only at the first node that binds a schema (#941):
+    it always declares one, so a dialect-checking CLI shaped like the real
+    external validator must still accept the vector it is handed."""
+
+    reference = claude_deployment(tmp_path, "reference", INTROSPECTING_CLAUDE)
+    settings = claude_deployment(
+        tmp_path,
+        "deployment",
+        schema_dialect_checking_claude(workspace_tool_flags(reference)),
     )
 
     assert attest_workspace_tool_invocation(settings) is None
