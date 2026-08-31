@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from typing import Never
 
-import pytest
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.stream import (
