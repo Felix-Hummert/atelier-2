@@ -97,6 +97,9 @@ Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b
 ### REQ-UIQ-07: Eine Frage hat ein Muster, und das Muster ist eine wiederverwendete Komponente.
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 7
 
+### REQ-UIQ-13: Ein Verhalten hat flächenübergreifend genau eine Komponente; eine zweite Implementierung desselben Verhaltens ist ein Defekt.
+Quelle: OPERATOR — 31.08.2026, wörtlich „neue Sachen sollen sich immer gleich verhalten — wenn ich eine Suche mit Highlight habe, will ich an anderer Stelle das gleiche Verhalten, und ändere ich es an einer Stelle, passt es sich automatisch an den anderen an", Segnung „ja wenn es geht auf jeden Fall"; vgl. REQ-UIQ-07 (Muster pro Frage, hier flächenübergreifend)
+
 ### REQ-UIQ-08: Eine Fläche, die ihr Interaktions-Budget überschreitet, ist ein Defekt.
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 8
 
