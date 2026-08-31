@@ -186,6 +186,7 @@ _HOME_VARIABLE = "HOME"
 _CREDENTIAL_DIRECTORY_VARIABLE = "GROK_HOME"
 _SEARCH_PATH_VARIABLE = "PATH"
 _TEXT_FIELD = "text"
+_STRUCTURED_OUTPUT_FIELD = "structuredOutput"
 _SINGLE_PROMPT_FLAG = "-p"
 _MEASURED_INLINE_PROMPT_BYTES = 30_000
 _PROMPT_LIMIT_REFUSAL = (
@@ -795,20 +796,28 @@ class GrokSubscriptionExecutor:
         # a progress value after an envelope is therefore
         # GrokProviderEndedWithoutFinalMessage. `text` is the final answer and
         # `thought` is narration. `--json-schema`
-        # adds `structuredOutput` as the parsed form of `text`, not a later
+        # adds `structuredOutput` as the parsed form of `text`, not a later value.
         schema_bearing = (
             isinstance(command, GrokSubscriptionProcessCommand)
             and command.declared_output_schema_bytes is not None
         )
         final_value = values[-1]
         if schema_bearing:
+            # Measured on grok 1.0.5: a run that ends without structured
+            # output keeps the field as `"structuredOutput": null` beside
+            # `structuredOutputError` -- null is the CLI's own no-answer
+            # sentinel, never a model answer. Reading it as the JSON value
+            # `null` handed the output seam a fabricated `null` answer and
+            # dropped this envelope from the evidence (live run
+            # 91c76c25, both attempts), so absent and null decode alike:
+            # the provider ended without a final message, envelope kept.
             if (
                 not isinstance(final_value, dict)
-                or "structuredOutput" not in final_value
+                or final_value.get(_STRUCTURED_OUTPUT_FIELD) is None
             ):
                 return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
             output_bytes = json.dumps(
-                final_value["structuredOutput"],
+                final_value[_STRUCTURED_OUTPUT_FIELD],
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
