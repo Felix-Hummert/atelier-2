@@ -334,12 +334,6 @@ class AgentExecutorOperationalIdentity(AgentExecutorIdentifier):
 
 
 @dataclass(frozen=True)
-class AgentExecutorBinding:
-    adapter_revision: AgentExecutorRevision
-    operational_identity: AgentExecutorOperationalIdentity
-
-
-@dataclass(frozen=True)
 class AgentExecutionResult:
     """What one execution answered, and what it did to get there where that is known.
 
