@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { RunV3 } from "../../src/api/client";
 import { forkFactList, planRunFork } from "../../src/lib/runFork";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
-import { publicReference, revisionHash as digest } from "../support/workflowV1";
+import { publicReference, revisionHash as digest } from "../support/runV3";
 
 function origin(overrides: Partial<RunV3> = {}): RunV3 {
   return {

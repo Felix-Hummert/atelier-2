@@ -29,7 +29,7 @@ import {
   startedRun,
   waitingInputRun,
   waitingReconciliationRun
-} from "../support/workflowV1";
+} from "../support/runV3";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 /** The workflow the e2e fixture publishes, and the detail surface it opens. */
@@ -197,18 +197,13 @@ function requiredMove(state: Parameters<typeof humanMove>[0]): string {
 
 /** One run in every standing this room can hold, terminal fixtures included. */
 function workbenchRuns() {
-  const reconciliation = waitingReconciliationRun();
-  if (reconciliation.waiting.type !== "WAITING_RECONCILIATION") {
-    throw new Error("waiting reconciliation fixture must wait for reconciliation");
-  }
   return [
     startedRun({ run_id: "run-a", public_run_reference: "run1.cnVuLWE" }),
     waitingInputRun({ run_id: "wait-a", public_run_reference: "run1.d2FpdC1h", latest_event_cursor: null }),
     waitingReconciliationRun({
       run_id: "wait-b",
       public_run_reference: "run1.d2FpdC1i",
-      latest_event_cursor: null,
-      waiting: { ...reconciliation.waiting, node_id: reconciliation.current_node.node_id }
+      latest_event_cursor: null
     }),
     startedRun({ run_id: "fail-a", public_run_reference: "run1.ZmFpbC1h", state: "FAILED" }),
     completedRun({ run_id: "done-a", public_run_reference: "run1.ZG9uZS1h" })
@@ -457,7 +452,11 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): the Wor
     await page.goto("/atelier?pseudo-locale=1");
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect(page.getByRole("heading", { name: "[[[ Workbench ]]]" })).toBeVisible();
-    await expect(page.getByText(`${wrapped(requiredMove("WAITING_INPUT"))} →`).first()).toBeVisible();
+    // The waiting-for-an-answer run stands pinned in the Open-decisions
+    // region; the reconciliation this room cannot answer inline stays a row.
+    await expect(
+      page.getByRole("region", { name: wrapped(workbenchPageCopy.pinnedDecisionsLabel) })
+    ).toBeVisible();
     await expect(
       page.getByText(`${wrapped(requiredMove("WAITING_RECONCILIATION"))} →`)
     ).toBeVisible();
@@ -497,7 +496,9 @@ test("proves(every-rendered-workbench-control-is-inventoried): every rendered Wo
     reply = "populated";
     await page.goto("/atelier");
     await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
-    await expect(page.getByText(`${requiredMove("WAITING_INPUT")} →`).first()).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: workbenchPageCopy.pinnedDecisionsLabel })
+    ).toBeVisible();
     // Once the read confirms, ReadState.svelte mounts no control at all (#532).
     await expect(
       page.getByRole("button", { name: /workbench runs/ })

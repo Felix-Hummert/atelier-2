@@ -11,7 +11,7 @@ import {
   decodeAndApplyDurableEvent,
   streamProjection
 } from "../../src/lib/runProjection";
-import { waitingInput } from "../support/workflowV1";
+import { waitingInput } from "../support/runV3";
 
 describe("native durable event transport", () => {
   it("opens the exact same-origin event route and forwards known and unknown message frames", async () => {
@@ -30,10 +30,11 @@ describe("native durable event transport", () => {
     };
     const api = createCockpitApi(fetch, factory);
 
+    const completed = await chainedAgentCompleted("agent", "done", 1);
     const subscription = api.openRunEvents("run1.cnVu", handlers);
     source.dispatch("open", new Event("open"));
-    source.dispatch("message", message(agentCompleted()));
-    source.dispatch("message", message({ ...agentCompleted(), event: "NODE_PROGRESS" }));
+    source.dispatch("message", message(completed));
+    source.dispatch("message", message({ ...completed, event: "NODE_PROGRESS" }));
     source.dispatch("error", new Event("error"));
     await eventQueue;
 
@@ -176,21 +177,6 @@ async function chainedWaitAnswered(answer: string, sequence: number) {
     actor: "operator",
     answer_base64: btoa(answer),
     answer_hash: await sha256Of(answer)
-  };
-}
-
-function agentCompleted() {
-  return {
-    cursor: "event1.cnVu.1",
-    sequence: 1,
-    public_run_reference: "run1.cnVu",
-    workflow_revision_hash: "a".repeat(64),
-    node_id: "agent",
-    node_execution_id: "b".repeat(64),
-    event_hash: "c".repeat(64),
-    event: "AGENT_COMPLETED",
-    output: "done",
-    payload_hash: "d".repeat(64)
   };
 }
 

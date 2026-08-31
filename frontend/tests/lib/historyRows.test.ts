@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { RunV1, RunV3 } from "../../src/api/client";
+import type { RunV3 } from "../../src/api/client";
 import {
   HISTORY_PERIOD_DAYS,
   hasTimestamplessRows,
@@ -12,9 +12,9 @@ import {
   withinHistoryPeriod
 } from "../../src/lib/historyRows";
 import { notCancellableBlock } from "../support/runV3";
-import { completedRun, publicReference, revisionHash } from "../support/workflowV1";
+import { completedRun, publicReference, revisionHash } from "../support/runV3";
 
-function v1Failed(changes: Partial<RunV1> = {}): RunV1 {
+function failedRun(changes: Partial<RunV3> = {}): RunV3 {
   return { ...completedRun(changes), state: "FAILED" };
 }
 
@@ -176,21 +176,21 @@ describe("projecting History's finished-run rows", () => {
     expect(historyResultNodeId(failed)).toBe("review");
   });
 
-  it("reads the current node as the failed one for a V1 run, which carries no rail", () => {
-    const [row] = projectHistoryRows([v1Failed()], null);
+  it("reads the current node as the failed one when no rail entry says failed", () => {
+    const [row] = projectHistoryRows([failedRun()], null);
 
     expect(row?.result.kind).toBe("failed");
     if (row?.result.kind === "failed") {
-      expect(row.result.nodeId).toBe(v1Failed().current_node.node_id);
+      expect(row.result.nodeId).toBe(failedRun().current_node_id);
       expect(row.result.sentence).toBeNull();
     }
-    expect(historyResultNodeId(v1Failed())).toBe(v1Failed().current_node.node_id);
+    expect(historyResultNodeId(failedRun())).toBe(failedRun().current_node_id);
   });
 
-  it("gives a duration span only for a real V3 pair, never guessed for V1 or a partial V3 row", () => {
-    const [v1Row] = projectHistoryRows([completedRun()], null);
-    expect(v1Row?.span).toBeNull();
-    expect(v1Row?.activityAt).toBeNull();
+  it("gives a duration span only for a real pair of stamps, never guessed for a partial row", () => {
+    const [stamplessRow] = projectHistoryRows([completedRun()], null);
+    expect(stamplessRow?.span).toBeNull();
+    expect(stamplessRow?.activityAt).toBeNull();
 
     const [partialRow] = projectHistoryRows([v3Run({ ended_at: null })], null);
     expect(partialRow?.span).toBeNull();
@@ -247,9 +247,9 @@ describe("the silent period chip filters only what it can honestly measure", () 
   });
 
   it("never hides a run with no recorded time, regardless of how old the window is", () => {
-    const [v1Row] = projectHistoryRows([completedRun()], null);
+    const [stamplessRow] = projectHistoryRows([completedRun()], null);
 
-    expect(v1Row && withinHistoryPeriod(v1Row, now, 0)).toBe(true);
+    expect(stamplessRow && withinHistoryPeriod(stamplessRow, now, 0)).toBe(true);
   });
 
   it("defaults to a 7 day window", () => {
@@ -258,7 +258,7 @@ describe("the silent period chip filters only what it can honestly measure", () 
 });
 
 describe("the timestampless hint", () => {
-  it("fires only when a listed row actually carries no V3 timestamp", () => {
+  it("fires only when a listed row actually carries no timestamp", () => {
     const withoutStamp = projectHistoryRows([completedRun()], null);
     const withStamp = projectHistoryRows([v3Run()], null);
 

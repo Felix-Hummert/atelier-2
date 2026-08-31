@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import {
   encodePublicRunReference,
-  type AnyRun,
   type CockpitApi,
   type NodeDetail,
   type RunV3,
@@ -15,7 +14,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
-import { revisionHash, startedRun } from "../support/workflowV1";
+import { revisionHash, startedRun } from "../support/runV3";
 
 /**
  * REQ-UIQ-08: a surface that exceeds its interaction budget is a defect.
@@ -200,7 +199,7 @@ function historyApi(rows: number): Partial<CockpitApi> {
   const runs = Array.from({ length: rows }, (_, index) => historyRun(index));
   const byReference = new Map(runs.map((run) => [run.public_run_reference, run]));
   return {
-    listRuns: vi.fn(async (_after?: string, state?: AnyRun["state"]) => ({
+    listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
       items: state === "COMPLETED" ? runs : [],
       next_after: null
     })),
@@ -242,7 +241,7 @@ function workbenchApi(rows: number): Partial<CockpitApi> {
     });
   });
   return {
-    listRuns: vi.fn(async (_after?: string, state?: AnyRun["state"]) => ({
+    listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
       items: state === "STARTED" ? runs : [],
       next_after: null
     }))

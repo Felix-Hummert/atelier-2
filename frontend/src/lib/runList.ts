@@ -1,12 +1,11 @@
-import { isRunV3, type AnyRun, type WorkflowRevisionDetail } from "../api/client";
+import type { RunV3, WorkflowRevisionDetail } from "../api/client";
 import { parseUtc } from "./when";
 
 /**
  * Last known movement on a run: the end if the wire has one, otherwise the start.
- * The list has no other clock. V1/V2 rows and a V3 row with neither stamp have none.
+ * The list has no other clock. A row with neither stamp has none.
  */
-export function runActivityAt(run: AnyRun): string | null {
-  if (!isRunV3(run)) return null;
+export function runActivityAt(run: RunV3): string | null {
   return run.ended_at ?? run.started_at ?? null;
 }
 
@@ -14,7 +13,7 @@ export function runActivityAt(run: AnyRun): string | null {
  * Newest activity first. Rows without a stamp stay at the end in the order
  * the durable list already gave, because inventing a time would rank them.
  */
-export function newestActivityFirst(runs: readonly AnyRun[]): AnyRun[] {
+export function newestActivityFirst(runs: readonly RunV3[]): RunV3[] {
   return [...runs].sort((left, right) => {
     const leftAt = activityMs(left);
     const rightAt = activityMs(right);
@@ -25,7 +24,7 @@ export function newestActivityFirst(runs: readonly AnyRun[]): AnyRun[] {
   });
 }
 
-function activityMs(run: AnyRun): number | null {
+function activityMs(run: RunV3): number | null {
   const stamp = runActivityAt(run);
   if (stamp === null) return null;
   const ms = parseUtc(stamp).getTime();
@@ -40,8 +39,8 @@ function activityMs(run: AnyRun): number | null {
  * opens while the started list is still on the wire -- comes back in both. The
  * higher `state_version` is the run's truth; the room shows it once.
  */
-export function newestReadOfEachRun(runs: readonly AnyRun[]): AnyRun[] {
-  const newest = new Map<string, AnyRun>();
+export function newestReadOfEachRun(runs: readonly RunV3[]): RunV3[] {
+  const newest = new Map<string, RunV3>();
   for (const run of runs) {
     const known = newest.get(run.public_run_reference);
     if (known === undefined || known.state_version <= run.state_version) {
@@ -63,7 +62,7 @@ export function newestReadOfEachRun(runs: readonly AnyRun[]): AnyRun[] {
  * with its own real fields even when its name could not be resolved.
  */
 export function resolveWorkflowName(
-  run: AnyRun,
+  run: RunV3,
   workflowNames: ReadonlyMap<string, string | null> | null
 ): string {
   return workflowNames?.get(run.workflow_revision_hash) ?? run.run_id;
@@ -71,12 +70,10 @@ export function resolveWorkflowName(
 
 /** Published V3 titles keyed by the revision hash the run already carries. */
 export async function workflowNamesOf(
-  runs: readonly AnyRun[],
+  runs: readonly RunV3[],
   readRevision: (hash: string) => Promise<WorkflowRevisionDetail>
 ): Promise<ReadonlyMap<string, string>> {
-  const hashes = [
-    ...new Set(runs.filter(isRunV3).map((run) => run.workflow_revision_hash))
-  ];
+  const hashes = [...new Set(runs.map((run) => run.workflow_revision_hash))];
   const names = new Map<string, string>();
   const revisions = await Promise.all(
     hashes.map(async (hash) => {

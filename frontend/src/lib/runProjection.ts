@@ -4,13 +4,9 @@ import {
   isRunProjectionCorrupt,
   isStreamFailure,
   type Problem,
-  type Run,
   type RunEvent,
-  type RunV1,
-  type RunV2,
-  type StreamFrame,
-  type ExecutableWorkflowGraph,
-  type WorkflowNode
+  type RunV3,
+  type StreamFrame
 } from "../api/client";
 import { sha256Hex } from "./exactBytes";
 import { ageLabel, exactLocal } from "./when";
@@ -165,16 +161,8 @@ export interface StreamProjection {
   agent_outputs_by_cursor: ReadonlyMap<string, AgentOutputProjection>;
 }
 
-type NodeRail = RunV2["node_rail"];
-export type NodeState = NodeRail[number]["state"];
-export type AgentAttemptProjection = NonNullable<NodeRail[number]["attempt"]>;
-
-export interface NodeProjection {
-  node: WorkflowNode;
-  state: NodeState;
-  last_event: RunEvent | null;
-  attempt: AgentAttemptProjection | null;
-}
+/** The served rail vocabulary every state-reading surface shares (#89). */
+export type NodeState = RunV3["node_rail"][number]["state"];
 
 export function streamProjection(
   publicRunReference: string,
@@ -239,8 +227,7 @@ export function markFailed(
 
 export async function decodeAndApplyDurableEvent(
   projection: StreamProjection,
-  rawData: string,
-  graph?: ExecutableWorkflowGraph
+  rawData: string
 ): Promise<StreamProjection> {
   if (projection.protocol_problem !== null) return projection;
   let frame: StreamFrame;
@@ -254,11 +241,8 @@ export async function decodeAndApplyDurableEvent(
     return { ...projection, protocol_problem: { type: "decoder" } };
   }
   const decoded: RunEvent = frame;
-  if (graph !== undefined && !eventMatchesGraph(decoded, graph)) {
-    return { ...projection, protocol_problem: { type: "decoder" } };
-  }
   let output: AgentOutputProjection | null = null;
-  if (decoded.event === "AGENT_COMPLETED" && "workflow_format_version" in decoded) {
+  if (decoded.event === "AGENT_COMPLETED") {
     const bytes = decodeCanonicalBase64(decoded.output_base64);
     if (bytes === null) {
       return { ...projection, protocol_problem: { type: "decoder" } };
@@ -342,219 +326,6 @@ export function applyDurableEvent(
     last_sequence: event.sequence,
     payload_bytes_by_cursor: payloads
   };
-}
-
-export function projectNodeRail(
-  run: Run,
-  graph: ExecutableWorkflowGraph,
-  events: readonly RunEvent[]
-): readonly NodeProjection[] {
-  const nodes = orderedNodes(graph);
-  const currentIndex = nodes.findIndex((node) => node.node_id === run.current_node.node_id);
-  if (currentIndex < 0) {
-    throw new Error("the durable run current node is absent from its workflow revision");
-  }
-  const latestEvent = events.at(-1) ?? null;
-  const eventsLeadSnapshot =
-    latestEvent !== null && latestEvent.sequence > snapshotEventSequence(run);
-  if ("node_rail" in run) {
-    const served = servedRail(run, latestEvent, eventsLeadSnapshot);
-    return nodes.map((node) => {
-      const entry = servedEntry(served, node.node_id);
-      return {
-        node,
-        state: entry.state,
-        last_event: lastNodeEvent(events, node.node_id),
-        attempt: entry.attempt
-      };
-    });
-  }
-  return nodes.map((node, index) => {
-    const lastEvent = lastNodeEvent(events, node.node_id);
-    return {
-      node,
-      state: eventsLeadSnapshot
-        ? eventDrivenNodeState(node, lastEvent, latestEvent, nodes)
-        : v1SnapshotNodeState(run, node, index, currentIndex, lastEvent),
-      last_event: lastEvent,
-      attempt: null
-    };
-  });
-}
-
-/**
- * The rail the server named: the newest event's once the events lead the
- * snapshot, the run resource's while they have not. Both were derived by the
- * same function on the server, from the same two inputs this browser holds.
- */
-function servedRail(
-  run: RunV2,
-  latestEvent: RunEvent | null,
-  eventsLeadSnapshot: boolean
-): NodeRail {
-  return eventsLeadSnapshot && latestEvent !== null && "node_rail" in latestEvent
-    ? latestEvent.node_rail
-    : run.node_rail;
-}
-
-function servedEntry(rail: NodeRail, nodeId: string): NodeRail[number] {
-  const served = rail.find((entry) => entry.node_id === nodeId);
-  if (served === undefined) {
-    throw new Error("the served node rail is missing a node of the workflow revision");
-  }
-  return served;
-}
-
-function orderedNodes(graph: ExecutableWorkflowGraph): WorkflowNode[] {
-  const byId = new Map(graph.nodes.map((node) => [node.node_id, node]));
-  const ordered: WorkflowNode[] = [];
-  const visited = new Set<string>();
-  let nextId: string | null = graph.start_node_id;
-  while (nextId !== null) {
-    if (visited.has(nextId)) {
-      throw new Error("the workflow graph contains a cycle");
-    }
-    const node = byId.get(nextId);
-    if (node === undefined) {
-      throw new Error("the workflow graph references a missing node");
-    }
-    ordered.push(node);
-    visited.add(nextId);
-    nextId = node.next_node_id;
-  }
-  if (ordered.length !== graph.nodes.length) {
-    throw new Error("the workflow graph contains unreachable nodes");
-  }
-  return ordered;
-}
-
-function lastNodeEvent(events: readonly RunEvent[], nodeId: string): RunEvent | null {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.node_id === nodeId) return event;
-  }
-  return null;
-}
-
-/**
- * The last durable state this browser still derives, and only for a V1 run: the
- * V1 run resource is byte-frozen, so it cannot carry the rail a V2 run reads off
- * the wire. Every name it answers is a name the server would have answered.
- */
-function v1SnapshotNodeState(
-  run: RunV1,
-  node: WorkflowNode,
-  index: number,
-  currentIndex: number,
-  lastEvent: RunEvent | null
-): NodeState {
-  if (lastEvent !== null) {
-    const terminal = terminalNodeState(lastEvent);
-    if (terminal !== null) return terminal;
-  }
-  if (index < currentIndex) {
-    return "succeeded";
-  }
-  if (index > currentIndex) {
-    return "queued";
-  }
-  if (run.state === "COMPLETED") {
-    return "succeeded";
-  }
-  if (run.state === "WAITING_INPUT") {
-    return "needs_you";
-  }
-  if (run.state === "WAITING_RECONCILIATION") {
-    return run.waiting.type === "WAITING_RECONCILIATION" &&
-      run.waiting.pending_command !== null
-      ? "working"
-      : "needs_you";
-  }
-  return node.node_id === run.current_node.node_id ? "working" : "queued";
-}
-
-function eventDrivenNodeState(
-  node: WorkflowNode,
-  lastNodeEventValue: RunEvent | null,
-  latestEvent: RunEvent,
-  nodes: readonly WorkflowNode[]
-): NodeState {
-  if (lastNodeEventValue !== null) {
-    const terminal = terminalNodeState(lastNodeEventValue);
-    if (terminal !== null) return terminal;
-  }
-  if (latestEvent.node_id === node.node_id) {
-    if (
-      latestEvent.event === "ACTION_RECONCILIATION_REQUIRED" ||
-      latestEvent.event === "WAITING_INPUT"
-    ) {
-      return "needs_you";
-    }
-    return "working";
-  }
-  if (isTerminalNodeEvent(latestEvent)) {
-    const completedNode = nodes.find((candidate) => candidate.node_id === latestEvent.node_id);
-    if (completedNode?.next_node_id === node.node_id) {
-      return "working";
-    }
-  }
-  return "queued";
-}
-
-function snapshotEventSequence(run: Run): number {
-  if (run.latest_event_cursor === null) return 0;
-  const encoded = run.latest_event_cursor.split(".").at(-1);
-  if (encoded === undefined) {
-    throw new Error("the durable run event cursor is incomplete");
-  }
-  const sequence = Number(encoded);
-  if (!Number.isSafeInteger(sequence) || sequence <= 0) {
-    throw new Error("the durable run event cursor has an invalid sequence");
-  }
-  return sequence;
-}
-
-function isTerminalNodeEvent(event: RunEvent): boolean {
-  return (
-    event.event === "AGENT_COMPLETED" ||
-    event.event === "ACTION_COMPLETED" ||
-    event.event === "WAIT_ANSWERED" ||
-    event.event === "SUBWORKFLOW_COMPLETED"
-  );
-}
-
-function terminalNodeState(event: RunEvent): NodeState | null {
-  if (event.event === "AGENT_FAILED") return "failed";
-  if (event.event === "AGENT_CANCELLED") return "cancelled";
-  if (event.event === "AGENT_INTERRUPTED") return "interrupted";
-  return isTerminalNodeEvent(event) ? "succeeded" : null;
-}
-
-function eventMatchesGraph(event: RunEvent, graph: ExecutableWorkflowGraph): boolean {
-  const eventFormat = "workflow_format_version" in event ? 2 : 1;
-  if (eventFormat !== graph.workflow_format_version) return false;
-  const node = graph.nodes.find((candidate) => candidate.node_id === event.node_id);
-  if (node === undefined) return false;
-  if (node.type === "agent") {
-    return [
-      "AGENT_COMPLETED",
-      "AGENT_FAILED",
-      "AGENT_CANCEL_REQUESTED",
-      "AGENT_CANCELLED",
-      "AGENT_INTERRUPTED"
-    ].includes(event.event);
-  }
-  if (node.type === "action") {
-    return (
-      event.event === "ACTION_RECONCILIATION_REQUIRED" ||
-      event.event === "ACTION_RECONCILIATION_RESOLVED" ||
-      event.event === "ACTION_COMPLETED"
-    );
-  }
-  if (node.type === "wait") {
-    return event.event === "WAITING_INPUT" || event.event === "WAIT_ANSWERED";
-  }
-  return event.event === "SUBWORKFLOW_COMPLETED";
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {

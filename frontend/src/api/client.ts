@@ -7,7 +7,6 @@ import {
 import type {
   CancelMutation,
   PublishMutation,
-  ReconciliationMutation,
   StartMutation,
   WaitMutation,
 } from "../lib/mutationJournal";
@@ -766,79 +765,6 @@ export const authProfileRevisionPageSchema = z
   })
   .strict();
 
-const operatorFoundSchema = z
-  .object({
-    type: z.literal("operator_found"),
-    effect_id: z.string().min(1),
-    result_base64: standardBase64,
-  })
-  .strict();
-
-const authoritativeAbsenceSchema = z
-  .object({ type: z.literal("operator_authoritative_absence") })
-  .strict();
-
-export const reconciliationDeterminationSchema = z.discriminatedUnion("type", [
-  operatorFoundSchema,
-  authoritativeAbsenceSchema,
-]);
-
-const reconciliationCommandSchema = z
-  .object({
-    command_id: z.string().min(1),
-    actor: z.string().min(1),
-    evidence: z.string().min(1),
-    state: z.literal("PENDING"),
-    determination: reconciliationDeterminationSchema,
-  })
-  .strict();
-
-const noWaitingSchema = z.object({ type: z.literal("NONE") }).strict();
-const waitingInputSchema = z
-  .object({
-    type: z.literal("WAITING_INPUT"),
-    node_id: z.string().min(1),
-    answer_type: z.literal("integer"),
-  })
-  .strict();
-const waitingReconciliationSchema = z
-  .object({
-    type: z.literal("WAITING_RECONCILIATION"),
-    node_id: z.string().min(1),
-    logical_effect_key: z.string().min(1),
-    request_hash: sha256,
-    request_base64: standardBase64,
-    intent_state_version: nonnegativeSafeInteger,
-    pending_command: reconciliationCommandSchema.nullable(),
-  })
-  .strict();
-const waitingSchema = z.discriminatedUnion("type", [
-  noWaitingSchema,
-  waitingInputSchema,
-  waitingReconciliationSchema,
-]);
-
-const runV1Schema = z
-  .object({
-    run_id: z.string().min(1),
-    public_run_reference: publicRunReference,
-    workflow_revision_hash: sha256,
-    state_version: nonnegativeSafeInteger,
-    state: z.enum([
-      "STARTED",
-      "WAITING_RECONCILIATION",
-      "WAITING_INPUT",
-      "COMPLETED",
-      "FAILED",
-    ]),
-    current_node: nodeSchema,
-    waiting: waitingSchema,
-    terminal_hash: sha256.nullable(),
-    latest_event_cursor: eventCursor.nullable(),
-  })
-  .strict()
-  .superRefine(validateRunShape);
-
 const agentBindingV2Schema = z
   .object({
     role: z.string().min(1),
@@ -853,34 +779,6 @@ const agentBindingV2Schema = z
   })
   .strict();
 
-const attemptCancellationV2Schema = z
-  .object({
-    command_id: z.string().min(1),
-    replacement: z.enum(["NONE", "ONE"]),
-    redrive_state: z.enum(["PENDING", "OWNER_NOT_LOCAL", "CLEANUP_ATTESTED"]),
-    disposition: z
-      .enum([
-        "NEVER_LAUNCHED",
-        "EXITED_BEFORE_SIGNAL",
-        "REAPED_AFTER_TERM",
-        "REAPED_AFTER_KILL",
-        "OWNER_LOST_AFTER_PARENT_DEATH",
-      ])
-      .nullable(),
-  })
-  .strict()
-  .superRefine((cancellation, context) => {
-    if (
-      (cancellation.redrive_state === "CLEANUP_ATTESTED") !==
-      (cancellation.disposition !== null)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "cleanup attestation and disposition disagree",
-      });
-    }
-  });
-
 /** The attempt states the served document names, in the order it names them. */
 export const PUBLIC_ATTEMPT_STATES = [
   "PREPARED",
@@ -890,43 +788,6 @@ export const PUBLIC_ATTEMPT_STATES = [
   "INTERRUPTED",
   "FAILED",
 ] as const;
-
-const agentAttemptV2Schema = z
-  .object({
-    attempt_id: sha256,
-    node_execution_id: sha256,
-    request_hash: sha256,
-    attempt_ordinal: z.union([z.literal(1), z.literal(2)]),
-    state: z.enum(PUBLIC_ATTEMPT_STATES),
-    failure_code: z
-      .enum([
-        "PROCESS_EXITED_UNSUCCESSFULLY",
-        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-        "PROCESS_SUPERVISION_FAILED",
-      ])
-      .nullable(),
-    cancellation: attemptCancellationV2Schema.nullable(),
-  })
-  .strict()
-  .superRefine((attempt, context) => {
-    if ((attempt.state === "FAILED") !== (attempt.failure_code !== null)) {
-      context.addIssue({
-        code: "custom",
-        message: "agent attempt state and failure code disagree",
-      });
-    }
-    const cancellationState = [
-      "CANCEL_REQUESTED",
-      "CANCELLED",
-      "INTERRUPTED",
-    ].includes(attempt.state);
-    if (cancellationState !== (attempt.cancellation !== null)) {
-      context.addIssue({
-        code: "custom",
-        message: "agent attempt state and cancellation disagree",
-      });
-    }
-  });
 
 /** The states the served document names; tests/api/servedVocabulary holds them to it. */
 export const NODE_STATES = [
@@ -978,47 +839,15 @@ export const nodeRailEntrySchema = z
     }
   });
 
-const runV2Schema = z
-  .object({
-    workflow_format_version: z.literal(2),
-    run_id: z.string().min(1),
-    public_run_reference: publicRunReference,
-    workflow_revision_hash: sha256,
-    agent_binding_set_hash: sha256,
-    agent_bindings: z.array(agentBindingV2Schema).max(100),
-    state_version: nonnegativeSafeInteger,
-    state: z.enum([
-      "STARTED",
-      "WAITING_RECONCILIATION",
-      "WAITING_INPUT",
-      "COMPLETED",
-      "FAILED",
-    ]),
-    current_node: nodeV2Schema,
-    node_rail: z.array(nodeRailEntrySchema).min(1),
-    agent_attempts: z.array(agentAttemptV2Schema).max(2),
-    waiting: waitingSchema,
-    terminal_hash: sha256.nullable(),
-    latest_event_cursor: eventCursor.nullable(),
-  })
-  .strict()
-  .superRefine(validateRunShape);
-
 /**
- * A V3 run as the server answers it, decoded on its own rather than folded into
- * the run union above.
+ * A V3 run as the server answers it -- the only run format the wire still
+ * serves (#901 slice 4; the start door refuses every other format and the
+ * server projects format 3 alone since PR #920).
  *
- * The two shapes disagree about what a run has. A V3 run names its current node
- * by id and carries no `current_node` object and no `agent_attempts`. It carries
- * no `waiting` block either, although it does reach WAITING_INPUT: what a V3
- * Wait node asks and which schema judges the answer belong to the document, and
- * the rail is what marks the node owing a person a move. A linear Action can
- * also leave the run `WAITING_RECONCILIATION`; that state is named here, and
- * the question itself still lives on the document and the event stream, not
- * on a `waiting` block. Widening `runSchema` would push a "this format has no
- * such thing" guard onto every reader of those fields; keeping it separate
- * leaves the V2 cockpit exactly as it was and lets the V3 view render what
- * actually exists.
+ * A V3 run names its current node by id and carries no `waiting` block,
+ * although it does reach WAITING_INPUT: what a V3 Wait node asks and which
+ * schema judges the answer belong to the document, and the rail is what marks
+ * the node owing a person a move.
  */
 /** The V3 run states the served document names; tests/api/servedVocabulary holds them to it. */
 export const RUN_STATES_V3 = [
@@ -1336,98 +1165,12 @@ export const nodeDetailSchema = z
 
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 
-export const runSchema = z.union([runV2Schema, runV1Schema]);
-
-/**
- * Whether this run is a version 3 one.
- *
- * A plain `run.workflow_format_version === 3` cannot narrow the union: a version
- * 1 run carries no format field at all, so the property has to be asked for
- * before it is compared.
- */
-export function isRunV3(run: AnyRun): run is RunV3 {
-  return "workflow_format_version" in run && run.workflow_format_version === 3;
-}
-
-/** Every run the server can answer with, before a reader narrows it by format. */
-export const anyRunSchema = z.union([runV3Schema, runV2Schema, runV1Schema]);
-
-function validateRunShape(
-  run: {
-    run_id: string;
-    public_run_reference: string;
-    latest_event_cursor: string | null;
-    state:
-      | "STARTED"
-      | "WAITING_RECONCILIATION"
-      | "WAITING_INPUT"
-      | "COMPLETED"
-      | "FAILED";
-    current_node: z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>;
-    waiting: z.infer<typeof waitingSchema>;
-    terminal_hash: string | null;
-  },
-  context: z.RefinementCtx,
-): void {
-  const referencedRunId = decodePublicRunReference(run.public_run_reference);
-  if (referencedRunId !== run.run_id) {
-    context.addIssue({
-      code: "custom",
-      message: "run id and public reference disagree",
-    });
-  }
-  if (run.latest_event_cursor !== null) {
-    const parsedCursor = parseEventCursor(run.latest_event_cursor);
-    if (parsedCursor?.publicRunReference !== run.public_run_reference) {
-      context.addIssue({
-        code: "custom",
-        message: "latest cursor belongs to another run",
-      });
-    }
-  }
-  const valid =
-    (run.state === "STARTED" &&
-      run.waiting.type === "NONE" &&
-      run.terminal_hash === null) ||
-    (run.state === "WAITING_INPUT" &&
-      run.current_node.type === "wait" &&
-      run.waiting.type === "WAITING_INPUT" &&
-      run.current_node.node_id === run.waiting.node_id &&
-      run.terminal_hash === null) ||
-    (run.state === "WAITING_RECONCILIATION" &&
-      run.current_node.type === "action" &&
-      run.waiting.type === "WAITING_RECONCILIATION" &&
-      run.current_node.node_id === run.waiting.node_id &&
-      run.terminal_hash === null) ||
-    (run.state === "COMPLETED" &&
-      run.current_node.type === "subworkflow" &&
-      run.waiting.type === "NONE" &&
-      run.terminal_hash !== null) ||
-    (run.state === "FAILED" &&
-      run.current_node.type === "agent" &&
-      run.waiting.type === "NONE" &&
-      run.terminal_hash !== null);
-  if (!valid) {
-    context.addIssue({ code: "custom", message: "run state fields disagree" });
-  }
-}
-
 export const runPageSchema = z
   .object({
-    items: z.array(anyRunSchema),
+    items: z.array(runV3Schema),
     next_after: publicRunReference.nullable(),
   })
   .strict();
-/**
- * The listing decodes every run the server can answer with, including V3.
- *
- * It read only V1 and V2 while the detail page already read V3, so one V3 run in
- * the store took down every level that lists runs -- the studio and the project
- * both answered "Request failed — wire contract" for a run they only had to name
- * and link. A listing is the wrong place to be strict about a format it merely
- * shows: what a row renders is the identity and the state, which every format
- * carries.
- */
 
 export const EFFECT_CONFIRMATION_SOURCES = [
   "ADAPTER_READBACK",
@@ -1459,11 +1202,6 @@ const eventBase = {
   event_hash: sha256,
 };
 
-const v2EventBase = {
-  workflow_format_version: z.literal(2),
-  ...eventBase,
-  node_rail: z.array(nodeRailEntrySchema).min(1),
-};
 const v2AttemptEvent = {
   attempt_id: sha256,
   attempt_ordinal: z.union([z.literal(1), z.literal(2)]),
@@ -1480,167 +1218,6 @@ const v2Disposition = z.enum([
   "REAPED_AFTER_KILL",
   "OWNER_LOST_AFTER_PARENT_DEATH",
 ]);
-
-const runEventV1Schema = z
-  .discriminatedUnion("event", [
-    z
-      .object({
-        ...eventBase,
-        event: z.literal("AGENT_COMPLETED"),
-        output: z.string(),
-        payload_hash: sha256,
-      })
-      .strict(),
-    z
-      .object({
-        ...eventBase,
-        event: z.literal("ACTION_RECONCILIATION_REQUIRED"),
-        request_base64: standardBase64,
-        request_hash: sha256,
-      })
-      .strict(),
-    z
-      .object({
-        ...eventBase,
-        event: z.literal("ACTION_RECONCILIATION_RESOLVED"),
-        receipt: receiptSchema,
-      })
-      .strict(),
-    z
-      .object({
-        ...eventBase,
-        event: z.literal("ACTION_COMPLETED"),
-        receipt: receiptSchema,
-      })
-      .strict(),
-    z
-      .object({
-        ...eventBase,
-        event: z.literal("WAITING_INPUT"),
-        answer_type: z.literal("integer"),
-      })
-      .strict(),
-    z
-      .object({
-        ...eventBase,
-        event: z.literal("WAIT_ANSWERED"),
-        answer: z.string().regex(/^(?:0|-?[1-9][0-9]*)$/),
-        answer_hash: sha256,
-      })
-      .strict(),
-    z
-      .object({
-        ...eventBase,
-        event: z.literal("SUBWORKFLOW_COMPLETED"),
-        result: safeInteger,
-        result_hash: sha256,
-      })
-      .strict(),
-  ])
-  .superRefine(validateEventCursor);
-
-const runEventV2Schema = z
-  .union([
-    z
-      .object({
-        ...v2EventBase,
-        ...v2AttemptEvent,
-        event: z.literal("AGENT_COMPLETED"),
-        output_base64: standardBase64,
-        output_hash: sha256,
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        ...v2AttemptEvent,
-        event: z.literal("AGENT_FAILED"),
-        failure_code: z.enum([
-          "PROCESS_EXITED_UNSUCCESSFULLY",
-          "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-          "PROCESS_SUPERVISION_FAILED",
-        ]),
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        event: z.literal("AGENT_FAILED"),
-        reason: z.literal("agent-executor-binding-unavailable"),
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        ...v2CancellationEvent,
-        event: z.literal("AGENT_CANCEL_REQUESTED"),
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        ...v2CancellationEvent,
-        event: z.literal("AGENT_CANCELLED"),
-        disposition: v2Disposition,
-        replacement_attempt_id: sha256.nullable(),
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        ...v2CancellationEvent,
-        event: z.literal("AGENT_INTERRUPTED"),
-        disposition: v2Disposition,
-        replacement_attempt_id: sha256.nullable(),
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        event: z.literal("ACTION_RECONCILIATION_REQUIRED"),
-        request_base64: standardBase64,
-        request_hash: sha256,
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        event: z.literal("ACTION_RECONCILIATION_RESOLVED"),
-        receipt: receiptSchema,
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        event: z.literal("ACTION_COMPLETED"),
-        receipt: receiptSchema,
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        event: z.literal("WAITING_INPUT"),
-        answer_type: z.literal("integer"),
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        event: z.literal("WAIT_ANSWERED"),
-        answer: z.string().regex(/^(?:0|-?[1-9][0-9]*)$/),
-        answer_hash: sha256,
-      })
-      .strict(),
-    z
-      .object({
-        ...v2EventBase,
-        event: z.literal("SUBWORKFLOW_COMPLETED"),
-        result: safeInteger,
-        result_hash: sha256,
-      })
-      .strict(),
-  ])
-  .superRefine(validateEventCursor);
 
 /**
  * A format-3 event, in the shape the service answers with.
@@ -1665,7 +1242,7 @@ const v3EventBase = {
   node_rail: z.array(nodeRailEntrySchema).min(1),
 };
 
-const runEventV3Schema = z
+export const runEventSchema = z
   .union([
     z
       .object({
@@ -1765,12 +1342,6 @@ const runEventV3Schema = z
       .strict(),
   ])
   .superRefine(validateEventCursor);
-
-export const runEventSchema = z.union([
-  runEventV3Schema,
-  runEventV2Schema,
-  runEventV1Schema,
-]);
 
 function validateEventCursor(
   event: { cursor: string; public_run_reference: string; sequence: number },
@@ -2838,12 +2409,8 @@ export type Problem = z.infer<typeof problemSchema>;
 export type StreamFailure = z.infer<typeof streamFailureSchema>;
 export type RunProjectionCorrupt = z.infer<typeof runProjectionCorruptSchema>;
 export type StreamFrame = z.infer<typeof streamFrameSchema>;
-export type Run = z.infer<typeof runSchema>;
-export type RunV1 = z.infer<typeof runV1Schema>;
-export type RunV2 = z.infer<typeof runV2Schema>;
 export type RunV3 = z.infer<typeof runV3Schema>;
 export type RunCancellability = z.infer<typeof runCancellabilitySchema>;
-export type AnyRun = z.infer<typeof anyRunSchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
 export type WorkflowGraph = z.infer<typeof workflowGraphSchema>;
 export type WorkflowNode =
@@ -2970,7 +2537,7 @@ export interface HttpResult<T> {
 export interface CockpitApi {
   /** The cheap read #700's bounded recovery probe reuses -- no purpose-built endpoint. */
   health(signal?: AbortSignal): Promise<HealthResource>;
-  listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
+  listRuns(after?: string, state?: RunV3["state"]): Promise<RunPage>;
   listProjects(): Promise<ProjectList>;
   getProjectSourceConnection(
     publicProjectReference: string,
@@ -3056,16 +2623,15 @@ export interface CockpitApi {
   publishAgentConfiguration(
     input: AgentConfigurationInput,
   ): Promise<HttpResult<AgentConfigurationRevision>>;
-  start(mutation: StartMutation): Promise<HttpResult<AnyRun>>;
-  answer(mutation: WaitMutation): Promise<HttpResult<AnyRun>>;
-  reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
+  start(mutation: StartMutation): Promise<HttpResult<RunV3>>;
+  answer(mutation: WaitMutation): Promise<HttpResult<RunV3>>;
   cancelRun(mutation: CancelMutation): Promise<HttpResult<RunV3>>;
   forkRun(request: {
     publicRunReference: string;
     idempotencyKey: string;
     restartFromNodeId: string;
   }): Promise<HttpResult<RunV3>>;
-  getRun(publicReference: string): Promise<AnyRun>;
+  getRun(publicReference: string): Promise<RunV3>;
   getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
   getSchemaRevision(schemaRevisionHash: string): Promise<JsonSchemaDocument>;
@@ -3108,7 +2674,7 @@ export class CockpitRequestError extends Error {
   }
 }
 
-function runListTarget(after?: string, state?: AnyRun["state"]): string {
+function runListTarget(after?: string, state?: RunV3["state"]): string {
   const query = new URLSearchParams({ limit: "50" });
   if (after !== undefined) query.set("after", after);
   if (state !== undefined) query.set("state", state);
@@ -3128,7 +2694,7 @@ export function createCockpitApi(
         [200],
         healthResourceSchema,
       ),
-    listRuns: (after?: string, state?: AnyRun["state"]) =>
+    listRuns: (after?: string, state?: RunV3["state"]) =>
       requestJson(
         fetcher,
         runListTarget(after, state),
@@ -3560,7 +3126,7 @@ export function createCockpitApi(
           body: exactBody(mutation.body_base64),
         },
         [200, 201],
-        anyRunSchema,
+        runV3Schema,
       ),
     answer: async (mutation) => {
       const result = await requestJsonResult(
@@ -3572,7 +3138,7 @@ export function createCockpitApi(
           body: exactBody(mutation.body_base64),
         },
         [202],
-        anyRunSchema,
+        runV3Schema,
       );
       if (
         result.value.public_run_reference !== mutation.public_run_reference ||
@@ -3580,29 +3146,6 @@ export function createCockpitApi(
       ) {
         throw new CockpitRequestError(
           "The answer response did not match the exact durable run.",
-        );
-      }
-      return result;
-    },
-    reconcile: async (mutation) => {
-      const result = await requestJsonResult(
-        fetcher,
-        mutation.target,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: exactBody(mutation.body_base64),
-        },
-        [200, 202],
-        runSchema,
-      );
-      const target = `/atelier/api/v1/runs/${result.value.public_run_reference}/reconciliations`;
-      if (
-        target !== mutation.target ||
-        result.value.workflow_revision_hash !== mutation.workflow_revision_hash
-      ) {
-        throw new CockpitRequestError(
-          "The reconciliation response did not match the exact durable run.",
         );
       }
       return result;
@@ -3617,13 +3160,8 @@ export function createCockpitApi(
           body: exactBody(mutation.body_base64),
         },
         [200, 202],
-        anyRunSchema,
+        runV3Schema,
       );
-      if (!isRunV3(result.value)) {
-        throw new CockpitRequestError(
-          "The cancel response answered with a run this page cannot read.",
-        );
-      }
       if (result.value.public_run_reference !== mutation.public_run_reference) {
         throw new CockpitRequestError(
           "The cancel response named a different run than the one it was for.",
@@ -3644,13 +3182,8 @@ export function createCockpitApi(
           }),
         },
         [200, 201],
-        anyRunSchema,
+        runV3Schema,
       );
-      if (!isRunV3(result.value)) {
-        throw new CockpitRequestError(
-          "The fork response answered with a run this page cannot read.",
-        );
-      }
       return { status: result.status, value: result.value };
     },
     getRun: (publicReference) =>
@@ -3659,7 +3192,7 @@ export function createCockpitApi(
         `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}`,
         {},
         [200],
-        anyRunSchema,
+        runV3Schema,
       ),
     getNodeDetail: async (publicReference, nodeId) => {
       const detail = await requestJson(
@@ -3764,10 +3297,6 @@ function subscribeEventSource(
 
 export function decodeProblem(value: unknown): Problem {
   return problemSchema.parse(value);
-}
-
-export function decodeRun(value: unknown): Run {
-  return runSchema.parse(value);
 }
 
 export function decodeRunEvent(value: unknown): RunEvent {

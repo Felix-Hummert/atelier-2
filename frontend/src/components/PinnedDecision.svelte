@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
 
-  import type { AnyRun, CockpitApi, RunV3 } from "../api/client";
+  import type { CockpitApi, RunV3 } from "../api/client";
   import { decisionStatusCopy } from "../lib/decisionStatusCopy";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
@@ -37,7 +37,7 @@
   export let workflowName: string;
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
-  export let onRunRead: (run: AnyRun) => void;
+  export let onRunRead: (run: RunV3) => void;
   export let navigate: (path: string) => void;
   export let compact = false;
   export let onExpand: () => void;
