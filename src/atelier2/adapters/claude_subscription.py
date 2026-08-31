@@ -34,6 +34,7 @@ from atelier2.contracts.agents import (
     AuthMode,
     ProviderId,
 )
+from atelier2.contracts.schemas_v3 import SUPPORTED_DIALECT
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
@@ -169,6 +170,13 @@ _STREAM_JSON_OUTPUT_FORMAT = "stream-json"
 _VERBOSE_FLAG = "--verbose"
 _JSON_OUTPUT_FORMAT = "json"
 _JSON_SCHEMA_FLAG = "--json-schema"
+# The key this repository's own schema house (`contracts.schemas_v3`) requires
+# and Claude's external `--json-schema` validator cannot resolve: it names the
+# dialect offline, without network retrieval, and the CLI has no local copy of
+# `SUPPORTED_DIALECT` to satisfy that reference against (#941). The dialect is
+# proven once, when a schema is published; the CLI needs only the constraint
+# the rest of the document states, so this key travels no further than here.
+_SCHEMA_DIALECT_KEY = "$schema"
 _MODEL_FLAG = "--model"
 _STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 
@@ -519,39 +527,34 @@ class ClaudeProcessCommand(AgentProcessCommand):
 def _output_format_arguments(
     declared_output_schema_bytes: bytes | None,
 ) -> tuple[str, ...]:
-    """Choose Claude's measured native output mode for this node contract."""
+    """Choose Claude's measured native output mode for this node contract.
+
+    A declared schema carries `$schema` as this repository's own internal
+    provenance line -- the dialect `contracts.schemas_v3.SUPPORTED_DIALECT`
+    already proved the document against before it was ever published. Claude's
+    `--json-schema` validator resolves no meta-schema URI offline and refuses
+    the whole call before a model ever starts (#941, live evidence
+    run-fe7eb558: exit 1 in one second, `no schema with key or ref
+    "https://json-schema.org/draft/2020-12/schema"`). So the key is stripped at
+    this boundary, for every executor that reaches this function: the CLI is
+    handed the constraint the rest of the document states, never the dialect
+    line it cannot resolve.
+    """
 
     if declared_output_schema_bytes is None:
         return (_OUTPUT_FORMAT_FLAG, _STREAM_JSON_OUTPUT_FORMAT, _VERBOSE_FLAG)
     try:
-        schema = declared_output_schema_bytes.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ValueError("declared output schema bytes must be UTF-8") from error
-    return (_OUTPUT_FORMAT_FLAG, _JSON_OUTPUT_FORMAT, _JSON_SCHEMA_FLAG, schema)
-
-
-def _tool_free_output_format_arguments(
-    declared_output_schema_bytes: bytes | None,
-) -> tuple[str, ...]:
-    """Choose the tool-free output mode and its CLI-compatible constraint."""
-
-    if declared_output_schema_bytes is None:
-        return _output_format_arguments(None)
-    try:
         schema = json.loads(declared_output_schema_bytes)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("declared output schema bytes must be JSON") from error
-    if not isinstance(schema, dict):
-        return _output_format_arguments(declared_output_schema_bytes)
-    # Claude's external CLI validator does not resolve the 2020-12 meta-schema
-    # URI; the flag carries the constraint, not that provenance annotation.
-    constraint = {key: value for key, value in schema.items() if key != "$schema"}
-    return (
-        _OUTPUT_FORMAT_FLAG,
-        _JSON_OUTPUT_FORMAT,
-        _JSON_SCHEMA_FLAG,
-        json.dumps(constraint, ensure_ascii=False, separators=(",", ":")),
-    )
+    if not isinstance(schema, dict) or _SCHEMA_DIALECT_KEY not in schema:
+        constraint = declared_output_schema_bytes.decode("utf-8")
+    else:
+        stripped = {
+            key: value for key, value in schema.items() if key != _SCHEMA_DIALECT_KEY
+        }
+        constraint = json.dumps(stripped, ensure_ascii=False, separators=(",", ":"))
+    return (_OUTPUT_FORMAT_FLAG, _JSON_OUTPUT_FORMAT, _JSON_SCHEMA_FLAG, constraint)
 
 
 def _tools_for_schema(
@@ -905,9 +908,7 @@ class ClaudeSubscriptionExecutor:
             (
                 str(settings.executable),
                 _PRINT_FLAG,
-                *_tool_free_output_format_arguments(
-                    request.declared_output_schema_bytes
-                ),
+                *_output_format_arguments(request.declared_output_schema_bytes),
                 _MODEL_FLAG,
                 binding.configuration.model,
                 _tool_free_tools_argument(request.declared_output_schema_bytes),
@@ -1031,9 +1032,27 @@ _UNKNOWN_FLAG_CONTROL = "--atelier2-no-claude-code-knows-this"
 # unknown option -- so a vector that lost `--verbose` would pass the attestation
 # below and then fail on every real run. It is refused by its own name.
 _OUTPUT_FORMAT_COMBINATION_MARKER = "requires --verbose"
+# What the CLI says when a declared schema still carries the dialect line this
+# module strips (#941): measured live (run-fe7eb558), the external validator
+# resolves no meta-schema URI offline and refuses the whole call before a
+# model starts. Neither control above can see this refusal -- the flag is
+# known and the format combination is the one that reaches a schema at all --
+# so a translation that stopped stripping `$schema` would otherwise pass this
+# attestation and then fail on every real schema-bearing call.
+_JSON_SCHEMA_DIALECT_MARKER = "is not a valid JSON Schema"
 # The probe never reaches a model, so this names none: it keeps the vector's
 # shape exact while saying plainly that no billed call stands behind it.
 _INVOCATION_PROBE_MODEL = "atelier2-invocation-probe"
+# The declared schema a tool-bearing probe carries, so the `--json-schema`
+# translation is exercised at every serve start rather than only at the first
+# node that actually binds a schema (#941). It states the same dialect line a
+# published house schema states -- `contracts.schemas_v3.SUPPORTED_DIALECT` --
+# because that line, not an arbitrary one, is what this boundary must strip.
+_INVOCATION_PROBE_SCHEMA_BYTES = json.dumps(
+    {_SCHEMA_DIALECT_KEY: SUPPORTED_DIALECT, "type": "object"},
+    ensure_ascii=False,
+    separators=(",", ":"),
+).encode("utf-8")
 # The measured answers are one short line each. The probe reads an external
 # program's streams, so it holds them to the smallest bound those answers fit
 # inside rather than to whatever the program decides to write.
@@ -1167,6 +1186,16 @@ def _attest_invocation_parses(
             "together, not only flag by flag -- every real call would otherwise "
             "die on a combination this probe had already called startable"
         )
+    if _JSON_SCHEMA_DIALECT_MARKER in started:
+        raise ClaudeExecutableUnsupported(
+            "the Claude executable refused this executor's declared schema: "
+            f"{started.strip()}. Serving {served_subject} needs the schema "
+            "translation at the adapter boundary to strip the dialect line "
+            "before this call, because the external validator resolves no "
+            "meta-schema URI offline (#941) -- every real schema-bearing call "
+            "would otherwise die on the same refusal this probe would have "
+            "already called startable"
+        )
     control = _jobless_invocation_answer(
         settings, (*arguments, _UNKNOWN_FLAG_CONTROL), timeout_seconds
     )
@@ -1183,11 +1212,19 @@ def attest_workspace_tool_invocation(
     settings: ClaudeSubscriptionSettings,
     timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
 ) -> None:
-    """Refuse an executable that cannot start the workspace-tool invocation."""
+    """Refuse an executable that cannot start the workspace-tool invocation.
+
+    Carries a declared schema so the `--json-schema` translation is proven at
+    every serve start rather than at the first node that binds one (#941).
+    """
 
     _attest_invocation_parses(
         settings,
-        _workspace_tool_arguments(settings.executable, _INVOCATION_PROBE_MODEL),
+        _workspace_tool_arguments(
+            settings.executable,
+            _INVOCATION_PROBE_MODEL,
+            _INVOCATION_PROBE_SCHEMA_BYTES,
+        ),
         "workspace-tool agents",
         timeout_seconds,
     )
