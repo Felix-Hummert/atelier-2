@@ -9,14 +9,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import sqlalchemy as sa
 from dbos import DBOS
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import effect_intents
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -36,19 +33,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.effects import (
-    AdapterRevision,
-    EffectAdapterBinding,
-    EffectDestination,
-    EffectIntent,
-    EffectReadback,
-    EffectUnknownOutcome,
-    OperatorAuthoritativeAbsence,
-    PerformedEffect,
-    ReconcileActor,
-    ReconcileCommand,
-    ReconcileCommandId,
-)
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
     SubmitWaitAnswerRequest,
@@ -65,7 +50,6 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionCreated,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
-from atelier2.ports.effects import EffectAdapter
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
@@ -76,11 +60,7 @@ from tests.scenarios.agents import (
     launching,
     publish_checked_model_registry,
 )
-from tests.scenarios.runs import (
-    start_published_v1_run,
-    submit_reconcile_command,
-    submit_wait_answer,
-)
+from tests.scenarios.runs import submit_wait_answer
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 CRASHED = 86
@@ -103,47 +83,7 @@ _COUNTING_PROVIDER = (
 )
 
 
-class HarnessEffectAdapter:
-    def __init__(self, delegate: EffectAdapter, force_unknown_marker: Path) -> None:
-        self._delegate = delegate
-        self._force_unknown_marker = force_unknown_marker
-
-    def readback(self, intent: EffectIntent) -> EffectReadback:
-        if self._force_unknown_marker.exists():
-            return EffectUnknownOutcome(intent.reference)
-        return self._delegate.readback(intent)
-
-    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
-        return self._delegate.execute(intent)
-
-    def close(self) -> None:
-        self._delegate.close()
-
-
-class HarnessEffectAdapterFactory:
-    def __init__(self, database: Path, force_unknown_marker: Path) -> None:
-        self._delegate = LoopbackEffectAdapterFactory(
-            database,
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-crash-test"),
-        )
-        self._force_unknown_marker = force_unknown_marker
-
-    @property
-    def binding(self) -> EffectAdapterBinding:
-        return self._delegate.binding
-
-    @property
-    def proves_absence(self) -> bool:
-        return self._delegate.proves_absence
-
-    def open(self) -> HarnessEffectAdapter:
-        return HarnessEffectAdapter(self._delegate.open(), self._force_unknown_marker)
-
-
-def runtime(
-    database: Path, external: Path, version: str, force_unknown_marker: Path
-) -> DbosRuntime:
+def runtime(database: Path, external: Path, version: str) -> DbosRuntime:
     provider = RecordingAgentExecutorFactoryV2(
         "exact",
         "exact/v1",
@@ -163,36 +103,20 @@ def runtime(
             version,
             agent_scratch_root=agent_scratch_root(database.parent),
         ),
-        HarnessEffectAdapterFactory(external, force_unknown_marker),
+        LoopbackEffectAdapterFactory(
+            external,
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-crash-test"),
+        ),
         ExactOutputAgentExecutorFactory(),
         (provider,),
     )
 
 
-def initialize(
-    database: Path, external: Path, version: str, force_unknown_marker: Path
-) -> None:
-    lease = runtime(database, external, version, force_unknown_marker)
+def initialize(database: Path, external: Path, version: str) -> None:
+    lease = runtime(database, external, version)
     try:
         lease.initialize_storage()
-    finally:
-        lease.close()
-
-
-def seed(
-    database: Path,
-    external: Path,
-    version: str,
-    force_unknown_marker: Path,
-    run_id: str,
-    document: bytes,
-) -> None:
-    lease = runtime(database, external, version, force_unknown_marker)
-    try:
-        lease.initialize_storage()
-        start_published_v1_run(
-            lease.engine, lease.settings, RunId(run_id), WorkflowRevision(document)
-        )
     finally:
         lease.close()
 
@@ -201,12 +125,11 @@ def seed_v3(
     database: Path,
     external: Path,
     version: str,
-    force_unknown_marker: Path,
     run_id: str,
     document: bytes,
     revision_format_version: AgentConfigurationRevisionFormatVersion,
 ) -> None:
-    lease = runtime(database, external, version, force_unknown_marker)
+    lease = runtime(database, external, version)
     try:
         lease.initialize_storage()
         catalog = DbosAgentConfigurationCatalog(
@@ -260,12 +183,11 @@ def submit_answer(
     database: Path,
     external: Path,
     version: str,
-    force_unknown_marker: Path,
     run_id: str,
     node_id: str,
     answer: str,
 ) -> None:
-    lease = runtime(database, external, version, force_unknown_marker)
+    lease = runtime(database, external, version)
     try:
         lease.initialize_storage()
         with sqlite3.connect(database, timeout=30) as connection:
@@ -339,13 +261,12 @@ def execute_until(
     database: Path,
     external: Path,
     version: str,
-    force_unknown_marker: Path,
     run_id: str,
     target_state: str,
     marker: Path | None,
     operation_name: str | None,
 ) -> None:
-    lease = runtime(database, external, version, force_unknown_marker)
+    lease = runtime(database, external, version)
     try:
         if marker is not None and operation_name is not None:
             if operation_name.startswith("start-successor:"):
@@ -382,91 +303,28 @@ def execute_until(
         lease.close()
 
 
-def reconcile_absence(
-    database: Path,
-    external: Path,
-    version: str,
-    force_unknown_marker: Path,
-    run_id: str,
-) -> None:
-    lease = runtime(database, external, version, force_unknown_marker)
-    try:
-        with lease.engine.connect() as connection:
-            snapshot = intent_snapshot_from_record(
-                connection.execute(
-                    sa.select(effect_intents).where(effect_intents.c.run_id == run_id)
-                )
-                .mappings()
-                .one()
-            )
-        command = ReconcileCommand(
-            ReconcileCommandId(f"{run_id}/reconcile-1"),
-            snapshot.intent.reference,
-            snapshot.state_version,
-            ReconcileActor("operator"),
-            "inspected the exact external destination",
-            OperatorAuthoritativeAbsence(),
-        )
-        submit_reconcile_command(lease.engine, lease.settings, command)
-    finally:
-        lease.close()
-
-
 def main() -> None:
-    (
-        command,
-        raw_database,
-        raw_external,
-        version,
-        raw_unknown_marker,
-        *arguments,
-    ) = sys.argv[1:]
+    command, raw_database, raw_external, version, *arguments = sys.argv[1:]
     database = Path(raw_database)
     external = Path(raw_external)
-    unknown_marker = Path(raw_unknown_marker)
     if command == "initialize":
-        initialize(database, external, version, unknown_marker)
-    elif command == "seed":
-        run_id, document_hex = arguments
-        seed(
-            database,
-            external,
-            version,
-            unknown_marker,
-            run_id,
-            bytes.fromhex(document_hex),
-        )
+        initialize(database, external, version)
     elif command == "seed-v3":
         run_id, document_hex, configuration_format = arguments
         seed_v3(
             database,
             external,
             version,
-            unknown_marker,
             run_id,
             bytes.fromhex(document_hex),
             AgentConfigurationRevisionFormatVersion(int(configuration_format)),
         )
     elif command == "answer":
         run_id, node_id, answer = arguments
-        submit_answer(
-            database,
-            external,
-            version,
-            unknown_marker,
-            run_id,
-            node_id,
-            answer,
-        )
-    elif command == "reconcile":
-        (run_id,) = arguments
-        reconcile_absence(database, external, version, unknown_marker, run_id)
+        submit_answer(database, external, version, run_id, node_id, answer)
     else:
         run_id, raw_marker, raw_operation = arguments
         target_state = {
-            "execute-until-reconcile": "WAITING_RECONCILIATION",
-            "execute-until-wait": "WAITING_INPUT",
-            "execute-until-complete": "COMPLETED",
             "execute-v3-until-wait": "WAITING_INPUT",
             "execute-v3-until-complete": "COMPLETED",
         }[command]
@@ -474,7 +332,6 @@ def main() -> None:
             database,
             external,
             version,
-            unknown_marker,
             run_id,
             target_state,
             None if raw_marker == "NONE" else Path(raw_marker),

@@ -99,7 +99,6 @@ from atelier2.ports.workflow_revisions import (
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
-    commit_configured_agent,
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import (
@@ -729,15 +728,7 @@ def test_event_query_keeps_one_old_snapshot_when_history_appends_between_selects
     engine: Engine, query_kind: str, initial_head: int
 ) -> None:
     run_id = RunId(f"snapshot-{query_kind}")
-    revision = _seed_history(engine, run_id=run_id, head=0)
-    if initial_head:
-        with engine.begin() as connection:
-            commit_configured_agent(
-                connection,
-                run_id,
-                revision.revision_hash,
-                "agent",
-            )
+    revision = _seed_history(engine, run_id=run_id, head=initial_head)
     appended = False
 
     def append_after_head_read(

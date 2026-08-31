@@ -28,7 +28,6 @@ from atelier2.adapters.dbos.run_transitions import (
     run_from_record_with_bindings,
 )
 from atelier2.adapters.dbos.schema import (
-    agent_receipts,
     context_packages_v3,
     effect_intents,
     effect_receipts,
@@ -49,14 +48,10 @@ from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentBindingSetHash,
     AgentConfigurationRevisionHash,
-    AgentExecutionRequest,
     AgentExecutionRequestHash,
-    AgentExecutionResult,
-    AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentOutputHash,
-    AgentReceipt,
     AgentReceiptHash,
     AgentReceiptV2,
     AgentRole,
@@ -125,6 +120,7 @@ from atelier2.contracts.workflows_v3 import (
     AnyWaitNode,
     AnyWorkflowDocument,
     GraphInputSource,
+    LoopVerdictNotRead,
     NodeOutput,
     NodeOutputSource,
     WaitNodeV3,
@@ -674,102 +670,6 @@ def entry_node_of(graph: AnyWorkflowDocument) -> str:
     return graph.start
 
 
-def successor_of(graph: AnyWorkflowDocument, node_id: str) -> str:
-    """The one node a finished node hands the run to, where `next` names it.
-
-    This is the V1 and V2 spelling alone, and its callers are the V1 Agent and the
-    Action transitions -- neither of which a V3 graph can carry. A V3 run does
-    advance, and it asks `completion_after_node`, which reads `depends_on` and
-    answers the sink and the heir under one rule for every format. A V3 graph
-    arriving here would therefore be a caller reaching for the wrong spelling, and
-    it is refused by name rather than left to fail on an attribute this graph does
-    not have.
-    """
-    if isinstance(graph, WorkflowGraphV3):
-        raise RunTransitionConflict(
-            f"a V3 run has no advance path yet, so node {node_id!r} hands on to nothing"
-        )
-    return graph.successor(node_id).id
-
-
-def _agent_receipt_values(receipt: AgentReceipt) -> dict[str, object]:
-    return {
-        "node_execution_id": receipt.node_execution_id.value,
-        "request_hash": receipt.request_hash.value,
-        "run_id": receipt.run_id.value,
-        "workflow_revision_hash": receipt.workflow_revision_hash.value,
-        "node_id": receipt.node_id,
-        "executor_adapter_revision": (receipt.executor_binding.adapter_revision.value),
-        "executor_operational_identity": (
-            receipt.executor_binding.operational_identity.value
-        ),
-        "output_bytes": receipt.output_bytes,
-        "output_hash": receipt.output_hash.value,
-        "receipt_hash": receipt.receipt_hash.value,
-    }
-
-
-def _agent_receipt_from_record(record: Mapping[Any, Any]) -> AgentReceipt:
-    try:
-        return AgentReceipt(
-            AgentExecutionRequestHash(str(record["request_hash"])),
-            NodeExecutionId(str(record["node_execution_id"])),
-            RunId(str(record["run_id"])),
-            WorkflowRevisionHash(str(record["workflow_revision_hash"])),
-            str(record["node_id"]),
-            AgentExecutorBinding(
-                AgentExecutorRevision(str(record["executor_adapter_revision"])),
-                AgentExecutorOperationalIdentity(
-                    str(record["executor_operational_identity"])
-                ),
-            ),
-            bytes(record["output_bytes"]),
-            AgentOutputHash(str(record["output_hash"])),
-            AgentReceiptHash(str(record["receipt_hash"])),
-        )
-    except ValueError as error:
-        raise AgentReceiptConflict(
-            "durable agent receipt hash binding disagrees"
-        ) from error
-
-
-def commit_agent_completed(
-    session: Any,
-    request: AgentExecutionRequest,
-    executor_binding: AgentExecutorBinding,
-    result: AgentExecutionResult,
-) -> TransitionSnapshot:
-    graph = load_graph(session, request.workflow_revision_hash)
-    receipt = AgentReceipt.for_execution(request, executor_binding, result)
-    session.execute(
-        agent_receipts.insert()
-        .prefix_with("OR IGNORE")
-        .values(_agent_receipt_values(receipt))
-    )
-    durable_record = (
-        session.execute(
-            sa.select(agent_receipts).where(
-                agent_receipts.c.node_execution_id == request.node_execution_id.value
-            )
-        )
-        .mappings()
-        .one()
-    )
-    if _agent_receipt_from_record(durable_record) != receipt:
-        raise AgentReceiptConflict("durable agent receipt differs from exact retry")
-    return _commit_event(
-        session,
-        request.run_id,
-        request.workflow_revision_hash,
-        request.node_id,
-        RunEventKind.AGENT_COMPLETED,
-        result.output_bytes,
-        RunState.STARTED,
-        RunState.STARTED,
-        successor_of(graph, request.node_id),
-    )
-
-
 def _agent_receipt_v2_values(receipt: AgentReceiptV2) -> dict[str, object]:
     return {
         "node_execution_id": receipt.node_execution_id.value,
@@ -1252,6 +1152,43 @@ def _applied_answer_matches_event(
     )
 
 
+def _run_stands_on_its_head_event(
+    graph: AnyWorkflowDocument, run: AnyRun, head_event: RunEvent
+) -> bool:
+    """Whether the run row and its head event describe one healthy head.
+
+    Steady state is the current node's own last word. But a transition commits
+    the run onto its heir in the same transaction that records the event, so
+    until the heir writes its own first event the head still carries the
+    transitioned node while `current_node_id` already names the heir. That
+    window is healthy state, not corruption -- the restart sweep learned the
+    same lesson for its driver families (#923) -- and it is recognized by
+    recomputing the recorded transition's target. A verdict-steered loop exit
+    cannot be recomputed without the verdict it was steered by and stays
+    unrecognized, which only means it is judged as strictly as before.
+    """
+    if head_event.revision_hash != run.revision_hash:
+        return False
+    if head_event.node_execution_id != NodeExecutionId.for_node(
+        run.run_id, run.revision_hash, head_event.node_id, head_event.round_ordinal
+    ):
+        return False
+    if (
+        head_event.node_id == run.current_node_id
+        and head_event.round_ordinal == run.current_round_ordinal
+    ):
+        return True
+    if run.state is not RunState.STARTED:
+        return False
+    try:
+        completion = completion_after_node(
+            graph, head_event.node_id, head_event.round_ordinal
+        )
+    except LoopVerdictNotRead:
+        return False
+    return completion == RunContinues(run.current_node_id, run.current_round_ordinal)
+
+
 class DbosWaitAnswerer:
     def __init__(self, engine: Engine, application_version: str) -> None:
         self._engine = engine
@@ -1340,12 +1277,7 @@ class DbosWaitAnswerer:
                         connection.rollback()
                         return DurableStateCorrupt()
                     head_event = event_from_record(head_records[0])
-                    if (
-                        head_event.revision_hash != run.revision_hash
-                        or head_event.node_id != run.current_node_id
-                        or head_event.node_execution_id != current_execution_id
-                        or head_event.round_ordinal != run.current_round_ordinal
-                    ):
+                    if not _run_stands_on_its_head_event(graph, run, head_event):
                         connection.rollback()
                         return DurableStateCorrupt()
                     current_record = _wait_answer_record(
