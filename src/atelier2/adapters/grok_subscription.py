@@ -12,10 +12,14 @@ ended successfully in 3.527 s with `{"findings":[],"verdict":"revise"}`.
 This tool-free adapter therefore uses inline `-p` only through the measured
 30,000-byte bound and returns typed `AGENT_REFUSED` before launch above it.
 Standard input is not a documented prompt carrier. The version gate admits
-exactly this measured release. The child environment is only `HOME`,
-`GROK_HOME` and `PATH` -- and
-`HOME` is containment, not convenience: without it the CLI resolves the
-invoking account's own profile.
+exactly this measured release. The child environment is `HOME`, `GROK_HOME`,
+`PATH`, `SHELL` and `TERM` -- and nothing else. `HOME` is containment, not
+convenience: without it the CLI resolves the invoking account's own profile.
+`SHELL` and `TERM` are the measured fix for a headless silence-kill: a
+`run_terminal_cmd` that stays silent for ~25s cancels the session under the
+three-variable environment but survives once a concrete shell and terminal
+type are named (issue #642); a real PTY is the structural successor
+(issue #943).
 
 Every invocation gets one private disposable `HOME`/`GROK_HOME`. The seam
 copies only `auth.json` into it and writes an inert compatibility configuration
@@ -185,6 +189,16 @@ _MAXIMUM_AUTHENTICATION_FILE_BYTES = 1_048_576
 _HOME_VARIABLE = "HOME"
 _CREDENTIAL_DIRECTORY_VARIABLE = "GROK_HOME"
 _SEARCH_PATH_VARIABLE = "PATH"
+_SHELL_VARIABLE = "SHELL"
+_TERMINAL_TYPE_VARIABLE = "TERM"
+# Headless grok 1.0.5 resolves its shell from `$SHELL` (xAI shell_state.rs
+# `ShellKind::detect`); under the minimal three-variable environment above, a
+# `run_terminal_cmd` that stays silent for ~25s cancels the whole session
+# instead of finishing (measured: 5/6 and 9/10 probe runs; see issue #642).
+# Naming a concrete shell and terminal type is what keeps that command alive.
+# A real PTY is the structural successor to this workaround (issue #943).
+_SHELL_VALUE = "/bin/bash"
+_TERMINAL_TYPE_VALUE = "xterm-256color"
 _TEXT_FIELD = "text"
 _STRUCTURED_OUTPUT_FIELD = "structuredOutput"
 _SINGLE_PROMPT_FLAG = "-p"
@@ -379,6 +393,8 @@ def _child_environment(
         (_HOME_VARIABLE, str(state_directory)),
         (_CREDENTIAL_DIRECTORY_VARIABLE, str(state_directory)),
         (_SEARCH_PATH_VARIABLE, settings.search_path),
+        (_SHELL_VARIABLE, _SHELL_VALUE),
+        (_TERMINAL_TYPE_VARIABLE, _TERMINAL_TYPE_VALUE),
     )
 
 
