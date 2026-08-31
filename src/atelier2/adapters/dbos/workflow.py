@@ -34,7 +34,6 @@ from atelier2.adapters.dbos.effect_store import (
 from atelier2.adapters.dbos.names import (
     ACTION_CONTINUATION_WORKFLOW_NAME,
     ACTION_PREPARE_STEP_NAME,
-    AGENT_COMMIT_STEP_NAME,
     AGENT_EFFECT_PREPARE_STEP_NAME,
     AGENT_EFFECT_REDEEM_STEP_NAME,
     ANSWER_COMMIT_STEP_NAME,
@@ -63,7 +62,6 @@ from atelier2.adapters.dbos.node_binding_codec import (
 )
 from atelier2.adapters.dbos.run_store import (
     bootstrap_node_for_snapshot,
-    commit_agent_completed,
     commit_subworkflow_completed,
     commit_wait_answered,
     load_node_outputs,
@@ -90,7 +88,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     subworkflow_workflow_id_for,
 )
 from atelier2.application.bind_node import (
-    agent_execution_request,
     agent_execution_request_v2,
     bind_node,
     pinned_project,
@@ -135,7 +132,6 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
-    AgentNodeBinding,
     AgentNodeBindingV2,
     SubworkflowNodeBinding,
     WaitNodeBinding,
@@ -1145,24 +1141,6 @@ def register_durable_run_workflow(
         binding = decode_node_binding(
             _node_binding(datasource, typed_run_id, typed_revision, node_id, project)
         )
-        if isinstance(binding, AgentNodeBinding):
-            execution_request = agent_execution_request(
-                binding, typed_run_id, typed_revision, node_id
-            )
-            result = agent_executor.execute(execution_request)
-            successor = datasource.run_tx_step(
-                {"name": AGENT_COMMIT_STEP_NAME},
-                lambda: (
-                    commit_agent_completed(
-                        datasource.sql_session(),
-                        execution_request,
-                        agent_binding,
-                        result,
-                    ).current_node_id
-                ),
-            )
-            start_node(typed_run_id, typed_revision, str(successor))
-            return RunState.STARTED.value
         if isinstance(binding, AgentNodeBindingV2):
             attempt = agent_node_attempt(
                 binding,

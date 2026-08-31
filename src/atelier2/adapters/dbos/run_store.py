@@ -28,7 +28,6 @@ from atelier2.adapters.dbos.run_transitions import (
     run_from_record_with_bindings,
 )
 from atelier2.adapters.dbos.schema import (
-    agent_receipts,
     context_packages_v3,
     effect_intents,
     effect_receipts,
@@ -49,14 +48,10 @@ from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentBindingSetHash,
     AgentConfigurationRevisionHash,
-    AgentExecutionRequest,
     AgentExecutionRequestHash,
-    AgentExecutionResult,
-    AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentOutputHash,
-    AgentReceipt,
     AgentReceiptHash,
     AgentReceiptV2,
     AgentRole,
@@ -672,102 +667,6 @@ def entry_node_of(graph: AnyWorkflowDocument) -> str:
             )
         return entry[0]
     return graph.start
-
-
-def successor_of(graph: AnyWorkflowDocument, node_id: str) -> str:
-    """The one node a finished node hands the run to, where `next` names it.
-
-    This is the V1 and V2 spelling alone, and its callers are the V1 Agent and the
-    Action transitions -- neither of which a V3 graph can carry. A V3 run does
-    advance, and it asks `completion_after_node`, which reads `depends_on` and
-    answers the sink and the heir under one rule for every format. A V3 graph
-    arriving here would therefore be a caller reaching for the wrong spelling, and
-    it is refused by name rather than left to fail on an attribute this graph does
-    not have.
-    """
-    if isinstance(graph, WorkflowGraphV3):
-        raise RunTransitionConflict(
-            f"a V3 run has no advance path yet, so node {node_id!r} hands on to nothing"
-        )
-    return graph.successor(node_id).id
-
-
-def _agent_receipt_values(receipt: AgentReceipt) -> dict[str, object]:
-    return {
-        "node_execution_id": receipt.node_execution_id.value,
-        "request_hash": receipt.request_hash.value,
-        "run_id": receipt.run_id.value,
-        "workflow_revision_hash": receipt.workflow_revision_hash.value,
-        "node_id": receipt.node_id,
-        "executor_adapter_revision": (receipt.executor_binding.adapter_revision.value),
-        "executor_operational_identity": (
-            receipt.executor_binding.operational_identity.value
-        ),
-        "output_bytes": receipt.output_bytes,
-        "output_hash": receipt.output_hash.value,
-        "receipt_hash": receipt.receipt_hash.value,
-    }
-
-
-def _agent_receipt_from_record(record: Mapping[Any, Any]) -> AgentReceipt:
-    try:
-        return AgentReceipt(
-            AgentExecutionRequestHash(str(record["request_hash"])),
-            NodeExecutionId(str(record["node_execution_id"])),
-            RunId(str(record["run_id"])),
-            WorkflowRevisionHash(str(record["workflow_revision_hash"])),
-            str(record["node_id"]),
-            AgentExecutorBinding(
-                AgentExecutorRevision(str(record["executor_adapter_revision"])),
-                AgentExecutorOperationalIdentity(
-                    str(record["executor_operational_identity"])
-                ),
-            ),
-            bytes(record["output_bytes"]),
-            AgentOutputHash(str(record["output_hash"])),
-            AgentReceiptHash(str(record["receipt_hash"])),
-        )
-    except ValueError as error:
-        raise AgentReceiptConflict(
-            "durable agent receipt hash binding disagrees"
-        ) from error
-
-
-def commit_agent_completed(
-    session: Any,
-    request: AgentExecutionRequest,
-    executor_binding: AgentExecutorBinding,
-    result: AgentExecutionResult,
-) -> TransitionSnapshot:
-    graph = load_graph(session, request.workflow_revision_hash)
-    receipt = AgentReceipt.for_execution(request, executor_binding, result)
-    session.execute(
-        agent_receipts.insert()
-        .prefix_with("OR IGNORE")
-        .values(_agent_receipt_values(receipt))
-    )
-    durable_record = (
-        session.execute(
-            sa.select(agent_receipts).where(
-                agent_receipts.c.node_execution_id == request.node_execution_id.value
-            )
-        )
-        .mappings()
-        .one()
-    )
-    if _agent_receipt_from_record(durable_record) != receipt:
-        raise AgentReceiptConflict("durable agent receipt differs from exact retry")
-    return _commit_event(
-        session,
-        request.run_id,
-        request.workflow_revision_hash,
-        request.node_id,
-        RunEventKind.AGENT_COMPLETED,
-        result.output_bytes,
-        RunState.STARTED,
-        RunState.STARTED,
-        successor_of(graph, request.node_id),
-    )
 
 
 def _agent_receipt_v2_values(receipt: AgentReceiptV2) -> dict[str, object]:

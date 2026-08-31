@@ -8,7 +8,6 @@ from atelier2.adapters.dbos.node_binding_codec import (
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.bind_node import (
-    agent_execution_request,
     agent_execution_request_v2,
     bind_node,
     pinned_project,
@@ -23,7 +22,6 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
-    AgentNodeBinding,
     AgentNodeBindingV2,
     NodeBinding,
     SubworkflowNodeBinding,
@@ -161,12 +159,6 @@ def bound(
 @pytest.mark.parametrize(
     ("run", "document", "node_id", "expected"),
     (
-        (
-            v1_run("build"),
-            V1_DOCUMENT,
-            "build",
-            AgentNodeBinding("build it", "the draft"),
-        ),
         (v1_run("act"), V1_DOCUMENT, "act", ActionNodeBinding()),
         (v1_run("pause"), V1_DOCUMENT, "pause", WaitNodeBinding()),
         (v1_run("done"), V1_DOCUMENT, "done", SubworkflowNodeBinding((2, 3))),
@@ -181,7 +173,6 @@ def bound(
         ),
     ),
     ids=[
-        "V1 agent",
         "V1 action",
         "V1 wait",
         "V1 subworkflow",
@@ -306,7 +297,6 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
 @pytest.mark.parametrize(
     "binding",
     (
-        AgentNodeBinding("build it", "the draft"),
         AgentNodeBindingV2(resolved_agent_binding(), "build it"),
         AgentNodeBindingV2(
             resolved_agent_binding(), "build it", A_GRANT, A_PIN, A_SCHEMA_DOCUMENT
@@ -324,7 +314,6 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         SubworkflowNodeBinding((2, 3)),
     ),
     ids=[
-        "agent",
         "agent-v2",
         "agent-v2 pinned",
         "agent-v2 in a later round",
@@ -605,20 +594,6 @@ def test_a_binding_that_pinned_a_turn_bound_puts_it_on_the_request() -> None:
     assert default_request.maximum_assistant_turns is None
     assert decode_node_binding(encode_node_binding(binding)) == binding
     assert "maximum_assistant_turns" not in encode_node_binding(unbound)
-
-
-def test_a_v1_binding_composes_the_request_its_exact_output_contract_names() -> None:
-    request = agent_execution_request(
-        AgentNodeBinding("build it", "the draft"),
-        RUN_ID,
-        WorkflowRevision(V1_DOCUMENT).revision_hash,
-        NODE_ID,
-    )
-
-    assert (request.job_bytes, request.exact_output.output_bytes) == (
-        b"build it",
-        b"the draft",
-    )
 
 
 def test_a_runtime_given_no_project_answers_for_a_binding_that_pinned_none() -> None:

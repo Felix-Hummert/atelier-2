@@ -17,15 +17,12 @@ from __future__ import annotations
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
-    AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutorOperationalIdentity,
-    ExactOutputContract,
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
-    AgentNodeBinding,
     AgentNodeBindingV2,
     NodeBinding,
     SubworkflowNodeBinding,
@@ -38,7 +35,6 @@ from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 from atelier2.contracts.workflows import (
     ActionNode,
-    AgentNode,
     AgentNodeV2,
     SubworkflowNode,
 )
@@ -88,8 +84,6 @@ def bind_node(
     here rather than at launch, so a commit landing in between cannot change what
     a started run works on.
     """
-    if isinstance(node, AgentNode):
-        return AgentNodeBinding(node.job, node.output)
     if isinstance(node, (AgentNodeV2, AgentNodeV3)):
         if not isinstance(run, (RunV2, RunV3)):
             raise RunBindingConflict("Agent node belongs to a V1 run")
@@ -129,23 +123,6 @@ def bind_node(
     if isinstance(node, SubworkflowNode):
         return SubworkflowNodeBinding(node.operands)
     raise AssertionError("closed WorkflowNode union was not exhaustive")
-
-
-def agent_execution_request(
-    binding: AgentNodeBinding,
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
-) -> AgentExecutionRequest:
-    """The V1 request this binding makes: the job, and the output it must match."""
-    return AgentExecutionRequest(
-        NodeExecutionId.for_node(run_id, revision_hash, node_id),
-        run_id,
-        revision_hash,
-        node_id,
-        binding.job.encode("utf-8"),
-        ExactOutputContract(binding.output.encode("utf-8")),
-    )
 
 
 def agent_execution_request_v2(
