@@ -1,0 +1,21 @@
+# TODO(#942 Scheibe 2): publish a canary-sized budget_policy revision and pin
+# it on this agent node before the local runner admits the workflow.
+format_version: 3
+name: provider-canary-workspace-tools
+description: >-
+  Proves that one configured workspace-tools vector survives a deliberately
+  silent terminal command and returns after its first delayed output.
+nodes:
+  - id: probe
+    type: agent
+    role: provider-canary
+    mode: headless_with_tools
+    instruction: >-
+      Use the terminal tool to run exactly `sleep 20 && echo canary-alive`.
+      Run no other command. Wait for it to finish, then answer with exactly
+      the JSON string "canary-alive" and no other text.
+    outputs:
+      - name: result
+        schema:
+          ref: nonempty_string
+          revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"

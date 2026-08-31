@@ -1,0 +1,19 @@
+# TODO(#942 Scheibe 2): publish a canary-sized budget_policy revision and pin
+# it on this agent node before the local runner admits the workflow.
+format_version: 3
+name: provider-canary-headless
+description: >-
+  Proves that one configured provider vector can answer a minimal unattended
+  call without tools.
+nodes:
+  - id: probe
+    type: agent
+    role: provider-canary
+    mode: headless
+    instruction: >-
+      Answer with exactly the JSON string "canary-alive" and no other text.
+    outputs:
+      - name: result
+        schema:
+          ref: nonempty_string
+          revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
