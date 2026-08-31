@@ -58,43 +58,61 @@ from atelier2.contracts.effects import (
     ReconcileCommandState,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.runs import (
+    complete_v3_agent_node,
     prepare_and_launch_graph_action,
-    start_published_v1_run,
+    publish_pinned_revisions,
+    start_published_v3_run,
     submit_reconcile_command,
 )
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_ACTION_NODE_ID,
+    V3_EFFECT_LINE_AGENT_JOB,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
+    V3_EFFECT_LINE_DOCUMENT,
+)
 
-WORKFLOW_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: request, next: action}
-"""
+PROVIDER_OUTPUT = b'"request"'
 
 
 @pytest.fixture
 def waiting(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, DbosEffectReconcileCommander, EffectIntent]]:
-    runtime = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
+    runtime = recording_exact_runtime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "executor-A",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        PROVIDER_OUTPUT,
     )
     runtime.initialize_storage()
-    revision = WorkflowRevision(WORKFLOW_DOCUMENT)
-    start_published_v1_run(runtime.engine, runtime.settings, RunId("run-1"), revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(
-            connection, RunId("run-1"), revision.revision_hash, "agent"
-        )
+    revision = WorkflowRevision(V3_EFFECT_LINE_DOCUMENT)
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        RunId("run-1"),
+        revision,
+        runtime.agent_executor_registry,
+    )
+    complete_v3_agent_node(
+        runtime,
+        RunId("run-1"),
+        V3_EFFECT_LINE_AGENT_NODE_ID,
+        V3_EFFECT_LINE_AGENT_JOB,
+        PROVIDER_OUTPUT,
+    )
     intent = prepare_and_launch_graph_action(
         runtime.engine,
         runtime.settings,
@@ -114,7 +132,7 @@ def waiting(
             connection,
             intent.binding.run_id,
             intent.binding.workflow_revision_hash,
-            "action",
+            V3_EFFECT_LINE_ACTION_NODE_ID,
             intent.request.payload,
         )
     try:

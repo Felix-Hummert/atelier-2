@@ -9,9 +9,10 @@ twin, and an `UNKNOWN` readback -- which only live GitHub can report and this
 fake never does -- confirms nothing and is refused loud.
 
 The prepared intent these tests redeem is the same one an Action prepares,
-reused here through the V1 action scenario, because what `redeem_agent_effect`
-loads is a PREPARED effect intent by its logical key -- how that key was derived
-is the intent-preparation's concern, proved end to end in the integration slice.
+reused here through the V3 effect-line scenario, because what
+`redeem_agent_effect` loads is a PREPARED effect intent by its logical key --
+how that key was derived is the intent-preparation's concern, proved end to end
+in the integration slice.
 """
 
 from __future__ import annotations
@@ -57,20 +58,25 @@ from atelier2.contracts.tool_grants_v3 import (
     redeems_as_platform_effect,
 )
 from atelier2.contracts.workflows_v3 import VersionedReference
-from tests.scenarios.agents import commit_configured_agent
-from tests.scenarios.runs import prepare_graph_action, start_published_v1_run
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.runs import (
+    complete_v3_agent_node,
+    prepare_graph_action,
+    publish_pinned_revisions,
+    start_published_v3_run,
+)
+from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_AGENT_JOB,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
+    V3_EFFECT_LINE_DOCUMENT,
+)
 
-WORKFLOW_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
-"""
-REVISION = WorkflowRevision(WORKFLOW_DOCUMENT)
+REVISION = WorkflowRevision(V3_EFFECT_LINE_DOCUMENT)
 RUN_ID = RunId("run-open-pr")
+PROVIDER_OUTPUT = b'"draft-17"'
 
 
 @pytest.fixture
@@ -83,13 +89,31 @@ def prepared(
         AdapterRevision("github-open-pr-v1"),
         EffectDestination("platform"),
     )
-    runtime = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"), github
+    runtime = recording_exact_runtime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "executor-A",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        github,
+        PROVIDER_OUTPUT,
     )
     runtime.initialize_storage()
-    start_published_v1_run(runtime.engine, runtime.settings, RUN_ID, REVISION)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, RUN_ID, REVISION.revision_hash, "agent")
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        RUN_ID,
+        REVISION,
+        runtime.agent_executor_registry,
+    )
+    complete_v3_agent_node(
+        runtime,
+        RUN_ID,
+        V3_EFFECT_LINE_AGENT_NODE_ID,
+        V3_EFFECT_LINE_AGENT_JOB,
+        PROVIDER_OUTPUT,
+    )
     intent = prepare_graph_action(
         runtime.engine, RUN_ID, REVISION.revision_hash, github.binding
     ).intent

@@ -23,21 +23,21 @@ from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from tests.crash.effect_harness import PROVIDER_OUTPUT
 from tests.scenarios.effect_requests import open_pull_request_request_for_output
+from tests.scenarios.workflows import (
+    V3_EFFECT_LINE_ACTION_NODE_ID,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
+    V3_EFFECT_LINE_DOCUMENT,
+    V3_EFFECT_LINE_WAIT_NODE_ID,
+)
 
 CRASHED = 86
 ADAPTER_EXECUTE_AFTER_COMMIT = "adapter/execute-after-commit"
 HARNESS = Path(__file__).with_name("effect_harness.py")
 VERSION = "executor-A"
-DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: exact-request, next: action}
-"""
-ACTION_REQUEST = open_pull_request_request_for_output(b"exact-request")
+DOCUMENT = V3_EFFECT_LINE_DOCUMENT
+ACTION_REQUEST = open_pull_request_request_for_output(PROVIDER_OUTPUT)
 ACTION_REQUEST_HASH = Sha256Hash.of(ACTION_REQUEST).value
 
 
@@ -120,42 +120,42 @@ def c1_expected_event_rows() -> tuple[tuple[object, ...], ...]:
     return (
         (
             "observe-0",
-            "bf64add046764d79120b2e7c68f4f2e323530360c2257cb6dba496680fc0e8da",
+            "da486bf0a9d4af874410964455824ee6077afa3bf9e196f8ec3829a43d611c44",
             1,
-            "agent",
-            "2ce821f6c443840ffe2b774e68fbe9df180d63498e8b3b60aee8207e959db657",
+            V3_EFFECT_LINE_AGENT_NODE_ID,
+            "99553e1bbd3cdf4b91398a797d9fc230221765846908704f9e388687c99884aa",
             "AGENT_COMPLETED",
-            b"exact-request",
-            "a2d48169c5bd43b1584309b4404d0529496157f0028dba857d0debb8f8683129",
+            PROVIDER_OUTPUT,
+            "10ba077a13378ab8b5b338a47169e9e0d9bbf1f746c2f45cdd9461896c0c0bb2",
             None,
             None,
-            "4e56a793fcc082b047143a53ba4e5aad0038d5e97adfd2c6169ee3cb5229ee6e",
+            "a6ebe03064f64c1ec637ec768f2917fbf6160771d31562283a406236ad8a9467",
         ),
         (
             "observe-0",
-            "bf64add046764d79120b2e7c68f4f2e323530360c2257cb6dba496680fc0e8da",
+            "da486bf0a9d4af874410964455824ee6077afa3bf9e196f8ec3829a43d611c44",
             2,
-            "action",
-            "232c4bdad45e4e3d32c97faecb995eb00c8c0fd2991bbe55db17e1249fcd36dc",
+            V3_EFFECT_LINE_ACTION_NODE_ID,
+            "fe6396a3939fce65d3e2804354909b705eca900fd8fd9a9ab2547354baeeb29e",
             "ACTION_COMPLETED",
             ACTION_REQUEST,
             ACTION_REQUEST_HASH,
-            "atelier2-node-effect-d13fbdc0e3e70d6a337abdcf79af98d6b8869e2a99f208cef0c2880af752add0",
+            "atelier2-node-effect-f2c4269d36ed2a1260bd6d959aa5de5dd3252b9fe670308b69e0ae4b26d8a0cb",
             ACTION_REQUEST_HASH,
-            "281695f23ecb82a06e0c2317f32e57200561befe7f12f41f51cecce068f32ad9",
+            "919e174385f9ccaa324bd8af5c0ddb0e2995ba8b7f612308a682978564d7cf1c",
         ),
         (
             "observe-0",
-            "bf64add046764d79120b2e7c68f4f2e323530360c2257cb6dba496680fc0e8da",
+            "da486bf0a9d4af874410964455824ee6077afa3bf9e196f8ec3829a43d611c44",
             3,
-            "waiting",
-            "c60d12dddc9cd6ad908b2aa8ca68cf5a8bd5d1ec4d15b355ce48d6fd5af6c33d",
+            V3_EFFECT_LINE_WAIT_NODE_ID,
+            "cf04409711609f05707d161c70a6c9d7f42e43a3eb5dabb7594704f2f0370698",
             "WAITING_INPUT",
             b"",
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             None,
             None,
-            "b9af06f7d43d13bf4306e9912cceda14be68a0b0d0b8b6de9e2ba98be46bb702",
+            "f02614d821928f12d387556916f55d5642c7042e29e7c693528618096a998bf4",
         ),
     )
 
@@ -164,42 +164,42 @@ def c2_expected_event_rows() -> tuple[tuple[object, ...], ...]:
     return (
         (
             "c2-after-external-commit",
-            "bf64add046764d79120b2e7c68f4f2e323530360c2257cb6dba496680fc0e8da",
+            "da486bf0a9d4af874410964455824ee6077afa3bf9e196f8ec3829a43d611c44",
             1,
-            "agent",
-            "96f5e991436054e7635dd15b664b7902d48d561c7f104ecaf4687ad7f03a0b68",
+            V3_EFFECT_LINE_AGENT_NODE_ID,
+            "3d2f3b2b439c0e7e09efd1d63ea12070f2c25daebc9e350a4b41e9481d1ba154",
             "AGENT_COMPLETED",
-            b"exact-request",
-            "a2d48169c5bd43b1584309b4404d0529496157f0028dba857d0debb8f8683129",
+            PROVIDER_OUTPUT,
+            "10ba077a13378ab8b5b338a47169e9e0d9bbf1f746c2f45cdd9461896c0c0bb2",
             None,
             None,
-            "fb0c8772936b6f96c5048d8e8ffa2e1c49efe6a1d24770ff5080c673c220f805",
+            "83439e78b8620dd06c52c8189c754894d9f82882f02f16aecdc6dd3333058aaa",
         ),
         (
             "c2-after-external-commit",
-            "bf64add046764d79120b2e7c68f4f2e323530360c2257cb6dba496680fc0e8da",
+            "da486bf0a9d4af874410964455824ee6077afa3bf9e196f8ec3829a43d611c44",
             2,
-            "action",
-            "276577eb257c3f0428ce654bf9dda8332f8c98b0974e337342b420fcaa804a9c",
+            V3_EFFECT_LINE_ACTION_NODE_ID,
+            "1ebd520e67a6eab641f5c489c8ad2964e0e5f3016ed9e3dd9d00bfefe382f2a9",
             "ACTION_COMPLETED",
             ACTION_REQUEST,
             ACTION_REQUEST_HASH,
-            "atelier2-node-effect-933abca9d7dc932d83d2b159829a9e0cdad05fa0da9ae4b729669f1a2cd3beda",
+            "atelier2-node-effect-e2665bb584d6511191603a42f28a81ac5e5b8f02f939d841491d32f15dfaa485",
             ACTION_REQUEST_HASH,
-            "117dc9b9328bacab25f5ca09d263ed394cbc7d065c0957e9f80b63cc39e78df0",
+            "6a8bece85dd2189a0132fd0fb1e7f6d178ca318e8222f8db166cb3102d86a149",
         ),
         (
             "c2-after-external-commit",
-            "bf64add046764d79120b2e7c68f4f2e323530360c2257cb6dba496680fc0e8da",
+            "da486bf0a9d4af874410964455824ee6077afa3bf9e196f8ec3829a43d611c44",
             3,
-            "waiting",
-            "50715f248eedf5e838f29f741ce224bb5d37e16b54f42394fcb42044e021be46",
+            V3_EFFECT_LINE_WAIT_NODE_ID,
+            "5df777e1d1449bd48a4206be27945623e0c04faef06385b272e738cfe42b8be5",
             "WAITING_INPUT",
             b"",
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             None,
             None,
-            "46c3c5426bed80d0cf654aebd444b46b784f3639177bbbdca0777f215b3ed2e4",
+            "21a3c71efc798d61678b731085de30a2587b581fe2a203152282ba6735ae27de",
         ),
     )
 
@@ -237,7 +237,7 @@ def resume(root: Path, run_id: str) -> None:
 def logical_key_for(run_id: str) -> str:
     revision = WorkflowRevision(DOCUMENT)
     execution = NodeExecutionId.for_node(
-        RunId(run_id), revision.revision_hash, "action"
+        RunId(run_id), revision.revision_hash, V3_EFFECT_LINE_ACTION_NODE_ID
     )
     return logical_effect_key_for(execution).value
 
@@ -412,13 +412,15 @@ def assert_action_continued_once(
     assert_effect_once(root, run_id, confirmation_source, reconcile_command_id)
     revision = WorkflowRevision(DOCUMENT)
     action_execution = NodeExecutionId.for_node(
-        RunId(run_id), revision.revision_hash, "action"
+        RunId(run_id), revision.revision_hash, V3_EFFECT_LINE_ACTION_NODE_ID
     )
     continuation_id = action_continuation_workflow_id_for(
         logical_effect_key_for(action_execution)
     )
     wait_id = node_workflow_id_for(
-        NodeExecutionId.for_node(RunId(run_id), revision.revision_hash, "waiting")
+        NodeExecutionId.for_node(
+            RunId(run_id), revision.revision_hash, V3_EFFECT_LINE_WAIT_NODE_ID
+        )
     )
     assert row(
         root,
@@ -469,7 +471,7 @@ def assert_exact_waiting_input_vector(
         "SELECT state,current_node_id,state_version,last_event_sequence,terminal_hash "
         "FROM runs WHERE run_id=?",
         (run_id,),
-    ) == ("WAITING_INPUT", "waiting", 3, 3, None)
+    ) == ("WAITING_INPUT", V3_EFFECT_LINE_WAIT_NODE_ID, 3, 3, None)
     assert event_rows(root) == expected_events
 
 
@@ -635,7 +637,9 @@ def test_node_workflow_that_dies_before_the_enqueue_reaches_the_operator_door(
     logical_key = logical_key_for(run_id)
     revision = WorkflowRevision(DOCUMENT)
     action_node_workflow = node_workflow_id_for(
-        NodeExecutionId.for_node(RunId(run_id), revision.revision_hash, "action")
+        NodeExecutionId.for_node(
+            RunId(run_id), revision.revision_hash, V3_EFFECT_LINE_ACTION_NODE_ID
+        )
     )
     assert row(
         tmp_path, "atelier.sqlite", "SELECT state,state_version FROM effect_intents"

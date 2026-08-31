@@ -13,7 +13,6 @@ from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
 from atelier2.adapters.dbos.workflow_ids import EFFECT_WORKFLOW_ID_PREFIX
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -30,12 +29,17 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.runs import (
-    start_published_v1_run,
+    publish_pinned_revisions,
+    start_published_v3_run,
     submit_reconcile_command,
 )
+from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, OPEN_PR_OPERATION
 
 CRASHED = 86
+PROVIDER_OUTPUT = b'"exact-request"'
 ADAPTER_EXECUTE_AFTER_COMMIT = "adapter/execute-after-commit"
 AFTER_EXTERNAL_COMMIT = "after-external-commit"
 
@@ -108,12 +112,16 @@ def runtime(
     force_unknown_marker: Path,
     after_execute_crash_marker: Path | None = None,
 ) -> DbosRuntime:
-    return DbosRuntime(
-        DbosRuntimeSettings(database, application_version),
+    return recording_exact_runtime(
+        DbosRuntimeSettings(
+            database,
+            application_version,
+            agent_scratch_root=agent_scratch_root(database.parent),
+        ),
         HarnessEffectAdapterFactory(
             external, force_unknown_marker, after_execute_crash_marker
         ),
-        ExactOutputAgentExecutorFactory(),
+        PROVIDER_OUTPUT,
     )
 
 
@@ -150,8 +158,13 @@ def seed(
     lease = runtime(database, external, version, unknown_marker)
     try:
         lease.initialize_storage()
-        start_published_v1_run(
-            lease.engine, lease.settings, RunId(run_id), WorkflowRevision(document)
+        publish_pinned_revisions(lease.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+        start_published_v3_run(
+            lease.engine,
+            lease.settings,
+            RunId(run_id),
+            WorkflowRevision(document),
+            lease.agent_executor_registry,
         )
     finally:
         lease.close()

@@ -9,16 +9,20 @@ same use cases and adapter methods the served application calls.
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.advancer import prepare_graph_action as _prepare
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import EFFECT_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
-from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
+from atelier2.adapters.dbos.run_transitions import run_from_record_with_bindings
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import runs as runs_table
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -53,10 +57,14 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentExecutionRequestV2,
+    AgentExecutionResult,
+    AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AuthMode,
     AuthProfileRevision,
     ProviderId,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
@@ -65,8 +73,13 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandSnapshot,
 )
-from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
-from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    SubmitWaitAnswerRequest,
+    WaitAnswerSnapshot,
+)
+from atelier2.contracts.revisions_v3 import PublishedRevision
+from atelier2.contracts.run_bindings import AnyRun, RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -75,7 +88,14 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionExisting,
 )
 from atelier2.ports.agent_executions import AgentExecutorRegistry
-from tests.scenarios.agents import publish_checked_model_registry
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    publish_checked_model_registry,
+)
 from tests.scenarios.api import permissive_projection_limit
 
 NO_AGENT_EXECUTORS = AgentExecutorRegistry()
@@ -85,8 +105,19 @@ V3_PROVIDER = ProviderId("exact")
 """The provider every V3 scenario binds, matching `failing_agent_executor_factory`."""
 
 V3_EXECUTOR_REVISION = AgentExecutorRevision("exact/v1")
+V3_OPERATIONAL_IDENTITY = "exact-operation"
 V3_MODEL = "opus"
 V3_PROFILE_ID = "max"
+
+
+def publish_pinned_revisions(engine: Engine, *revisions: PublishedRevision) -> None:
+    """Publish every catalog revision a workflow document pins before starting it."""
+    store = DbosCatalogStore(engine)
+    for revision in revisions:
+        published = store.publish_revision(revision)
+        assert isinstance(
+            published, (PublishedRevisionCreated, PublishedRevisionExisting)
+        ), published
 
 
 def publish_revision(engine: Engine, revision: WorkflowRevision) -> None:
@@ -174,10 +205,15 @@ def start_published_v3_run(
 
     The V3 twin of `start_published_v1_run`, through the same use case the API
     calls. `roles` names every role the document declares; the caller says which
-    they are because only the document knows.
+    they are because only the document knows. A document declaring no role at
+    all publishes no binding and starts with an empty set.
     """
 
-    bindings = publish_v3_agent_bindings(engine, agent_executor_registry, roles)
+    bindings = (
+        publish_v3_agent_bindings(engine, agent_executor_registry, roles)
+        if roles
+        else ()
+    )
     publish_revision(engine, revision)
     result = start_published_run(
         run_id,
@@ -187,6 +223,45 @@ def start_published_v3_run(
     )
     assert isinstance(result, (RunCreated, RunExisting)), result
     return result.run
+
+
+def complete_v3_agent_node(
+    runtime: DbosRuntime, run_id: RunId, node_id: str, job: bytes, output: bytes
+) -> None:
+    """Drive one V3 agent node to success through the real attempt store.
+
+    Prepare, claim, and complete are the exact writes the node workflow
+    performs, so a scenario that parks a run between two nodes without
+    launching the runtime advances it here rather than hand-writing events.
+    `job` is what the composition owner hands the node -- for a first node
+    without inputs, its instruction bytes.
+    """
+
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(
+                sa.select(runs_table).where(runs_table.c.run_id == run_id.value)
+            )
+            .mappings()
+            .one()
+        )
+        run = run_from_record_with_bindings(connection, record)
+    assert isinstance(run, RunV3), run
+    binding = run.agent_bindings[0]
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, run.revision_hash, node_id),
+        run_id,
+        run.revision_hash,
+        node_id,
+        ResolvedAgentBinding(binding.role, binding.configuration, binding.auth_profile),
+        AgentExecutorOperationalIdentity(V3_OPERATIONAL_IDENTITY),
+        job,
+    )
+    execution = agent_attempt_execution(request)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    store.claim(execution)
+    store.complete_success(execution, AgentExecutionResult(output))
 
 
 def prepare_graph_action(

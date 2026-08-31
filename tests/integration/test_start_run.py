@@ -56,22 +56,26 @@ from atelier2.ports.durable_runs import (
     DurableRunFormatNotExecutable,
     StartPublishedRunRequestV2,
 )
+from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.api import permissive_projection_limit
 from tests.scenarios.runs import (
-    NO_AGENT_EXECUTORS,
+    publish_pinned_revisions,
     publish_revision,
-    start_published_v1_run,
+    publish_v3_agent_bindings,
+    start_published_v3_run,
 )
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_ACTION_NODE_ID,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
+    V3_EFFECT_LINE_DOCUMENT,
+    V3_EFFECT_LINE_WAIT_NODE_ID,
+)
 
-WORKFLOW_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
-"""
+WORKFLOW_DOCUMENT = V3_EFFECT_LINE_DOCUMENT
+PROVIDER_OUTPUT = b'"draft-17"'
 
 V3_SUBWORKFLOW_DOCUMENT = b"""format_version: 3
 name: An authored child is not executable yet
@@ -84,13 +88,18 @@ nodes:
 
 @pytest.fixture
 def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter]]:
-    runtime = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
+    runtime = recording_exact_runtime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "executor-A",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        PROVIDER_OUTPUT,
     )
     runtime.initialize_storage()
     try:
@@ -99,7 +108,7 @@ def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter
             DbosDurableRunStarter(
                 runtime.engine,
                 runtime.settings,
-                NO_AGENT_EXECUTORS,
+                runtime.agent_executor_registry,
             ),
         )
     finally:
@@ -116,8 +125,13 @@ def start(
     run_id: str = "run-1",
     document: bytes = WORKFLOW_DOCUMENT,
 ) -> AnyRun:
-    return start_published_v1_run(
-        runtime.engine, runtime.settings, RunId(run_id), revision(document)
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    return start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        RunId(run_id),
+        revision(document),
+        runtime.agent_executor_registry,
     )
 
 
@@ -127,9 +141,13 @@ def start_result(
     run_id: str = "run-1",
     document: bytes = WORKFLOW_DOCUMENT,
 ):
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    bindings = publish_v3_agent_bindings(
+        runtime.engine, runtime.agent_executor_registry
+    )
     publish_revision(runtime.engine, revision(document))
     return start_published_run(
-        RunId(run_id), revision(document).revision_hash, None, starter
+        RunId(run_id), revision(document).revision_hash, bindings, starter
     )
 
 
@@ -156,7 +174,7 @@ def test_start_commits_the_run_and_its_enqueue_atomically(
             (
                 "run-1",
                 revision().revision_hash.value,
-                "agent",
+                V3_EFFECT_LINE_AGENT_NODE_ID,
                 "STARTED",
                 0,
                 0,
@@ -213,7 +231,9 @@ def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, _starter = storage
-    invalid = WORKFLOW_DOCUMENT.replace(b"start: agent", b"start: action")
+    invalid = WORKFLOW_DOCUMENT.replace(
+        b"depends_on: [implement]", b"depends_on: [missing]"
+    )
 
     result = publish_workflow_revision(
         invalid,
@@ -241,7 +261,10 @@ nodes:
   - {id: build, type: agent, role: builder, job: build, next: done}
 """
 
-    result = start_result(runtime, starter, document=document)
+    publish_revision(runtime.engine, revision(document))
+    result = start_published_run(
+        RunId("run-1"), revision(document).revision_hash, None, starter
+    )
 
     assert isinstance(result, InvalidAgentBindings)
     for table in PRODUCT_TABLE_NAMES - {
@@ -297,8 +320,8 @@ def test_identical_retry_returns_current_run_without_enqueueing_again(
 @pytest.mark.parametrize(
     ("state", "current_node", "terminal_hash"),
     [
-        (RunState.WAITING_RECONCILIATION, "action", None),
-        (RunState.COMPLETED, "final", "0" * 64),
+        (RunState.WAITING_RECONCILIATION, V3_EFFECT_LINE_ACTION_NODE_ID, None),
+        (RunState.COMPLETED, V3_EFFECT_LINE_WAIT_NODE_ID, "0" * 64),
     ],
 )
 def test_retry_after_progress_returns_the_current_run(
@@ -335,7 +358,9 @@ def test_conflicting_run_id_fails_without_mutation(
     conflict = start_result(
         runtime,
         starter,
-        document=WORKFLOW_DOCUMENT.replace(b"draft-17", b"draft-18"),
+        document=WORKFLOW_DOCUMENT.replace(
+            b"Draft the pull request", b"Draft another pull request"
+        ),
     )
 
     assert isinstance(conflict, RunIdentityConflict)
@@ -447,13 +472,18 @@ def test_pre_release_schema_versions_require_no_mutating_runtime_migration(
 
 
 def test_current_schema_opens_idempotently(tmp_path: Path) -> None:
-    runtime = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
+    runtime = recording_exact_runtime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "executor-A",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        PROVIDER_OUTPUT,
     )
     try:
         initialize_schema(runtime.engine)
@@ -543,7 +573,7 @@ def test_bootstrap_returns_configured_start_and_requires_the_exact_new_run_bindi
 
     assert (
         bootstrap_run_binding(runtime.datasource, started.run_id, started.revision_hash)
-        == "agent"
+        == V3_EFFECT_LINE_AGENT_NODE_ID
     )
 
     with pytest.raises(RuntimeError, match="exact durable run binding"):
@@ -557,7 +587,7 @@ def test_bootstrap_returns_configured_start_and_requires_the_exact_new_run_bindi
         connection.execute(
             sa.text(
                 "UPDATE runs SET state='WAITING_RECONCILIATION', "
-                "current_node_id='action', state_version=1"
+                "current_node_id='publish', state_version=1"
             )
         )
     with pytest.raises(RuntimeError, match="exact new durable run"):

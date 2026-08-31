@@ -18,6 +18,7 @@ from atelier2.adapters.dbos.names import (
 )
 from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
 from atelier2.contracts.runs import RunId
+from tests.scenarios.workflows import V3_EFFECT_LINE_DOCUMENT
 
 CRASHED = 86
 HARNESS = Path(__file__).with_name("durable_run_harness.py")
@@ -63,14 +64,7 @@ def test_matching_executor_recovers_after_datasource_commit(tmp_path: Path) -> N
     database = tmp_path / "atelier.sqlite"
     marker = tmp_path / "after-datasource"
     run_id = "recover-me"
-    document = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
-"""
+    document = V3_EFFECT_LINE_DOCUMENT
     revision = hashlib.sha256(document).hexdigest()
     workflow_id = bootstrap_workflow_id_for(RunId(run_id))
     child(database, "initialize", "executor-A")
