@@ -2239,7 +2239,6 @@ export type StreamFrame = z.infer<typeof streamFrameSchema>;
 export type RunV3 = z.infer<typeof runV3Schema>;
 export type RunCancellability = z.infer<typeof runCancellabilitySchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
-export type WorkflowGraph = z.infer<typeof workflowGraphV3Schema>;
 export type WorkflowRevisionDetail = z.infer<
   typeof workflowRevisionDetailSchema
 >;

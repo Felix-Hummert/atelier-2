@@ -71,10 +71,10 @@ NOT_HELD_REASONS: Mapping[NotHeldKind, str] = {
 
 @dataclass(frozen=True)
 class RecognizedWorkflow:
-    """The bytes are one workflow document; only V3 authors its own name."""
+    """The bytes are one workflow document, in the one format the parser admits."""
 
-    format_version: WorkflowFormatVersion
-    name: str | None
+    format_version: Literal[WorkflowFormatVersion.V3]
+    name: str
     description: str | None
 
 

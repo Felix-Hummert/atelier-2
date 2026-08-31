@@ -142,13 +142,26 @@ from tests.scenarios.api import (
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
-_DOCUMENT = b"""format_version: 2
-start: build
+_DOCUMENT = (
+    b"""format_version: 3
+name: Builder then reviewer
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: review, type: agent, role: reviewer, job: review, next: done}
-  - {id: build, type: agent, role: builder, job: build, next: review}
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
 """
+    + declared_output()
+    + b"""  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: review
+    depends_on: [build]
+"""
+    + declared_output()
+)
 
 _V3_DOCUMENT = b"""format_version: 3
 name: One agent
@@ -245,6 +258,7 @@ def _publish_matrix(
             runtime.engine, ProviderId(provider), (configuration,)
         )
         bindings.append(AgentBinding(AgentRole(role), configuration.revision_hash))
+    _publish_output_schema(runtime)
     workflow = WorkflowRevision(_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(tuple(bindings))
@@ -280,16 +294,8 @@ def _publish_single_capability(
     publish_checked_model_registry(
         runtime.engine, ProviderId("anthropic"), (configuration,)
     )
-    workflow = WorkflowRevision(
-        b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
-        if document is None
-        else document
-    )
+    workflow = WorkflowRevision(_V3_DOCUMENT if document is None else document)
+    _publish_output_schema(runtime)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
@@ -301,11 +307,12 @@ def _encoded_binding(
     auth: AuthProfileRevision,
     *,
     include_contract: bool,
+    job: str = "build",
 ) -> dict[str, object]:
     encoded = dict(
         encode_node_binding(
             AgentNodeBindingV2(
-                ResolvedAgentBinding(AgentRole("builder"), configuration, auth), "build"
+                ResolvedAgentBinding(AgentRole("builder"), configuration, auth), job
             )
         )
     )
@@ -935,14 +942,11 @@ def test_list_publication_and_start_share_the_current_registry_decision(
             catalog.publish_agent_configuration_revision(sibling_configuration),
             AgentConfigurationRevisionCreated,
         )
-        workflow = WorkflowRevision(
-            b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (claude,)
         )
+        workflow = WorkflowRevision(_V3_DOCUMENT)
+        _publish_output_schema(runtime)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
 
         listed = client.get(API_PREFIX + "/agent-configuration-revisions")
@@ -959,7 +963,7 @@ nodes:
         refused = client.post(
             API_PREFIX + "/runs",
             json={
-                "workflow_format_version": 2,
+                "workflow_format_version": 3,
                 "run_id": "unavailable-new-draft",
                 "workflow_revision_hash": workflow.revision_hash.value,
                 "agent_bindings": [
@@ -968,6 +972,7 @@ nodes:
                         "agent_configuration_revision_hash": claude.revision_hash.value,
                     }
                 ],
+                "orders": [],
             },
         )
         assert refused.status_code == 409
@@ -1086,13 +1091,24 @@ def test_bound_unstarted_run_fails_without_an_attempt_when_executor_is_unavailab
 def test_wait_predecessor_stays_intact_until_it_reaches_an_unavailable_executor(
     tmp_path: Path,
 ) -> None:
-    wait_then_agent = b"""format_version: 2
-start: ask
+    wait_then_agent = (
+        b"""format_version: 3
+name: Wait then agent
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-  - {id: ask, type: wait, answer_type: integer, next: build}
+  - id: ask
+    type: wait
+    prompt: Approve before the agent runs.
 """
+        + declared_output(name="approval")
+        + b"""  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
+    depends_on: [ask]
+"""
+        + declared_output()
+    )
     seeded_factory = RecordingAgentExecutorFactoryV2(
         "anthropic", "claude-cli/v1", "seed", b"unused"
     )
@@ -1197,7 +1213,9 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
             AgentConfigurationRevisionFormatVersion.V2,
         )
         request = _replayed_request(
-            _encoded_binding(configuration, auth, include_contract=True),
+            _encoded_binding(
+                configuration, auth, include_contract=True, job="Build the one thing."
+            ),
             run_id,
             workflow.revision_hash,
             "build",
@@ -1486,7 +1504,7 @@ def test_completed_v2_history_reopens_without_process_supervision(
         tmp_path,
         (
             RecordingAgentExecutorFactoryV2(
-                "anthropic", "claude-cli/v1", "completed-history", b"built"
+                "anthropic", "claude-cli/v1", "completed-history", b'"built"'
             ),
         ),
     )
@@ -1725,7 +1743,7 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
         assert workflow.status_code == 201
         revision_hash = workflow.json()["workflow_revision_hash"]
         request = {
-            "workflow_format_version": 2,
+            "workflow_format_version": 3,
             "run_id": "api/catalog-roundtrip",
             "workflow_revision_hash": revision_hash,
             "agent_bindings": [
@@ -1734,6 +1752,7 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
                     "agent_configuration_revision_hash": configuration_hash,
                 }
             ],
+            "orders": [],
         }
 
         created = client.post(API_PREFIX + "/runs", json=request)
@@ -2036,7 +2055,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
         return client.post(
             API_PREFIX + "/runs",
             json={
-                "workflow_format_version": 2,
+                "workflow_format_version": 3,
                 "run_id": run_id,
                 "workflow_revision_hash": revision_hash,
                 "agent_bindings": [
@@ -2045,6 +2064,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
                         "agent_configuration_revision_hash": configuration_hash,
                     }
                 ],
+                "orders": [],
             },
         )
 
@@ -2158,7 +2178,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
         unavailable = _api_client(production_empty).post(
             API_PREFIX + "/runs",
             json={
-                "workflow_format_version": 2,
+                "workflow_format_version": 3,
                 "run_id": "no-production-executor",
                 "workflow_revision_hash": seeded_revision,
                 "agent_bindings": [
@@ -2167,6 +2187,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
                         "agent_configuration_revision_hash": seeded_configuration,
                     }
                 ],
+                "orders": [],
             },
         )
         assert unavailable.status_code == 409

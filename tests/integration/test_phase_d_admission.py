@@ -124,10 +124,32 @@ from tests.scenarios.api import (
 from tests.scenarios.runs import publish_revision
 
 PROJECT = ProjectId("project1")
-BINDING_FREE_WORKFLOW = b"""format_version: 1
-start: final
+BINDING_FREE_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
+"""The one schema a wait-only document needs published before it is executable.
+
+`evaluate_executability` resolves every reference a V3 document pins, including
+a Wait's declared output schema, before the start admits it -- so a line with no
+agent role binding still needs this one pinned revision published, which
+`_found_lineage` does for every document it seats.
+"""
+
+BINDING_FREE_WORKFLOW = f"""format_version: 3
+name: Binding-free wait line
 nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - id: approve
+    type: wait
+    prompt: Add [2, 3].
+    outputs:
+      - name: approval
+        schema: {{ref: approval-schema, revision: {BINDING_FREE_SCHEMA.revision_hash.value}}}
+""".encode()
+"""A wait-only document: startable without resolving any agent role binding.
+
+No node here declares a role, so no agent executor is ever needed to admit it --
+exactly what these queue-launch tests want to hold constant while they vary the
+admission machinery around it. The bracketed pair inside the prompt plays the
+role a differing operand pair once did: `.replace(...)` on it is what gives a
+test a second, distinguishable revision of the same shape.
 """
 
 
@@ -148,6 +170,7 @@ def _found_lineage(
     revision = WorkflowRevision(document)
     publish_revision(engine, revision)
     catalog = DbosCatalogStore(engine)
+    catalog.publish_revision(BINDING_FREE_SCHEMA)
     published = PublishedRevision(RevisionKind.WORKFLOW, document)
     catalog.publish_revision(published)
     founded = catalog.found_lineage(

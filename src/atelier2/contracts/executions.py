@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -29,12 +28,6 @@ else:
     AgentAttemptCancellationDisposition = StrEnum
     AgentAttemptId = Sha256Hash
     AgentAttemptReplacement = StrEnum
-
-_CANONICAL_INTEGER_BYTES = re.compile(rb"(?:0|-?[1-9][0-9]*)")
-
-
-def is_canonical_integer_bytes(value: bytes) -> bool:
-    return _CANONICAL_INTEGER_BYTES.fullmatch(value) is not None
 
 
 class NodeExecutionId(Sha256Hash):

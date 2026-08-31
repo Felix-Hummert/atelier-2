@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -234,37 +235,13 @@ def test_a_historic_v3_run_lists_even_when_today_would_refuse_to_start_it(
 def test_a_corrupt_run_list_logs_the_reason_it_refused(
     runtime: DbosRuntime, process_log: io.StringIO
 ) -> None:
-    revision = WorkflowRevision(
-        b"""format_version: 1
-start: agent
-nodes:
-  - {id: agent, type: agent, job: test, output: result, next: final}
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-"""
-    )
+    run_id = RunId("poison-row")
+    _seed_historic_run(runtime, run_id)
     with runtime.engine.begin() as connection:
         connection.execute(
-            workflow_revisions.insert(),
-            {
-                "revision_hash": revision.revision_hash.value,
-                "document": revision.document,
-            },
-        )
-        connection.execute(
-            runs.insert(),
-            {
-                "run_id": "poison-row",
-                "bootstrap_workflow_id": "poison-workflow",
-                "revision_hash": revision.revision_hash.value,
-                "workflow_format_version": 1,
-                "agent_binding_set_hash": None,
-                "current_node_id": "missing-node",
-                "current_round_ordinal": FIRST_ROUND_ORDINAL,
-                "state": RunState.STARTED.value,
-                "state_version": 0,
-                "last_event_sequence": 0,
-                "terminal_hash": None,
-            },
+            sa.update(runs)
+            .where(runs.c.run_id == run_id.value)
+            .values(current_node_id="missing-node")
         )
     client = TestClient(
         create_app(

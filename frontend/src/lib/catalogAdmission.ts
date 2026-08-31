@@ -27,7 +27,6 @@ export async function admitPublishedRevision(
   actor: string,
   activatedAt: string
 ): Promise<void> {
-  if (revision.graph.workflow_format_version !== 3) return;
   if (!isCatalogDisplayName(revision.graph.name)) return;
   try {
     await api.foundCatalogLineage({

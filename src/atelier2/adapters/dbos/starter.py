@@ -637,12 +637,16 @@ class DbosDurableRunStarter:
         )
         if resolved.uncast_roles:
             return DurableUncastAgentRoles(resolved.uncast_roles)
-        if resolved.agent_bindings == requested:
-            return request
         if isinstance(request, StartPublishedRunRequest):
+            # `_start` requires a V2/V3-typed request for a V3 graph even where
+            # nothing needed casting -- a bare request declares no
+            # `agent_bindings` at all, which a zero-role V3 document (a graph
+            # this branch is reached for either way) still must carry.
             return StartPublishedRunRequestV2(
                 request.run_id, request.revision_hash, resolved.agent_bindings
             )
+        if resolved.agent_bindings == requested:
+            return request
         return replace(request, agent_bindings=resolved.agent_bindings)
 
     def _start(

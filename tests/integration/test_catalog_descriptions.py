@@ -2,10 +2,8 @@
 
 ADR 0007 decision 4 refuses a per-attribute column beside the document, so every
 field a listing shows is parsed from the stored bytes by the one document parser.
-These tests therefore publish real documents and read them back, rather than
-asserting against a projection built by hand. A format-3 document goes through
-the real HTTP boundary; a format-1 one is seated in the store the way the store
-still holds the revisions it accepted before that door narrowed.
+These tests therefore publish real documents over the real HTTP boundary and
+read them back, rather than asserting against a projection built by hand.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ from atelier2.adapters.dbos.schema import workflow_revisions
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
@@ -32,15 +30,7 @@ from atelier2.ports.workflow_revisions import (
     QueryDurableStateCorrupt,
 )
 from tests.scenarios.api import api_limits, durable_api_client, durable_queries
-from tests.scenarios.runs import publish_revision
-from tests.scenarios.workflows import V3_DOCUMENT, V3_NODE_COUNT
-
-V1_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: agent, type: agent, job: test, output: payload, next: final}
-"""
+from tests.scenarios.workflows import V3_DOCUMENT, V3_NODE_COUNT, V3_WAIT_LINE_DOCUMENT
 
 DESCRIBED_NAME = "Nightly regression sweep"
 DESCRIBED_DESCRIPTION = "Runs the sweep and files what it finds."
@@ -88,21 +78,6 @@ def _publish_over_the_api(client: TestClient, document: bytes) -> str:
     )
     assert response.status_code in (200, 201), response.text
     return str(response.json()["workflow_revision_hash"])
-
-
-def _publish_into_the_store(runtime: DbosRuntime, document: bytes) -> str:
-    """Seat a revision the publication door no longer admits.
-
-    A store keeps every revision it ever accepted -- none is rewritten and none
-    is deleted -- so a format-1 revision published before the API narrowed to
-    format 3 is still there and still has to be listed. That door cannot produce
-    one any more, so this reaches the same use case the route calls and stops
-    short of the response the route can no longer project.
-    """
-
-    revision = WorkflowRevision(document)
-    publish_revision(runtime.engine, revision)
-    return revision.revision_hash.value
 
 
 def _listed(client: TestClient) -> dict[str, dict[str, object]]:
@@ -161,21 +136,6 @@ def test_a_published_revision_is_listed_with_the_name_its_author_wrote(
     assert listed["executable"] is False
 
 
-@pytest.mark.proves("a-format-that-declares-no-name-is-listed-as-unnamed")
-def test_a_format_that_declares_no_name_is_listed_as_unnamed(
-    runtime: DbosRuntime,
-) -> None:
-    client = durable_api_client(runtime)
-    revision_hash = _publish_into_the_store(runtime, V1_DOCUMENT)
-
-    listed = _listed(client)[revision_hash]
-
-    assert listed["name"] is None
-    assert listed["description"] is None
-    assert listed["workflow_format_version"] == 1
-    assert listed["executable"] is True
-
-
 @pytest.mark.proves(
     "the-description-is-read-from-the-published-bytes-and-from-nowhere-else"
 )
@@ -220,7 +180,7 @@ def test_an_enriched_page_stops_at_its_derived_bound_and_pages_on(
         {
             _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT),
             _publish_over_the_api(client, V3_DOCUMENT),
-            _publish_into_the_store(runtime, V1_DOCUMENT),
+            _publish_over_the_api(client, V3_WAIT_LINE_DOCUMENT),
         }
     )
     queries = durable_queries(runtime.engine)
@@ -265,7 +225,7 @@ def test_each_bound_stops_a_page_on_its_own_and_pages_through_to_the_end(
         {
             _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT),
             _publish_over_the_api(client, V3_DOCUMENT),
-            _publish_into_the_store(runtime, V1_DOCUMENT),
+            _publish_over_the_api(client, V3_WAIT_LINE_DOCUMENT),
         }
     )
     queries = durable_queries(runtime.engine)
@@ -290,7 +250,7 @@ def test_a_generous_budget_lists_every_revision_and_ends_the_page(
     client = durable_api_client(runtime)
     _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
     _publish_over_the_api(client, V3_DOCUMENT)
-    _publish_into_the_store(runtime, V1_DOCUMENT)
+    _publish_over_the_api(client, V3_WAIT_LINE_DOCUMENT)
     queries = durable_queries(runtime.engine)
 
     page = queries.list_described_workflow_revisions(
@@ -307,10 +267,10 @@ def test_a_generous_budget_lists_every_revision_and_ends_the_page(
 def test_the_frozen_hash_only_listing_still_answers_beside_the_enriched_one(
     runtime: DbosRuntime,
 ) -> None:
-    """The V1 page query keeps its own shape; the enriched page is a second read."""
+    """The frozen page query keeps its own shape; the enriched page is a second read."""
 
     client = durable_api_client(runtime)
-    _publish_into_the_store(runtime, V1_DOCUMENT)
+    _publish_over_the_api(client, V3_WAIT_LINE_DOCUMENT)
     _publish_over_the_api(client, V3_DESCRIBED_DOCUMENT)
     queries = durable_queries(runtime.engine)
 
@@ -350,13 +310,15 @@ def test_a_stored_document_that_denies_its_own_hash_is_named_not_listed(
 
     Publication and the table's own triggers make this unreachable through the
     product -- a revision cannot be updated or deleted -- so the row is written
-    directly, which is the shape damage at rest would take.
+    directly, which is the shape damage at rest would take. The hash check runs
+    before the document is parsed, so the bytes below never reach the grammar;
+    only their mismatch with the stored key matters.
     """
 
     with runtime.engine.begin() as connection:
         connection.execute(
             sa.insert(workflow_revisions).values(
-                revision_hash="0" * 64, document=V1_DOCUMENT
+                revision_hash="0" * 64, document=b"opaque bytes, never parsed"
             )
         )
     queries = durable_queries(runtime.engine)

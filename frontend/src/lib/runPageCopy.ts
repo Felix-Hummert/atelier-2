@@ -124,7 +124,6 @@ export const runPageCopy = {
   graphUnreadable: "The graph could not be read",
   workflowGraphUnreadable: "The workflow graph could not be read.",
   documentMismatch: "The document the workshop returned is not the one this run followed.",
-  olderDocumentFormat: "This run follows an older document format this page cannot draw.",
   nodeUnreadable: "This node could not be read",
   closeNodeDetail: "Close node detail",
   stoppedHere: "Stopped here:",

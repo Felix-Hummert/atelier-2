@@ -12,11 +12,11 @@ from atelier2.contracts.agents import MAXIMUM_PROVIDER_ID_CHARACTERS
 
 
 class RecognizedWorkflowResource(ApiModel):
-    """The bytes are one workflow; a format older than 3 authors no name."""
+    """The bytes are one workflow, in the one format the parser admits."""
 
     outcome: Literal["workflow"]
-    workflow_format_version: Literal[1, 2, 3]
-    name: str | None
+    workflow_format_version: Literal[3]
+    name: str
     description: str | None
 
 

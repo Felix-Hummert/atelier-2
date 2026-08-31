@@ -836,6 +836,7 @@ class WorkflowRevisionPageResource(ApiModel):
 class WorkflowRevisionSummaryResourceV2(ApiModel):
     """A listed revision: its hash, its format, and what its own bytes call it.
 
+    A format-3 document always declares a name, so `name` is never absent here.
     `description` is absent where the document declares none, which is the
     truthful answer rather than a line invented to fill the column.
     """
@@ -844,7 +845,7 @@ class WorkflowRevisionSummaryResourceV2(ApiModel):
     workflow_format_version: Literal[3]
     executable: bool
     not_executable_reason: str | None
-    name: str | None
+    name: str
     description: str | None
 
     @model_validator(mode="after")

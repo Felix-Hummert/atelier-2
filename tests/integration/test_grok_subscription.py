@@ -18,6 +18,7 @@ from dbos import DBOSClient
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
@@ -74,7 +75,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
     InstanceAccepted,
@@ -106,8 +107,10 @@ from atelier2.ports.durable_runs import (
 from tests.scenarios.agents import (
     agent_attempt_execution,
     leased_directory_identity,
+    publish_checked_model_registry,
     runtime_workspace_owner,
 )
+from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 MEASURED_GROK_VERSION = "1.0.5"
 
@@ -120,11 +123,24 @@ def scratch_root_outside_a_worktree() -> Iterator[Path]:
         yield Path(directory)
 
 
-HOST_DOCUMENT = b"""format_version: 2
-start: build
+HOST_DOCUMENT = f"""format_version: 3
+name: Grok subscription host document
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
+    outputs:
+      - name: result
+        schema: {{ref: result-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
+""".encode()
+"""One node, and its own sink: the line's single real attempt is the whole run.
+
+A second, trivially-completing node stood on the deleted V1/V2 grammar's
+subworkflow kind; V3 has no node that completes without a real attempt, so a
+second node here would need its own executor pass and, worse, would race this
+file's cleanup assertion against a workspace that node had not yet vacated.
 """
 INTROSPECTING_GROK = """
 import json, os, sys, tomllib
@@ -1292,7 +1308,11 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
             catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
         )
         interactive = AgentConfigurationRevision(
-            "grok-4",
+            # A distinct model name from `headless` below: the checked model
+            # registry names one canonical configuration per model, so the two
+            # capability variants under study here need two names to both be
+            # registered and reachable by their own exact binding.
+            "grok-4-interactive",
             auth.revision_hash,
             GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
             AgentExecutionCapability.INTERACTIVE,
@@ -1313,6 +1333,10 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
             catalog.publish_agent_configuration_revision(headless),
             AgentConfigurationRevisionCreated,
         )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("xai"), (interactive, headless)
+        )
+        DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
         workflow = WorkflowRevision(HOST_DOCUMENT)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         starter = DbosDurableRunStarter(
@@ -1343,6 +1367,7 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         runtime.launch()
         deadline = time.monotonic() + 10
         state = ""
+        workspace_cleared = False
         while time.monotonic() < deadline:
             with runtime.engine.connect() as connection:
                 state = str(
@@ -1352,11 +1377,12 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
                         .where(runs.c.run_id == "grok/headless")
                     )
                 )
-            if state == "COMPLETED":
+            workspace_cleared = not list(candidate.workspace.iterdir())
+            if state == "COMPLETED" and workspace_cleared:
                 break
             time.sleep(0.02)
         assert state == "COMPLETED"
-        assert list(candidate.workspace.iterdir()) == []
+        assert workspace_cleared
         assert (candidate.credential_directory / "auth.json").read_bytes() == b"{}"
     finally:
         runtime.close()
@@ -1582,7 +1608,11 @@ def grok_subscription_start(
         AgentConfigurationRevisionFormatVersion.V2,
     )
     catalog.publish_agent_configuration_revision(configuration)
-    workflow = WorkflowRevision(HOST_DOCUMENT.replace(b"job: build", b"job: " + job))
+    publish_checked_model_registry(runtime.engine, ProviderId("xai"), (configuration,))
+    DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
+    workflow = WorkflowRevision(
+        HOST_DOCUMENT.replace(b"instruction: build", b"instruction: " + job)
+    )
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     started = DbosDurableRunStarter(
         runtime.engine,
@@ -1613,7 +1643,7 @@ def grok_subscription_attempt(
         runtime, run_name, requested_capability, executor_revision, job
     )
     assert isinstance(started, DurableRunCreated)
-    assert isinstance(started.run, RunV2)
+    assert isinstance(started.run, RunV3)
     return agent_attempt_execution(
         AgentExecutionRequestV2(
             NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),

@@ -124,8 +124,9 @@ substitutes its authored source or revision. Per-run work instead enters through
 declared `graph_input`, supplied as exact `RunInput` material. A document outside
 that shape is refused at the start naming what it is waiting for — a node kind
 nothing interprets, a branch nothing chooses between, an authored form nothing
-binds — rather than naming its version, and writes no run. V1 and V2 documents keep
-their exact meaning under their own models, and their wire bytes are unchanged.
+binds — rather than naming its version, and writes no run. The V1 and V2 document
+grammar is deleted: the parser admits format 3 only, and a document declaring
+format 1 or 2 is refused rather than read.
 [ADR 0006](../decisions/0006-node-vocabulary.md) owns this vocabulary and the staging
 rule behind it.
 

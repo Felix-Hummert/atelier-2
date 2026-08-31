@@ -44,8 +44,8 @@ from atelier2.application.publish_workflow_revision import (
     publish_workflow_revision,
 )
 from atelier2.application.start_published_run import (
-    InvalidAgentBindings,
     RunIdentityConflict,
+    UncastAgentRoles,
     start_published_run,
 )
 from atelier2.contracts.agents import AgentBindingSet
@@ -250,26 +250,31 @@ def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
     assert count(runtime.engine, "workflow_status") == 0
 
 
-def test_a_v1_start_request_refuses_a_v2_graph_without_a_durable_run(
+def test_an_uncast_v3_role_refuses_a_start_without_a_durable_run(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
-    runtime, starter = storage
-    document = b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
+    """A declared role no project default resolves refuses cleanly, before any write.
 
-    publish_revision(runtime.engine, revision(document))
+    This test once proved the same invariant -- an unbound start writes nothing
+    durable -- through a V2 graph refused as `InvalidAgentBindings`. The V1/V2
+    document grammar that made that refusal reachable is deleted (#901 slice 5,
+    #934); a V3 document proves the surviving invariant through the refusal a
+    V3 role actually gets when nothing casts it, `UncastAgentRoles`, since V3
+    resolves each role against project defaults rather than accepting or
+    refusing a whole binding set at once.
+    """
+    runtime, starter = storage
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    publish_revision(runtime.engine, revision())
     result = start_published_run(
-        RunId("run-1"), revision(document).revision_hash, None, starter
+        RunId("run-1"), revision().revision_hash, None, starter
     )
 
-    assert isinstance(result, InvalidAgentBindings)
+    assert isinstance(result, UncastAgentRoles)
     for table in PRODUCT_TABLE_NAMES - {
         "atelier_schema_versions",
         "workflow_revisions",
+        "published_revisions",
     }:
         assert count(runtime.engine, table) == 0
     assert count(runtime.engine, "workflow_status") == 0

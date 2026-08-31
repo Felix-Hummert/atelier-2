@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,19 +14,49 @@ from atelier2.adapters.dbos.run_store import (
     commit_subworkflow_completed,
 )
 from atelier2.adapters.dbos.runtime import create_canonical_engine
-from atelier2.adapters.dbos.schema import initialize_schema, runs, workflow_revisions
+from atelier2.adapters.dbos.schema import (
+    initialize_schema,
+    run_agent_bindings,
+    run_configuration_revisions,
+    runs,
+    workflow_revisions,
+)
+from atelier2.contracts.agents import (
+    AgentBinding,
+    AgentBindingSet,
+    AgentConfigurationRevisionHash,
+    AgentRole,
+)
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevision,
 )
+from atelier2.ports.agent_executions import AgentExecutorRegistry
+from tests.scenarios.agents import failing_agent_executor_factory
+from tests.scenarios.runs import publish_v3_agent_bindings
 
-_DOCUMENT = b"""format_version: 1
-start: agent
+_DOCUMENT = b"""format_version: 3
+name: Terminal rule fixture
 nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: agent, type: agent, job: implement, output: text, next: final}
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Produce the text the sink stands on.
+    outputs:
+      - name: text
+        schema: {ref: text-schema, revision: schema-text}
+  - id: final
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Stand as this run's sink.
+    depends_on: [agent]
+    outputs:
+      - name: text
+        schema: {ref: text-schema, revision: schema-text}
 """
 
 _RUN_ID = RunId("run-terminal-rule")
@@ -41,8 +72,26 @@ def engine(tmp_path: Path) -> Iterator[Engine]:
         engine.dispose()
 
 
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def _seed_run_standing_on(engine: Engine, node_id: str) -> WorkflowRevision:
     revision = WorkflowRevision(_DOCUMENT)
+    registry = AgentExecutorRegistry((failing_agent_executor_factory("exact", []),))
+    bindings = publish_v3_agent_bindings(engine, registry)
+    binding_set = AgentBindingSet(
+        tuple(
+            AgentBinding(
+                AgentRole(binding.role),
+                AgentConfigurationRevisionHash(
+                    binding.agent_configuration_revision_hash
+                ),
+            )
+            for binding in bindings
+        )
+    )
+    configuration_hash = _digest(f"configuration-{_RUN_ID.value}")
     with Session(engine) as session:
         session.execute(
             workflow_revisions.insert().values(
@@ -50,17 +99,40 @@ def _seed_run_standing_on(engine: Engine, node_id: str) -> WorkflowRevision:
             )
         )
         session.execute(
+            run_configuration_revisions.insert().values(
+                revision_hash=configuration_hash,
+                preimage=b"seeded terminal-rule run configuration",
+            )
+        )
+        session.execute(
             runs.insert().values(
                 run_id=_RUN_ID.value,
                 bootstrap_workflow_id=f"bootstrap-{_RUN_ID.value}",
                 revision_hash=revision.revision_hash.value,
-                workflow_format_version=1,
+                workflow_format_version=3,
+                run_configuration_revision_hash=configuration_hash,
+                agent_binding_set_hash=binding_set.binding_set_hash.value,
                 current_node_id=node_id,
                 current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state=RunState.STARTED.value,
                 state_version=0,
                 last_event_sequence=0,
             )
+        )
+        session.execute(
+            run_agent_bindings.insert(),
+            [
+                {
+                    "run_id": _RUN_ID.value,
+                    "revision_hash": revision.revision_hash.value,
+                    "binding_set_hash": binding_set.binding_set_hash.value,
+                    "role": binding.role,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash
+                    ),
+                }
+                for binding in bindings
+            ],
         )
         session.commit()
     return revision

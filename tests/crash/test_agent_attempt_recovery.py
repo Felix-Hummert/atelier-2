@@ -413,12 +413,10 @@ def test_restart_lifts_an_operator_cancelled_run_and_keeps_its_hash_across_a_sec
         ("AGENT_CANCEL_REQUESTED",),
         ("AGENT_INTERRUPTED",),
     )
-    # The harness's own workflow document is format 2: #439 P3's receipt is a
-    # V3-only `node-receipt/v3` (proved directly, with a V3 run, in
-    # `tests/integration/test_run_cancellation.py`); a format-2 run stays
-    # honestly receipt-less here, the same as every other leftover family
-    # `tests/integration/test_interrupted_uncontinuable_inventory.py` proves.
-    assert rows(tmp_path, "SELECT COUNT(*) FROM node_receipts_v3") == ((0,),)
+    # The harness's own workflow document is format 3 (#901 slice 5), so this
+    # cancellation writes the same `node-receipt/v3` #439 P3 proves directly,
+    # with a V3 run, in `tests/integration/test_run_cancellation.py`.
+    assert rows(tmp_path, "SELECT COUNT(*) FROM node_receipts_v3") == ((1,),)
 
     child(tmp_path, "recover-operator-cancellation")
 
