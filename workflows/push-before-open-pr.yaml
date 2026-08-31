@@ -1,7 +1,8 @@
 format_version: 3
 name: push-before-open-pr
 description: >-
-  One headless builder publishes its captured candidate through the
+  One workspace-tool builder implements the ordered work item where it
+  stands and publishes its captured candidate through the
   push-atelier-commit grant before the successor opens the matching pull
   request from that confirmed push receipt.
 graph_inputs:
@@ -16,7 +17,7 @@ nodes:
     # The pinned grant carries Grok 4.6's committer identity, so the node
     # pins the model -- receipt committer and pushing model cannot diverge.
     model: grok-4.6
-    mode: headless
+    mode: headless_with_tools
     instruction: >-
       Implement the named work item and return a concise JSON string summarizing
       the candidate you produced.

@@ -229,7 +229,7 @@ def _publish_workflow(
         "builder",
         auth.revision_hash,
         AgentExecutorRevision("exact/v1"),
-        AgentExecutionCapability.HEADLESS,
+        AgentExecutionCapability.HEADLESS_WITH_TOOLS,
         AgentConfigurationRevisionFormatVersion.V2,
     )
     assert isinstance(
@@ -288,6 +288,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         "exact/v1",
         "exact-operation",
         AGENT_OUTPUT,
+        capability_set=frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS}),
         command=launching(
             sys.executable,
             "-c",
