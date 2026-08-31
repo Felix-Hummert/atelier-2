@@ -1,0 +1,40 @@
+format_version: 3
+name: push-before-open-pr
+description: >-
+  One headless builder publishes its captured candidate through the
+  push-atelier-commit grant before the successor opens the matching pull
+  request from that confirmed push receipt.
+graph_inputs:
+  - name: work_item
+    schema:
+      ref: work-item
+      revision: "e57e281851b809afc32527cdde2a2a76b033f4b6b4301ad592472147bc7c978a"
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    # The pinned grant carries Grok 4.6's committer identity, so the node
+    # pins the model -- receipt committer and pushing model cannot diverge.
+    model: grok-4.6
+    mode: headless
+    instruction: >-
+      Implement the named work item and return a concise JSON string summarizing
+      the candidate you produced.
+    tools:
+      - ref: push-atelier-commit
+        revision: "32eb46fb44f23c97a7b978a9de08c8a764281e6944426bb823329cfc7f9c5b1a"
+    inputs:
+      - name: work_item
+        from:
+          graph_input: work_item
+    outputs:
+      - name: result
+        schema:
+          ref: nonempty_string
+          revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - id: open-pull-request
+    type: action
+    operation:
+      ref: open-pr
+      revision: "420440a07ba8d6f2ba953d02e50d3889a4128ce42fe3e8562fead9523e341f37"
+    depends_on: [implement]
