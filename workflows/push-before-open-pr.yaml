@@ -24,6 +24,13 @@ nodes:
     tools:
       - ref: push-atelier-commit
         revision: "32eb46fb44f23c97a7b978a9de08c8a764281e6944426bb823329cfc7f9c5b1a"
+    # The workspace executor's default turn cap is sized for the
+    # read-then-answer class and died mid-implementation (gh:926 run 3);
+    # this budget covers explore+edit+verify+push with headroom while
+    # still cutting off a wedged attempt within minutes.
+    budget:
+      ref: push-implement
+      revision: "da6b2bf8fbf5e16b31cd788c4547003f970422aaf2316eb9d2b485b676707b15"
     inputs:
       - name: work_item
         from:
