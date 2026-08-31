@@ -92,6 +92,38 @@ REFUSED_DOCUMENTS = (
         ProviderProbeReceiptRefusal.UNKNOWN_RESULT,
     ),
     (
+        canonical_document(vector=1),
+        ProviderProbeReceiptRefusal.INVALID_FIELD,
+    ),
+    (
+        canonical_document(result=True),
+        ProviderProbeReceiptRefusal.UNKNOWN_RESULT,
+    ),
+    (
+        canonical_document(source_commit=1.5),
+        ProviderProbeReceiptRefusal.INVALID_FIELD,
+    ),
+    (
+        canonical_document(workflow_hash=None),
+        ProviderProbeReceiptRefusal.INVALID_FIELD,
+    ),
+    (
+        canonical_document(terminal_hash=_MISSING),
+        ProviderProbeReceiptRefusal.MISSING_FIELD,
+    ),
+    (
+        canonical_document(problem_code="provider-unavailable"),
+        ProviderProbeReceiptRefusal.UNKNOWN_FIELD,
+    ),
+    (
+        canonical_document(result="failed", terminal_hash=_MISSING),
+        ProviderProbeReceiptRefusal.MISSING_FIELD,
+    ),
+    (
+        canonical_document(result="failed"),
+        ProviderProbeReceiptRefusal.UNKNOWN_FIELD,
+    ),
+    (
         canonical_document(source_commit="not-a-commit"),
         ProviderProbeReceiptRefusal.INVALID_FIELD,
     ),
@@ -112,17 +144,32 @@ def test_every_non_receipt_form_is_refused_by_name() -> None:
 
 def test_a_result_carries_exactly_its_own_evidence() -> None:
     cases = (
-        (ProviderProbeResult.SUCCEEDED, {"terminal_hash": None}),
-        (ProviderProbeResult.FAILED, {"problem_code": None}),
+        (
+            ProviderProbeResult.SUCCEEDED,
+            {"terminal_hash": None},
+            "a succeeded provider probe carries a terminal hash",
+        ),
+        (
+            ProviderProbeResult.FAILED,
+            {"problem_code": None},
+            "a failed provider probe carries a problem code",
+        ),
         (
             ProviderProbeResult.SUCCEEDED,
             {"problem_code": ProviderProbeProblemCode("provider-unavailable")},
+            "a succeeded provider probe carries no problem code",
+        ),
+        (
+            ProviderProbeResult.FAILED,
+            {"terminal_hash": Sha256Hash("4" * 64)},
+            "a failed provider probe carries no terminal hash",
         ),
     )
 
-    for result, changes in cases:
+    for result, changes, expected_reason in cases:
         try:
             replace(receipt(result), **changes)
-        except ValueError:
+        except ValueError as refused:
+            assert str(refused) == expected_reason
             continue
         raise AssertionError(f"{result.value} admitted evidence {changes}")
