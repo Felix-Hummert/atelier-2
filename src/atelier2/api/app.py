@@ -194,7 +194,7 @@ def bound_use_cases(
                 limit,
                 enriched_page_budget,
                 ports.workflow_revision_queries,
-                ports.published_revision_registry,
+                ports.published_revision_resolver_sessions,
             )
         ),
         get_run=lambda run_id: get_run(run_id, ports.run_queries),

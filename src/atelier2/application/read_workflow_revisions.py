@@ -45,6 +45,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
     PublishedRevisionResolver,
+    PublishedRevisionResolverWithSession,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.workflow_revisions import (
@@ -302,27 +303,35 @@ def list_described_workflow_revisions(
     limit: int,
     budget: EnrichedPageBudget,
     queries: WorkflowRevisionQueries,
-    resolver: PublishedRevisionResolver,
+    resolver: PublishedRevisionResolverWithSession,
 ) -> ListDescribedWorkflowRevisionsResult:
     """One page of revisions that carries what each document says about itself.
 
     The budget is the composition's decision rather than the caller's, so no
     route can widen what one page is allowed to read from the store. Each item
     is judged executable by the same rule the detail read and the start apply,
-    so a listing never promises a start the service then refuses.
+    so a listing never promises a start the service then refuses. `resolver`
+    is required to open a session because this read composes many lookups
+    into one page: an adapter that cannot open one is a wiring defect this
+    signature refuses to hide behind a silent one-lookup-at-a-time fallback
+    (#937) -- every reference the page resolves runs through the one session
+    opened for the whole page, never a fresh lookup per reference.
     """
 
     match queries.list_described_workflow_revisions(after, limit, budget):
         case DescribedWorkflowRevisionPage(items, next_after):
-            described: list[DescribedWorkflowRevision] = []
-            for projection in items:
-                read = describe_workflow_revision(projection, resolver)
-                if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
-                    return read
-                described.append(
-                    DescribedWorkflowRevision(projection, read.not_executable_reason)
-                )
-            return WorkflowRevisionsDescribed(tuple(described), next_after)
+            with resolver.resolver_session() as page_resolver:
+                described: list[DescribedWorkflowRevision] = []
+                for projection in items:
+                    read = describe_workflow_revision(projection, page_resolver)
+                    if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
+                        return read
+                    described.append(
+                        DescribedWorkflowRevision(
+                            projection, read.not_executable_reason
+                        )
+                    )
+                return WorkflowRevisionsDescribed(tuple(described), next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
         case PortProjectionTooLarge():
