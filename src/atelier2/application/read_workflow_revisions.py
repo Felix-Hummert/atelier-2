@@ -9,10 +9,9 @@ outcome is a new member here rather than a new type leaking into every route.
 from __future__ import annotations
 
 import json
-from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal, Protocol, assert_never, cast, runtime_checkable
+from typing import Literal, assert_never, cast
 
 from atelier2.application.evaluate_executability import (
     DocumentNotExecutable,
@@ -46,6 +45,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
     PublishedRevisionResolver,
+    PublishedRevisionResolverWithSession,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.workflow_revisions import (
@@ -298,50 +298,29 @@ def list_workflow_revisions(
             assert_never(unreachable)
 
 
-@runtime_checkable
-class _SessionedResolver(Protocol):
-    """A resolver that can also open one connection reused by many lookups.
-
-    This composed read judges every item on one page, each of which may pin
-    its own references -- the one caller that resolves many references for a
-    single answer, unlike every other reader of `PublishedRevisionResolver`,
-    which asks for exactly one. Widening that shared port with a connection
-    concept every other caller would have to carry, just to serve this one, is
-    the dishonest fix; asking the handed resolver whether it separately offers
-    a session is not. Nothing requires the answer to be yes: a resolver that
-    does not open a session at all is read one reference at a time, exactly as
-    before this existed.
-    """
-
-    def resolver_session(self) -> AbstractContextManager[PublishedRevisionResolver]: ...
-
-
 def list_described_workflow_revisions(
     after: WorkflowRevisionHash | None,
     limit: int,
     budget: EnrichedPageBudget,
     queries: WorkflowRevisionQueries,
-    resolver: PublishedRevisionResolver,
+    resolver: PublishedRevisionResolverWithSession,
 ) -> ListDescribedWorkflowRevisionsResult:
     """One page of revisions that carries what each document says about itself.
 
     The budget is the composition's decision rather than the caller's, so no
     route can widen what one page is allowed to read from the store. Each item
     is judged executable by the same rule the detail read and the start apply,
-    so a listing never promises a start the service then refuses. Every
-    reference the page resolves along the way runs through the one session
-    `resolver` opens for the whole page, when it offers one, rather than a
-    fresh lookup per reference.
+    so a listing never promises a start the service then refuses. `resolver`
+    is required to open a session because this read composes many lookups
+    into one page: an adapter that cannot open one is a wiring defect this
+    signature refuses to hide behind a silent one-lookup-at-a-time fallback
+    (#937) -- every reference the page resolves runs through the one session
+    opened for the whole page, never a fresh lookup per reference.
     """
 
     match queries.list_described_workflow_revisions(after, limit, budget):
         case DescribedWorkflowRevisionPage(items, next_after):
-            session = (
-                resolver.resolver_session()
-                if isinstance(resolver, _SessionedResolver)
-                else nullcontext(resolver)
-            )
-            with session as page_resolver:
+            with resolver.resolver_session() as page_resolver:
                 described: list[DescribedWorkflowRevision] = []
                 for projection in items:
                     read = describe_workflow_revision(projection, page_resolver)

@@ -497,8 +497,8 @@ class _ConnectionBoundResolver:
     """`PublishedRevisionResolver` bound to one connection its caller already holds.
 
     Yielded by `DbosCatalogStore.resolver_session` for the length of one
-    composed read; every `resolve` call here runs on that connection instead
-    of opening (and write-locking) one of its own.
+    composed read; every `resolve` call here runs on that one connection
+    instead of checking out (and later returning) a fresh one per call.
     """
 
     def __init__(self, connection: sa.Connection) -> None:
@@ -516,6 +516,26 @@ class _ConnectionBoundResolver:
         if revision is None:
             return PublishedRevisionMissing()
         return PublishedRevisionFound(revision)
+
+
+class _RefusingResolver:
+    """A `PublishedRevisionResolver` that answers every lookup with one refusal.
+
+    Yielded when `resolver_session` could not open the connection a page
+    needs: the same typed refusal a single `resolve` call already answers
+    with for the same failure, so a connection outage never escapes a session
+    as a raw exception out of `__enter__` -- every reference the page tries to
+    resolve through this answers that refusal instead.
+    """
+
+    def __init__(self, refusal: ResolvePublishedRevisionResult) -> None:
+        self._refusal = refusal
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        del kind, revision_hash
+        return self._refusal
 
 
 class DbosCatalogStore:
@@ -630,16 +650,28 @@ class DbosCatalogStore:
     def resolver_session(self) -> Iterator[PublishedRevisionResolver]:
         """One connection, reused by every `resolve` call made inside the block.
 
-        `resolve` alone opens (and, under this store's `IMMEDIATE` isolation,
-        write-locks) a fresh connection per call. A composed read that resolves
-        many references for one page -- `list_described_workflow_revisions`
-        judging each listed revision's executability -- pays that cost once per
-        reference instead of once for the whole page. This session is that one
-        connection: every lookup made through the resolver it yields runs on it,
-        and it closes when the `with` block does.
+        `resolve` alone checks out (and returns) a fresh connection per call.
+        A composed read that resolves many references for one page --
+        `list_described_workflow_revisions` judging each listed revision's
+        executability -- pays that checkout once per reference instead of
+        once for the whole page. This session is that one connection: every
+        lookup made through the resolver it yields runs on it, and it closes
+        when the `with` block does. A connection this store cannot open right
+        now answers the same refusal a single `resolve` call already gives for
+        that failure, rather than raising out of `__enter__`.
         """
-        with self._engine.connect() as connection:
+        try:
+            connection = self._engine.connect()
+        except (OperationalError, PoolTimeoutError):
+            yield _RefusingResolver(PublishedRevisionsUnavailable())
+            return
+        except (ValueError, RuntimeError, DatabaseError):
+            yield _RefusingResolver(DurableStateCorrupt())
+            return
+        try:
             yield _ConnectionBoundResolver(connection)
+        finally:
+            connection.close()
 
     def list_revisions(
         self, kind: RevisionKind, after: PublishedRevisionHash | None, limit: int

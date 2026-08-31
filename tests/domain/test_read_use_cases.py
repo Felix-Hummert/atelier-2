@@ -611,14 +611,17 @@ ENRICHED_PAGE_BUDGET = EnrichedPageBudget(
 
 def test_a_described_page_resolves_every_reference_inside_one_session() -> None:
     """A page's references all resolve inside the one session opened for it, not
-    one session -- or one connection -- per item or per pinned reference (#937)."""
-    schema = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
-    first_item = _wait_revision_projection(schema.revision_hash.value)
-    second_item = _wait_revision_projection(schema.revision_hash.value)
+    one session -- or one connection -- per item or per pinned reference (#937).
+    `resolver_session` is mandatory: this read never falls back to asking
+    `resolve` one lookup at a time."""
+    schema_one = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
+    schema_two = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
+    first_item = _wait_revision_projection(schema_one.revision_hash.value)
+    second_item = _wait_revision_projection(schema_two.revision_hash.value)
     queries = ScriptedQueries(
         DescribedWorkflowRevisionPage((first_item, second_item), None)
     )
-    resolver = ScriptedSessionResolver(PublishedRevisionFound(schema))
+    resolver = ScriptedSessionResolver(PublishedRevisionFound(schema_one))
 
     result = list_described_workflow_revisions(
         None, 50, ENRICHED_PAGE_BUDGET, queries, resolver
@@ -627,24 +630,8 @@ def test_a_described_page_resolves_every_reference_inside_one_session() -> None:
     assert isinstance(result, WorkflowRevisionsDescribed)
     assert len(result.items) == 2
     assert len(resolver.sessions) == 1, "one session must serve the whole page"
-    references_resolved = resolver.sessions[0].asked
-    assert len(references_resolved) >= 2, (
-        "both items' references must resolve through that one session"
-    )
-
-
-def test_a_described_page_still_reads_through_a_resolver_without_a_session() -> None:
-    """A resolver that offers no session is read the old way: one lookup at a
-    time on the resolver it was handed, exactly as before #937."""
-    schema = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
-    projection = _wait_revision_projection(schema.revision_hash.value)
-    queries = ScriptedQueries(DescribedWorkflowRevisionPage((projection,), None))
-    resolver = ScriptedResolver(PublishedRevisionFound(schema))
-
-    result = list_described_workflow_revisions(
-        None, 50, ENRICHED_PAGE_BUDGET, queries, resolver
-    )
-
-    assert isinstance(result, WorkflowRevisionsDescribed)
-    assert len(result.items) == 1
-    assert resolver.asked
+    distinct_references_resolved = set(resolver.sessions[0].asked)
+    assert distinct_references_resolved == {
+        (RevisionKind.SCHEMA, schema_one.revision_hash),
+        (RevisionKind.SCHEMA, schema_two.revision_hash),
+    }, "each item's own pinned reference must resolve through that one session"
