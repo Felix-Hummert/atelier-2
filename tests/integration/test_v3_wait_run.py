@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 import sqlalchemy as sa
@@ -49,6 +51,7 @@ from atelier2.api.projection.runs import run_resource
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     AnswerExistingApplied,
+    AnswerExistingPending,
     UnanswerableWait,
     answer_wait_result,
 )
@@ -58,6 +61,7 @@ from atelier2.application.cancel_run import (
     CancelRunResult,
     cancel_run_result,
 )
+from atelier2.application.refusals import DurableStateCorrupt
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -74,6 +78,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
+    SubmitWaitAnswerRequest,
     WaitAnswerActor,
     WaitAnswerState,
     terminal_hash_for,
@@ -93,7 +98,11 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
-from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from atelier2.ports.durable_runs import (
+    DurableAnswerNotAdmitted,
+    DurableRunCreated,
+    StartPublishedRunRequestV2,
+)
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
@@ -870,6 +879,206 @@ def test_an_answer_to_a_v3_turn_that_has_already_been_answered_is_idempotent(
     )
 
     assert isinstance(late, AnswerExistingApplied), late
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param((ANSWER, ANSWER), id="the same bytes"),
+        pytest.param((ANSWER, b'"rejected"'), id="different bytes"),
+    ],
+)
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_racing_answers_leave_one_durable_answer_and_one_heir(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+    answers: tuple[bytes, bytes],
+) -> None:
+    """Two people answering the same pause at once cannot double or fork it.
+
+    Two submissions released together: the same bytes are both accepted as the
+    one answer, while different bytes leave exactly one winner and hand the
+    loser a refusal rather than a second row. Either way the store holds one
+    `wait_answers` row and one answer workflow, and the line finishes on the
+    one accepted answer -- the only place this door is proven under actual
+    concurrency.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+    barrier = Barrier(2)
+
+    def submit(answer_bytes: bytes) -> object:
+        barrier.wait(timeout=5)
+        return answer(started, workflow, answer_bytes)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(submit, answers))
+
+    snapshots = [
+        result.snapshot
+        for result in results
+        if isinstance(
+            result,
+            (AnswerAcceptedPending, AnswerExistingPending, AnswerExistingApplied),
+        )
+    ]
+    corruptions = [
+        result for result in results if isinstance(result, DurableStateCorrupt)
+    ]
+    if answers[0] == answers[1]:
+        assert (len(snapshots), len(corruptions)) == (2, 0)
+    else:
+        assert (len(snapshots), len(corruptions)) == (1, 1)
+    accepted = {snapshot.answer.answer_bytes for snapshot in snapshots}
+    assert len(accepted) == 1
+    assert accepted.issubset(set(answers))
+
+    wait_for_state(started, RunState.COMPLETED)
+    with started.engine.connect() as connection:
+        stored = connection.scalar(sa.select(sa.func.count()).select_from(wait_answers))
+        answer_workflows = connection.scalar(
+            sa.text(
+                "SELECT COUNT(*) FROM workflow_status WHERE name='atelier2_wait_answer'"
+            )
+        )
+    assert (stored, answer_workflows) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    "refused_bytes",
+    [
+        pytest.param(b"", id="nothing at all"),
+        pytest.param(b"\xff", id="bytes that are no text"),
+        pytest.param(b"+5", id="a plus-signed number is no JSON"),
+        pytest.param(b"05", id="a leading zero is no JSON"),
+        pytest.param(b" 5", id="a padded number is JSON the schema refuses"),
+        pytest.param(b"-0", id="negative zero is JSON the schema refuses"),
+    ],
+)
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_the_store_door_itself_refuses_an_inadmissible_answer_and_writes_nothing(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+    refused_bytes: bytes,
+) -> None:
+    """What the waiting node admits is the store's to decide, for every caller.
+
+    The refusal is asked of `DbosWaitAnswerer.submit_result` directly as well as
+    through the use case, so it is pinned for every caller and not only for the
+    one route the API takes -- and it leaves nothing durable behind either way:
+    no answer row, no enqueued answer workflow, no event, no moved run.
+
+    A V3 wait has no `answer_type`: its judge is the JSON schema its author
+    pinned, so the old canonical-integer vocabulary has no door here. The same
+    byte shapes it once refused for canonicality are still refused, but as
+    non-JSON (`+5`, `05`) or as schema-refused values (` 5`, `-0`).
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+    execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE)
+    settled_events = durable_events(started)
+    with started.engine.connect() as connection:
+        settled_run = connection.execute(
+            sa.select(
+                runs.c.state,
+                runs.c.current_node_id,
+                runs.c.state_version,
+                runs.c.last_event_sequence,
+            ).where(runs.c.run_id == RUN.value)
+        ).one()
+
+    assert isinstance(answer(started, workflow, refused_bytes), UnanswerableWait)
+    direct = DbosWaitAnswerer(
+        started.engine, started.settings.application_version
+    ).submit_result(
+        SubmitWaitAnswerRequest(
+            RUN,
+            workflow.revision_hash,
+            WAIT_NODE,
+            execution,
+            WaitAnswerActor.OPERATOR,
+            refused_bytes,
+        )
+    )
+    assert isinstance(direct, DurableAnswerNotAdmitted)
+
+    assert durable_events(started) == settled_events
+    with started.engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(wait_answers)) == 0
+        )
+        assert (
+            connection.scalar(
+                sa.text(
+                    "SELECT COUNT(*) FROM workflow_status "
+                    "WHERE name='atelier2_wait_answer'"
+                )
+            )
+            == 0
+        )
+        assert (
+            connection.execute(
+                sa.select(
+                    runs.c.state,
+                    runs.c.current_node_id,
+                    runs.c.state_version,
+                    runs.c.last_event_sequence,
+                ).where(runs.c.run_id == RUN.value)
+            ).one()
+            == settled_run
+        )
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_a_pending_answer_reports_itself_again_and_refuses_different_bytes(
+    tmp_path: Path,
+) -> None:
+    """An accepted answer nobody has applied yet stays the one answer.
+
+    The runtime that would apply it is closed first, so the PENDING row is a
+    real parked state rather than a timing window. The same bytes submitted
+    again are that answer reported back; different bytes are refused rather
+    than becoming a second row -- and either way the store still holds exactly
+    the first answer, still PENDING.
+    """
+    recording = recording_provider()
+    started = wait_runtime_over(tmp_path, recording)
+    started.initialize_storage()
+    try:
+        workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+        wait_for_state(started, RunState.WAITING_INPUT)
+        version = started.settings.application_version
+    finally:
+        started.close()
+
+    engine = create_canonical_engine(tmp_path / "atelier.sqlite")
+    try:
+        answerer = DbosWaitAnswerer(engine, version)
+
+        def submit(value: bytes) -> object:
+            return answer_wait_result(
+                RUN,
+                workflow.revision_hash,
+                WAIT_NODE,
+                NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+                WaitAnswerActor.OPERATOR,
+                value,
+                answerer,
+            )
+
+        first = submit(ANSWER)
+        assert isinstance(first, AnswerAcceptedPending), first
+
+        assert submit(ANSWER) == AnswerExistingPending(first.snapshot)
+        assert submit(b'"rejected"') == DurableStateCorrupt()
+
+        with engine.connect() as connection:
+            stored = connection.execute(
+                sa.select(wait_answers.c.state, wait_answers.c.answer_bytes)
+            ).all()
+    finally:
+        engine.dispose()
+    assert stored == [(WaitAnswerState.PENDING.value, ANSWER)]
 
 
 CANCEL_KEY = "operator-stops-the-wait-1"
