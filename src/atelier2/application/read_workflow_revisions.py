@@ -9,9 +9,10 @@ outcome is a new member here rather than a new type leaking into every route.
 from __future__ import annotations
 
 import json
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal, assert_never, cast
+from typing import Literal, Protocol, assert_never, cast, runtime_checkable
 
 from atelier2.application.evaluate_executability import (
     DocumentNotExecutable,
@@ -297,6 +298,24 @@ def list_workflow_revisions(
             assert_never(unreachable)
 
 
+@runtime_checkable
+class _SessionedResolver(Protocol):
+    """A resolver that can also open one connection reused by many lookups.
+
+    This composed read judges every item on one page, each of which may pin
+    its own references -- the one caller that resolves many references for a
+    single answer, unlike every other reader of `PublishedRevisionResolver`,
+    which asks for exactly one. Widening that shared port with a connection
+    concept every other caller would have to carry, just to serve this one, is
+    the dishonest fix; asking the handed resolver whether it separately offers
+    a session is not. Nothing requires the answer to be yes: a resolver that
+    does not open a session at all is read one reference at a time, exactly as
+    before this existed.
+    """
+
+    def resolver_session(self) -> AbstractContextManager[PublishedRevisionResolver]: ...
+
+
 def list_described_workflow_revisions(
     after: WorkflowRevisionHash | None,
     limit: int,
@@ -309,20 +328,31 @@ def list_described_workflow_revisions(
     The budget is the composition's decision rather than the caller's, so no
     route can widen what one page is allowed to read from the store. Each item
     is judged executable by the same rule the detail read and the start apply,
-    so a listing never promises a start the service then refuses.
+    so a listing never promises a start the service then refuses. Every
+    reference the page resolves along the way runs through the one session
+    `resolver` opens for the whole page, when it offers one, rather than a
+    fresh lookup per reference.
     """
 
     match queries.list_described_workflow_revisions(after, limit, budget):
         case DescribedWorkflowRevisionPage(items, next_after):
-            described: list[DescribedWorkflowRevision] = []
-            for projection in items:
-                read = describe_workflow_revision(projection, resolver)
-                if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
-                    return read
-                described.append(
-                    DescribedWorkflowRevision(projection, read.not_executable_reason)
-                )
-            return WorkflowRevisionsDescribed(tuple(described), next_after)
+            session = (
+                resolver.resolver_session()
+                if isinstance(resolver, _SessionedResolver)
+                else nullcontext(resolver)
+            )
+            with session as page_resolver:
+                described: list[DescribedWorkflowRevision] = []
+                for projection in items:
+                    read = describe_workflow_revision(projection, page_resolver)
+                    if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
+                        return read
+                    described.append(
+                        DescribedWorkflowRevision(
+                            projection, read.not_executable_reason
+                        )
+                    )
+                return WorkflowRevisionsDescribed(tuple(described), next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
         case PortProjectionTooLarge():

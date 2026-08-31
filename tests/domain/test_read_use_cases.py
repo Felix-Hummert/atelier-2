@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -45,8 +46,10 @@ from atelier2.application.read_workflow_revisions import (
     WaitAnswerClassification,
     WorkflowRevisionNotFound,
     WorkflowRevisionRead,
+    WorkflowRevisionsDescribed,
     WorkflowRevisionsListed,
     get_workflow_revision,
+    list_described_workflow_revisions,
     list_workflow_revisions,
 )
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
@@ -56,6 +59,8 @@ from atelier2.contracts.run_projections import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflow_projections import (
+    DescribedWorkflowRevisionPage,
+    EnrichedPageBudget,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
@@ -299,6 +304,31 @@ class ScriptedResolver:
     def resolve(self, kind: Any, revision_hash: Any) -> Any:
         self.asked.append((kind, revision_hash))
         return self.answer
+
+
+class ScriptedSessionResolver:
+    """A resolver that only answers `resolve` inside the one session it opens.
+
+    Pins the shape `DbosCatalogStore.resolver_session` gives a composed read
+    (#937): every lookup a page needs must go through the session it opened
+    for that page, never through a `resolve` call made on this object
+    directly -- the old, one-connection-per-lookup way.
+    """
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.sessions: list[ScriptedResolver] = []
+
+    def resolve(self, kind: Any, revision_hash: Any) -> Any:
+        raise AssertionError(
+            "a page resolved a reference outside the one session opened for it"
+        )
+
+    @contextmanager
+    def resolver_session(self) -> Iterator[ScriptedResolver]:
+        session = ScriptedResolver(self.answer)
+        self.sessions.append(session)
+        yield session
 
 
 WAIT_NODE_ID = "ship"
@@ -572,3 +602,49 @@ def test_list_auth_profile_revisions_becomes_this_layers_own_outcome() -> None:
         catalog: Any = Catalog(port_answer)
         assert list_auth_profile_revisions(None, 50, catalog) == expected
         assert catalog.asked == [(None, 50)]
+
+
+ENRICHED_PAGE_BUDGET = EnrichedPageBudget(
+    maximum_nodes=1_000, maximum_document_bytes=1 << 20
+)
+
+
+def test_a_described_page_resolves_every_reference_inside_one_session() -> None:
+    """A page's references all resolve inside the one session opened for it, not
+    one session -- or one connection -- per item or per pinned reference (#937)."""
+    schema = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
+    first_item = _wait_revision_projection(schema.revision_hash.value)
+    second_item = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(
+        DescribedWorkflowRevisionPage((first_item, second_item), None)
+    )
+    resolver = ScriptedSessionResolver(PublishedRevisionFound(schema))
+
+    result = list_described_workflow_revisions(
+        None, 50, ENRICHED_PAGE_BUDGET, queries, resolver
+    )
+
+    assert isinstance(result, WorkflowRevisionsDescribed)
+    assert len(result.items) == 2
+    assert len(resolver.sessions) == 1, "one session must serve the whole page"
+    references_resolved = resolver.sessions[0].asked
+    assert len(references_resolved) >= 2, (
+        "both items' references must resolve through that one session"
+    )
+
+
+def test_a_described_page_still_reads_through_a_resolver_without_a_session() -> None:
+    """A resolver that offers no session is read the old way: one lookup at a
+    time on the resolver it was handed, exactly as before #937."""
+    schema = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(DescribedWorkflowRevisionPage((projection,), None))
+    resolver = ScriptedResolver(PublishedRevisionFound(schema))
+
+    result = list_described_workflow_revisions(
+        None, 50, ENRICHED_PAGE_BUDGET, queries, resolver
+    )
+
+    assert isinstance(result, WorkflowRevisionsDescribed)
+    assert len(result.items) == 1
+    assert resolver.asked
