@@ -9,25 +9,32 @@ from pathlib import Path
 
 from atelier2.adapters.dbos.names import BOOTSTRAP_STEP_NAME
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.runs import RunId, WorkflowRevision
-from tests.scenarios.runs import start_published_v1_run
+from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.runs import publish_pinned_revisions, start_published_v3_run
+from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, OPEN_PR_OPERATION
 
 CRASHED = 86
 UNSETTLED_STATUSES = ("PENDING", "ENQUEUED")
+PROVIDER_OUTPUT = b'"draft-17"'
 
 
 def _runtime(database: Path, application_version: str) -> DbosRuntime:
-    return DbosRuntime(
-        DbosRuntimeSettings(database, application_version),
+    return recording_exact_runtime(
+        DbosRuntimeSettings(
+            database,
+            application_version,
+            agent_scratch_root=agent_scratch_root(database.parent),
+        ),
         LoopbackEffectAdapterFactory(
             database.with_name("external-effect.sqlite"),
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
+        PROVIDER_OUTPUT,
     )
 
 
@@ -71,11 +78,13 @@ def seed(
 ) -> None:
     runtime = _runtime(database, application_version)
     try:
-        start_published_v1_run(
+        publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+        start_published_v3_run(
             runtime.engine,
             runtime.settings,
             RunId(run_id),
             WorkflowRevision(document),
+            runtime.agent_executor_registry,
         )
     finally:
         runtime.close()

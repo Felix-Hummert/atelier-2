@@ -34,7 +34,8 @@ from tests.scenarios.open_pr_agent import (
     open_pr_agent_executor_factory,
     publish_open_pr_agent_run,
 )
-from tests.scenarios.runs import start_published_v1_run
+from tests.scenarios.runs import publish_pinned_revisions, start_published_v3_run
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, OPEN_PR_OPERATION
 
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 
@@ -128,8 +129,13 @@ def seed(
     lease = runtime(database, external, version)
     try:
         lease.initialize_storage()
-        start_published_v1_run(
-            lease.engine, lease.settings, RunId(run_id), WorkflowRevision(document)
+        publish_pinned_revisions(lease.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+        start_published_v3_run(
+            lease.engine,
+            lease.settings,
+            RunId(run_id),
+            WorkflowRevision(document),
+            lease.agent_executor_registry,
         )
     finally:
         lease.close()

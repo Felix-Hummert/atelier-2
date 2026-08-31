@@ -15,7 +15,7 @@ from atelier2.contracts.effect_markers import body_carries_request_hash
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from tests.crash.effect_harness import ADAPTER_EXECUTE_AFTER_COMMIT, CRASHED
 from tests.crash.open_pr_harness import CANARY_TOKEN
-from tests.crash.test_effect_recovery import DOCUMENT
+from tests.scenarios.workflows import V3_EFFECT_LINE_DOCUMENT
 
 HARNESS = Path(__file__).with_name("open_pr_harness.py")
 VERSION = "executor-A"
@@ -57,7 +57,7 @@ def child(
 
 def seed(root: Path, run_id: str) -> None:
     child(root, "initialize")
-    child(root, "seed", run_id, DOCUMENT.hex())
+    child(root, "seed", run_id, V3_EFFECT_LINE_DOCUMENT.hex())
 
 
 def seed_agent(root: Path, run_id: str) -> None:

@@ -129,7 +129,6 @@ from atelier2.ports.workflow_revisions import (
 from tests.scenarios.agents import (
     agent_attempt_execution,
     agent_scratch_root,
-    commit_configured_agent,
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import (
@@ -141,25 +140,23 @@ from tests.scenarios.runs import (
     NO_AGENT_EXECUTORS,
     V3_EXECUTOR_REVISION,
     V3_PROVIDER,
+    complete_v3_agent_node,
     prepare_and_launch_graph_action,
-    start_published_v1_run,
     start_published_v3_run,
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, V3_DOCUMENT, declared_output
 
 DOCUMENT = b"""format_version: 1
-start: agent
+start: wait
 nodes:
   - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
   - {id: wait, type: wait, answer_type: integer, next: final}
-  - {id: agent, type: agent, job: test, output: payload, next: wait}
 """
-"""The format-1 document the store-level tests below still stand on.
+"""The format-1 document the publisher and V1 start-door tests still stand on.
 
-The publisher, the starter and the wait answerer all still accept format 1; only
-the wire refuses to project it. Tests that measure those writers therefore keep
-the cheaper document, and every test that reads a resource back over HTTP uses a
-format-3 document instead.
+The publisher and the format-1 start request are live production doors until
+the V1 grammar falls, so the tests that measure them keep a format-1 document.
+It declares no agent node: nothing that stands on it can reach one.
 """
 
 
@@ -212,6 +209,34 @@ nodes:
 """.encode()
     + declared_output(ANY_JSON_SCHEMA, "answer")
 )
+PAUSED_LINE_INSTRUCTION = "Say the thing a person will judge."
+PAUSED_LINE_AGENT_OUTPUT = b'"payload"'
+PAUSED_LINE_DOCUMENT = (
+    f"""format_version: 3
+name: One agent, then one answer
+nodes:
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: {PAUSED_LINE_INSTRUCTION}
+""".encode()
+    + declared_output()
+    + b"""  - id: wait
+    type: wait
+    prompt: Did the agent's work hold?
+    depends_on: [agent]
+"""
+    + declared_output(ANY_JSON_SCHEMA, "answer")
+)
+"""The format-3 mirror of the retired format-1 store scaffolding: agent, wait.
+
+The wait-answer machinery below needs a run resting at a Wait whose document
+also declares a non-wait node, so the corruption cases can point the head at
+one. The agent's success goes through the real attempt door; the pause is
+committed directly, because no runtime drives these runs.
+"""
+
 RECONCILED_LOGICAL_KEY = (
     "atelier2-node-effect-"
     "aa4c4a4f6baad796aa6a13cbe2f722d0073e8e1cfabcc7535c35146aee46c65c"
@@ -399,6 +424,39 @@ def _complete_the_action_predecessor(runtime: DbosRuntime, run: AnyRun) -> None:
     assert isinstance(succeeded, AgentAttemptSucceeded), succeeded
 
 
+def _paused_wait_line(
+    runtime: DbosRuntime, run_id: RunId
+) -> tuple[WorkflowRevision, TransitionSnapshot]:
+    """The paused line's run rested at its Wait, at store level.
+
+    The agent's success goes through the real attempt door; the pause is
+    committed directly, because what the callers measure is the answer
+    machinery, never a driving runtime.
+    """
+
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
+    revision = WorkflowRevision(PAUSED_LINE_DOCUMENT)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        run_id,
+        revision,
+        runtime.agent_executor_registry,
+    )
+    complete_v3_agent_node(
+        runtime,
+        run_id,
+        "agent",
+        PAUSED_LINE_INSTRUCTION.encode("utf-8"),
+        PAUSED_LINE_AGENT_OUTPUT,
+    )
+    with canonical_write_transaction(runtime.engine) as connection:
+        waiting = commit_waiting_input(
+            connection, run_id, revision.revision_hash, "wait"
+        )
+    return revision, waiting
+
+
 def test_revision_publication_created_and_existing_are_decided_by_one_write(
     runtime: DbosRuntime,
 ) -> None:
@@ -522,7 +580,7 @@ def test_missing_revision_start_never_acquires_a_write_lock_or_blocks_publicatio
 ) -> None:
     requested = WorkflowRevisionHash("0" * 64)
     concurrent_revision = WorkflowRevision(
-        DOCUMENT.replace(b"job: test", b"job: other")
+        DOCUMENT.replace(b"operands: [2, 3]", b"operands: [2, 4]")
     )
     statements: list[str] = []
     publication_completed = False
@@ -618,17 +676,7 @@ def test_concurrent_start_enqueues_only_the_transaction_that_created_the_run(
 def test_concurrent_wait_answer_enqueues_only_the_created_answer(
     runtime: DbosRuntime,
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
-    start_published_v1_run(
-        runtime.engine, runtime.settings, RunId("wait-run"), revision
-    )
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(
-            connection, RunId("wait-run"), revision.revision_hash, "agent"
-        )
-        commit_waiting_input(
-            connection, RunId("wait-run"), revision.revision_hash, "wait"
-        )
+    revision, _waiting = _paused_wait_line(runtime, RunId("wait-run"))
     answerer = DbosWaitAnswerer(runtime.engine, runtime.settings.application_version)
     request = SubmitWaitAnswerRequest(
         RunId("wait-run"),
@@ -995,10 +1043,12 @@ def _client(
     )
 
 
-def test_valid_r1_revision_over_projection_limit_is_unrepresentable(
+def test_valid_revision_over_projection_limit_is_unrepresentable(
     runtime: DbosRuntime,
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
+    revision = WorkflowRevision(
+        DOCUMENT.replace(b"final", b"final-node-beyond-the-bound")
+    )
     assert isinstance(
         DbosWorkflowRevisionPublisher(runtime.engine).publish(revision),
         DurableRevisionCreated,
@@ -1030,7 +1080,7 @@ def test_http_publication_collision_changes_no_durable_state_or_workflow(
     runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     requested = WorkflowRevision(DOCUMENT)
-    stored_document = DOCUMENT.replace(b"job: test", b"job: collision")
+    stored_document = DOCUMENT.replace(b"operands: [2, 3]", b"operands: [2, 5]")
     with runtime.engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(
@@ -1330,14 +1380,8 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
 def test_http_wait_answer_refuses_an_unsupported_actor_as_an_invalid_request(
     runtime: DbosRuntime,
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("unsupported-answer-actor")
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        waiting = commit_waiting_input(
-            connection, run_id, revision.revision_hash, "wait"
-        )
+    revision, waiting = _paused_wait_line(runtime, run_id)
     before = _durable_snapshot(runtime)
 
     response = _client(runtime).post(
@@ -1365,12 +1409,8 @@ def test_http_wait_answer_refuses_an_unsupported_actor_as_an_invalid_request(
 def test_http_wait_answer_refuses_a_fabricated_execution_as_corrupt(
     runtime: DbosRuntime,
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("fabricated-answer-execution")
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+    revision, _waiting = _paused_wait_line(runtime, run_id)
     before = _durable_snapshot(runtime)
 
     response = _client(runtime).post(
@@ -1595,14 +1635,8 @@ def test_http_wait_answer_reports_a_corrupt_current_wait_as_definitive_500(
     runtime: DbosRuntime,
     corruption: str,
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
     run_id = RunId(f"corrupt-answer-{corruption}")
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        waiting = commit_waiting_input(
-            connection, run_id, revision.revision_hash, "wait"
-        )
+    revision, waiting = _paused_wait_line(runtime, run_id)
     execution_id = waiting.event.node_execution_id
     with runtime.engine.begin() as connection:
         if corruption == "missing-head":
@@ -2131,12 +2165,8 @@ def test_start_parses_workflow_before_begin_immediate(
 def test_wait_answer_parses_workflow_before_begin_immediate(
     runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("parse-before-answer-lock")
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+    revision, _waiting = _paused_wait_line(runtime, run_id)
     original_parser = run_transitions_module.parse_executable_workflow_document
     monkeypatch.setattr(
         run_transitions_module,
@@ -2170,7 +2200,7 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
         DbosWorkflowRevisionPublisher(runtime.engine).publish(revision),
         DurableRevisionCreated,
     )
-    changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
+    changed_document = DOCUMENT.replace(b"operands: [2, 3]", b"operands: [2, 4]")
     original_parser = starter_module.parse_workflow_document
 
     def drift_revision(document: bytes):
@@ -2218,13 +2248,11 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
 def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutation(
     runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("revision-drift-answer")
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
-    changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
+    revision, _waiting = _paused_wait_line(runtime, run_id)
+    changed_document = PAUSED_LINE_DOCUMENT.replace(
+        b"Did the agent's work hold?", b"Did the agent's work really hold?"
+    )
     original_parser = run_transitions_module.parse_executable_workflow_document
 
     def drift_revision(document: bytes):

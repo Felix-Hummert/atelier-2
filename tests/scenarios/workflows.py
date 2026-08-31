@@ -32,6 +32,65 @@ def declared_output(
 """.encode()
 
 
+OPEN_PR_OPERATION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION, b'{"operation":"open-pr"}'
+)
+"""The adapter operation the effect line's Action pins, published by its hash."""
+
+
+V3_EFFECT_LINE_AGENT_NODE_ID = "implement"
+V3_EFFECT_LINE_AGENT_JOB = b"Draft the pull request this chain opens."
+"""What the composition owner hands the first node: its instruction, verbatim."""
+V3_EFFECT_LINE_ACTION_NODE_ID = "publish"
+V3_EFFECT_LINE_WAIT_NODE_ID = "approve"
+V3_EFFECT_LINE_DOCUMENT = (
+    b"""format_version: 3
+name: An agent drafts, its pull request opens, then a person approves
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: """
+    + V3_EFFECT_LINE_AGENT_JOB
+    + b"\n"
+    + declared_output()
+    + f"""  - id: publish
+    type: action
+    operation: {{ref: open-pr, revision: {OPEN_PR_OPERATION.revision_hash.value}}}
+    depends_on: [implement]
+  - id: approve
+    type: wait
+    prompt: Approve what the pull request shipped.
+    depends_on: [publish]
+""".encode()
+    + declared_output(ANY_JSON_SCHEMA, "approval")
+)
+"""The V3 shape of the retired V1 scaffolding chain: agent, action, wait.
+
+The agent's recorded provider bytes become the pull request the Action opens,
+and the Wait keeps the run alive past the effect so a scenario can watch every
+durable state between the start and a person's answer. A run of this line pins
+`ANY_JSON_SCHEMA` and `OPEN_PR_OPERATION`; publish both before the revision.
+"""
+
+
+V3_WAIT_LINE_NODE_ID = "approve"
+V3_WAIT_LINE_DOCUMENT = b"""format_version: 3
+name: A person answers, then the line is done
+nodes:
+  - id: approve
+    type: wait
+    prompt: Approve this line.
+""" + declared_output(ANY_JSON_SCHEMA, "approval")
+"""One wait node and nothing else: a run that needs no executor to be alive.
+
+A scenario about the runtime's own lifecycle wants a run that provably moved
+-- the bootstrap workflow ran and parked it on `WAITING_INPUT` -- without
+binding any provider. This is the smallest document that does that.
+"""
+
+
 V3_DOCUMENT = b"""format_version: 3
 name: Implement a candidate, then review it for defects
 graph_outputs:

@@ -42,7 +42,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import node_detail_resource
@@ -130,12 +129,25 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     answering,
-    commit_configured_agent,
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
-from tests.scenarios.runs import prepare_and_launch_graph_action, start_published_v1_run
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.runs import (
+    complete_v3_agent_node,
+    prepare_and_launch_graph_action,
+    publish_pinned_revisions,
+    start_published_v3_run,
+)
+from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_ACTION_NODE_ID,
+    V3_EFFECT_LINE_AGENT_JOB,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
+    V3_EFFECT_LINE_DOCUMENT,
+    V3_EFFECT_LINE_WAIT_NODE_ID,
+)
 
 refusal_runtime = _refusal_runtime
 
@@ -561,31 +573,29 @@ def test_a_wait_answered_before_event_instants_existed_carries_no_guessed_time(
     assert detail.ended_at is None
 
 
-V1_ANSWER_CHAIN_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: agent-answer, next: action}
-"""
-V1_ANSWER_CHAIN_RUN = RunId("v1/answer-chain")
-V1_WAIT_ANSWER = b"7"
+ANSWER_CHAIN_RUN = RunId("v3/answer-chain")
+ANSWER_CHAIN_AGENT_ANSWER = b'"agent-answer"'
+ANSWER_CHAIN_WAIT_ANSWER = b"7"
 
 
 @pytest.fixture
-def v1_answer_chain_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    """A V1 line whose four node kinds -- Agent, Action, Wait, Subworkflow -- each
+def answer_chain_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    """A line whose answer-bearing node kinds -- Agent, Action, Wait -- each
     write their own completion, so the fix is proven against every kind
     `_node_answer` now reads rather than the Agent kind alone.
     """
-    runtime = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "v1-answer-chain-test"),
+    runtime = recording_exact_runtime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "answer-chain-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        ANSWER_CHAIN_AGENT_ANSWER,
     )
     runtime.initialize_storage()
     try:
@@ -596,58 +606,64 @@ def v1_answer_chain_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
 
 @pytest.mark.proves("a-click-into-a-node-answers-what-it-was-asked-and-wrote")
 def test_every_answer_bearing_node_kind_reads_back_its_own_value(
-    v1_answer_chain_runtime: DbosRuntime,
+    answer_chain_runtime: DbosRuntime,
 ) -> None:
-    """Action and Subworkflow completions answer their node exactly as Agent does.
+    """Action and Wait completions answer their node exactly as Agent does.
 
-    `_node_answer` used to match `AGENT_COMPLETED` alone; this drives one V1 line
-    all the way to its own Subworkflow sink, so `ACTION_COMPLETED` and
-    `SUBWORKFLOW_COMPLETED` are read back through the real production write path
-    rather than a planted event, alongside the Agent and Wait kinds the tests
-    above already prove on their own.
+    `_node_answer` used to match `AGENT_COMPLETED` alone; this drives one line
+    through its Action and into its answered Wait, so `ACTION_COMPLETED` and
+    `WAIT_ANSWERED` are read back through the real production write path rather
+    than a planted event, alongside the Agent kind.
     """
-    runtime = v1_answer_chain_runtime
-    revision = WorkflowRevision(V1_ANSWER_CHAIN_DOCUMENT)
-    start_published_v1_run(
-        runtime.engine, runtime.settings, V1_ANSWER_CHAIN_RUN, revision
+    runtime = answer_chain_runtime
+    revision = WorkflowRevision(V3_EFFECT_LINE_DOCUMENT)
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        ANSWER_CHAIN_RUN,
+        revision,
+        runtime.agent_executor_registry,
     )
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(
-            connection, V1_ANSWER_CHAIN_RUN, revision.revision_hash, "agent"
-        )
+    complete_v3_agent_node(
+        runtime,
+        ANSWER_CHAIN_RUN,
+        V3_EFFECT_LINE_AGENT_NODE_ID,
+        V3_EFFECT_LINE_AGENT_JOB,
+        ANSWER_CHAIN_AGENT_ANSWER,
+    )
     intent = prepare_and_launch_graph_action(
         runtime.engine,
         runtime.settings,
-        V1_ANSWER_CHAIN_RUN,
+        ANSWER_CHAIN_RUN,
         revision.revision_hash,
         runtime.effect_adapter_binding,
     )
     runtime.launch()
-    wait_for_run_state(runtime, V1_ANSWER_CHAIN_RUN, RunState.WAITING_INPUT)
+    wait_for_run_state(runtime, ANSWER_CHAIN_RUN, RunState.WAITING_INPUT)
 
     answered = answer_wait_result(
-        V1_ANSWER_CHAIN_RUN,
+        ANSWER_CHAIN_RUN,
         revision.revision_hash,
-        "waiting",
+        V3_EFFECT_LINE_WAIT_NODE_ID,
         NodeExecutionId.for_node(
-            V1_ANSWER_CHAIN_RUN, revision.revision_hash, "waiting"
+            ANSWER_CHAIN_RUN, revision.revision_hash, V3_EFFECT_LINE_WAIT_NODE_ID
         ),
         WaitAnswerActor.OPERATOR,
-        V1_WAIT_ANSWER,
+        ANSWER_CHAIN_WAIT_ANSWER,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
     assert isinstance(answered, AnswerAcceptedPending), answered
-    wait_for_run_state(runtime, V1_ANSWER_CHAIN_RUN, RunState.COMPLETED)
+    wait_for_run_state(runtime, ANSWER_CHAIN_RUN, RunState.COMPLETED)
 
     queries = durable_queries(runtime.engine)
     expected_answers = {
-        "agent": b"agent-answer",
-        "action": intent.request.payload,
-        "waiting": V1_WAIT_ANSWER,
-        "final": b"5",
+        V3_EFFECT_LINE_AGENT_NODE_ID: ANSWER_CHAIN_AGENT_ANSWER,
+        V3_EFFECT_LINE_ACTION_NODE_ID: intent.request.payload,
+        V3_EFFECT_LINE_WAIT_NODE_ID: ANSWER_CHAIN_WAIT_ANSWER,
     }
     for node_id, expected in expected_answers.items():
-        found = queries.get_node_detail(V1_ANSWER_CHAIN_RUN, node_id)
+        found = queries.get_node_detail(ANSWER_CHAIN_RUN, node_id)
         assert isinstance(found, NodeDetailFound), (node_id, found)
         answer = found.detail.answer
         assert answer is not None, node_id

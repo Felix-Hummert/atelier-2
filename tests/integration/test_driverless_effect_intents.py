@@ -107,44 +107,63 @@ from atelier2.contracts.run_projections import NodeState, RunPage
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import AttentionEvent, AttentionEventPage
 from atelier2.ports.run_queries import NodeDetailFound, RunFound
-from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.api import durable_queries
 from tests.scenarios.runs import (
+    complete_v3_agent_node,
     prepare_and_launch_graph_action,
-    start_published_v1_run,
+    publish_pinned_revisions,
+    start_published_v3_run,
     submit_reconcile_command,
 )
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_ACTION_NODE_ID,
+    V3_EFFECT_LINE_AGENT_JOB,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
+    V3_EFFECT_LINE_DOCUMENT,
+)
 
-WORKFLOW_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: request, next: action}
-"""
-ACTION_NODE_ID = "action"
+WORKFLOW_DOCUMENT = V3_EFFECT_LINE_DOCUMENT
+PROVIDER_OUTPUT = b'"request"'
+ACTION_NODE_ID = V3_EFFECT_LINE_ACTION_NODE_ID
 """The node of WORKFLOW_DOCUMENT the prepared intent belongs to."""
 
 
 @pytest.fixture
 def prepared(tmp_path: Path) -> Iterator[tuple[DbosRuntime, EffectIntent]]:
-    runtime = exact_output_runtime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
+    runtime = recording_exact_runtime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "executor-A",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        PROVIDER_OUTPUT,
     )
     runtime.initialize_storage()
     revision = WorkflowRevision(WORKFLOW_DOCUMENT)
-    start_published_v1_run(runtime.engine, runtime.settings, RunId("run-1"), revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(
-            connection, RunId("run-1"), revision.revision_hash, "agent"
-        )
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        RunId("run-1"),
+        revision,
+        runtime.agent_executor_registry,
+    )
+    complete_v3_agent_node(
+        runtime,
+        RunId("run-1"),
+        V3_EFFECT_LINE_AGENT_NODE_ID,
+        V3_EFFECT_LINE_AGENT_JOB,
+        PROVIDER_OUTPUT,
+    )
     intent = prepare_and_launch_graph_action(
         runtime.engine,
         runtime.settings,
@@ -410,7 +429,7 @@ def test_prepared_intent_no_workflow_will_move_reaches_the_operator_door(
                 run_events.c.event_kind
                 == RunEventKind.ACTION_RECONCILIATION_REQUIRED.value
             )
-        ).one() == ("action", intent.request.payload)
+        ).one() == (ACTION_NODE_ID, intent.request.payload)
 
     page = durable_queries(runtime.engine).read_attention_event_page(None, None, 10, ())
     assert isinstance(page, AttentionEventPage)

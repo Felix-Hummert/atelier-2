@@ -30,7 +30,6 @@ from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
     commit_action_completed,
-    commit_subworkflow_completed,
     commit_wait_answered,
     load_wait_answer,
 )
@@ -88,7 +87,6 @@ from atelier2.ports.run_queries import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
-    commit_configured_agent,
     dying,
 )
 from tests.scenarios.api import (
@@ -99,13 +97,23 @@ from tests.scenarios.api import (
     stream_page_reader,
 )
 from tests.scenarios.runs import (
+    complete_v3_agent_node,
     prepare_and_launch_graph_action,
-    start_published_v1_run,
+    publish_pinned_revisions,
     start_published_v3_run,
     submit_reconcile_command,
     submit_wait_answer,
 )
-from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_ACTION_NODE_ID,
+    V3_EFFECT_LINE_AGENT_JOB,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
+    V3_EFFECT_LINE_DOCUMENT,
+    V3_EFFECT_LINE_WAIT_NODE_ID,
+    declared_output,
+)
 
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 DYING_PROVIDER_SAID = b"the provider process said this"
@@ -148,21 +156,12 @@ STREAMED_HISTORY = (
 EVENTS_BEFORE_THE_ANSWER = STREAMED_HISTORY.index(("approve", "WAIT_ANSWERED"))
 """How far the line gets on its own, before a person answers its Wait."""
 
-RECONCILED_ACTION_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: wait, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: wait}
-  - {id: agent, type: agent, job: test, output: request, next: action}
-"""
+RECONCILED_ACTION_DOCUMENT = V3_EFFECT_LINE_DOCUMENT
 """The one history here carrying effect receipts, for the durable read below.
 
-Its run never reaches the wire, which projects format 3 only: the receipt-index
-test asks the durable store for a page directly. A V3 Action node needs a
-published adapter operation and an adapter that performs it, which is a fixture
-about effects rather than about the query plan being proven.
-"""
+Its run never reaches the wire: the receipt-index test asks the durable store
+for a page directly, so the effect line is driven by hand up to its answered
+Wait rather than through the launched runtime."""
 
 
 def _agent_runtime(
@@ -285,9 +284,21 @@ def _failed_first_node(runtime: DbosRuntime, run_id: RunId) -> None:
 def _receipt_history(runtime: DbosRuntime) -> RunId:
     run_id = RunId("sse/run")
     revision = WorkflowRevision(RECONCILED_ACTION_DOCUMENT)
-    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        run_id,
+        revision,
+        runtime.agent_executor_registry,
+    )
+    complete_v3_agent_node(
+        runtime,
+        run_id,
+        V3_EFFECT_LINE_AGENT_NODE_ID,
+        V3_EFFECT_LINE_AGENT_JOB,
+        PROVIDER_OUTPUT,
+    )
     intent = prepare_and_launch_graph_action(
         runtime.engine,
         runtime.settings,
@@ -306,7 +317,7 @@ def _receipt_history(runtime: DbosRuntime) -> RunId:
             connection,
             run_id,
             revision.revision_hash,
-            "action",
+            V3_EFFECT_LINE_ACTION_NODE_ID,
             intent.request.payload,
         )
     command = ReconcileCommand(
@@ -336,24 +347,27 @@ def _receipt_history(runtime: DbosRuntime) -> RunId:
         commit_action_completed(
             connection, intent.binding.logical_key, revision.revision_hash
         )
-        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+        commit_waiting_input(
+            connection, run_id, revision.revision_hash, V3_EFFECT_LINE_WAIT_NODE_ID
+        )
     answerer = DbosWaitAnswerer(runtime.engine, runtime.settings.application_version)
     answerer.submit_result(
         SubmitWaitAnswerRequest(
             run_id,
             revision.revision_hash,
-            "wait",
-            NodeExecutionId.for_node(run_id, revision.revision_hash, "wait"),
+            V3_EFFECT_LINE_WAIT_NODE_ID,
+            NodeExecutionId.for_node(
+                run_id, revision.revision_hash, V3_EFFECT_LINE_WAIT_NODE_ID
+            ),
             WaitAnswerActor.OPERATOR,
             b"17",
         )
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        answer = load_wait_answer(connection, run_id, revision.revision_hash, "wait")
-        commit_wait_answered(connection, answer.answer)
-        commit_subworkflow_completed(
-            connection, run_id, revision.revision_hash, "final", 5
+        answer = load_wait_answer(
+            connection, run_id, revision.revision_hash, V3_EFFECT_LINE_WAIT_NODE_ID
         )
+        commit_wait_answered(connection, answer.answer)
     return run_id
 
 

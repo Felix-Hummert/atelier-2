@@ -24,7 +24,6 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
 )
 from atelier2.adapters.dbos.schema import runs
-from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -54,26 +53,25 @@ from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
-    commit_configured_agent,
     failing_agent_executor_factory,
 )
 from tests.scenarios.runs import (
-    prepare_and_launch_graph_action,
-    start_published_v1_run,
+    NO_AGENT_EXECUTORS,
+    publish_pinned_revisions,
+    start_published_v3_run,
 )
-from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.runtime import exact_output_runtime, recording_exact_runtime
+from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
+    OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_DOCUMENT,
+    V3_WAIT_LINE_DOCUMENT,
+)
 
 WORKFLOW_TIMEOUT_SECONDS = 5.0
 WORKFLOW_POLL_SECONDS = 0.025
 BARRIER_TIMEOUT_SECONDS = 5.0
-WORKFLOW_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: request, next: action}
-"""
+WORKFLOW_DOCUMENT = V3_WAIT_LINE_DOCUMENT
 
 AcquireLease = Callable[[DbosRuntimeSettings], DbosRuntime]
 
@@ -124,12 +122,15 @@ def canonical_database(root: Path) -> Path:
     return root / "atelier.sqlite"
 
 
-def start_v1_run(runtime: DbosRuntime) -> AnyRun:
-    return start_published_v1_run(
+def start_wait_run(runtime: DbosRuntime) -> AnyRun:
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA)
+    return start_published_v3_run(
         runtime.engine,
         runtime.settings,
         RunId("run-1"),
         WorkflowRevision(WORKFLOW_DOCUMENT),
+        NO_AGENT_EXECUTORS,
+        roles=(),
     )
 
 
@@ -170,7 +171,7 @@ def wait_until_run_state(engine: Engine, run_id: RunId, expected: RunState) -> R
 
 def execute_one_bootstrap(runtime: DbosRuntime) -> RunState:
     runtime.initialize_storage()
-    started = start_v1_run(runtime)
+    started = start_wait_run(runtime)
     runtime.launch()
     assert wait_until_bootstrap_succeeds(runtime.engine, started.run_id) == "SUCCESS"
     return wait_until_run_state(runtime.engine, started.run_id, RunState.WAITING_INPUT)
@@ -268,7 +269,7 @@ def test_closing_one_of_two_identical_leases_keeps_the_executor_running(
 
     first.close()
 
-    started = start_v1_run(second)
+    started = start_wait_run(second)
     assert wait_until_bootstrap_succeeds(second.engine, started.run_id) == "SUCCESS"
     assert (
         wait_until_run_state(second.engine, started.run_id, RunState.WAITING_INPUT)
@@ -287,7 +288,7 @@ def test_initializing_storage_from_a_second_lease_keeps_the_executor_running(
 
     second.initialize_storage()
 
-    started = start_v1_run(first)
+    started = start_wait_run(first)
     assert wait_until_bootstrap_succeeds(first.engine, started.run_id) == "SUCCESS"
     assert (
         wait_until_run_state(first.engine, started.run_id, RunState.WAITING_INPUT)
@@ -478,40 +479,43 @@ def test_initialization_failure_closes_the_opened_adapter_and_releases_binding(
 def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
     tmp_path: Path,
 ) -> None:
-    settings = runtime_settings(canonical_database(tmp_path))
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
     original_factory = LoopbackEffectAdapterFactory(
         tmp_path / "external.sqlite",
         AdapterRevision("loopback-v1"),
         EffectDestination("loopback-test"),
     )
-    runtime = exact_output_runtime(settings, original_factory)
+    runtime = recording_exact_runtime(settings, original_factory, b'"draft-17"')
     runtime.initialize_storage()
-    started = start_v1_run(runtime)
-    with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(
-            connection,
-            started.run_id,
-            started.revision_hash,
-            "agent",
-        )
-    prepare_and_launch_graph_action(
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    started = start_published_v3_run(
         runtime.engine,
         runtime.settings,
-        started.run_id,
-        started.revision_hash,
-        runtime.effect_adapter_binding,
+        RunId("run-1"),
+        WorkflowRevision(V3_EFFECT_LINE_DOCUMENT),
+        runtime.agent_executor_registry,
+    )
+    runtime.launch()
+    assert (
+        wait_until_run_state(runtime.engine, started.run_id, RunState.WAITING_INPUT)
+        is RunState.WAITING_INPUT
     )
     runtime.close()
     changed_path = tmp_path / "changed" / "external.sqlite"
 
     with pytest.raises(DbosRuntimeBindingConflict, match="durable effect intents"):
-        exact_output_runtime(
+        recording_exact_runtime(
             settings,
             LoopbackEffectAdapterFactory(
                 changed_path,
                 AdapterRevision("loopback-v1"),
                 EffectDestination("loopback-test"),
             ),
+            b'"draft-17"',
         )
 
     assert not changed_path.parent.exists()
@@ -588,7 +592,7 @@ def _runtime_with_v2(
     )
 
 
-def test_empty_registry_runs_v1_without_process_supervision(
+def test_empty_registry_runs_a_waiting_line_without_process_supervision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def forbidden_process_authority() -> Never:
