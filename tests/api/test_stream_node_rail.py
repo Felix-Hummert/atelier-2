@@ -157,7 +157,6 @@ def streamed(
     return frames[0]
 
 
-@pytest.mark.proves("the-browser-derives-no-durable-state-for-a-v2-run")
 def test_a_streamed_event_carries_the_rail_the_run_stands_at_after_it() -> None:
     projection = run_projection(PublicAgentAttemptState.POSSIBLY_RAN)
 
