@@ -45,7 +45,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agents import (
     AgentBindingSet,
@@ -169,7 +168,6 @@ def runtime(
             agent_scratch_root=agent_scratch_root(tmp_path),
         ),
         github,
-        ExactOutputAgentExecutorFactory(),
         (open_pr_agent_executor_factory(PR_SPEC),),
     )
     started.initialize_storage()
@@ -647,7 +645,6 @@ def test_a_persisted_round_two_agent_reconciliation_preserves_its_round(
             agent_scratch_root=agent_scratch_root(tmp_path),
         ),
         adapter_factory,
-        ExactOutputAgentExecutorFactory(),
         (open_pr_agent_executor_factory(PR_SPEC),),
     )
     runtime.initialize_storage()

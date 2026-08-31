@@ -44,7 +44,6 @@ from atelier2.contracts.host_configuration import (
     SourceReference,
 )
 from tests.scenarios.api import durable_api_client
-from tests.scenarios.runtime import exact_output_runtime
 
 PROJECT = ProjectId("studio")
 OWNER = "atelier2-operator"
@@ -76,7 +75,7 @@ class _FakeGitHubIssueListing:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    started = exact_output_runtime(
+    started = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "queue-import-route-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",

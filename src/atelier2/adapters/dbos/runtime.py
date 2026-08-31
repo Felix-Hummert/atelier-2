@@ -99,7 +99,6 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
-    AgentExecutorBinding,
     AgentExecutorRevision,
     AuthProfileRevision,
     ProviderId,
@@ -130,9 +129,7 @@ from atelier2.contracts.runner_manifests import (
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_executions import (
-    AgentExecutor,
     AgentExecutorCarrier,
-    AgentExecutorFactory,
     AgentExecutorFactoryV2,
     AgentExecutorKey,
     AgentExecutorManifestEntry,
@@ -182,7 +179,6 @@ class DbosRuntimeBinding:
 
     canonical_database_path: Path
     application_version: str
-    agent_executor: AgentExecutorBinding
     agent_executors_v2: tuple[AgentExecutorManifestEntry, ...]
     effect_adapters: tuple[EffectAdapterBinding, ...]
     agent_process_control_root: Path | None
@@ -298,7 +294,6 @@ class DbosRuntimeSettings:
 
     def binding(
         self,
-        agent_executor: AgentExecutorBinding,
         agent_executors_v2: tuple[AgentExecutorManifestEntry, ...],
         effect_adapters: tuple[EffectAdapterBinding, ...],
     ) -> DbosRuntimeBinding:
@@ -312,7 +307,6 @@ class DbosRuntimeSettings:
         return DbosRuntimeBinding(
             self.database_path.resolve(),
             self.application_version,
-            agent_executor,
             agent_executors_v2,
             effect_adapters,
             self.process_control_root() if process_runner_required else None,
@@ -391,8 +385,6 @@ class _BoundRuntime:
     settings: DbosRuntimeSettings
     engine: Engine
     datasource: SQLAlchemyDatasource
-    agent_executor_binding: AgentExecutorBinding
-    agent_executor: AgentExecutor
     agent_executor_registry: AgentExecutorRegistry
     agent_executors_v2: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...]
     effect_adapter_bindings: tuple[EffectAdapterBinding, ...]
@@ -841,10 +833,7 @@ def _runner_lease_attempt_driver(
 
 def _open_binding(
     settings: DbosRuntimeSettings,
-    agent_factory: AgentExecutorFactory,
-    agent_binding: AgentExecutorBinding,
     agent_registry: AgentExecutorRegistry,
-    agent_manifest: tuple[AgentExecutorManifestEntry, ...],
     effect_registry: EffectAdapterRegistry,
     effect_bindings: tuple[EffectAdapterBinding, ...],
 ) -> _BoundRuntime:
@@ -888,7 +877,6 @@ def _open_binding(
     engine = create_canonical_engine(
         settings.database_path, settings.sqlite_lock_timeout_seconds
     )
-    agent_executor: AgentExecutor | None = None
     agent_executors_v2: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]] = []
     adapters: OpenEffectAdapterRegistry | None = None
     agent_process_supervisor: AgentProcessSupervisor | None = None
@@ -982,7 +970,6 @@ def _open_binding(
             raise DbosRuntimeBindingConflict(
                 "runtime registry lacks a nonterminal durable capability"
             )
-        agent_executor = agent_factory.open()
         for registry_entry in agent_registry.entries:
             if registry_entry.factory is not None:
                 agent_executors_v2.append(
@@ -1015,8 +1002,6 @@ def _open_binding(
             )
         register_durable_run_workflow(
             datasource,
-            agent_executor,
-            agent_binding,
             _agent_executor_map(agent_registry, tuple(agent_executors_v2)),
             attempt_store,
             agent_process_supervisor,
@@ -1041,13 +1026,11 @@ def _open_binding(
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
         resources: list[
-            OpenEffectAdapterRegistry | EffectAdapter | AgentExecutorV2 | AgentExecutor
+            OpenEffectAdapterRegistry | EffectAdapter | AgentExecutorV2
         ] = []
         if adapters is not None:
             resources.append(adapters)
         resources.extend(executor for _entry, executor in reversed(agent_executors_v2))
-        if agent_executor is not None:
-            resources.append(agent_executor)
         for resource in resources:
             try:
                 resource.close()
@@ -1066,8 +1049,6 @@ def _open_binding(
         settings,
         engine,
         datasource,
-        agent_binding,
-        agent_executor,
         agent_registry,
         tuple(agent_executors_v2),
         effect_bindings,
@@ -1141,30 +1122,22 @@ class _DbosProcessOwner:
     def acquire(
         self,
         settings: DbosRuntimeSettings,
-        agent_factory: AgentExecutorFactory,
         agent_registry: AgentExecutorRegistry,
         effect_registry: EffectAdapterRegistry,
     ) -> _BoundRuntime:
         with self._lock:
-            agent_binding = agent_factory.binding
             agent_manifest = agent_registry.manifest
             effect_bindings = effect_registry.bindings
-            requested_binding = settings.binding(
-                agent_binding, agent_manifest, effect_bindings
-            )
+            requested_binding = settings.binding(agent_manifest, effect_bindings)
             if self._bound is None:
                 self._bound = _open_binding(
                     settings,
-                    agent_factory,
-                    agent_binding,
                     agent_registry,
-                    agent_manifest,
                     effect_registry,
                     effect_bindings,
                 )
             elif (
                 self._bound.settings.binding(
-                    self._bound.agent_executor_binding,
                     self._bound.agent_executor_registry.manifest,
                     self._bound.effect_adapter_bindings,
                 )
@@ -1172,7 +1145,7 @@ class _DbosProcessOwner:
             ):
                 raise DbosRuntimeBindingConflict(
                     "this process already owns "
-                    f"{self._bound.settings.binding(self._bound.agent_executor_binding, self._bound.agent_executor_registry.manifest, self._bound.effect_adapter_bindings)}; "
+                    f"{self._bound.settings.binding(self._bound.agent_executor_registry.manifest, self._bound.effect_adapter_bindings)}; "
                     f"refusing {requested_binding}"
                 )
             self._bound.leases += 1
@@ -1197,10 +1170,7 @@ class _DbosProcessOwner:
                 except BaseException as error:
                     errors.append(error)
                 resources: list[
-                    OpenEffectAdapterRegistry
-                    | EffectAdapter
-                    | AgentExecutorV2
-                    | AgentExecutor
+                    OpenEffectAdapterRegistry | EffectAdapter | AgentExecutorV2
                 ] = [bound.effect_adapters]
                 if bound.agent_process_supervisor is not None:
                     try:
@@ -1215,7 +1185,6 @@ class _DbosProcessOwner:
                 resources.extend(
                     executor for _entry, executor in reversed(bound.agent_executors_v2)
                 )
-                resources.append(bound.agent_executor)
                 for resource in resources:
                     try:
                         resource.close()
@@ -1400,7 +1369,6 @@ class DbosRuntime:
         self,
         settings: DbosRuntimeSettings,
         effect_adapter_factory: EffectAdapterFactory | EffectAdapterRegistry,
-        agent_executor_factory: AgentExecutorFactory,
         agent_executor_factories_v2: tuple[
             AgentExecutorFactoryV2 | AgentExecutorRegistration, ...
         ] = (),
@@ -1420,7 +1388,7 @@ class DbosRuntime:
             )
         )
         self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(
-            settings, agent_executor_factory, registry, effect_registry
+            settings, registry, effect_registry
         )
 
     @property
@@ -1439,14 +1407,6 @@ class DbosRuntime:
     def effect_adapter(self) -> EffectAdapter:
         binding = self.effect_adapter_binding
         return self._held().effect_adapters.adapter_for(binding.operation_name, binding)
-
-    @property
-    def agent_executor(self) -> AgentExecutor:
-        return self._held().agent_executor
-
-    @property
-    def agent_executor_binding(self) -> AgentExecutorBinding:
-        return self._held().agent_executor_binding
 
     @property
     def agent_executor_registry(self) -> AgentExecutorRegistry:

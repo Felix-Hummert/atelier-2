@@ -40,7 +40,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.git_transport.effects import (
     GitCommandResult,
     GitRemote,
@@ -357,7 +356,6 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
             bootstrap_project_root=project,
         ),
         registry,
-        ExactOutputAgentExecutorFactory(),
         (executor,),
     )
     runtime.initialize_storage()
@@ -545,7 +543,6 @@ def test_release_resolve_after_a_push_crash_opens_one_pr_without_another_push(
             bootstrap_project_root=project,
         ),
         github,
-        ExactOutputAgentExecutorFactory(),
     )
     runtime.initialize_storage()
     try:
@@ -787,7 +784,6 @@ def test_the_real_release_entry_binds_approval_to_the_exact_candidate_before_eff
             bootstrap_project_root=project,
         ),
         github,
-        ExactOutputAgentExecutorFactory(),
     )
     runtime.initialize_storage()
     try:

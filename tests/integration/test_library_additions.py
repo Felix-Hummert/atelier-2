@@ -16,12 +16,11 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import LIBRARY_ADDITIONS_PATH
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from tests.scenarios.api import durable_api_client
-from tests.scenarios.runtime import exact_output_runtime
 
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    started = exact_output_runtime(
+    started = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "catalog-intake-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",

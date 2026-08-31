@@ -55,7 +55,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.workflow_ids import runner_lease_workflow_id_for
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerExecutorFactory,
@@ -562,7 +561,6 @@ def _build_runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("lease-dispatch-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         registrations,
     )
     runtime.initialize_storage()

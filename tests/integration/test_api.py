@@ -55,7 +55,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     bootstrap_workflow_id_for,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimits, durable_projection_limit
@@ -284,7 +283,6 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (failing_agent_executor_factory(V3_PROVIDER.value, []),),
     )
     configured.initialize_storage()

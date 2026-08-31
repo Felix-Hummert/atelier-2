@@ -25,7 +25,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.workflow import AgentExecutorMap, ReconstructedAgentAttempt
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.project_verification import declared_project
 from atelier2.application.cancel_agent_attempt import (
@@ -181,7 +180,6 @@ def runtime(root: Path) -> DbosRuntime:
             AdapterRevision("loopback-v1"),
             EffectDestination("agent-attempt-crash"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (inert_factory(),),
     )
 
@@ -200,7 +198,6 @@ def output_schema_runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (executor_factory,),
     )
     started.initialize_storage()

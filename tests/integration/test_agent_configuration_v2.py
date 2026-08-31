@@ -38,7 +38,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.workflow import _node_binding
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
@@ -188,7 +187,6 @@ def _runtime(
             agent_scratch_root=agent_scratch_root(root),
         ),
         _effect_factory(root),
-        ExactOutputAgentExecutorFactory(),
         factories,
     )
 
@@ -649,7 +647,6 @@ def test_v2_start_against_an_empty_registry_creates_no_durable_run_or_attempt(
     try:
         runtime.initialize_storage()
         binding = runtime.settings.binding(
-            runtime.agent_executor_binding,
             runtime.agent_executor_registry.manifest,
             (runtime.effect_adapter_binding,),
         )
@@ -765,9 +762,6 @@ def test_nonterminal_v3_restart_with_an_empty_registry_refuses_before_cgroup_or_
 
     monkeypatch.setattr(
         dbos_runtime, "delegated_cgroup_root", forbidden_process_authority
-    )
-    monkeypatch.setattr(
-        ExactOutputAgentExecutorFactory, "open", forbidden_process_authority
     )
     monkeypatch.setattr(
         LoopbackEffectAdapterFactory, "open", forbidden_process_authority

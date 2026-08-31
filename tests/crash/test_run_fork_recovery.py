@@ -12,7 +12,6 @@ from sqlalchemy import event
 from atelier2.adapters.dbos.names import BOOTSTRAP_STEP_NAME, COMMIT_STEP_NAME
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -91,7 +90,6 @@ def _runtime(root: Path) -> DbosRuntime:
             agent_scratch_root=agent_scratch_root(root),
         ),
         _RecordingEffectAdapterFactory(root),
-        ExactOutputAgentExecutorFactory(),
         (
             RecordingAgentExecutorFactoryV2(
                 "exact", "exact/v1", "exact-operation", TREE

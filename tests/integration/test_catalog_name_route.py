@@ -42,7 +42,6 @@ from tests.scenarios.api import (
     durable_ports,
     event_poll_backoff,
 )
-from tests.scenarios.runtime import exact_output_runtime
 
 NAME = "review-bounded-diff"
 DOCUMENT = b"""format_version: 3
@@ -59,7 +58,7 @@ SECOND_DOCUMENT = DOCUMENT.replace(b"Review one bounded diff.", b"Review it agai
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    started = exact_output_runtime(
+    started = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "catalog-route-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",

@@ -22,7 +22,6 @@ from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, runs
 from atelier2.adapters.dbos.starter import DbosWorkflowRevisionPublisher
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.git_transport.effects import (
     GitRemote,
     GitTransportEffectAdapterFactory,
@@ -322,7 +321,6 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
             bootstrap_project_root=project,
         ),
         registry,
-        ExactOutputAgentExecutorFactory(),
         (executor,),
     )
     runtime.initialize_storage()

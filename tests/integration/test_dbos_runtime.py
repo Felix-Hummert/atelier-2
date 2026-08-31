@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Never
+from typing import Any, Never
 
 import pytest
 from cryptography import x509
@@ -28,7 +28,6 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeBindingConflict,
     DbosRuntimeSettings,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
@@ -110,7 +109,6 @@ def test_a_pure_runner_lease_registry_opens_without_process_supervision_or_scrat
     runtime = DbosRuntime(
         _runner_lease_settings(tmp_path),
         _effect_factory(tmp_path),
-        ExactOutputAgentExecutorFactory(),
         (
             AgentExecutorRegistration.startable(
                 FreeRunnerExecutorFactory(), AgentExecutorCarrier.RUNNER_LEASE
@@ -151,6 +149,18 @@ def test_a_partial_runner_lease_deployment_is_refused_by_name(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "runner-lease-test", **partial)
 
 
+def test_a_fourth_constructor_argument_is_rejected(tmp_path: Path) -> None:
+    """The deleted V1 executor-factory parameter must not silently return (#930)."""
+    construct: Any = DbosRuntime
+    with pytest.raises(TypeError):
+        construct(
+            _runner_lease_settings(tmp_path),
+            _effect_factory(tmp_path),
+            (),
+            (),
+        )
+
+
 def test_serving_a_runner_lease_key_without_the_deployment_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -158,7 +168,6 @@ def test_serving_a_runner_lease_key_without_the_deployment_is_refused(
         DbosRuntime(
             DbosRuntimeSettings(tmp_path / "atelier.sqlite", "runner-lease-test"),
             _effect_factory(tmp_path),
-            ExactOutputAgentExecutorFactory(),
             (
                 AgentExecutorRegistration.startable(
                     FreeRunnerExecutorFactory(), AgentExecutorCarrier.RUNNER_LEASE
@@ -174,7 +183,6 @@ def test_a_mixed_registry_still_requires_a_scratch_root_for_its_local_process_ke
         DbosRuntime(
             _runner_lease_settings(tmp_path),
             _effect_factory(tmp_path),
-            ExactOutputAgentExecutorFactory(),
             (
                 AgentExecutorRegistration.startable(
                     FreeRunnerExecutorFactory(), AgentExecutorCarrier.RUNNER_LEASE
@@ -192,7 +200,6 @@ def test_a_mixed_registry_opens_both_carriers_together(tmp_path: Path) -> None:
             tmp_path, agent_scratch_root=agent_scratch_root(tmp_path)
         ),
         _effect_factory(tmp_path),
-        ExactOutputAgentExecutorFactory(),
         (
             AgentExecutorRegistration.startable(
                 FreeRunnerExecutorFactory(), AgentExecutorCarrier.RUNNER_LEASE
