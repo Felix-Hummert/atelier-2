@@ -165,6 +165,7 @@ from atelier2.ports.published_revisions import (
     LibraryAdditions,
     PublishedRevisionListing,
     PublishedRevisionRegistry,
+    PublishedRevisionResolverWithSession,
 )
 from atelier2.ports.queue_projection import QueueProjection
 from atelier2.ports.run_events import (
@@ -199,6 +200,12 @@ class ApiPorts:
     library_additions: LibraryAdditions
     catalog_intakes: CatalogIntakes
     published_revision_registry: PublishedRevisionRegistry
+    # Distinct from `published_revision_registry`: the one composed read that
+    # resolves many references per page (`list_described_workflow_revisions`)
+    # needs a resolver that can open a session, which most single-lookup
+    # callers of the registry above do not and should not have to carry
+    # (#937). The two are wired to the same durable store in production.
+    published_revision_resolver_sessions: PublishedRevisionResolverWithSession
     published_revision_listing: PublishedRevisionListing
     artifact_publisher: ArtifactPublisher
     host_configuration_channel: HostConfigurationChannel

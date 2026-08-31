@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any
 
 import sqlalchemy as sa
@@ -74,6 +75,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
     PublishedRevisionPage,
+    PublishedRevisionResolver,
     PublishedRevisionsUnavailable,
     PublishRevisionResult,
     ResolveCatalogNameResult,
@@ -132,11 +134,23 @@ def _intake_from_record(record: Mapping[Any, Any]) -> CatalogIntake:
 def _published(
     connection: sa.Connection, revision: PublishedRevision
 ) -> PublishedRevision | None:
+    return _select_published_revision(connection, revision.kind, revision.revision_hash)
+
+
+def _select_published_revision(
+    connection: sa.Connection, kind: RevisionKind, revision_hash: PublishedRevisionHash
+) -> PublishedRevision | None:
+    """The one lookup `resolve` answers, on a connection its caller already opened.
+
+    Kept apart from `resolve` itself so a composed read that must not open a
+    connection per lookup (`DbosCatalogStore.resolver_session`) can share this
+    exact query on the one connection it holds for the whole read.
+    """
     record = (
         connection.execute(
             sa.select(published_revisions).where(
-                published_revisions.c.kind == revision.kind.value,
-                published_revisions.c.revision_hash == revision.revision_hash.value,
+                published_revisions.c.kind == kind.value,
+                published_revisions.c.revision_hash == revision_hash.value,
             )
         )
         .mappings()
@@ -479,6 +493,51 @@ def _admit_member(
     return CatalogMemberAdmitted(lineage, revision, revision_number, display_name)
 
 
+class _ConnectionBoundResolver:
+    """`PublishedRevisionResolver` bound to one connection its caller already holds.
+
+    Yielded by `DbosCatalogStore.resolver_session` for the length of one
+    composed read; every `resolve` call here runs on that one connection
+    instead of checking out (and later returning) a fresh one per call.
+    """
+
+    def __init__(self, connection: sa.Connection) -> None:
+        self._connection = connection
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        try:
+            revision = _select_published_revision(self._connection, kind, revision_hash)
+        except (OperationalError, PoolTimeoutError):
+            return PublishedRevisionsUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+        if revision is None:
+            return PublishedRevisionMissing()
+        return PublishedRevisionFound(revision)
+
+
+class _RefusingResolver:
+    """A `PublishedRevisionResolver` that answers every lookup with one refusal.
+
+    Yielded when `resolver_session` could not open the connection a page
+    needs: the same typed refusal a single `resolve` call already answers
+    with for the same failure, so a connection outage never escapes a session
+    as a raw exception out of `__enter__` -- every reference the page tries to
+    resolve through this answers that refusal instead.
+    """
+
+    def __init__(self, refusal: ResolvePublishedRevisionResult) -> None:
+        self._refusal = refusal
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        del kind, revision_hash
+        return self._refusal
+
+
 class DbosCatalogStore:
     """Published revisions and admitted named lineages over the V12 catalog tables."""
 
@@ -578,23 +637,41 @@ class DbosCatalogStore:
     ) -> ResolvePublishedRevisionResult:
         try:
             with self._engine.connect() as connection:
-                record = (
-                    connection.execute(
-                        sa.select(published_revisions).where(
-                            published_revisions.c.kind == kind.value,
-                            published_revisions.c.revision_hash == revision_hash.value,
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-            if record is None:
+                revision = _select_published_revision(connection, kind, revision_hash)
+            if revision is None:
                 return PublishedRevisionMissing()
-            return PublishedRevisionFound(published_revision_from_record(record))
+            return PublishedRevisionFound(revision)
         except (OperationalError, PoolTimeoutError):
             return PublishedRevisionsUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
+
+    @contextmanager
+    def resolver_session(self) -> Iterator[PublishedRevisionResolver]:
+        """One connection, reused by every `resolve` call made inside the block.
+
+        `resolve` alone checks out (and returns) a fresh connection per call.
+        A composed read that resolves many references for one page --
+        `list_described_workflow_revisions` judging each listed revision's
+        executability -- pays that checkout once per reference instead of
+        once for the whole page. This session is that one connection: every
+        lookup made through the resolver it yields runs on it, and it closes
+        when the `with` block does. A connection this store cannot open right
+        now answers the same refusal a single `resolve` call already gives for
+        that failure, rather than raising out of `__enter__`.
+        """
+        try:
+            connection = self._engine.connect()
+        except (OperationalError, PoolTimeoutError):
+            yield _RefusingResolver(PublishedRevisionsUnavailable())
+            return
+        except (ValueError, RuntimeError, DatabaseError):
+            yield _RefusingResolver(DurableStateCorrupt())
+            return
+        try:
+            yield _ConnectionBoundResolver(connection)
+        finally:
+            connection.close()
 
     def list_revisions(
         self, kind: RevisionKind, after: PublishedRevisionHash | None, limit: int
