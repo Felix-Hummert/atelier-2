@@ -147,12 +147,12 @@ executor recovery fence. [ADR 0002](0002-exact-yaml-graph.md) owns the workflow
 document and graph semantics above this execution boundary.
 
 A process owns exactly one compatible DBOS binding of canonical database path,
-application version, the V1 `AgentExecutorBinding`, the sorted V2 executor
-manifest, and the effect-adapter binding. Restart refuses a registry missing a
+application version, the sorted V2 executor manifest, and the effect-adapter
+binding. Restart refuses a registry missing a
 provider/executor key or requested capability required by a nonterminal durable
 V2 run, configuration
 contradicting durable V1 Agent receipts, or an effect binding contradicting
-durable intents. Identical callers share one opened V1 executor, every V2
+durable intents. Identical callers share every V2
 executor, effect adapter, and runtime under counted leases; an incompatible
 lease is refused before either executable boundary opens or global state
 mutates. V2 factories open in manifest order and close in reverse order. Only

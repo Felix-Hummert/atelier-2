@@ -1,6 +1,6 @@
 import { vi, type Mock } from "vitest";
 
-import type { CockpitApi, RunEventHandlers, RunPage, RunV1 } from "../../src/api/client";
+import type { CockpitApi, RunEventHandlers, RunPage, RunV3 } from "../../src/api/client";
 
 /**
  * One owner for the CockpitApi test double: when the port grows a method, the
@@ -52,7 +52,6 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
     publishAgentConfiguration: vi.fn(),
     start: vi.fn(),
     answer: vi.fn(),
-    reconcile: vi.fn(),
     cancelRun: vi.fn(),
     forkRun: vi.fn(),
     getRun: vi.fn(),
@@ -90,7 +89,7 @@ type ListRunsDouble = Mock<(after?: string) => Promise<RunPage>>;
  * cursor. `failFrom` makes that page index unreadable instead.
  */
 export function pagedListRuns(
-  pages: readonly (readonly RunV1[])[],
+  pages: readonly (readonly RunV3[])[],
   failFrom = -1
 ): ListRunsDouble {
   return vi.fn(async (after?: string) => {
@@ -108,7 +107,7 @@ export function pagedListRuns(
 }
 
 /** A listRuns double whose cursor never advances -- the durable defect a client must not spin on. */
-export function repeatingCursorListRuns(page: readonly RunV1[]): ListRunsDouble {
+export function repeatingCursorListRuns(page: readonly RunV3[]): ListRunsDouble {
   const repeated = PAGE_CURSORS[0] ?? null;
   return vi.fn(async () => ({ items: [...page], next_after: repeated }));
 }

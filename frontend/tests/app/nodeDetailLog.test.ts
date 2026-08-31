@@ -13,7 +13,7 @@ import {
 } from "../../src/lib/runPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
-import { publicReference, revisionHash as digest } from "../support/workflowV1";
+import { publicReference, revisionHash as digest } from "../support/runV3";
 
 afterEach(() => {
   cleanup();

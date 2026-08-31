@@ -6,9 +6,8 @@
  *
  * One owner so renaming a status word ("Answer uncertain") happens once, not
  * once per card (#611): the wait-answer cards each render this identical
- * vocabulary in their own markup, and the reconciliation card shares the
- * uncertain-send label. Only the words live here -- each card keeps its own
- * markup and its own state logic.
+ * vocabulary in their own markup. Only the words live here -- each card keeps
+ * its own markup and its own state logic.
  */
 export const decisionStatusCopy = {
   sending: "Sending answer",

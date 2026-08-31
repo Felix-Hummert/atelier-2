@@ -6,7 +6,7 @@ import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { cockpitApiStub } from "../support/cockpitApi";
-import { completedRun, publicReference, workflowRevision as revision } from "../support/workflowV1";
+import { completedRun, publicReference, workflowRevision as revision } from "../support/runV3";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -79,7 +79,7 @@ describe("cockpit navigation", () => {
       }
     });
 
-    expect((await screen.findByRole("heading", { name: "Unnamed workflow" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Four steps in a line" })).isConnected).toBe(true);
 
     await fireEvent.click(within(rail()).getByRole("link", { name: "Catalog" }));
     expect((await screen.findByRole("heading", { name: "Catalog" })).isConnected).toBe(true);
@@ -95,7 +95,7 @@ describe("cockpit navigation", () => {
 
     window.history.back();
     await waitFor(() => expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`));
-    expect((await screen.findByRole("heading", { name: "Unnamed workflow" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Four steps in a line" })).isConnected).toBe(true);
 
     const trail = screen.getByRole("navigation", { name: backLinkCopy.whereYouAre });
     const link = within(trail).getByRole("link");

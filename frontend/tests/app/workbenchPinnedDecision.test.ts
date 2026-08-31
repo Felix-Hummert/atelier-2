@@ -14,7 +14,7 @@ import { runPageCopy } from "../../src/lib/runPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { cancellableBlock } from "../support/runV3";
-import { waitingInput } from "../support/workflowV1";
+import { waitingInput } from "../support/runV3";
 
 /**
  * The Workbench pins every open decision in its own non-scrolling "Needs you"

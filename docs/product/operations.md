@@ -13,8 +13,7 @@ credential/configuration or host-home/scratch mount, Runner service, or
 external execution claim; its entrypoint can carry an operator-declared
 Runner-lease deployment from `ATELIER2_RUNNER_*` environment variables, which
 the disposable candidate leaves undeclared, so it starts runner-free. The
-existing Core `ExactOutput` fixture remains Core behavior, not a packaged
-provider. The operator runbook is
+operator runbook is
 [OPERATIONS.md](../OPERATIONS.md); network hardening remains
 [ADR 0009](../decisions/0009-runner-trust.md).
 

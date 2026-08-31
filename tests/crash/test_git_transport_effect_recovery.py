@@ -24,7 +24,6 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.workflow_ids import reconcile_workflow_id_for
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.git_transport.effects import (
     GitCommandResult,
     GitRemote,
@@ -262,7 +261,6 @@ def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
             bootstrap_project_root=root / "project",
         ),
         registry,
-        ExactOutputAgentExecutorFactory(),
         (executor,),
     )
 

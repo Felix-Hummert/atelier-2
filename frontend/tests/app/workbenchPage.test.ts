@@ -1,7 +1,7 @@
 import type * as SvelteTestingLibrary from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AnyRun, CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import type { CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { railCopy } from "../../src/lib/railCopy";
 import { retryLabel } from "../../src/lib/readStateCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
@@ -20,7 +20,7 @@ import {
   waitingInput,
   waitingInputRun,
   waitingReconciliationRun
-} from "../support/workflowV1";
+} from "../support/runV3";
 
 /**
  * The Workbench's conversation is owned by the `chatTranscript` module, not the
@@ -254,14 +254,14 @@ describe("the workbench door", () => {
  * and the one number the rail carries.
  */
 describe("the workbench is the room the workshop opens on", () => {
-  function listRunsByState(runs: readonly AnyRun[]) {
+  function listRunsByState(runs: readonly RunV3[]) {
     return vi.fn(async (_after?: string, state?: string) => ({
       items: state === undefined ? [...runs] : runs.filter((run) => run.state === state),
       next_after: null
     }));
   }
 
-  function openRoom(runs: readonly AnyRun[] = [], overrides: Partial<CockpitApi> = {}): void {
+  function openRoom(runs: readonly RunV3[] = [], overrides: Partial<CockpitApi> = {}): void {
     window.history.replaceState(null, "", "/atelier");
     openChat({ listRuns: listRunsByState(runs), ...overrides });
   }
@@ -303,10 +303,14 @@ describe("the workbench is the room the workshop opens on", () => {
         return { items: [], next_after: null };
       })
     });
-    const { fireEvent, screen, waitFor } = testingLibrary;
+    const { fireEvent, screen, waitFor, within } = testingLibrary;
 
-    const waiting = await screen.findAllByText(/Answer →/);
-    expect(waiting).toHaveLength(2);
+    // A waiting decision stands pinned in the Open-decisions region, one card
+    // per run; a reconciliation this room cannot answer inline stays a row.
+    const pinnedRegion = await screen.findByRole("region", { name: "Open decisions" });
+    await waitFor(() => {
+      expect(within(pinnedRegion).getAllByRole("listitem")).toHaveLength(2);
+    });
     expect(screen.getByText(/Reconcile →/).isConnected).toBe(true);
     expect(screen.queryByText(/Running/)).toBeNull();
 
@@ -355,10 +359,15 @@ describe("the workbench is the room the workshop opens on", () => {
         return { items: [], next_after: null };
       })
     });
-    const { screen } = testingLibrary;
+    const { screen, waitFor, within } = testingLibrary;
 
-    expect(await screen.findAllByRole("link", { name: /moving run/ })).toHaveLength(1);
-    expect(screen.getByText(/Answer →/).isConnected).toBe(true);
+    // The fresher read waits, so the run stands once -- as a pinned decision,
+    // never also as a moving row.
+    const pinnedRegion = await screen.findByRole("region", { name: "Open decisions" });
+    await waitFor(() => {
+      expect(within(pinnedRegion).getAllByText(/moving run/)).toHaveLength(1);
+    });
+    expect(screen.queryByRole("link", { name: /moving run/ })).toBeNull();
   });
 
   /**

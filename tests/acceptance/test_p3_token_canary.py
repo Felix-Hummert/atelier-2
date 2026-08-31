@@ -34,7 +34,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.git_transport.effects import (
     GitCommandResult,
     GitRemote,
@@ -452,7 +451,6 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
                 bootstrap_project_root=project,
             ),
             registry,
-            ExactOutputAgentExecutorFactory(),
             (executor,),
         )
         runtime.initialize_storage()

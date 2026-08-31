@@ -20,7 +20,6 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.workflow import AgentExecutorMap, reconstruct_agent_attempt
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
@@ -80,7 +79,6 @@ def output_schema_runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (
             failing_agent_executor_factory("exact", [])
             if executor_factory is None

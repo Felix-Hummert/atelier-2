@@ -20,7 +20,6 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import (
     WorkflowFormatNotExecutable,
@@ -91,7 +90,6 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()

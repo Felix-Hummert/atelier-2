@@ -28,7 +28,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.grok_subscription import (
     CONFORMANT_GROK_VERSIONS,
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
@@ -935,6 +934,72 @@ def test_a_schema_bearing_envelope_yields_the_provider_structured_value(
     assert result != AgentExecutionResult(narration.encode())
 
 
+def test_a_null_structured_output_is_an_ended_provider_not_a_null_answer(
+    tmp_path: Path,
+) -> None:
+    """`"structuredOutput": null` is grok's no-answer sentinel, never an answer.
+
+    The envelope is a recorded grok 1.0.5 completion of the workspace-tool
+    vector whose model ended without structured output; live run 91c76c25
+    published the same shape with exit code 0, where decoding the null as a
+    JSON answer handed the output seam a fabricated `b"null"` and dropped
+    the envelope from the evidence.
+    """
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        GrokSubscriptionProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+            declared_output_schema_bytes=b'{"type":"string"}',
+        ),
+        tmp_path,
+    )
+    recorded_envelope = rb"""{
+  "text": "\"I'll create `y.txt` with the word alpha first, then reply with the JSON string after that write finishes.\"",
+  "stopReason": "cancelled",
+  "sessionId": "01a058a0-068c-7a02-bb6f-cc93c47af5f5",
+  "requestId": "363041fa-e87d-4058-8e69-f70614590dd3",
+  "thought": "The user wants me to:\n1. First create a file named y.txt containing the word alpha using a tool",
+  "usage": {
+    "input_tokens": 6831,
+    "cache_read_input_tokens": 128,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 265,
+    "reasoning_tokens": 211,
+    "total_tokens": 7224
+  },
+  "num_turns": 1,
+  "total_cost_usd": 0.00260372,
+  "total_cost_usd_ticks": 26037200,
+  "modelUsage": {
+    "grok-4.6-build": {
+      "inputTokens": 6831,
+      "outputTokens": 265,
+      "cacheReadInputTokens": 128,
+      "cacheCreationInputTokens": 0,
+      "modelCalls": 1,
+      "costUSD": 0.00260372
+    }
+  },
+  "structuredOutput": null,
+  "structuredOutputError": "model did not produce structured output"
+}
+"""
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(0, recorded_envelope, b""),
+    )
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript is not None
+    (envelope_evidence,) = result.transcript.events
+    assert isinstance(envelope_evidence, UnrecognisedProviderOutput)
+    assert "model did not produce structured output" in envelope_evidence.text
+
+
 def test_a_normal_grok_answer_that_mentions_offloaded_files_is_not_refused(
     tmp_path: Path,
 ) -> None:
@@ -1488,7 +1553,6 @@ def grok_subscription_runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("grok-subscription-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (
             GrokSubscriptionExecutorFactory(settings),
             *((GrokWorkspaceToolExecutorFactory(settings),) if workspace_tools else ()),

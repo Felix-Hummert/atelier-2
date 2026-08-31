@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AnyRun, CockpitApi, WorkflowRevisionDetail } from "../../src/api/client";
+import type { CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 
@@ -108,8 +108,8 @@ function configurationItem(startable: boolean) {
   };
 }
 
-function startedRun(): { status: number; value: AnyRun } {
-  return { status: 201, value: { public_run_reference: PUBLIC_RUN } as unknown as AnyRun };
+function startedRun(): { status: number; value: RunV3 } {
+  return { status: 201, value: { public_run_reference: PUBLIC_RUN } as unknown as RunV3 };
 }
 
 function completedEvent(output: object): object {

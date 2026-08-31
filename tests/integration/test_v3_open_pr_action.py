@@ -38,7 +38,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github.effects import (
     GitHubEffectAdapterFactory,
     RecordedPullRequest,
@@ -207,7 +206,6 @@ def _runtime_for(
             agent_scratch_root=agent_scratch_root(root),
         ),
         github,
-        ExactOutputAgentExecutorFactory(),
         (recording,),
     )
     return started, github, listing

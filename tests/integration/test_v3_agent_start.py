@@ -40,7 +40,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.workflow import _node_binding
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.project_verification import declared_project
 from atelier2.api.openapi import API_PREFIX
@@ -141,7 +140,6 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()
@@ -296,7 +294,6 @@ def test_a_bound_v3_run_refuses_before_an_attempt_when_its_executor_is_unavailab
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (AgentExecutorRegistration.unavailable(unavailable_factory),),
     )
     try:

@@ -33,7 +33,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     driving_workflow_ids,
     runner_lease_workflow_id_for,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
@@ -144,7 +143,6 @@ def attempt_runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (
             RecordingAgentExecutorFactoryV2(
                 "anthropic", "claude-cli/v1", "controlled-process", b"unused"

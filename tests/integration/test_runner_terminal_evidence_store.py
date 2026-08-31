@@ -22,7 +22,6 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
@@ -179,7 +178,6 @@ def _v3_armed(
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (failing_agent_executor_factory("exact", []),),
     )
     runtime.initialize_storage()

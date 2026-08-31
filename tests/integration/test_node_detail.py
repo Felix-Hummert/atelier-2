@@ -42,7 +42,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import node_detail_resource
 from atelier2.api.references import MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
@@ -219,7 +218,6 @@ def runtime(
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (provider,),
     )
     started.initialize_storage()
@@ -806,7 +804,6 @@ def _own_schema_refused_runtime(tmp_path: Path, answer: bytes) -> DbosRuntime:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", answer),),
     )
     started.initialize_storage()
@@ -1094,7 +1091,6 @@ def _transcript_runtime(tmp_path: Path) -> DbosRuntime:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (
             RecordingAgentExecutorFactoryV2(
                 "exact",

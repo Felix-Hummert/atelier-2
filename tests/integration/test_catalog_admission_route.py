@@ -55,7 +55,6 @@ from tests.scenarios.api import (
     durable_ports,
     event_poll_backoff,
 )
-from tests.scenarios.runtime import exact_output_runtime
 
 NAME = "review-bounded-diff"
 DOCUMENT = b"""format_version: 3
@@ -92,7 +91,7 @@ REVISIONS = f"{API_PREFIX}/workflow-revisions"
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    started = exact_output_runtime(
+    started = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "admission-route-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -319,7 +318,7 @@ def test_a_later_revision_appends_its_authored_name_and_both_names_survive_resta
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
     external_path = tmp_path / "external.sqlite"
-    runtime = exact_output_runtime(
+    runtime = DbosRuntime(
         DbosRuntimeSettings(database_path, "admission-route-test"),
         LoopbackEffectAdapterFactory(
             external_path,
@@ -353,7 +352,7 @@ def test_a_later_revision_appends_its_authored_name_and_both_names_survive_resta
     finally:
         runtime.close()
 
-    restarted = exact_output_runtime(
+    restarted = DbosRuntime(
         DbosRuntimeSettings(database_path, "admission-route-test"),
         LoopbackEffectAdapterFactory(
             external_path,

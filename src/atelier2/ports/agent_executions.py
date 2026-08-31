@@ -21,10 +21,8 @@ from atelier2.contracts.agents import (
     MAXIMUM_SIGNED_INT64,
     UNATTENDED_AGENT_EXECUTION_CAPABILITIES,
     AgentExecutionCapability,
-    AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutionResult,
-    AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     ProviderId,
@@ -32,19 +30,6 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.executions import AgentAttemptExecution
 
 MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = MAXIMUM_RUNNER_STANDARD_ERROR_BYTES
-
-
-class AgentExecutor(Protocol):
-    def execute(self, request: AgentExecutionRequest) -> AgentExecutionResult: ...
-
-    def close(self) -> None: ...
-
-
-class AgentExecutorFactory(Protocol):
-    @property
-    def binding(self) -> AgentExecutorBinding: ...
-
-    def open(self) -> AgentExecutor: ...
 
 
 @dataclass(frozen=True)

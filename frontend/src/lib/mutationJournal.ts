@@ -106,44 +106,9 @@ export async function waitMutation(
   expectedNodeExecutionId: string,
   answer: string
 ): Promise<WaitMutation> {
-  if (!canonicalIntegerPattern.test(answer)) {
-    throw new Error("wait answer must be one canonical integer");
-  }
-  return waitAnswerMutation(
-    publicRunReference,
-    workflowRevisionHash,
-    nodeId,
-    expectedNodeExecutionId,
-    answer
-  );
-}
-
-export async function v3WaitMutation(
-  publicRunReference: string,
-  workflowRevisionHash: string,
-  nodeId: string,
-  expectedNodeExecutionId: string,
-  answer: string
-): Promise<WaitMutation> {
   if (answer.length === 0) {
     throw new Error("wait answer must not be empty");
   }
-  return waitAnswerMutation(
-    publicRunReference,
-    workflowRevisionHash,
-    nodeId,
-    expectedNodeExecutionId,
-    answer
-  );
-}
-
-async function waitAnswerMutation(
-  publicRunReference: string,
-  workflowRevisionHash: string,
-  nodeId: string,
-  expectedNodeExecutionId: string,
-  answer: string
-): Promise<WaitMutation> {
   const answerBytes = new TextEncoder().encode(answer);
   const answerBase64 = encodeBase64(answerBytes);
   const body = new TextEncoder().encode(
@@ -171,14 +136,6 @@ async function waitAnswerMutation(
   };
 }
 
-export function waitAnswer(mutation: WaitMutation): string {
-  const answer = waitAnswerText(mutation);
-  if (!canonicalIntegerPattern.test(answer)) {
-    throw new Error("saved wait answer is not one canonical integer");
-  }
-  return answer;
-}
-
 export function waitAnswerText(mutation: WaitMutation): string {
   const bytes = decodeCanonicalBase64(mutation.answer_base64);
   const answer = bytes === null ? null : decodeUtf8(bytes);
@@ -186,108 +143,6 @@ export function waitAnswerText(mutation: WaitMutation): string {
     throw new Error("saved wait answer is not readable text");
   }
   return answer;
-}
-
-export interface ReconciliationMutation extends MutationBase {
-  kind: "reconciliation";
-  content_type: "application/json";
-  workflow_revision_hash: string;
-  node_id: string;
-  request_base64: string;
-  request_hash: string;
-  result_hash: string | null;
-}
-
-export type ReconciliationDeterminationInput =
-  | { type: "operator_found"; effect_id: string; result_base64: string }
-  | { type: "operator_authoritative_absence" };
-
-export type ReconciliationCommand = {
-  command_id: string;
-  expected_intent_state_version: number;
-  actor: string;
-  evidence: string;
-  determination:
-    | { type: "operator_found"; effect_id: string; result_base64: string }
-    | { type: "operator_authoritative_absence" };
-};
-
-export function createReconcileCommandId(): string {
-  return `reconcile-${globalThis.crypto.randomUUID()}`;
-}
-
-export async function reconciliationMutation(
-  publicRunReference: string,
-  workflowRevisionHash: string,
-  nodeId: string,
-  requestBase64: string,
-  requestHash: string,
-  expectedIntentStateVersion: number,
-  commandId: string,
-  actor: string,
-  evidence: string,
-  determination: ReconciliationDeterminationInput
-): Promise<ReconciliationMutation> {
-  if (
-    decodePublicRunReference(publicRunReference) === null ||
-    !digestPattern.test(workflowRevisionHash) ||
-    nodeId.length === 0 ||
-    commandId.length === 0 ||
-    actor.trim().length === 0 ||
-    evidence.trim().length === 0 ||
-    !Number.isSafeInteger(expectedIntentStateVersion) ||
-    expectedIntentStateVersion < 0
-  ) {
-    throw new Error("invalid reconciliation identity or accountable evidence");
-  }
-  const request = decodeCanonicalBase64(requestBase64);
-  if (request === null || (await sha256Hex(request)) !== requestHash) {
-    throw new Error("reconciliation request hash differs from its exact bytes");
-  }
-  let commandDetermination: ReconciliationCommand["determination"];
-  let resultHash: string | null;
-  if (determination.type === "operator_found") {
-    if (determination.effect_id.trim().length === 0) {
-      throw new Error("a found effect requires an effect identity");
-    }
-    const result = decodeCanonicalBase64(determination.result_base64);
-    if (result === null) {
-      throw new Error("a found result must be canonical standard base64");
-    }
-    commandDetermination = {
-      type: "operator_found",
-      effect_id: determination.effect_id,
-      result_base64: determination.result_base64
-    };
-    resultHash = await sha256Hex(result);
-  } else {
-    commandDetermination = { type: "operator_authoritative_absence" };
-    resultHash = null;
-  }
-  const command: ReconciliationCommand = {
-    command_id: commandId,
-    expected_intent_state_version: expectedIntentStateVersion,
-    actor,
-    evidence,
-    determination: commandDetermination
-  };
-  return {
-    mutation_id: `reconciliation:${publicRunReference}:${commandId}`,
-    kind: "reconciliation",
-    target: `/atelier/api/v1/runs/${publicRunReference}/reconciliations`,
-    content_type: "application/json",
-    body_base64: encodeBase64(new TextEncoder().encode(JSON.stringify(command))),
-    workflow_revision_hash: workflowRevisionHash,
-    node_id: nodeId,
-    request_base64: requestBase64,
-    request_hash: requestHash,
-    result_hash: resultHash
-  };
-}
-
-export function reconciliationCommand(mutation: ReconciliationMutation): ReconciliationCommand {
-  const value = requireJsonBody(mutation.body_base64);
-  return value as ReconciliationCommand;
 }
 
 /**
@@ -355,7 +210,6 @@ export type MutationEnvelope =
   | PublishMutation
   | StartMutation
   | WaitMutation
-  | ReconciliationMutation
   | CancelMutation;
 
 export type JournalEntry = MutationEnvelope & { delivery: MutationDelivery };
@@ -379,7 +233,6 @@ export type MutationEvidence =
       workflow_revision_hash: string;
     })
   | (RequestBoundEvidence & { type: "wait_response" })
-  | (RequestBoundEvidence & { type: "reconciliation_response" })
   | (RequestBoundEvidence & { type: "cancel_response" })
   | {
       type: "wait_answered";
@@ -389,23 +242,10 @@ export type MutationEvidence =
       node_execution_id: string;
       answer: string;
       answer_hash: string;
-    }
-  | {
-      type: "reconciliation_resolved";
-      public_run_reference: string;
-      workflow_revision_hash: string;
-      node_id: string;
-      command_id: string;
-      request_hash: string;
-      effect_id: string;
-      confirmation_source: "OPERATOR_FOUND" | "OPERATOR_AUTHORIZED_EXECUTION";
-      result_base64: string;
-      result_hash: string;
     };
 
 const storageKey = "atelier2.mutation-journal.v1";
 const digestPattern = /^[0-9a-f]{64}$/;
-const canonicalIntegerPattern = /^(?:0|-?[1-9][0-9]*)$/;
 
 export class MutationJournal {
   constructor(private readonly storage: Storage) {}
@@ -483,7 +323,7 @@ export class MutationJournal {
   async resolve(mutationId: string, evidence: MutationEvidence): Promise<boolean> {
     const entries = await this.entries();
     const entry = entries.find((candidate) => candidate.mutation_id === mutationId);
-    if (entry === undefined || !(await evidenceMatches(entry, evidence))) {
+    if (entry === undefined || !evidenceMatches(entry, evidence)) {
       return false;
     }
     this.write(entries.filter((candidate) => candidate.mutation_id !== mutationId));
@@ -540,9 +380,6 @@ async function requireEnvelope(envelope: MutationEnvelope): Promise<void> {
       return;
     case "wait":
       await requireWait(envelope as WaitMutation);
-      return;
-    case "reconciliation":
-      await requireReconciliation(envelope as ReconciliationMutation);
       return;
     case "cancel":
       requireCancel(envelope as CancelMutation);
@@ -707,78 +544,6 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
   }
 }
 
-async function requireReconciliation(envelope: ReconciliationMutation): Promise<void> {
-  requireExactKeys(envelope, envelopeKeys(envelope));
-  const route = /^\/atelier\/api\/v1\/runs\/(run1\.[A-Za-z0-9_-]+)\/reconciliations$/.exec(
-    envelope.target
-  );
-  const publicReference = route?.[1];
-  const body = requireJsonBody(envelope.body_base64);
-  requireExactKeys(body, [
-    "command_id",
-    "expected_intent_state_version",
-    "actor",
-    "evidence",
-    "determination"
-  ]);
-  const determination = body.determination;
-  if (!isRecord(determination) || typeof determination.type !== "string") {
-    throw new Error("invalid reconciliation determination");
-  }
-  if (determination.type === "operator_found") {
-    requireExactKeys(determination, ["type", "effect_id", "result_base64"]);
-    if (
-      typeof determination.effect_id !== "string" ||
-      determination.effect_id.length === 0 ||
-      typeof determination.result_base64 !== "string" ||
-      decodeCanonicalBase64(determination.result_base64) === null ||
-      envelope.result_hash === null ||
-      !digestPattern.test(envelope.result_hash)
-    ) {
-      throw new Error("invalid operator-found determination");
-    }
-    const result = decodeCanonicalBase64(determination.result_base64 as string);
-    if (result === null || (await sha256Hex(result)) !== envelope.result_hash) {
-      throw new Error("found result identity differs from its exact bytes");
-    }
-  } else if (determination.type === "operator_authoritative_absence") {
-    requireExactKeys(determination, ["type"]);
-    if (envelope.result_hash !== null) {
-      throw new Error("authoritative absence must not claim a result hash");
-    }
-  } else {
-    throw new Error("invalid reconciliation determination");
-  }
-  if (
-    envelope.content_type !== "application/json" ||
-    publicReference === undefined ||
-    decodePublicRunReference(publicReference) === null ||
-    typeof body.command_id !== "string" ||
-    body.command_id.length === 0 ||
-    !Number.isSafeInteger(body.expected_intent_state_version) ||
-    (body.expected_intent_state_version as number) < 0 ||
-    typeof body.actor !== "string" ||
-    body.actor.length === 0 ||
-    typeof body.evidence !== "string" ||
-    body.evidence.length === 0 ||
-    typeof envelope.workflow_revision_hash !== "string" ||
-    !digestPattern.test(envelope.workflow_revision_hash) ||
-    typeof envelope.node_id !== "string" ||
-    envelope.node_id.length === 0 ||
-    typeof envelope.request_base64 !== "string" ||
-    decodeCanonicalBase64(envelope.request_base64) === null ||
-    typeof envelope.request_hash !== "string" ||
-    !digestPattern.test(envelope.request_hash) ||
-    envelope.mutation_id !== `reconciliation:${publicReference}:${body.command_id}`
-  ) {
-    throw new Error("invalid reconciliation mutation envelope");
-  }
-  const request = decodeCanonicalBase64(envelope.request_base64);
-  if (request === null || (await sha256Hex(request)) !== envelope.request_hash) {
-    throw new Error("reconciliation request hash differs from its exact bytes");
-  }
-}
-
 function requireCancel(envelope: CancelMutation): void {
   requireExactKeys(envelope, envelopeKeys(envelope));
   const route = /^\/atelier\/api\/v1\/runs\/(run1\.[A-Za-z0-9_-]+)\/cancellations$/.exec(
@@ -804,10 +569,10 @@ function requireCancel(envelope: CancelMutation): void {
   }
 }
 
-async function evidenceMatches(
+function evidenceMatches(
   entry: JournalEntry,
   evidence: MutationEvidence
-): Promise<boolean> {
+): boolean {
   switch (entry.kind) {
     case "publish":
       return (
@@ -837,14 +602,6 @@ async function evidenceMatches(
         return evidence.status === 200 && requestEvidenceMatches(entry, evidence);
       }
       return evidence.type === "wait_answered" && waitEvidenceMatches(entry, evidence);
-    case "reconciliation":
-      if (evidence.type === "reconciliation_response") {
-        return evidence.status === 200 && requestEvidenceMatches(entry, evidence);
-      }
-      return (
-        evidence.type === "reconciliation_resolved" &&
-        (await reconciliationEvidenceMatches(entry, evidence))
-      );
     case "cancel":
       return (
         evidence.type === "cancel_response" &&
@@ -882,39 +639,6 @@ function waitEvidenceMatches(
     evidence.node_execution_id === body.expected_node_execution_id &&
     evidence.answer === answer &&
     evidence.answer_hash === entry.answer_hash
-  );
-}
-
-async function reconciliationEvidenceMatches(
-  entry: ReconciliationMutation,
-  evidence: Extract<MutationEvidence, { type: "reconciliation_resolved" }>
-): Promise<boolean> {
-  const evidenceResult = decodeCanonicalBase64(evidence.result_base64);
-  if (
-    evidenceResult === null ||
-    !digestPattern.test(evidence.result_hash) ||
-    (await sha256Hex(evidenceResult)) !== evidence.result_hash
-  ) {
-    return false;
-  }
-  const body = requireJsonBody(entry.body_base64);
-  const determination = body.determination as Record<string, unknown>;
-  const sourceMatches =
-    (determination.type === "operator_found" &&
-      evidence.confirmation_source === "OPERATOR_FOUND" &&
-      evidence.effect_id === determination.effect_id &&
-      evidence.result_base64 === determination.result_base64 &&
-      evidence.result_hash === entry.result_hash) ||
-    (determination.type === "operator_authoritative_absence" &&
-      evidence.confirmation_source === "OPERATOR_AUTHORIZED_EXECUTION");
-  return (
-    evidence.public_run_reference ===
-      publicReferenceFromTarget(entry.target, "reconciliations") &&
-    evidence.workflow_revision_hash === entry.workflow_revision_hash &&
-    evidence.node_id === entry.node_id &&
-    evidence.command_id === body.command_id &&
-    evidence.request_hash === entry.request_hash &&
-    sourceMatches
   );
 }
 
@@ -966,15 +690,6 @@ function envelopeKeys(envelope: MutationEnvelope): string[] {
         "actor",
         "answer_base64",
         "answer_hash"
-      ];
-    case "reconciliation":
-      return [
-        ...common,
-        "workflow_revision_hash",
-        "node_id",
-        "request_base64",
-        "request_hash",
-        "result_hash"
       ];
     case "cancel":
       return [

@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { AnyRun, CockpitApi, NodeDetail, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import type { CockpitApi, NodeDetail, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import {
   reportConnectionLost,
   reportConnectionRestored,
@@ -17,9 +17,9 @@ import { historyWhenLabel } from "../../src/lib/historyRows";
 import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
-import { completedRun, publicReference, revisionHash } from "../support/workflowV1";
+import { completedRun, publicReference, revisionHash, workflowRevision } from "../support/runV3";
 
-function v1Failed(changes: Partial<RunV1> = {}): RunV1 {
+function failedRun(changes: Partial<RunV3> = {}): RunV3 {
   return { ...completedRun(changes), state: "FAILED" };
 }
 
@@ -173,11 +173,11 @@ function visibleResultText(row: HTMLElement): string {
 }
 
 function openHistory(
-  runsByState: { completed?: AnyRun[]; failed?: AnyRun[] },
+  runsByState: { completed?: RunV3[]; failed?: RunV3[] },
   overrides: Partial<CockpitApi> = {}
 ) {
   window.history.replaceState(null, "", "/atelier/history");
-  const listRuns = vi.fn(async (_after?: string, state?: AnyRun["state"]) => ({
+  const listRuns = vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
     items: state === "FAILED" ? runsByState.failed ?? [] : runsByState.completed ?? [],
     next_after: null
   }));
@@ -464,15 +464,18 @@ describe("History shows only what has finished", () => {
     });
   });
 
-  it("names a failed run from extras, and shows no duration when no V3 stamp exists", async () => {
+  it("names a failed run from extras, and shows no duration when no stamp exists", async () => {
     const getNodeDetail = vi.fn(async () => failedNodeDetail());
-    openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
+    openHistory(
+      { failed: [failedRun({ run_id: "broke" })] },
+      { getNodeDetail, getWorkflowRevision: vi.fn(async () => workflowRevision()) }
+    );
 
-    const row = await findHistoryCard(/broke/);
+    const row = await findHistoryCard(/Four steps in a line/);
     await waitFor(() => {
       expect(getNodeDetail).toHaveBeenCalled();
       expect(row.querySelector(".row-result")?.textContent).toContain(
-        historyOutcome("broke", '{"answer":"could not merge"}')
+        historyOutcome("Four steps in a line", '{"answer":"could not merge"}')
       );
     });
     expect(row.textContent).toContain(standingWords.failed);
@@ -484,9 +487,12 @@ describe("History shows only what has finished", () => {
 
   it("names a failed run's node when extras settle with no sentence", async () => {
     const getNodeDetail = vi.fn(async () => nodeDetail({ state: "failed" }));
-    openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
+    openHistory(
+      { failed: [failedRun({ run_id: "broke" })] },
+      { getNodeDetail, getWorkflowRevision: vi.fn(async () => workflowRevision()) }
+    );
 
-    const row = await findHistoryCard(/broke/);
+    const row = await findHistoryCard(/Four steps in a line/);
     await waitFor(() => {
       expect(row.textContent).toContain(`${standingWords.failed} · final`);
     });
@@ -504,10 +510,13 @@ describe("History shows only what has finished", () => {
     expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`);
   });
 
-  it("never hides a timestampless V1 row behind the period chip, and names why", async () => {
-    openHistory({ completed: [completedRun({ run_id: "old-format" })] });
+  it("never hides a timestampless row behind the period chip, and names why", async () => {
+    openHistory(
+      { completed: [completedRun({ run_id: "old-format" })] },
+      { getWorkflowRevision: vi.fn(async () => workflowRevision()) }
+    );
 
-    const row = await findHistoryCard(/old-format/);
+    const row = await findHistoryCard(/Four steps in a line/);
     expect(row.isConnected).toBe(true);
     expect(
       screen.getByText(/Runs with no recorded time always show here/).isConnected

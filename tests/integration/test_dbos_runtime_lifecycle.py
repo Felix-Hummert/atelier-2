@@ -25,7 +25,6 @@ from atelier2.adapters.dbos.runtime import (
 )
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
@@ -60,7 +59,7 @@ from tests.scenarios.runs import (
     publish_pinned_revisions,
     start_published_v3_run,
 )
-from tests.scenarios.runtime import exact_output_runtime, recording_exact_runtime
+from tests.scenarios.runtime import recording_exact_runtime
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
     OPEN_PR_OPERATION,
@@ -182,7 +181,7 @@ def acquire() -> Iterator[AcquireLease]:
     leases: list[DbosRuntime] = []
 
     def acquire_lease(settings: DbosRuntimeSettings) -> DbosRuntime:
-        lease = exact_output_runtime(
+        lease = DbosRuntime(
             settings,
             LoopbackEffectAdapterFactory(
                 settings.database_path.parent / "external-effect.sqlite",
@@ -407,8 +406,8 @@ def test_equivalent_factories_open_once_and_last_lease_closes_once(
         )
     )
     second_factory = CountingFactory(first_factory._delegate)
-    first = exact_output_runtime(settings, first_factory)
-    second = exact_output_runtime(settings, second_factory)
+    first = DbosRuntime(settings, first_factory)
+    second = DbosRuntime(settings, second_factory)
 
     assert first_factory.opens == 1
     assert second_factory.opens == 0
@@ -424,7 +423,7 @@ def test_incompatible_factory_is_refused_before_it_opens_or_mutates_its_store(
     tmp_path: Path,
 ) -> None:
     settings = runtime_settings(canonical_database(tmp_path))
-    active = exact_output_runtime(
+    active = DbosRuntime(
         settings,
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -442,7 +441,7 @@ def test_incompatible_factory_is_refused_before_it_opens_or_mutates_its_store(
     )
     try:
         with pytest.raises(DbosRuntimeBindingConflict):
-            exact_output_runtime(settings, refused)
+            DbosRuntime(settings, refused)
         assert refused.opens == 0
         assert not refused_path.parent.exists()
     finally:
@@ -467,12 +466,12 @@ def test_initialization_failure_closes_the_opened_adapter_and_releases_binding(
     with monkeypatch.context() as context:
         context.setattr(SQLAlchemyDatasource, "create", fail_datasource)
         with pytest.raises(RuntimeError, match="injected datasource failure"):
-            exact_output_runtime(settings, factory)
+            DbosRuntime(settings, factory)
 
     assert factory.opens == 1
     assert factory.opened is not None
     assert factory.opened.closes == 1
-    recovered = exact_output_runtime(settings, factory._delegate)
+    recovered = DbosRuntime(settings, factory._delegate)
     recovered.close()
 
 
@@ -525,7 +524,7 @@ def test_canonical_and_external_store_must_be_distinct(tmp_path: Path) -> None:
     database = canonical_database(tmp_path)
 
     with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
-        exact_output_runtime(
+        DbosRuntime(
             runtime_settings(database),
             LoopbackEffectAdapterFactory(
                 database,
@@ -539,7 +538,7 @@ def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
     tmp_path: Path,
 ) -> None:
     database = canonical_database(tmp_path)
-    original = exact_output_runtime(
+    original = DbosRuntime(
         runtime_settings(database),
         LoopbackEffectAdapterFactory(
             tmp_path / "original-external.sqlite",
@@ -553,7 +552,7 @@ def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
     os.link(database, external_alias)
 
     with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
-        exact_output_runtime(
+        DbosRuntime(
             runtime_settings(database),
             LoopbackEffectAdapterFactory(
                 external_alias,
@@ -587,7 +586,6 @@ def _runtime_with_v2(
             AdapterRevision("loopback-v1"),
             EffectDestination("lifecycle"),
         ),
-        ExactOutputAgentExecutorFactory(),
         factories,
     )
 
@@ -604,7 +602,7 @@ def test_empty_registry_runs_a_waiting_line_without_process_supervision(
     monkeypatch.setattr(
         dbos_runtime, "AgentProcessSupervisor", forbidden_process_authority
     )
-    runtime = exact_output_runtime(
+    runtime = DbosRuntime(
         runtime_settings(canonical_database(tmp_path)),
         LoopbackEffectAdapterFactory(
             tmp_path / "effects.sqlite",
@@ -622,7 +620,7 @@ def test_empty_registry_runs_a_waiting_line_without_process_supervision(
     finally:
         runtime.close()
 
-    restarted = exact_output_runtime(
+    restarted = DbosRuntime(
         runtime_settings(canonical_database(tmp_path)),
         LoopbackEffectAdapterFactory(
             tmp_path / "effects.sqlite",
@@ -1060,7 +1058,6 @@ def test_effect_open_base_exception_closes_provider_and_releases_owner(
                 agent_scratch_root=agent_scratch_root(tmp_path),
             ),
             effect_factory,
-            ExactOutputAgentExecutorFactory(),
             (factory,),
         )
 

@@ -28,7 +28,6 @@ from atelier2.adapters.dbos import workflow as dbos_workflow
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.context import ApiContext, ApiPorts
 from atelier2.api.limits import ApiLimits
@@ -103,7 +102,6 @@ from atelier2.host.conductor_workflow import (
 from atelier2.host.serving import HostSettings
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
-    AgentExecutorFactory,
     AgentExecutorFactoryV2,
     AgentProcessCompletion,
     AgentProcessInvocation,
@@ -1165,7 +1163,6 @@ def seed_boot_baseline(database: Path, effects: Path, application_version: str) 
             database, application_version, agent_scratch_root=seed_scratch.path
         ),
         UnknownReadbackFactory(binding),
-        ExactOutputAgentExecutorFactory(),
         (baseline_agent_executor_factory(),),
     )
     try:
@@ -1271,7 +1268,6 @@ def main() -> None:
     def runtime(
         settings: DbosRuntimeSettings,
         effect_factory: EffectAdapterFactory,
-        agent_factory: AgentExecutorFactory,
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
         factories = (
@@ -1291,7 +1287,6 @@ def main() -> None:
                 agent_scratch_root=scratch_root.path,
             ),
             effect_factory,
-            agent_factory,
             factories,
         )
 

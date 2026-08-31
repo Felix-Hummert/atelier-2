@@ -41,7 +41,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github import (
     GitHubConnectionUncomposable,
     GitHubCredentialUnresolvable,
@@ -123,7 +122,6 @@ from tests.scenarios.projects import (
     git_project,
     write_into_checkout,
 )
-from tests.scenarios.runtime import exact_output_runtime
 
 INERT_CLAUDE = "raise SystemExit(0)\n"
 
@@ -247,7 +245,7 @@ def frontend_dist(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    configured = exact_output_runtime(
+    configured = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "host-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "effects.sqlite",
@@ -870,7 +868,6 @@ def test_a_record_composed_start_refuses_a_legacy_agent_completion_without_recei
             AdapterRevision("loopback-v1"),
             EffectDestination("local"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (open_pr_agent_executor_factory(PR_SPEC),),
     )
     seeded.initialize_storage()

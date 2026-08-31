@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -106,7 +105,6 @@ def runtime(
             agent_scratch_root=agent_scratch_root(database.parent),
         ),
         HarnessEffectAdapterFactory(external, after_execute_crash_marker),
-        ExactOutputAgentExecutorFactory(),
         (open_pr_agent_executor_factory(PR_SPEC),),
     )
 

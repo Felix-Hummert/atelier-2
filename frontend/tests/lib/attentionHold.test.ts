@@ -6,7 +6,7 @@ import {
   markAttentionLive,
   startAttentionHold
 } from "../../src/lib/attentionHold";
-import { eventCursor, publicReference, revisionHash, waitingInput } from "../support/workflowV1";
+import { eventCursor, publicReference, revisionHash, waitingInput } from "../support/runV3";
 
 describe("the studio's hold of GET /events", () => {
   it("starts connecting and becomes live only after the door opens", () => {
@@ -90,7 +90,7 @@ describe("the studio's hold of GET /events", () => {
     const applied = applyAttentionFrame(
       markAttentionLive(startAttentionHold()),
       JSON.stringify({
-        workflow_format_version: 2 as const,
+        workflow_format_version: 3 as const,
         cursor: eventCursor(1),
         sequence: 1,
         public_run_reference: publicReference,
@@ -140,7 +140,7 @@ describe("the studio's hold of GET /events", () => {
 
 function agentFailed() {
   return {
-    workflow_format_version: 2 as const,
+    workflow_format_version: 3 as const,
     cursor: eventCursor(1),
     sequence: 1,
     public_run_reference: publicReference,
@@ -157,6 +157,7 @@ function agentFailed() {
     ],
     event: "AGENT_FAILED" as const,
     failure_code: "PROCESS_EXITED_UNSUCCESSFULLY" as const,
+    reason: null,
     attempt_id: revisionHash,
     attempt_ordinal: 1 as const
   };

@@ -59,7 +59,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     runner_lease_workflow_id_for,
 )
-from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.converge_uncontinuable_runs import (
     converge_uncontinuable_runs,
@@ -230,7 +229,6 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        ExactOutputAgentExecutorFactory(),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()

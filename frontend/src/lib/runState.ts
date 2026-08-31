@@ -1,4 +1,4 @@
-import type { AnyRun } from "../api/client";
+import type { RunV3 } from "../api/client";
 
 /**
  * What a durable run state means for the person looking at it.
@@ -13,7 +13,7 @@ import type { AnyRun } from "../api/client";
  */
 export type RunStanding = "running" | "waiting" | "failed" | "cancelled" | "done";
 
-const standings: Record<AnyRun["state"], RunStanding> = {
+const standings: Record<RunV3["state"], RunStanding> = {
   STARTED: "running",
   WAITING_INPUT: "waiting",
   WAITING_RECONCILIATION: "waiting",
@@ -23,7 +23,7 @@ const standings: Record<AnyRun["state"], RunStanding> = {
 };
 
 /** The move the run is waiting for from a human, in one word, or null when it waits for nobody. */
-const humanMoves: Record<AnyRun["state"], string | null> = {
+const humanMoves: Record<RunV3["state"], string | null> = {
   STARTED: null,
   WAITING_INPUT: "Answer",
   WAITING_RECONCILIATION: "Reconcile",
@@ -50,16 +50,16 @@ export const standingMarks: Record<RunStanding, string> = {
   done: "●"
 };
 
-export function humanMove(state: AnyRun["state"]): string | null {
+export function humanMove(state: RunV3["state"]): string | null {
   return humanMoves[state];
 }
 
-export function runStanding(state: AnyRun["state"]): RunStanding {
+export function runStanding(state: RunV3["state"]): RunStanding {
   return standings[state];
 }
 
 /** Whether a run's line is over -- done, failed or cancelled, never running or waiting. */
-export function runHasEnded(state: AnyRun["state"]): boolean {
+export function runHasEnded(state: RunV3["state"]): boolean {
   const standing = standings[state];
   return standing !== "running" && standing !== "waiting";
 }
