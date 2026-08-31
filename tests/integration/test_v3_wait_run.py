@@ -1081,6 +1081,84 @@ def test_a_pending_answer_reports_itself_again_and_refuses_different_bytes(
     assert stored == [(WaitAnswerState.PENDING.value, ANSWER)]
 
 
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_a_duplicate_answer_in_the_committed_transition_window_is_that_answer(
+    tmp_path: Path,
+) -> None:
+    """Between the answer's commit and the heir's first event, the store is healthy.
+
+    In that window the head event still carries the wait node while
+    `current_node_id` already names the heir -- the same committed-transition
+    state the restart sweep once misread as a dead gap. The front door misread
+    it too, handing a duplicate identical answer `DurableStateCorrupt` instead
+    of the answer it already accepted. The window is parked here exactly, with
+    nothing running: the duplicate must be told its own answer, different bytes
+    must still be refused, and neither may write anything.
+    """
+    recording = recording_provider()
+    started = wait_runtime_over(tmp_path, recording)
+    started.initialize_storage()
+    try:
+        workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+        wait_for_state(started, RunState.WAITING_INPUT)
+        version = started.settings.application_version
+    finally:
+        started.close()
+
+    engine = create_canonical_engine(tmp_path / "atelier.sqlite")
+    try:
+        answerer = DbosWaitAnswerer(engine, version)
+
+        def submit(value: bytes) -> object:
+            return answer_wait_result(
+                RUN,
+                workflow.revision_hash,
+                WAIT_NODE,
+                NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+                WaitAnswerActor.OPERATOR,
+                value,
+                answerer,
+            )
+
+        assert isinstance(submit(ANSWER), AnswerAcceptedPending)
+        # The apply commits without any runtime to start the heir, so the run
+        # now stands STARTED on the heir while the head event is WAIT_ANSWERED
+        # on the wait node: the committed-transition window, held open.
+        with engine.begin() as connection:
+            pending = load_wait_answer(
+                connection, RUN, workflow.revision_hash, WAIT_NODE
+            )
+            commit_wait_answered(connection, pending.answer)
+        with engine.connect() as connection:
+            parked = connection.execute(
+                sa.select(runs.c.state, runs.c.current_node_id).where(
+                    runs.c.run_id == RUN.value
+                )
+            ).one()
+        assert parked == (RunState.STARTED.value, "review")
+
+        duplicate = submit(ANSWER)
+        assert isinstance(duplicate, AnswerExistingApplied), duplicate
+        assert duplicate.snapshot.answer.answer_bytes == ANSWER
+        assert submit(b'"rejected"') == DurableStateCorrupt()
+
+        with engine.connect() as connection:
+            stored = connection.execute(
+                sa.select(wait_answers.c.state, wait_answers.c.answer_bytes)
+            ).all()
+            still_parked = connection.execute(
+                sa.select(
+                    runs.c.state,
+                    runs.c.current_node_id,
+                    runs.c.last_event_sequence,
+                ).where(runs.c.run_id == RUN.value)
+            ).one()
+    finally:
+        engine.dispose()
+    assert stored == [(WaitAnswerState.APPLIED.value, ANSWER)]
+    assert still_parked == (RunState.STARTED.value, "review", 3)
+
+
 CANCEL_KEY = "operator-stops-the-wait-1"
 
 

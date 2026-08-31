@@ -120,6 +120,7 @@ from atelier2.contracts.workflows_v3 import (
     AnyWaitNode,
     AnyWorkflowDocument,
     GraphInputSource,
+    LoopVerdictNotRead,
     NodeOutput,
     NodeOutputSource,
     WaitNodeV3,
@@ -1151,6 +1152,43 @@ def _applied_answer_matches_event(
     )
 
 
+def _run_stands_on_its_head_event(
+    graph: AnyWorkflowDocument, run: AnyRun, head_event: RunEvent
+) -> bool:
+    """Whether the run row and its head event describe one healthy head.
+
+    Steady state is the current node's own last word. But a transition commits
+    the run onto its heir in the same transaction that records the event, so
+    until the heir writes its own first event the head still carries the
+    transitioned node while `current_node_id` already names the heir. That
+    window is healthy state, not corruption -- the restart sweep learned the
+    same lesson for its driver families (#923) -- and it is recognized by
+    recomputing the recorded transition's target. A verdict-steered loop exit
+    cannot be recomputed without the verdict it was steered by and stays
+    unrecognized, which only means it is judged as strictly as before.
+    """
+    if head_event.revision_hash != run.revision_hash:
+        return False
+    if head_event.node_execution_id != NodeExecutionId.for_node(
+        run.run_id, run.revision_hash, head_event.node_id, head_event.round_ordinal
+    ):
+        return False
+    if (
+        head_event.node_id == run.current_node_id
+        and head_event.round_ordinal == run.current_round_ordinal
+    ):
+        return True
+    if run.state is not RunState.STARTED:
+        return False
+    try:
+        completion = completion_after_node(
+            graph, head_event.node_id, head_event.round_ordinal
+        )
+    except LoopVerdictNotRead:
+        return False
+    return completion == RunContinues(run.current_node_id, run.current_round_ordinal)
+
+
 class DbosWaitAnswerer:
     def __init__(self, engine: Engine, application_version: str) -> None:
         self._engine = engine
@@ -1239,12 +1277,7 @@ class DbosWaitAnswerer:
                         connection.rollback()
                         return DurableStateCorrupt()
                     head_event = event_from_record(head_records[0])
-                    if (
-                        head_event.revision_hash != run.revision_hash
-                        or head_event.node_id != run.current_node_id
-                        or head_event.node_execution_id != current_execution_id
-                        or head_event.round_ordinal != run.current_round_ordinal
-                    ):
+                    if not _run_stands_on_its_head_event(graph, run, head_event):
                         connection.rollback()
                         return DurableStateCorrupt()
                     current_record = _wait_answer_record(
