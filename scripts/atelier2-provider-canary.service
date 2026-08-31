@@ -1,0 +1,11 @@
+# Run one bounded live probe for every configured provider vector. Install with
+# the timer and atelier2-serve.service drop-in documented in docs/OPERATIONS.md.
+[Unit]
+Description=Atelier2 live provider canaries
+After=atelier2-serve.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/absolute/path/to/atelier-2
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env uv run --locked atelier2 provider-canary

@@ -72,6 +72,15 @@ from atelier2.contracts.host_configuration import (
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.mcp_command import execute_mcp
 from atelier2.host.migrate_command import describe_migration, execute_migrate
+from atelier2.host.provider_canary import (
+    PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS,
+    ProviderCanaryAnswerUnreadable,
+    ProviderCanaryHttpRefused,
+    ProviderCanaryServerUnavailable,
+    ProviderCanarySettings,
+    default_provider_canary_state_directory,
+    execute_provider_canaries,
+)
 from atelier2.host.run_command import (
     DEFAULT_CATALOG_POSITION,
     AgentBindingSource,
@@ -205,6 +214,17 @@ Each tool calls an existing door. A typed problem from the service is the
 tool's own answer, field pointers included.
 """
 
+PROVIDER_CANARY_DESCRIPTION = """\
+Run each configured live provider vector once through the served Atelier API.
+
+The command reads the instance's startable agent-configuration list, resolves
+the matching admitted provider-canary workflow, starts one fresh run with that
+exact configuration hash, and waits for a terminal state. Each outcome atomically
+replaces one provider-probe-receipt/v1 beneath the XDG state directory. A failed
+vector leaves a fail receipt and makes the command exit nonzero; provider output
+stays with the durable run and never enters the receipt.
+"""
+
 BINDING_SEPARATOR = "="
 
 
@@ -237,6 +257,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _connect(parsed)
     if parsed.command == "mcp":
         return execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer)
+    if parsed.command == "provider-canary":
+        return _provider_canary(parser, parsed)
     parser.error("a command is required")
 
 
@@ -388,6 +410,40 @@ def _migrate(parsed: argparse.Namespace) -> int:
         print(refusal, file=sys.stderr)
         return 1
     print(describe_migration(report))
+    return 0
+
+
+def _provider_canary(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> int:
+    try:
+        settings = ProviderCanarySettings(
+            service_url=parsed.service,
+            workflow_directory=parsed.workflow_directory,
+            state_directory=parsed.state_directory,
+            terminal_timeout_seconds=parsed.terminal_timeout_seconds,
+        )
+    except ValueError as refusal:
+        parser.error(str(refusal))
+    try:
+        report = execute_provider_canaries(settings)
+    except (
+        OSError,
+        ProviderCanaryAnswerUnreadable,
+        ProviderCanaryHttpRefused,
+        ProviderCanaryServerUnavailable,
+    ) as refusal:
+        print(f"provider canary refused: {refusal}", file=sys.stderr)
+        return 1
+    for failure in report.failures:
+        print(
+            f"provider canary {failure.vector.value} failed with "
+            f"{failure.problem_code.value}: {failure.detail}",
+            file=sys.stderr,
+        )
+    if report.failed:
+        return 1
+    print(f"provider canary: {report.attempted} vector(s) succeeded")
     return 0
 
 
@@ -1060,6 +1116,41 @@ def _argument_parser() -> argparse.ArgumentParser:
         help=(
             "the served Atelier API to call (default "
             f"{DEFAULT_SERVICE_URL}); must be a literal loopback address"
+        ),
+    )
+    provider_canary_parser = commands.add_parser(
+        "provider-canary",
+        help="run each configured provider vector and write its live receipt",
+        description=PROVIDER_CANARY_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    provider_canary_parser.add_argument(
+        "--service",
+        default=DEFAULT_SERVICE_URL,
+        help=(f"the served Atelier API to probe (default {DEFAULT_SERVICE_URL})"),
+    )
+    provider_canary_parser.add_argument(
+        "--workflow-directory",
+        type=Path,
+        default=Path("workflows"),
+        help="directory containing the three provider-canary workflow documents",
+    )
+    provider_canary_parser.add_argument(
+        "--state-directory",
+        type=Path,
+        default=default_provider_canary_state_directory(),
+        help=(
+            "receipt directory (default "
+            "${XDG_STATE_HOME:-~/.local/state}/atelier2/provider-probes/live)"
+        ),
+    )
+    provider_canary_parser.add_argument(
+        "--terminal-timeout-seconds",
+        type=float,
+        default=PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS,
+        help=(
+            "maximum wait for each started run "
+            f"(default {PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS:g})"
         ),
     )
     return parser

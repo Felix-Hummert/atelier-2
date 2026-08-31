@@ -641,6 +641,71 @@ next poll fails the same visible way until you act. The watcher never runs
 `reconcile` or `update --fresh` itself: adopting or discarding the store
 stays your hand, through the paragraphs above.
 
+### Live provider canaries
+
+The billed loopback host process is installed as the systemd user unit
+`atelier2-serve.service`. Its launcher owns the `atelier2 serve` executor
+flags; the canary does not copy them. It asks that running instance for its
+currently startable agent configurations, runs the matching headless,
+workspace-tools, or atelier-doors workflow once with each exact configuration
+hash, refuses an admitted workflow whose hash differs from the deploy checkout,
+and waits at most 300 seconds per run. The durable run owns provider output. The
+canary atomically replaces only the secret-free
+`provider-probe-receipt/v1` at
+`${XDG_STATE_HOME:-$HOME/.local/state}/atelier2/provider-probes/live/<vector-id>.json`.
+Receipts remain valid for 26 hours, so the nightly schedule has two hours of
+overlap. A service refusal, unavailable server, or terminal timeout writes a
+failed receipt for every vector already discovered and makes the oneshot fail.
+
+Install the oneshot, its nightly persistent timer, and the post-Serve-start
+drop-in from the deploy checkout, as the same user that owns
+`atelier2-serve.service`:
+
+```bash
+mkdir -p ~/.config/systemd/user/atelier2-serve.service.d
+sed "s|/absolute/path/to/atelier-2|${PWD}|" \
+  scripts/atelier2-provider-canary.service \
+  > ~/.config/systemd/user/atelier2-provider-canary.service
+cp scripts/atelier2-provider-canary.timer ~/.config/systemd/user/
+cp scripts/atelier2-serve.service.d/provider-canary.conf \
+  ~/.config/systemd/user/atelier2-serve.service.d/
+systemctl --user daemon-reload
+systemctl --user enable --now atelier2-provider-canary.timer
+```
+
+The timer's `Persistent=true` catches a missed 03:00 local run after the user
+manager returns. The drop-in takes effect on the next Serve start; start one
+probe without restarting Serve with:
+
+```bash
+systemctl --user start atelier2-provider-canary.service
+journalctl --user -u atelier2-provider-canary.service -e
+```
+
+The canary workflows are admitted only after their budget revision exists on
+the live instance. This is a landing operation, in this order:
+
+1. Publish `workflows/budgets/provider-canary.json` with
+   `POST /atelier/api/v1/budget-revisions` and retain the returned
+   `budget_revision_hash`.
+2. Replace the TODO head in each `workflows/provider-canary-*.yaml` with a node
+   budget reference named `provider-canary` and that exact returned hash. The
+   budget file's local SHA-256 is not a publication receipt.
+3. Publish each resulting YAML document through
+   `POST /atelier/api/v1/workflow-revisions`. Admit each returned workflow hash
+   through `POST /atelier/api/v1/workflow-lineages`; when its authored name
+   already owns a lineage, resolve that name and append through
+   `POST /atelier/api/v1/workflow-lineages/<lineage-id>/members` instead.
+4. Only after all three admissions answer with their exact workflow hashes,
+   activate the deployed revision and start the canary oneshot. A partial
+   publication is not activation authority.
+
+Every publication and admission above targets the same loopback base URL the
+installed `atelier2-serve.service` serves (normally
+`http://127.0.0.1:8422`). The landing records the four returned revision hashes
+in its own evidence; this runbook does not copy live hashes that change with
+the published documents.
+
 This slice deliberately has no copy, preview, activation, rollback, or
 acceptance command. The stable console exposes current Core/V1 provider-free
 behavior only; it adds no provider or Runner. Use the disposable candidate
