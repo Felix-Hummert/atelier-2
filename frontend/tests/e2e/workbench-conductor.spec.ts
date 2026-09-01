@@ -133,7 +133,15 @@ async function placeConversationAboveComposer(page: Page): Promise<void> {
   });
 }
 
-test("a message meets the honest refusal without a conductor, and becomes one episode with one", async ({ page }) => {
+// RETIRED 01.09.2026 (#658 P4): this journey proved the EPISODIC conductor
+// connection -- "one order = one brief, one message = one run" -- that P3
+// (#931) deliberately retires. `episodeShapeOf` (conductorEpisode.ts) reads
+// `graph.orders`, requiring exactly one; the loop document P3 now publishes
+// declares zero `graph_inputs` by design, so the episode shape it looked for
+// no longer exists. The loop-aware conversation flow -- connection detection
+// and a wait-answer composer -- is #658 P4's own named slice; this journey
+// returns as one of P4's driver proofs once that lands.
+test.skip("a message meets the honest refusal without a conductor, and becomes one episode with one", async ({ page }) => {
   test.setTimeout(120_000);
 
   // This suite shares one server across every spec file (#742): a conductor

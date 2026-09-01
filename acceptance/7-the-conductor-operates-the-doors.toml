@@ -37,4 +37,4 @@ text = "An episode whose answer carries no value the declared schema admits hand
 
 [[sentence]]
 id = "the-conductor-document-carries-its-own-fence"
-text = "The conductor workflow document parses under the production V3 grammar as one agent node whose instruction names only the three granted doors and carries the recursion-fence sentence, and the builder refuses a document that lost the fence or authors an order naming the conductor itself."
+text = "The conductor workflow document parses under the production V3 grammar as one loop round -- a wait node followed by an agent node, capped at the conductor's own named ceiling of 24 rounds -- whose agent instruction names only the three granted doors and carries the recursion-fence sentence, and the builder refuses a document that lost the fence or authors an order naming the conductor itself."
