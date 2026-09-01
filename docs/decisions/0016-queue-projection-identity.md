@@ -95,6 +95,45 @@ blockers. The former observed/admitted split reads are removed. Tracker display
 enrichment is explicitly separate: if it cannot be read, the durable row still
 appears with `tracker_enrichment: ENRICHMENT_UNAVAILABLE` and no invented title.
 
+**2026-09-01 amendment (Operator-Ruling, [#962](https://github.com/FlexOr2/atelier-2/issues/962);
+[Issue #79](https://github.com/FlexOr2/atelier-2/issues/79) ruled line 21 of
+31.08.2026): the projection may hold a last-observed title, and closedness is
+derived at import.** Two facts a queue row could not carry may now be written,
+both at import time and both as observations rather than as core truth.
+
+**A title is an observation of a fact the tracker owns.** The projection may hold
+the tracker title as it was last observed, together with the marker of when it
+was observed. The tracker stays the owner; the core records only what it saw and
+when, and never invents a title. A row with no observation keeps
+`tracker_enrichment: ENRICHMENT_UNAVAILABLE` — the paragraph above is extended,
+not replaced. A stale observation is shown as the observation it is, carrying its
+marker, rather than silently refreshed behind the reader.
+
+Import is the honest place for it because the answer is already paid for: the
+adapter's open-item listing serves title and state on every entry and discards
+both at the boundary, keeping the item number alone. Deriving the title at read
+time would instead cost one uncached per-item request per board load, because
+that adapter deliberately builds its client without an HTTP cache.
+
+**Closedness arises by set difference at import.** An item missing from a new
+open-items answer has left the pullable set, and the import records that
+retirement; today the import only inserts and never retires, so no durable row
+states the fact. The port keeps answering references only — the tracker is not
+asked for lifecycle, and `open_items()` is unchanged in this respect.
+
+This supersedes the Phase-D sentence in #79's body that tracker enrichment is
+never written into the queue store. The newer operator line governs.
+
+Carrying the title inside the pinned `ObservedWorkItemRevision` is refused: those
+bytes are the item body alone, the queue never takes such a snapshot, and adding
+a field would invalidate every workflow document pinned against the current
+`WORK_ITEM_ORDER_SCHEMA_REVISION`.
+
+Both facts are durable state, so recording them requires a further published
+schema hop above this record's V44 — the title, its observation marker, and the
+retirement fact — serial on the one live store like every other hop. This
+amendment authorizes that hop; it does not design it.
+
 ## Consequences
 
 - Proposal and confirmation are independently stale-safe and idempotent.
