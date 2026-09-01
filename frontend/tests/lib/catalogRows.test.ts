@@ -79,33 +79,10 @@ describe("what the catalog says about a workflow", () => {
     expect(row?.admittable).toBe(false);
   });
 
-  it("names a revision without a title rather than showing its hash as one", () => {
-    const [row] = catalogWorkflowRows([summary({ name: null })], {});
-
-    expect(row?.title).toBe(catalogPageCopy.unnamedWorkflow);
-    expect(row?.name).toBeNull();
-    expect(row?.admittable).toBe(false);
-  });
-
   it("carries the document's own declared name for the Details door to link with", () => {
     const [row] = catalogWorkflowRows([summary()], {});
 
     expect(row?.name).toBe(NAME);
-  });
-
-  it("claims nothing about a nameless revision the catalog can only answer by name", () => {
-    const [row] = catalogWorkflowRows([summary({ name: null })], {});
-
-    expect(row?.state).toBeNull();
-  });
-
-  it("still names why a nameless revision cannot run, which needs no name", () => {
-    const [row] = catalogWorkflowRows(
-      [summary({ name: null, executable: false, not_executable_reason: "not one line" })],
-      {}
-    );
-
-    expect(row?.state?.kind).toBe("not-executable");
   });
 
   it("offers no admission for a title the catalog grammar refuses", () => {

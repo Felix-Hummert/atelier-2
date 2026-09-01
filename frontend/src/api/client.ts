@@ -183,7 +183,7 @@ export const workflowRevisionSummarySchema = z
     workflow_format_version: z.literal(3),
     executable: z.boolean(),
     not_executable_reason: z.string().nullable(),
-    name: z.string().nullable(),
+    name: z.string(),
     description: z.string().nullable(),
   })
   .strict();
@@ -367,7 +367,7 @@ export const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("workflow"),
     workflow_format_version: z.literal(3),
-    name: z.string().nullable(),
+    name: z.string(),
     description: z.string().nullable(),
   }).strict(),
   z.object({

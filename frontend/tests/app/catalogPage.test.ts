@@ -463,13 +463,6 @@ describe("the catalog room", () => {
     expect(screen.queryByRole("button", { name: /Why builder/ })).toBeNull();
   });
 
-  it("offers no card door for a revision that declares no name to look one up by", async () => {
-    openCatalog({ ...listing([workflowSummary({ name: null })]), ...unlistedName() });
-    await screen.findByText(catalogPageCopy.unnamedWorkflow);
-
-    expect(screen.queryByRole("link", { name: catalogPageCopy.unnamedWorkflow })).toBeNull();
-  });
-
   it("keeps a published workflow outside the catalog without a second admission door", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...unlistedName() });
 
@@ -581,19 +574,6 @@ describe("the catalog room", () => {
     });
 
     expect((await screen.findByRole("button", { name: catalogPageCopy.addToCatalog })).isConnected).toBe(true);
-  });
-
-  it("offers no admission door for a workflow the library would refuse", async () => {
-    openCatalog({
-      ...listing([workflowSummary({ name: null })]),
-      ...unlistedName()
-    });
-
-    expect(
-      (await screen.findByText(catalogPageCopy.unnamedWorkflow)).isConnected
-    ).toBe(true);
-    expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
-    expect(screen.queryByText(catalogPageCopy.newerRevision)).toBeNull();
   });
 
   it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): carries a blocked workflow with an honest tile pill", async () => {

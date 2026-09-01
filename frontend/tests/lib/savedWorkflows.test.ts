@@ -22,17 +22,6 @@ function named(
   };
 }
 
-function unnamed(hashChar: string): WorkflowRevisionSummary {
-  return {
-    workflow_revision_hash: hashChar.repeat(64),
-    workflow_format_version: 3,
-    executable: true,
-    not_executable_reason: null,
-    name: null,
-    description: null
-  };
-}
-
 describe("grouping saved workflows by the name the listing already publishes", () => {
   it("keeps two revisions of one name as one row and puts the catalog head first", () => {
     const older = named("a", "drei-saetze-review-sehend");
@@ -60,20 +49,6 @@ describe("grouping saved workflows by the name the listing already publishes", (
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.revisions).toEqual([only]);
-  });
-
-  it("leaves unnamed documents as their own rows, never one unnamed pile", () => {
-    const first = unnamed("a");
-    const second = unnamed("b");
-
-    const rows = groupSavedWorkflows([first, second]);
-
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.revisions.map((item) => item.workflow_revision_hash))).toEqual([
-      [first.workflow_revision_hash],
-      [second.workflow_revision_hash]
-    ]);
-    expect(rows.every((row) => row.name === null)).toBe(true);
   });
 
   it("keeps two different names as two rows", () => {
