@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.references import MAX_SIGNED_INT64
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -36,6 +37,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.orders import ArtifactOrderValue
+from atelier2.contracts.queue_projection import QueuePriorityRank
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -72,34 +74,185 @@ TEXT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "nonempty_string.json").read_bytes(),
 )
+ACCEPTED_SENTENCES_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    b"""{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sentences"],
+  "properties": {
+    "sentences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "sentence"],
+        "properties": {
+          "id": {"type": "string"},
+          "sentence": {"type": "string"}
+        }
+      }
+    }
+  }
+}
+""",
+)
 RESULT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
-    (WORKFLOWS_DIRECTORY / "schemas" / "breakdown_result.json").read_bytes(),
+    b"""{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slices", "contradictions", "sentence_assignment", "verdict"],
+  "properties": {
+    "slices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "files",
+          "done_when",
+          "depends_on",
+          "builder_class",
+          "risk",
+          "proves",
+          "defers",
+          "priority"
+        ],
+        "properties": {
+          "title": {"type": "string"},
+          "files": {"type": "array", "items": {"type": "string"}},
+          "done_when": {"type": "string"},
+          "depends_on": {"type": "array", "items": {"type": "integer"}},
+          "builder_class": {"enum": ["mechanical", "normal", "architecture"]},
+          "risk": {"type": "array", "items": {"type": "string"}},
+          "proves": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "defers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["sentence_id", "owner_sentence"],
+              "properties": {
+                "sentence_id": {"type": "string"},
+                "owner_sentence": {"type": "string"}
+              }
+            }
+          },
+          "priority": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rank"],
+            "properties": {
+              "rank": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}
+            }
+          }
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {"text": {"type": "string"}}
+      }
+    },
+    "sentence_assignment": {
+      "enum": ["all_assigned", "no_regulated_sentences_supplied"]
+    },
+    "verdict": {"enum": ["buildable", "needs_decision"]}
+  }
+}
+""",
 )
 ITEM_BODY_TEXT = "Build a catalog workflow for breakdown planning."
 OWNER_DOCUMENTS_TEXT = "The workflow schema owns its output contract."
 ITEM_BODY = json.dumps(ITEM_BODY_TEXT).encode()
 OWNER_DOCUMENTS = json.dumps(OWNER_DOCUMENTS_TEXT).encode()
+ACCEPTED_SENTENCES = {
+    "sentences": [
+        {
+            "id": "breakdown-workflow",
+            "sentence": "Ein breakdown-Dokument nimmt geregelte Sätze an.",
+        }
+    ]
+}
+ACCEPTED_SENTENCES_DOCUMENT = json.dumps(
+    ACCEPTED_SENTENCES, ensure_ascii=False
+).encode()
+NO_ACCEPTED_SENTENCES_DOCUMENT = b'{"sentences":[]}'
 BREAKDOWN = {
     "slices": [
         {
             "title": "Publish the breakdown workflow",
             "files": ["workflows/breakdown.yaml"],
-            "done_when": "The catalog admits the workflow.",
+            "done_when": "The landing step live-admits the new workflow revision.",
+            "depends_on": [],
+            "builder_class": "mechanical",
+            "risk": [],
+            "proves": ["breakdown-workflow"],
+            "defers": [],
+            "priority": {"rank": 1},
+        }
+    ],
+    "contradictions": [],
+    "sentence_assignment": "all_assigned",
+    "verdict": "buildable",
+}
+ANSWER = json.dumps(BREAKDOWN, ensure_ascii=False).encode()
+NO_SENTENCES_BREAKDOWN = {
+    **BREAKDOWN,
+    "slices": [{**BREAKDOWN["slices"][0], "proves": []}],
+    "sentence_assignment": "no_regulated_sentences_supplied",
+}
+NO_SENTENCES_ANSWER = json.dumps(NO_SENTENCES_BREAKDOWN, ensure_ascii=False).encode()
+INVALID_BREAKDOWN = {
+    "slices": [
+        {
+            "title": "Publish the breakdown workflow",
+            "files": ["workflows/breakdown.yaml"],
+            "done_when": "The landing step live-admits the new workflow revision.",
             "depends_on": [],
             "builder_class": "mechanical",
             "risk": [],
         }
     ],
     "contradictions": [],
+    "sentence_assignment": "all_assigned",
     "verdict": "buildable",
 }
-ANSWER = json.dumps(BREAKDOWN, ensure_ascii=False).encode()
-INVALID_BREAKDOWN = {
-    "slices": [],
-    "contradictions": [],
-    "verdict": "approved",
-}
+
+
+@pytest.mark.parametrize("rank", [0, 1, MAX_SIGNED_INT64, MAX_SIGNED_INT64 + 1])
+def test_the_shipped_result_schema_accepts_a_rank_exactly_when_queuepriorityrank_and_the_wire_ceiling_do(
+    rank: int,
+) -> None:
+    """The `priority.rank` fragment cannot `$ref` its owner (schemas_v3 forbids
+    cross-schema references), so it is a copy that must be kept honest by test:
+    `QueuePriorityRank` owns the positive-integer floor, and the wire resource
+    `QueuePriorityRankRequestResource` additionally owns the `MAX_SIGNED_INT64`
+    ceiling. A schema fragment wider or narrower than both together is drift.
+    """
+    try:
+        QueuePriorityRank(rank)
+        domain_accepts = True
+    except ValueError:
+        domain_accepts = False
+    schema_should_accept = domain_accepts and rank <= MAX_SIGNED_INT64
+
+    schema = read_schema_document(RESULT_SCHEMA.document)
+    assert isinstance(schema, SchemaAccepted), schema
+    slice_with_rank = {**BREAKDOWN["slices"][0], "priority": {"rank": rank}}
+    instance = json.dumps(
+        {**BREAKDOWN, "slices": [slice_with_rank]}, ensure_ascii=False
+    ).encode()
+    result = read_instance_document(instance, schema)
+    assert isinstance(result, InstanceAccepted) == schema_should_accept
 
 
 def runtime_over(
@@ -142,7 +295,7 @@ def runtime(
 
 def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     store = DbosCatalogStore(runtime.engine)
-    for revision in (TEXT_SCHEMA, RESULT_SCHEMA):
+    for revision in (TEXT_SCHEMA, ACCEPTED_SENTENCES_SCHEMA, RESULT_SCHEMA):
         result = store.publish_revision(revision)
         assert isinstance(
             result, (PublishedRevisionCreated, PublishedRevisionExisting)
@@ -201,6 +354,7 @@ def start_breakdown(
     workflow: WorkflowRevision,
     bindings: AgentBindingSet,
     run_id: RunId,
+    accepted_sentences: bytes = ACCEPTED_SENTENCES_DOCUMENT,
 ) -> None:
     created = DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
@@ -212,15 +366,24 @@ def start_breakdown(
             orders=(
                 artifact_order(runtime, "item_body", ITEM_BODY),
                 artifact_order(runtime, "owner_documents", OWNER_DOCUMENTS),
+                artifact_order(runtime, "accepted_sentences", accepted_sentences),
             ),
         )
     )
     assert isinstance(created, DurableRunCreated), created
 
 
-def test_a_breakdown_round_trips_artifact_orders_to_an_object_result(
+def test_a_breakdown_run_accepts_accepted_sentences_and_returns_an_object_result(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
+    accepted_sentences_schema = read_schema_document(ACCEPTED_SENTENCES_SCHEMA.document)
+    assert isinstance(accepted_sentences_schema, SchemaAccepted), (
+        accepted_sentences_schema
+    )
+    assert isinstance(
+        read_instance_document(ACCEPTED_SENTENCES_DOCUMENT, accepted_sentences_schema),
+        InstanceAccepted,
+    )
     schema = read_schema_document(RESULT_SCHEMA.document)
     assert isinstance(schema, SchemaAccepted), schema
     assert isinstance(read_instance_document(ANSWER, schema), InstanceAccepted)
@@ -236,6 +399,7 @@ def test_a_breakdown_round_trips_artifact_orders_to_an_object_result(
     handed = provider.opened.requests[0].job_bytes
     assert ITEM_BODY_TEXT.encode() in handed
     assert OWNER_DOCUMENTS_TEXT.encode() in handed
+    assert ACCEPTED_SENTENCES_DOCUMENT in handed
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "plan")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.SUCCEEDED
@@ -243,10 +407,35 @@ def test_a_breakdown_round_trips_artifact_orders_to_an_object_result(
     assert detail.detail.answer.value == ANSWER
 
 
+@pytest.mark.parametrize("provider", [NO_SENTENCES_ANSWER], indirect=True)
+def test_a_breakdown_run_without_sentences_remains_valid_and_names_that_result(
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    workflow, bindings = publish(runtime)
+    run_id = RunId("v3/breakdown-without-sentences")
+    start_breakdown(
+        runtime,
+        workflow,
+        bindings,
+        run_id,
+        accepted_sentences=NO_ACCEPTED_SENTENCES_DOCUMENT,
+    )
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    assert provider.opened is not None
+    assert NO_ACCEPTED_SENTENCES_DOCUMENT in provider.opened.requests[0].job_bytes
+    detail = durable_queries(runtime.engine).get_node_detail(run_id, "plan")
+    assert isinstance(detail, NodeDetailFound), detail
+    assert detail.detail.answer is not None
+    assert detail.detail.answer.value == NO_SENTENCES_ANSWER
+
+
 @pytest.mark.parametrize(
     "provider", [json.dumps(INVALID_BREAKDOWN).encode()], indirect=True
 )
-def test_an_invalid_breakdown_object_fails_admission(
+def test_a_breakdown_object_without_proves_defers_and_rank_fails_admission(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
     workflow, bindings = publish(runtime)

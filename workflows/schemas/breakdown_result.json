@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["slices", "contradictions", "verdict"],
+  "required": ["slices", "contradictions", "sentence_assignment", "verdict"],
   "properties": {
     "slices": {
       "type": "array",
@@ -15,25 +15,38 @@
           "done_when",
           "depends_on",
           "builder_class",
-          "risk"
+          "risk",
+          "proves",
+          "defers",
+          "priority"
         ],
         "properties": {
           "title": {"type": "string"},
-          "files": {
-            "type": "array",
-            "items": {"type": "string"}
-          },
+          "files": {"type": "array", "items": {"type": "string"}},
           "done_when": {"type": "string"},
-          "depends_on": {
+          "depends_on": {"type": "array", "items": {"type": "integer"}},
+          "builder_class": {"enum": ["mechanical", "normal", "architecture"]},
+          "risk": {"type": "array", "items": {"type": "string"}},
+          "proves": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "defers": {
             "type": "array",
-            "items": {"type": "integer"}
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["sentence_id", "owner_sentence"],
+              "properties": {
+                "sentence_id": {"type": "string"},
+                "owner_sentence": {"type": "string"}
+              }
+            }
           },
-          "builder_class": {
-            "enum": ["mechanical", "normal", "architecture"]
-          },
-          "risk": {
-            "type": "array",
-            "items": {"type": "string"}
+          "priority": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rank"],
+            "properties": {
+              "rank": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}
+            }
           }
         }
       }
@@ -44,13 +57,12 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["text"],
-        "properties": {
-          "text": {"type": "string"}
-        }
+        "properties": {"text": {"type": "string"}}
       }
     },
-    "verdict": {
-      "enum": ["buildable", "needs_decision"]
-    }
+    "sentence_assignment": {
+      "enum": ["all_assigned", "no_regulated_sentences_supplied"]
+    },
+    "verdict": {"enum": ["buildable", "needs_decision"]}
   }
 }
