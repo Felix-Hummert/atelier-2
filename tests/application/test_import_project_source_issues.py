@@ -23,6 +23,7 @@ from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemRe
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.issue_observation import (
+    ObservedOpenTrackerItem,
     ObserveOpenTrackerItemsResult,
     OpenTrackerItemsObserved,
     TrackerPayloadMalformed,
@@ -60,7 +61,14 @@ def test_open_tracker_items_become_one_observation_batch_for_the_served_project(
 ):
     source = FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
-            (TrackerItemReference("gh:79"), TrackerItemReference("gh:652"))
+            (
+                ObservedOpenTrackerItem(
+                    TrackerItemReference("gh:79"), "First listed item"
+                ),
+                ObservedOpenTrackerItem(
+                    TrackerItemReference("gh:652"), "Second listed item"
+                ),
+            )
         )
     )
     queue = _QueueRecording(QueueItemsObserved(observed=2, newly_observed=1))
@@ -131,7 +139,9 @@ def test_a_store_failure_is_translated_into_this_layers_word(
     store_answer: ObserveQueueItemsResult, expected: object
 ) -> None:
     source = FakeTrackerItemSource(
-        open_items_answer=OpenTrackerItemsObserved((TrackerItemReference("gh:1"),))
+        open_items_answer=OpenTrackerItemsObserved(
+            (ObservedOpenTrackerItem(TrackerItemReference("gh:1"), "Listed item"),)
+        )
     )
 
     outcome = import_project_source_issues(
