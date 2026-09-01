@@ -1,0 +1,12 @@
+# Nightly backstop for the live provider probes. The serve drop-in triggers the
+# same oneshot after a deployment; systemd serializes starts of one oneshot.
+[Unit]
+Description=Run Atelier2 live provider canaries nightly
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=atelier2-provider-canary.service
+
+[Install]
+WantedBy=timers.target

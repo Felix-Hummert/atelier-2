@@ -95,7 +95,7 @@ from atelier2.contracts.work_items import (
 )
 from atelier2.host import serving
 from atelier2.host.conductor_workflow import (
-    CONDUCTOR_BRIEF_SCHEMA,
+    CONDUCTOR_MESSAGE_SCHEMA,
     CONDUCTOR_REPORT_SCHEMA,
     conductor_workflow_document,
 )
@@ -1004,9 +1004,9 @@ class BrowserProofHarness:
     def seed_conductor(self) -> bytes:
         """Publish the whole conductor catalog through the production doors.
 
-        Everything the workbench needs to see a connected conductor: the brief
-        and report schemas, the production conductor document (built by its own
-        owner, `atelier2.host.conductor_workflow`), its catalog lineage, an
+        Everything the workbench needs to see a connected conductor: the
+        message and report schemas, the production conductor document (built
+        by its own owner, `atelier2.host.conductor_workflow`), its catalog lineage, an
         auth profile plus agent configuration bound to the fake conductor
         executor, and the project level-2 model default selecting that exact
         model. On demand rather than at startup, so one served
@@ -1016,13 +1016,13 @@ class BrowserProofHarness:
 
         context: ApiContext = self.app.state.api_context  # type: ignore[attr-defined]
         use_cases = context.use_cases
-        brief_hash = _published_schema_hash(
-            use_cases.publish_schema_revision(CONDUCTOR_BRIEF_SCHEMA)
+        message_hash = _published_schema_hash(
+            use_cases.publish_schema_revision(CONDUCTOR_MESSAGE_SCHEMA)
         )
         report_hash = _published_schema_hash(
             use_cases.publish_schema_revision(CONDUCTOR_REPORT_SCHEMA)
         )
-        document = conductor_workflow_document(brief_hash, report_hash)
+        document = conductor_workflow_document(message_hash, report_hash)
         match use_cases.publish_workflow_revision(document):
             case PublicationCreated(read) | PublicationExisting(read):
                 revision = read.projection.revision
