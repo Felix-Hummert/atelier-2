@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -200,6 +201,63 @@ from atelier2.ports.workflow_revisions import (
 
 class WaitAnswerProjectionCorrupt(RuntimeError):
     """A WAIT_ANSWERED event contradicts its one durable answer record."""
+
+
+_PARSED_WORKFLOW_REVISION_CACHE_CAPACITY = 4_096
+"""Comfortably above the tens of workflow revisions one project holds today.
+
+The cap bounds memory for a pathological project; it never bounds
+correctness. A workflow revision is content-addressed (`revision_hash` is
+derived from its bytes) and cannot change once published, so a parsed graph
+stays correct for the process's whole lifetime -- there is no staleness to
+invalidate.
+"""
+
+
+class _ParsedWorkflowRevisionCache:
+    """Workflow revision graphs this process has already parsed successfully.
+
+    #937 (round 3): profiling a described page after the lookup and settlement
+    caches from rounds 1 and 2 found the dominant remaining cost was parsing
+    every immutable revision again on every read. All `DbosQueries` instances
+    share this module-level cache so reads across pages and adapter instances
+    pay that parse once per content hash. The API can execute those reads in a
+    worker pool, so the lock makes lookup and insertion safe across threads.
+
+    A failed parse is deliberately never cached: it proved no graph value, and
+    remembering its exception would turn one transient parser or runtime failure
+    into process-lifetime durable-state corruption instead of letting the next
+    read retry.
+    """
+
+    def __init__(self) -> None:
+        self._found: dict[WorkflowRevisionHash, AnyWorkflowDocument] = {}
+        self._lock = threading.Lock()
+
+    def found(self, revision_hash: WorkflowRevisionHash) -> AnyWorkflowDocument | None:
+        with self._lock:
+            return self._found.get(revision_hash)
+
+    def remember(
+        self, revision_hash: WorkflowRevisionHash, graph: AnyWorkflowDocument
+    ) -> None:
+        with self._lock:
+            if len(self._found) < _PARSED_WORKFLOW_REVISION_CACHE_CAPACITY:
+                self._found[revision_hash] = graph
+
+
+_PARSED_WORKFLOW_REVISIONS = _ParsedWorkflowRevisionCache()
+
+
+def _parsed_workflow_revision(
+    revision: WorkflowRevision,
+) -> AnyWorkflowDocument:
+    cached = _PARSED_WORKFLOW_REVISIONS.found(revision.revision_hash)
+    if cached is not None:
+        return cached
+    graph = parse_workflow_document(revision.document)
+    _PARSED_WORKFLOW_REVISIONS.remember(revision.revision_hash, graph)
+    return graph
 
 
 _LENGTH_LABEL_PREFIX = "_atelier_length_"
@@ -1209,7 +1267,7 @@ class DbosQueries:
                 revision = WorkflowRevision(document_bytes)
                 if revision.revision_hash != revision_hash:
                     return QueryDurableStateCorrupt()
-                graph = parse_workflow_document(revision.document)
+                graph = _parsed_workflow_revision(revision)
                 self._projection_limit.validate_graph(graph)
                 return WorkflowRevisionFound(
                     WorkflowRevisionProjection(revision, graph)
@@ -1302,7 +1360,7 @@ class DbosQueries:
                     revision = WorkflowRevision(document)
                     if revision.revision_hash.value != str(record["revision_hash"]):
                         return QueryDurableStateCorrupt()
-                    graph = parse_workflow_document(document)
+                    graph = _parsed_workflow_revision(revision)
                     self._projection_limit.validate_graph(graph)
                     if items and spent_nodes + len(graph.nodes) > budget.maximum_nodes:
                         exhausted = True
