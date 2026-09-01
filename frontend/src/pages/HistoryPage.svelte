@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
 
   import type { CockpitApi, NodeDetail, RunV3 } from "../api/client";
+  import LoadingState from "../components/LoadingState.svelte";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
@@ -240,7 +241,9 @@
   </header>
 
   {#if history.confirmed === null && history.request.state === "loading"}
-    <p class="status" role="status">{wrapDisplayCopy(historyPageCopy.looking)}</p>
+    <p class="status">
+      <LoadingState label={wrapDisplayCopy(historyPageCopy.looking)} compact />
+    </p>
   {:else if history.request.state === "failed" && $connectionState !== "reconnecting"}
     <!-- The central connection line above already names an unreachable
          workshop once; this page's own "unavailable" stays quiet for that
@@ -333,7 +336,7 @@
                     {wrapDisplayCopy(historyPageCopy.notRecorded)}
                   {/if}
                 {:else}
-                  {wrapDisplayCopy(historyPageCopy.looking)}
+                  <LoadingState label={wrapDisplayCopy(historyPageCopy.looking)} compact />
                 {/if}
               </span>
               <span class="row-duration">

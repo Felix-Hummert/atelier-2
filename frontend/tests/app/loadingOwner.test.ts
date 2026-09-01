@@ -7,17 +7,20 @@ import { FRONTEND_SRC, svelteImportClosure, svelteSourcesIn } from "../support/w
 /**
  * REQ-UIQ-10 (loading is a silent skeleton) and REQ-UIQ-13 (one behaviour,
  * one component across surfaces, proven here first): `ReadState`,
- * `AttemptTranscript`, `PinnedDecision`, and `V3AnswerCard` each once drew
- * their own loading state -- a spinner glyph, a dimmed heading, or a plain
- * status line, only `AttemptTranscript`'s conforming to REQ-UIQ-10's
- * skeleton (a shape mark and shape lines, dashed border, no glyph). All
- * four now render `components/LoadingState.svelte`.
+ * `AttemptTranscript`, `PinnedDecision`, `V3AnswerCard`, and `HistoryPage`
+ * each once drew their own loading state -- a spinner glyph, a dimmed
+ * heading, or a plain status line, only `AttemptTranscript`'s conforming to
+ * REQ-UIQ-10's skeleton (a shape mark and shape lines, dashed border, no
+ * glyph). `HistoryPage` was the fifth, unmeasured occurrence of the same
+ * defect (its own `historyPageCopy.looking` literal, found while this issue
+ * was already in flight); all five now render
+ * `components/LoadingState.svelte`.
  *
  * The proof follows `roomQuestionPattern.test.ts`'s shape: it discovers the
  * shared owner from the skeleton's own CSS signature -- the unique file in
  * the room tree that defines both `.loading-mark` and `.loading-lines` and
  * is imported by another file -- then pins the exact consumer list so a
- * fifth site or a dropped one is caught, not assumed (exact-pin: red on
+ * sixth site or a dropped one is caught, not assumed (exact-pin: red on
  * growth and on shrinkage). A second file independently defining that same
  * signature is reported as a second implementation, whether or not it also
  * consumes the owner.
@@ -34,7 +37,8 @@ const EXPECTED_CONSUMERS = [
   "components/AttemptTranscript.svelte",
   "components/PinnedDecision.svelte",
   "components/ReadState.svelte",
-  "components/V3AnswerCard.svelte"
+  "components/V3AnswerCard.svelte",
+  "pages/HistoryPage.svelte"
 ] as const;
 
 function roomTemplates(): string[] {
@@ -148,7 +152,7 @@ describe("the loading state has one component owner, consumed by name", () => {
     ]);
   });
 
-  it("follows each room page's imports into the four named loading sites", () => {
+  it("follows each room page's imports into the named loading sites", () => {
     expect(roomTemplates()).toEqual(
       expect.arrayContaining([
         "pages/WorkbenchPage.svelte",
