@@ -124,9 +124,11 @@ async function settledConductorReportRun(page: Page): Promise<void> {
         { role: "conductor", agent_configuration_revision_hash: configurationHash }
       ],
       // A version-3 start declares its orders, empty ones included: without the
-      // field the body is not that start at all, and the one it does match
-      // carries no bindings, so the workshop refuses a document whose role
-      // nothing bound (`StartRunRequestResourceV3`, `api/wire/requests.py`).
+      // field the body is no start resource at all and dies in wire validation
+      // (`StartRunRequestResourceV3`, `api/wire/requests.py`). It comes back
+      // titled "invalid agent bindings" because that is how the handler reads
+      // a refused start body mentioning bindings (`api/problems.py`) -- the
+      // title is not a verdict on the bindings above.
       orders: []
     }
   });
