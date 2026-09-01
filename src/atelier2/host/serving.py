@@ -1177,6 +1177,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 library_additions=DbosCatalogStore(runtime.engine),
                 catalog_intakes=DbosCatalogStore(runtime.engine),
                 published_revision_registry=DbosCatalogStore(runtime.engine),
+                published_revision_resolver_sessions=DbosCatalogStore(runtime.engine),
                 published_revision_listing=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
