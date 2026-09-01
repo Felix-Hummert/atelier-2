@@ -11,8 +11,8 @@ regexTarget = "match"
 regexes = [
   # systemd credential *name* (the channel label, not its content)
   '''DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME = "atelier2-launch"''',
-  # browser localStorage key name
-  '''storageKey = "atelier2\.mutation-journal\.v1"''',
-  # browser sessionStorage key name
-  '''CONDUCTOR_CONVERSATION_RUN_STORAGE_KEY = "atelier2\.conductor-conversation-run"''',
+]
+paths = [
+  # browser storage-key owner
+  '''^frontend/src/lib/storageKeys\.ts$''',
 ]

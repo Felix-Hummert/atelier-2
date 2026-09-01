@@ -9,6 +9,7 @@ import {
 import { conductorChatCopy } from "./conductorChatCopy";
 import { decodeUtf8Base64 } from "./exactBytes";
 import { createRunId, startMutation, type MutationJournal } from "./mutationJournal";
+import { CONDUCTOR_CONVERSATION_RUN_STORAGE_KEY } from "./storageKeys";
 import { deliverWaitAnswer, prepareWaitAnswer, type WaitAnswerOutcome } from "./waitAnswerDelivery";
 import type { ConductorConnection } from "./conductorEpisode";
 
@@ -29,8 +30,6 @@ export type ConductorTranscript = {
 
 const CONDUCTOR_WAIT_NODE_ID = "next_message";
 const CONDUCTOR_AGENT_NODE_ID = "conduct";
-const CONDUCTOR_CONVERSATION_RUN_STORAGE_KEY = "atelier2.conductor-conversation-run";
-
 export const conductorConversationCopy = {
   emptyDescription: "The conductor is ready for the first message.",
   composerHint: "The conductor is listening. Your next message begins the conversation.",
