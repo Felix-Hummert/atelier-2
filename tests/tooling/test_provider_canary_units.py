@@ -19,7 +19,14 @@ def test_provider_canary_service_invokes_the_real_cli_subcommand() -> None:
 
     command = shlex.split(service["Service"]["ExecStart"])
 
-    assert command[-2:] == ["atelier2", "provider-canary"]
+    assert service["Service"]["WorkingDirectory"] == "/absolute/path/to/atelier-2"
+    assert command == [
+        "%h/.local/bin/uv",
+        "run",
+        "--locked",
+        "atelier2",
+        "provider-canary",
+    ]
     assert service["Service"]["Type"] == "oneshot"
 
 
@@ -36,4 +43,10 @@ def test_serve_drop_in_triggers_the_provider_canary_unit_after_start() -> None:
 
     command = shlex.split(drop_in["Service"]["ExecStartPost"])
 
-    assert command[-2:] == ["start", "atelier2-provider-canary.service"]
+    assert command == [
+        "-/usr/bin/systemctl",
+        "--user",
+        "--no-block",
+        "start",
+        "atelier2-provider-canary.service",
+    ]

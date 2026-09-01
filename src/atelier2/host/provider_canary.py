@@ -7,10 +7,20 @@ with the listed configuration hash, and polls the public run resource to a
 terminal state. It owns no provider process and opens no store.
 
 Each vector replaces one secret-free ``provider-probe-receipt/v1`` beneath the
-operator's XDG state directory. The durable run remains the evidence owner; a
-receipt carries only its identities and terminal hash, or a bounded problem
-code. Replacement is a same-directory temporary file plus ``os.replace`` so a
-reader sees either the previous complete receipt or the new complete receipt.
+operator's XDG state directory. Replacement records the newest attempt, so a
+failure deliberately replaces a still-valid success before the readiness gate
+reads it. The durable run remains the evidence owner; a receipt carries only
+its identities and terminal hash, or a bounded problem code. Replacement is a
+same-directory temporary file plus ``os.replace`` so a reader sees either the
+previous complete receipt or the new complete receipt.
+
+The public start request has no separate ``idempotency_key``: its ``run_id`` is
+the durable idempotency identity. Every trigger creates a timestamped identity,
+so a deploy trigger may start another billed probe on the same day. This client
+does not persist that identity before POST; a crash after the service accepts
+the POST but before the receipt lands can therefore make the next trigger start
+another billed run. Closing that gap requires persisting the planned ``run_id``
+as the retry key before POST and replaying it until its outcome is receipted.
 """
 
 from __future__ import annotations
@@ -53,8 +63,10 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeProblemCode,
     ProviderProbeReceipt,
+    ProviderProbeReceiptRefused,
     ProviderProbeResult,
     ProviderProbeVectorId,
+    read_provider_probe_receipt,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
@@ -83,6 +95,9 @@ _configuration_page_resource = TypeAdapter(AgentConfigurationRevisionPageResourc
 _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
 _run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
 
+# These executor keys choose the matching probe workflow only. The served
+# startable configuration list remains the sole owner of which vectors run,
+# using the same executor constants that the Serve composition registers.
 _WORKFLOW_BY_EXECUTOR = {
     (
         CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
@@ -129,6 +144,14 @@ class ProviderCanaryAnswerUnreadable(RuntimeError):
 
 class ProviderCanaryRunTimedOut(RuntimeError):
     """A started provider canary did not reach terminal before its bound."""
+
+
+class ProviderCanaryDiscoveryFailed(RuntimeError):
+    """No complete, nonempty startable provider-vector set was discovered."""
+
+
+class ProviderCanaryWorkflowUnreadable(RuntimeError):
+    """The deployed canary workflow bytes could not be read locally."""
 
 
 class ProviderCanaryHttp(Protocol):
@@ -258,16 +281,128 @@ def execute_provider_canaries(
 ) -> ProviderCanaryReport:
     """Run each currently startable, known provider vector exactly once."""
 
-    client = http or UrllibProviderCanaryHttp(settings.service_url)
+    client = http or UrllibProviderCanaryHttp(
+        settings.service_url,
+        timeout_seconds=min(
+            PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS, settings.terminal_timeout_seconds
+        ),
+    )
     canary_clock = clock or SystemProviderCanaryClock()
-    health = _decoded(_health_resource, client.get("/health"), "health")
-    vectors = _configured_vectors(client)
+    try:
+        health = _decoded(_health_resource, client.get("/health"), "health")
+        vectors = _configured_vectors(client)
+    except ProviderCanaryServerUnavailable as unavailable:
+        return _discovery_failed(
+            settings,
+            canary_clock,
+            ProviderProbeProblemCode("server-unavailable"),
+            str(unavailable),
+            cause=unavailable,
+        )
+    except ProviderCanaryHttpRefused as refused:
+        return _discovery_failed(
+            settings,
+            canary_clock,
+            _bounded_problem_code(refused.problem_code),
+            str(refused),
+            cause=refused,
+        )
+    except ProviderCanaryAnswerUnreadable as unreadable:
+        return _discovery_failed(
+            settings,
+            canary_clock,
+            ProviderProbeProblemCode("server-answer-unreadable"),
+            str(unreadable),
+            cause=unreadable,
+        )
+    if not vectors:
+        return _discovery_failed(
+            settings,
+            canary_clock,
+            ProviderProbeProblemCode("no-startable-provider-vectors"),
+            "the service listed no startable provider vectors",
+        )
     failures: list[ProviderCanaryFailure] = []
     for vector in vectors:
-        failure = _execute_vector(settings, vector, health, client, canary_clock)
+        try:
+            failure = _execute_vector(settings, vector, health, client, canary_clock)
+        except ProviderCanaryWorkflowUnreadable as unreadable:
+            problem_code = ProviderProbeProblemCode("workflow-unreadable")
+            _replace_vector_receipt_after_prestart_failure(
+                settings, vector, canary_clock, problem_code
+            )
+            failure = ProviderCanaryFailure(
+                vector.vector_id, problem_code, str(unreadable)
+            )
         if failure is not None:
             failures.append(failure)
     return ProviderCanaryReport(len(vectors), tuple(failures))
+
+
+def _discovery_failed(
+    settings: ProviderCanarySettings,
+    clock: ProviderCanaryClock,
+    problem_code: ProviderProbeProblemCode,
+    detail: str,
+    *,
+    cause: Exception | None = None,
+) -> ProviderCanaryReport:
+    failures: list[ProviderCanaryFailure] = []
+    for destination in sorted(settings.state_directory.glob("*.json")):
+        previous = read_provider_probe_receipt(destination.read_bytes())
+        if isinstance(previous, ProviderProbeReceiptRefused):
+            continue
+        observed = clock.now().astimezone(UTC)
+        write_provider_canary_receipt_atomic(
+            destination,
+            _failed_previous_receipt(previous, observed, problem_code),
+        )
+        failures.append(ProviderCanaryFailure(previous.vector, problem_code, detail))
+    if not failures:
+        refusal = ProviderCanaryDiscoveryFailed(detail)
+        if cause is not None:
+            raise refusal from cause
+        raise refusal
+    return ProviderCanaryReport(0, tuple(failures))
+
+
+def _replace_vector_receipt_after_prestart_failure(
+    settings: ProviderCanarySettings,
+    vector: _CanaryVector,
+    clock: ProviderCanaryClock,
+    problem_code: ProviderProbeProblemCode,
+) -> None:
+    destination = settings.state_directory / f"{vector.vector_id.value}.json"
+    if not destination.is_file():
+        return
+    previous = read_provider_probe_receipt(destination.read_bytes())
+    if (
+        isinstance(previous, ProviderProbeReceiptRefused)
+        or previous.vector != vector.vector_id
+    ):
+        return
+    observed = clock.now().astimezone(UTC)
+    write_provider_canary_receipt_atomic(
+        destination, _failed_previous_receipt(previous, observed, problem_code)
+    )
+
+
+def _failed_previous_receipt(
+    previous: ProviderProbeReceipt,
+    observed: datetime,
+    problem_code: ProviderProbeProblemCode,
+) -> ProviderProbeReceipt:
+    return ProviderProbeReceipt(
+        vector=previous.vector,
+        configuration_hash=previous.configuration_hash,
+        workflow_hash=previous.workflow_hash,
+        source_commit=previous.source_commit,
+        observed_at=recorded_instant(observed),
+        valid_until=recorded_instant(observed + PROVIDER_CANARY_RECEIPT_VALIDITY),
+        result=ProviderProbeResult.FAILED,
+        run_reference=_run_id(previous.vector, observed),
+        problem_code=problem_code,
+    )
 
 
 def _configured_vectors(client: ProviderCanaryHttp) -> tuple[_CanaryVector, ...]:
@@ -325,15 +460,15 @@ def _execute_vector(
     client: ProviderCanaryHttp,
     clock: ProviderCanaryClock,
 ) -> ProviderCanaryFailure | None:
-    workflow_document = (
-        settings.workflow_directory / f"{vector.workflow_name}.yaml"
-    ).read_bytes()
+    workflow_path = settings.workflow_directory / f"{vector.workflow_name}.yaml"
+    try:
+        workflow_document = workflow_path.read_bytes()
+    except OSError as unreadable:
+        raise ProviderCanaryWorkflowUnreadable(
+            f"could not read {workflow_path}: {unreadable}"
+        ) from unreadable
     workflow_hash = WorkflowRevisionHash.of(workflow_document)
-    run_id = RunId(
-        "provider-canary/"
-        f"{vector.vector_id.value}/"
-        f"{clock.now().astimezone(UTC).isoformat(timespec='microseconds')}"
-    )
+    run_id = _run_id(vector.vector_id, clock.now().astimezone(UTC))
     try:
         resolved = _decoded(
             _catalog_name_resolution_resource,
@@ -355,6 +490,8 @@ def _execute_vector(
             _run_resource,
             client.post(
                 RUN_PATH,
+                # The shared public-run owner emits StartRunRequestResourceV2:
+                # bindings are present and these workflows declare no orders.
                 start_request_body(run_id.value, workflow_hash.value, (binding,)),
             ),
             "started run",
@@ -406,6 +543,14 @@ def _execute_vector(
         settings.state_directory / f"{vector.vector_id.value}.json", receipt
     )
     return ProviderCanaryFailure(vector.vector_id, problem_code, detail)
+
+
+def _run_id(vector: ProviderProbeVectorId, observed: datetime) -> RunId:
+    return RunId(
+        "provider-canary/"
+        f"{vector.value}/"
+        f"{observed.astimezone(UTC).isoformat(timespec='microseconds')}"
+    )
 
 
 def _wait_for_terminal(

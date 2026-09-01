@@ -6,6 +6,8 @@ After=atelier2-serve.service
 
 [Service]
 Type=oneshot
+# Installation substitutes the same deploy checkout that serve-live.sh enters;
+# its pinned uv executable is the same %h/.local/bin/uv used by that launcher.
 WorkingDirectory=/absolute/path/to/atelier-2
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env uv run --locked atelier2 provider-canary
+ExecStart=%h/.local/bin/uv run --locked atelier2 provider-canary

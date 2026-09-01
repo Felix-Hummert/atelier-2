@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.request import Request
 
 import pytest
 
@@ -17,6 +19,7 @@ from atelier2.api.wire.resources import (
 from atelier2.contracts.agents import AgentConfigurationRevisionHash
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeProblemCode,
     ProviderProbeReceipt,
     ProviderProbeReceiptRefused,
     ProviderProbeResult,
@@ -64,6 +67,8 @@ class FakeHttp:
     terminal_after_reads: int = 1
     refusal: str | None = None
     server_down: bool = False
+    configuration_answer: bytes | None = None
+    configuration_unavailable: bool = False
     calls: list[tuple[str, str, bytes | None]] = field(default_factory=list)
     workflow_hashes: list[str] = field(default_factory=list)
     run_reads: int = 0
@@ -79,6 +84,10 @@ class FakeHttp:
                 .encode()
             )
         if path.startswith("/agent-configuration-revisions"):
+            if self.configuration_unavailable:
+                raise ProviderCanaryServerUnavailable("configuration listing timed out")
+            if self.configuration_answer is not None:
+                return self.configuration_answer
             return encoded(items=self.configurations, next_after_revision_hash=None)
         if path.startswith("/workflow-revisions/by-name/"):
             name = path.rsplit("/", 1)[-1]
@@ -221,6 +230,26 @@ def read_receipts(state_directory: Path) -> tuple[ProviderProbeReceipt, ...]:
     return tuple(receipts)
 
 
+def successful_receipt() -> ProviderProbeReceipt:
+    return ProviderProbeReceipt(
+        vector=ProviderProbeVectorId(f"headless-{CONFIGURATION_HASH}"),
+        configuration_hash=AgentConfigurationRevisionHash(CONFIGURATION_HASH),
+        workflow_hash=WorkflowRevisionHash("d" * 64),
+        source_commit=SOURCE_COMMIT,
+        observed_at=RecordedAt("2026-08-31T08:00:00Z"),
+        valid_until=RecordedAt("2026-09-01T10:00:00Z"),
+        result=ProviderProbeResult.SUCCEEDED,
+        run_reference=RunId("provider-canary/previous-run"),
+        terminal_hash=Sha256Hash(TERMINAL_HASH),
+    )
+
+
+def write_live_success(state_directory: Path) -> Path:
+    destination = state_directory / f"headless-{CONFIGURATION_HASH}.json"
+    write_provider_canary_receipt_atomic(destination, successful_receipt())
+    return destination
+
+
 def test_provider_canary_is_an_operator_cli_subcommand(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -262,6 +291,17 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
         if method == "GET" and path.startswith("/workflow-revisions/by-name/")
     ]
     assert len(starts) == len(resolved) == 2
+    assert starts[0] == {
+        "workflow_format_version": 2,
+        "run_id": starts[0]["run_id"],
+        "workflow_revision_hash": http.workflow_hashes[0],
+        "agent_bindings": [
+            {
+                "role": "provider-canary",
+                "agent_configuration_revision_hash": CONFIGURATION_HASH,
+            }
+        ],
+    }
     assert [start["agent_bindings"] for start in starts] == [
         [
             {
@@ -291,6 +331,28 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     assert {receipt.valid_until.value for receipt in receipts} == {
         "2026-09-02T10:00:00Z"
     }
+
+
+def test_each_trigger_starts_a_new_run_even_on_the_same_day(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    http = FakeHttp((configuration(),), workflow_directory)
+    clock = FakeClock()
+    canary_settings = settings(workflow_directory, tmp_path / "state")
+
+    execute_provider_canaries(canary_settings, http=http, clock=clock)
+    clock.instant += timedelta(minutes=1)
+    execute_provider_canaries(canary_settings, http=http, clock=clock)
+
+    starts = [
+        json.loads(body)
+        for _method, path, body in http.calls
+        if path == "/runs" and body is not None
+    ]
+    assert len(starts) == 2
+    assert starts[0]["run_id"] != starts[1]["run_id"]
+    assert starts[0]["run_id"].startswith("provider-canary/")
+    assert starts[1]["run_id"].startswith("provider-canary/")
 
 
 @pytest.mark.parametrize(
@@ -329,6 +391,166 @@ def test_server_down_timeout_and_start_refusal_each_leave_a_loud_fail_receipt(
     assert receipt.problem_code is not None
     assert receipt.problem_code.value == expected_problem
     assert receipt.terminal_hash is None
+
+
+def test_a_failed_run_replaces_the_live_success_receipt(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    state_directory = tmp_path / "state"
+    destination = write_live_success(state_directory)
+    previous = destination.read_bytes()
+    http = FakeHttp((configuration(),), workflow_directory, server_down=True)
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.failed == 1
+    assert destination.read_bytes() != previous
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.result is ProviderProbeResult.FAILED
+    assert receipt.problem_code == ProviderProbeProblemCode("server-unavailable")
+
+
+def test_an_unreadable_local_workflow_replaces_the_live_success_receipt(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    state_directory = tmp_path / "state"
+    write_live_success(state_directory)
+    (workflow_directory / "provider-canary-headless.yaml").unlink()
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory),
+        http=FakeHttp((configuration(),), workflow_directory),
+        clock=FakeClock(),
+    )
+
+    assert report.failed == 1
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.result is ProviderProbeResult.FAILED
+    assert receipt.problem_code == ProviderProbeProblemCode("workflow-unreadable")
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_problem"),
+    (
+        ("unavailable", "server-unavailable"),
+        ("unreadable", "server-answer-unreadable"),
+        ("empty", "no-startable-provider-vectors"),
+    ),
+)
+def test_discovery_failure_replaces_every_live_success_with_a_fail_receipt(
+    tmp_path: Path,
+    workflow_directory: Path,
+    failure_mode: str,
+    expected_problem: str,
+) -> None:
+    state_directory = tmp_path / "state"
+    write_live_success(state_directory)
+    http = FakeHttp((configuration(),), workflow_directory)
+    if failure_mode == "unavailable":
+        http.configuration_unavailable = True
+    elif failure_mode == "unreadable":
+        http.configuration_answer = b"not-json"
+    else:
+        http.configurations = ()
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.attempted == 0
+    assert report.failed == 1
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.result is ProviderProbeResult.FAILED
+    assert receipt.problem_code == ProviderProbeProblemCode(expected_problem)
+    assert receipt.observed_at == RecordedAt("2026-09-01T08:00:00Z")
+
+
+def test_empty_discovery_without_previous_receipts_is_a_loud_cli_failure(
+    tmp_path: Path,
+    workflow_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    http = FakeHttp((), workflow_directory)
+    monkeypatch.setattr(
+        "atelier2.host.execute_provider_canaries",
+        lambda canary_settings: execute_provider_canaries(
+            canary_settings, http=http, clock=FakeClock()
+        ),
+    )
+
+    exit_status = main(
+        [
+            "provider-canary",
+            "--workflow-directory",
+            str(workflow_directory),
+            "--state-directory",
+            str(tmp_path / "state"),
+        ]
+    )
+
+    assert exit_status == 1
+    assert "no startable provider vectors" in capsys.readouterr().err
+
+
+def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
+    tmp_path: Path,
+    workflow_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeouts: list[float] = []
+    workflow_name = "provider-canary-headless"
+    workflow_hash = Sha256Hash.of(
+        (workflow_directory / f"{workflow_name}.yaml").read_bytes()
+    ).value
+
+    def hung_start(request: Request, *, timeout: float) -> io.BytesIO:
+        timeouts.append(timeout)
+        full_url = request.full_url
+        method = request.method
+        if full_url.endswith("/health"):
+            answer = HealthResource(
+                status="serving", source_commit=SOURCE_COMMIT, source_tree="d" * 40
+            ).model_dump_json()
+        elif "/agent-configuration-revisions?" in full_url:
+            answer = encoded(
+                items=(configuration(),), next_after_revision_hash=None
+            ).decode()
+        elif full_url.endswith(f"/workflow-revisions/by-name/{workflow_name}"):
+            answer = CatalogNameResolutionResource(
+                display_name=workflow_name,
+                lineage_id="4" * 64,
+                workflow_revision_hash=workflow_hash,
+                revision_number=1,
+            ).model_dump_json()
+        elif full_url.endswith("/runs") and method == "POST":
+            raise TimeoutError("HTTP start timed out")
+        else:
+            raise AssertionError((method, full_url))
+        return io.BytesIO(answer.encode())
+
+    monkeypatch.setattr("atelier2.host.provider_canary.urlopen", hung_start)
+    state_directory = tmp_path / "state"
+    canary_settings = ProviderCanarySettings(
+        service_url="http://127.0.0.1:8422",
+        workflow_directory=workflow_directory,
+        state_directory=state_directory,
+        terminal_timeout_seconds=5,
+        poll_interval_seconds=1,
+    )
+
+    report = execute_provider_canaries(canary_settings, clock=FakeClock())
+
+    assert timeouts
+    assert all(
+        timeout <= canary_settings.terminal_timeout_seconds for timeout in timeouts
+    )
+    assert report.failed == 1
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.result is ProviderProbeResult.FAILED
+    assert receipt.problem_code == ProviderProbeProblemCode("server-unavailable")
 
 
 def test_atomic_receipt_replacement_never_exposes_a_partly_written_success(

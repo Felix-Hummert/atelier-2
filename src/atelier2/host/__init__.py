@@ -75,6 +75,7 @@ from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.provider_canary import (
     PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS,
     ProviderCanaryAnswerUnreadable,
+    ProviderCanaryDiscoveryFailed,
     ProviderCanaryHttpRefused,
     ProviderCanaryServerUnavailable,
     ProviderCanarySettings,
@@ -220,9 +221,10 @@ Run each configured live provider vector once through the served Atelier API.
 The command reads the instance's startable agent-configuration list, resolves
 the matching admitted provider-canary workflow, starts one fresh run with that
 exact configuration hash, and waits for a terminal state. Each outcome atomically
-replaces one provider-probe-receipt/v1 beneath the XDG state directory. A failed
-vector leaves a fail receipt and makes the command exit nonzero; provider output
-stays with the durable run and never enters the receipt.
+replaces one provider-probe-receipt/v1 beneath the XDG state directory, including
+a failure replacing a still-live success. Discovery failure replaces every known
+live receipt with failure; an empty list with no prior vector still exits nonzero.
+Provider output stays with the durable run and never enters the receipt.
 """
 
 BINDING_SEPARATOR = "="
@@ -430,6 +432,7 @@ def _provider_canary(
     except (
         OSError,
         ProviderCanaryAnswerUnreadable,
+        ProviderCanaryDiscoveryFailed,
         ProviderCanaryHttpRefused,
         ProviderCanaryServerUnavailable,
     ) as refusal:

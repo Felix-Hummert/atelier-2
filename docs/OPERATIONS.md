@@ -645,17 +645,37 @@ stays your hand, through the paragraphs above.
 
 The billed loopback host process is installed as the systemd user unit
 `atelier2-serve.service`. Its launcher owns the `atelier2 serve` executor
-flags; the canary does not copy them. It asks that running instance for its
-currently startable agent configurations, runs the matching headless,
-workspace-tools, or atelier-doors workflow once with each exact configuration
-hash, refuses an admitted workflow whose hash differs from the deploy checkout,
-and waits at most 300 seconds per run. The durable run owns provider output. The
-canary atomically replaces only the secret-free
+flags; the canary does not copy them. The installed canary unit does share the
+launcher's effective runtime truth: installation substitutes the same deploy
+checkout as its working directory, and `%h/.local/bin/uv run --locked` is the
+same pinned interpreter and lock path that `serve-live.sh` uses. It asks that
+running instance for its currently startable agent configurations, runs the
+matching headless, workspace-tools, or atelier-doors workflow once with each
+exact configuration hash, refuses an admitted workflow whose hash differs from
+the deploy checkout, and waits at most 300 seconds per run. Every HTTP call has
+a 30-second timeout, reduced to the terminal wait when the operator configures a
+shorter one. The durable run owns provider output. The canary atomically
+replaces only the secret-free
 `provider-probe-receipt/v1` at
 `${XDG_STATE_HOME:-$HOME/.local/state}/atelier2/provider-probes/live/<vector-id>.json`.
 Receipts remain valid for 26 hours, so the nightly schedule has two hours of
-overlap. A service refusal, unavailable server, or terminal timeout writes a
-failed receipt for every vector already discovered and makes the oneshot fail.
+overlap. A receipt always says what the youngest probe attempt found: a failed
+attempt replaces a still-valid success before the next readiness read. A
+service refusal, unavailable server, unreadable configuration list, empty
+startable list, or unreadable local canary workflow replaces each affected
+previously known live receipt with failure and makes the oneshot fail; with no
+prior vector, the same pre-start failure is still a loud nonzero unit result
+rather than a zero-vector success.
+
+`POST /runs` uses the public `StartRunRequestResourceV2` form from the shared
+run-command owner: workflow revision, one exact agent binding, and no orders.
+That public start has no separate `idempotency_key`; `run_id` is its durable
+idempotency identity. The timestamped id makes every timer or deploy trigger a
+new run, including another trigger on the same day. The runner does not persist
+the planned id before POST. A process crash after an accepted POST but before
+the receipt therefore leaves a named duplicate-billing gap: the next trigger
+uses a new id. Closing it requires persisting the planned `run_id` as the retry
+key before POST and replaying that id until its outcome is receipted.
 
 Install the oneshot, its nightly persistent timer, and the post-Serve-start
 drop-in from the deploy checkout, as the same user that owns
@@ -674,8 +694,10 @@ systemctl --user enable --now atelier2-provider-canary.timer
 ```
 
 The timer's `Persistent=true` catches a missed 03:00 local run after the user
-manager returns. The drop-in takes effect on the next Serve start; start one
-probe without restarting Serve with:
+manager returns. The drop-in takes effect on the next Serve start. Its
+`--no-block` keeps Serve from waiting for a billed run, and its `-` prefix keeps
+Serve healthy when the optional canary unit is missing or refuses activation.
+Start one probe without restarting Serve with:
 
 ```bash
 systemctl --user start atelier2-provider-canary.service
