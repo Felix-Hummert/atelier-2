@@ -22,10 +22,9 @@ import socket
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
-from typing import Any, Never
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
@@ -141,6 +140,7 @@ from tests.scenarios.api import (
     durable_ports,
     event_poll_backoff,
 )
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 PORTIONS_SCHEMA = PublishedRevision(
@@ -1406,45 +1406,13 @@ def observed_item(
     )
 
 
-@dataclass
-class _CountingTracker:
-    """A tracker that says how often the start reached for it."""
-
-    answer: ObserveWorkItemRevisionResult
-    reads: int = 0
-
-    def open_items(self) -> Never:
-        raise AssertionError("a start never lists the open items")
-
-    def snapshot(
-        self, reference: TrackerItemReference
-    ) -> ObserveWorkItemRevisionResult:
-        self.reads += 1
-        return self.answer
-
-
-@dataclass
-class _TrackerAnswering:
-    """The connected tracker, as the composed server reaches it."""
-
-    answer: ObserveWorkItemRevisionResult
-
-    def open_items(self) -> Never:
-        raise AssertionError("a start never lists the open items")
-
-    def snapshot(
-        self, reference: TrackerItemReference
-    ) -> ObserveWorkItemRevisionResult:
-        return self.answer
-
-
 def work_item_client(
     runtime: DbosRuntime, answer: ObserveWorkItemRevisionResult
 ) -> TestClient:
     return durable_api_client(
         runtime,
         served_project_id=SERVED_PROJECT,
-        tracker_item_source=_TrackerAnswering(answer),
+        tracker_item_source=FakeTrackerItemSource(snapshot_answer=answer),
     )
 
 
@@ -1678,7 +1646,7 @@ def test_a_retry_answers_from_what_the_run_pinned_without_reading_the_item_again
         TrackerSourceUnavailable("GitHub answered 503"),
         TrackerItemUnknown(ASKED_ITEM),
     ):
-        counting = _CountingTracker(answer)
+        counting = FakeTrackerItemSource(snapshot_answer=answer)
         retried = start_with_work_item(
             durable_api_client(
                 runtime,
@@ -1691,7 +1659,7 @@ def test_a_retry_answers_from_what_the_run_pinned_without_reading_the_item_again
         )
 
         assert retried.status_code == 200, answer
-        assert counting.reads == 0, answer
+        assert counting.snapshot_requests == [], answer
         assert stored_order(runtime, "v3/pinned-retry") == pinned
 
 
@@ -1709,7 +1677,9 @@ def test_a_retry_naming_another_item_is_a_conflict_rather_than_the_same_run(
     )
     assert started.status_code == 201
 
-    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    counting = FakeTrackerItemSource(
+        snapshot_answer=WorkItemRevisionObserved(observed_item())
+    )
     conflicting = start_with_work_item(
         durable_api_client(
             runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
@@ -1722,7 +1692,7 @@ def test_a_retry_naming_another_item_is_a_conflict_rather_than_the_same_run(
 
     assert conflicting.status_code == 409
     assert conflicting.json()["type"].endswith("run-identity-conflict")
-    assert counting.reads == 0
+    assert counting.snapshot_requests == []
 
 
 MATERIAL_NAME = "material"
@@ -1825,7 +1795,9 @@ def test_a_retry_mixing_a_work_item_with_an_artifact_is_the_same_run(
     )
     assert started.status_code == 201, started.text
 
-    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    counting = FakeTrackerItemSource(
+        snapshot_answer=WorkItemRevisionObserved(observed_item())
+    )
     retried = start_with_work_item_and_artifact(
         durable_api_client(
             runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
@@ -1837,7 +1809,7 @@ def test_a_retry_mixing_a_work_item_with_an_artifact_is_the_same_run(
     )
 
     assert retried.status_code == 200
-    assert counting.reads == 0
+    assert counting.snapshot_requests == []
 
 
 def bent_work_item_order(**fields: str) -> bytes:
@@ -1957,7 +1929,9 @@ def test_a_read_whose_write_failed_leaves_nothing_and_the_retry_starts_the_run(
         raise OperationalError("enqueue", {}, Exception("the disk is full"))
 
     monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", refuse_to_commit)
-    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    counting = FakeTrackerItemSource(
+        snapshot_answer=WorkItemRevisionObserved(observed_item())
+    )
 
     failed = start_with_work_item(
         durable_api_client(
@@ -1969,11 +1943,13 @@ def test_a_read_whose_write_failed_leaves_nothing_and_the_retry_starts_the_run(
     )
 
     assert failed.status_code == 503
-    assert counting.reads == 1
+    assert len(counting.snapshot_requests) == 1
     assert_no_run(runtime, "v3/unwritten")
 
     monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", enqueued)
-    retried = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    retried = FakeTrackerItemSource(
+        snapshot_answer=WorkItemRevisionObserved(observed_item())
+    )
     started = start_with_work_item(
         durable_api_client(
             runtime, served_project_id=SERVED_PROJECT, tracker_item_source=retried
@@ -1984,7 +1960,7 @@ def test_a_read_whose_write_failed_leaves_nothing_and_the_retry_starts_the_run(
     )
 
     assert started.status_code == 201
-    assert retried.reads == 1
+    assert len(retried.snapshot_requests) == 1
     assert stored_order(runtime, "v3/unwritten")[0] == work_item_order_document(
         observed_item()
     )

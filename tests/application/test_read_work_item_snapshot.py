@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Never
-
 import pytest
 
 from atelier2.application.read_work_item_snapshot import (
@@ -32,6 +29,7 @@ from atelier2.ports.issue_observation import (
     TrackerSourceUnavailable,
     WorkItemRevisionObserved,
 )
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 
 PROJECT = ProjectId("studio")
 ITEM = TrackerItemReference("gh:712")
@@ -45,32 +43,17 @@ REVISION = ObservedWorkItemRevision(
 )
 
 
-@dataclass
-class _SnapshotSource:
-    answer: ObserveWorkItemRevisionResult
-    asked_for: list[TrackerItemReference] = field(default_factory=list)
-
-    def open_items(self) -> Never:
-        raise AssertionError("a snapshot never lists the open items")
-
-    def snapshot(
-        self, reference: TrackerItemReference
-    ) -> ObserveWorkItemRevisionResult:
-        self.asked_for.append(reference)
-        return self.answer
-
-
 def test_an_observed_revision_is_named_under_the_served_projects_item_identity() -> (
     None
 ):
-    source = _SnapshotSource(WorkItemRevisionObserved(REVISION))
+    source = FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(REVISION))
 
     outcome = read_work_item_snapshot(PROJECT, source, ITEM)
 
     assert outcome == WorkItemSnapshotRead(PROJECT, REVISION)
     assert isinstance(outcome, WorkItemSnapshotRead)
     assert outcome.item_reference == WorkItemReference(PROJECT, ITEM)
-    assert source.asked_for == [ITEM]
+    assert source.snapshot_requests == [ITEM]
 
 
 def test_a_source_answering_about_another_item_is_refused_not_recorded() -> None:
@@ -85,14 +68,16 @@ def test_a_source_answering_about_another_item_is_refused_not_recorded() -> None
     )
 
     outcome = read_work_item_snapshot(
-        PROJECT, _SnapshotSource(WorkItemRevisionObserved(other)), ITEM
+        PROJECT,
+        FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(other)),
+        ITEM,
     )
 
     assert isinstance(outcome, SourcePayloadMalformed)
 
 
 def test_an_item_the_tracker_does_not_hold_is_named_by_its_item_identity() -> None:
-    source = _SnapshotSource(TrackerItemUnknown(ITEM))
+    source = FakeTrackerItemSource(snapshot_answer=TrackerItemUnknown(ITEM))
 
     outcome = read_work_item_snapshot(PROJECT, source, ITEM)
 
@@ -102,17 +87,20 @@ def test_an_item_the_tracker_does_not_hold_is_named_by_its_item_identity() -> No
 @pytest.mark.parametrize(
     ("project", "source"),
     [
-        (None, _SnapshotSource(WorkItemRevisionObserved(REVISION))),
+        (
+            None,
+            FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(REVISION)),
+        ),
         (PROJECT, None),
     ],
 )
 def test_an_unconnected_instance_is_refused_without_reading_the_tracker(
-    project: ProjectId | None, source: _SnapshotSource | None
+    project: ProjectId | None, source: FakeTrackerItemSource | None
 ) -> None:
     outcome = read_work_item_snapshot(project, source, ITEM)
 
     assert outcome == ProjectSourceNotConnected()
-    assert source is None or source.asked_for == []
+    assert source is None or source.snapshot_requests == []
 
 
 @pytest.mark.parametrize(
@@ -131,6 +119,8 @@ def test_an_unconnected_instance_is_refused_without_reading_the_tracker(
 def test_a_tracker_refusal_is_translated_into_this_layers_word(
     source_answer: ObserveWorkItemRevisionResult, expected: object
 ) -> None:
-    outcome = read_work_item_snapshot(PROJECT, _SnapshotSource(source_answer), ITEM)
+    outcome = read_work_item_snapshot(
+        PROJECT, FakeTrackerItemSource(snapshot_answer=source_answer), ITEM
+    )
 
     assert outcome == expected

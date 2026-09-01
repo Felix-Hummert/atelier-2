@@ -29,19 +29,9 @@ from atelier2.ports.issue_observation import (
     TrackerSourceUnavailable,
 )
 from atelier2.ports.queue_projection import ObserveQueueItemsResult, QueueItemsObserved
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 
 PROJECT = ProjectId("studio")
-
-
-@dataclass
-class _SourceAnswering:
-    answer: ObserveOpenTrackerItemsResult
-
-    def open_items(self) -> ObserveOpenTrackerItemsResult:
-        return self.answer
-
-    def snapshot(self, reference: object) -> Never:
-        raise AssertionError("an import never reads one item's bytes")
 
 
 @dataclass
@@ -68,8 +58,8 @@ class _QueueRecording:
 def test_open_tracker_items_become_one_observation_batch_for_the_served_project() -> (
     None
 ):
-    source = _SourceAnswering(
-        OpenTrackerItemsObserved(
+    source = FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved(
             (TrackerItemReference("gh:79"), TrackerItemReference("gh:652"))
         )
     )
@@ -89,12 +79,12 @@ def test_open_tracker_items_become_one_observation_batch_for_the_served_project(
 @pytest.mark.parametrize(
     ("project", "source"),
     [
-        (None, _SourceAnswering(OpenTrackerItemsObserved(()))),
+        (None, FakeTrackerItemSource(open_items_answer=OpenTrackerItemsObserved(()))),
         (PROJECT, None),
     ],
 )
 def test_an_unconnected_instance_is_refused_by_name_without_touching_the_queue(
-    project: ProjectId | None, source: _SourceAnswering | None
+    project: ProjectId | None, source: FakeTrackerItemSource | None
 ) -> None:
     queue = _QueueRecording(QueueItemsObserved(0, 0))
 
@@ -123,7 +113,7 @@ def test_a_tracker_refusal_is_translated_and_writes_nothing(
     queue = _QueueRecording(QueueItemsObserved(0, 0))
 
     outcome = import_project_source_issues(
-        PROJECT, _SourceAnswering(source_answer), queue
+        PROJECT, FakeTrackerItemSource(open_items_answer=source_answer), queue
     )
 
     assert outcome == expected
@@ -140,7 +130,9 @@ def test_a_tracker_refusal_is_translated_and_writes_nothing(
 def test_a_store_failure_is_translated_into_this_layers_word(
     store_answer: ObserveQueueItemsResult, expected: object
 ) -> None:
-    source = _SourceAnswering(OpenTrackerItemsObserved((TrackerItemReference("gh:1"),)))
+    source = FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved((TrackerItemReference("gh:1"),))
+    )
 
     outcome = import_project_source_issues(
         PROJECT, source, _QueueRecording(store_answer)

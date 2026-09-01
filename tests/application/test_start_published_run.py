@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Never
 
 from atelier2.application.refusals import ReadUnavailable, WriteUnavailable
 from atelier2.application.start_published_run import (
@@ -35,11 +34,11 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequestV3,
 )
 from atelier2.ports.issue_observation import (
-    ObserveWorkItemRevisionResult,
     TrackerItemUnknown,
     TrackerSourceUnavailable,
     WorkItemRevisionObserved,
 )
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 
 PROJECT = ProjectId("studio")
 ITEM = TrackerItemReference("gh:712")
@@ -71,21 +70,6 @@ def a_run() -> AnyRun:
 
 
 @dataclass
-class _CountingTracker:
-    answer: ObserveWorkItemRevisionResult
-    reads: int = 0
-
-    def open_items(self) -> Never:
-        raise AssertionError("a start never lists the open items")
-
-    def snapshot(
-        self, reference: TrackerItemReference
-    ) -> ObserveWorkItemRevisionResult:
-        self.reads += 1
-        return self.answer
-
-
-@dataclass
 class _ScriptedStarter:
     """A store that answers each ask in turn, remembering what it was handed."""
 
@@ -99,7 +83,7 @@ class _ScriptedStarter:
         return self.answers[len(self.asks) - 1]
 
 
-def start(starter: _ScriptedStarter, tracker: _CountingTracker) -> object:
+def start(starter: _ScriptedStarter, tracker: FakeTrackerItemSource) -> object:
     return start_published_run(
         RUN_ID,
         REVISION_HASH,
@@ -114,28 +98,30 @@ def start(starter: _ScriptedStarter, tracker: _CountingTracker) -> object:
 def test_a_run_that_already_exists_is_answered_without_reading_the_item() -> None:
     """The durable answer comes first, so a retry never re-reads a moving object."""
 
-    tracker = _CountingTracker(WorkItemRevisionObserved(REVISION))
+    tracker = FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(REVISION))
     starter = _ScriptedStarter([DurableRunExisting(a_run())])
 
     outcome = start(starter, tracker)
 
     assert isinstance(outcome, RunExisting)
-    assert tracker.reads == 0
+    assert tracker.snapshot_requests == []
     asked = starter.asks[0]
     assert isinstance(asked, StartPublishedRunRequestV3)
     assert asked.orders[0].value == WorkItemOrderValue(ITEM)
 
 
 def test_an_unreachable_tracker_does_not_spoil_a_retry_of_an_existing_run() -> None:
-    tracker = _CountingTracker(TrackerSourceUnavailable("GitHub answered 503"))
+    tracker = FakeTrackerItemSource(
+        snapshot_answer=TrackerSourceUnavailable("GitHub answered 503")
+    )
     starter = _ScriptedStarter([DurableRunExisting(a_run())])
 
     assert isinstance(start(starter, tracker), RunExisting)
-    assert tracker.reads == 0
+    assert tracker.snapshot_requests == []
 
 
 def test_a_start_with_nothing_to_answer_from_reads_the_item_exactly_once() -> None:
-    tracker = _CountingTracker(WorkItemRevisionObserved(REVISION))
+    tracker = FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(REVISION))
     starter = _ScriptedStarter(
         [DurableWorkItemOrderUnread(), DurableRunCreated(a_run())]
     )
@@ -143,7 +129,7 @@ def test_a_start_with_nothing_to_answer_from_reads_the_item_exactly_once() -> No
     outcome = start(starter, tracker)
 
     assert isinstance(outcome, RunCreated)
-    assert tracker.reads == 1
+    assert len(tracker.snapshot_requests) == 1
     second = starter.asks[1]
     assert isinstance(second, StartPublishedRunRequestV3)
     assert second.orders[0].value == ObservedWorkItemOrderValue(REVISION)
@@ -152,7 +138,7 @@ def test_a_start_with_nothing_to_answer_from_reads_the_item_exactly_once() -> No
 def test_an_item_the_start_cannot_read_refuses_before_the_store_is_asked_again() -> (
     None
 ):
-    tracker = _CountingTracker(TrackerItemUnknown(ITEM))
+    tracker = FakeTrackerItemSource(snapshot_answer=TrackerItemUnknown(ITEM))
     starter = _ScriptedStarter([DurableWorkItemOrderUnread()])
 
     outcome = start(starter, tracker)
@@ -164,24 +150,26 @@ def test_an_item_the_start_cannot_read_refuses_before_the_store_is_asked_again()
 def test_a_read_whose_write_failed_is_read_again_by_the_next_start() -> None:
     """The read commits nothing: a failed write leaves the next start free to read."""
 
-    tracker = _CountingTracker(WorkItemRevisionObserved(REVISION))
+    tracker = FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(REVISION))
     failing = _ScriptedStarter(
         [DurableWorkItemOrderUnread(), DurableWriteUnavailable()]
     )
 
     assert isinstance(start(failing, tracker), WriteUnavailable)
-    assert tracker.reads == 1
+    assert len(tracker.snapshot_requests) == 1
 
     retried = _ScriptedStarter(
         [DurableWorkItemOrderUnread(), DurableRunCreated(a_run())]
     )
 
     assert isinstance(start(retried, tracker), RunCreated)
-    assert tracker.reads == 2
+    assert len(tracker.snapshot_requests) == 2
 
 
 def test_an_unavailable_tracker_on_a_first_start_is_named_not_swallowed() -> None:
-    tracker = _CountingTracker(TrackerSourceUnavailable("GitHub answered 503"))
+    tracker = FakeTrackerItemSource(
+        snapshot_answer=TrackerSourceUnavailable("GitHub answered 503")
+    )
     starter = _ScriptedStarter([DurableWorkItemOrderUnread()])
 
     outcome = start(starter, tracker)

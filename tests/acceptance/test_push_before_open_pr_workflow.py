@@ -7,9 +7,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Never
 
 import pytest
 import sqlalchemy as sa
@@ -90,6 +88,7 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import submit_reconcile_command
 
 WORKFLOW_PATH = Path("workflows/push-before-open-pr.yaml")
@@ -136,18 +135,6 @@ def _repositories(root: Path) -> tuple[Path, Path, str]:
     _git(root, "init", "--bare", "--quiet", str(remote))
     _git(project, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
     return project, remote, base
-
-
-@dataclass(frozen=True)
-class _Tracker:
-    revision: ObservedWorkItemRevision
-
-    def open_items(self) -> Never:
-        raise AssertionError("a public start reads only the named work item")
-
-    def snapshot(self, reference: TrackerItemReference) -> WorkItemRevisionObserved:
-        assert reference == self.revision.item
-        return WorkItemRevisionObserved(self.revision)
 
 
 def _publish_workflow(
@@ -337,7 +324,10 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         client = durable_api_client(
             runtime,
             served_project_id=PROJECT,
-            tracker_item_source=_Tracker(item),
+            tracker_item_source=FakeTrackerItemSource(
+                snapshot_answer=WorkItemRevisionObserved(item),
+                expected_snapshot_reference=item.item,
+            ),
         )
         response = client.post(
             API_PREFIX + "/runs",

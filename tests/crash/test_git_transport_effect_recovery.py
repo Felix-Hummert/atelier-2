@@ -10,7 +10,6 @@ import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Never
 
 import pytest
 import sqlalchemy as sa
@@ -71,6 +70,7 @@ from tests.scenarios.agents import (
     launching,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import submit_reconcile_command
 
 CRASHED = 86
@@ -208,18 +208,6 @@ class PushAttemptRecordingRunner(SubprocessGitCommandRunner):
         )
 
 
-class _Tracker:
-    def __init__(self, revision: ObservedWorkItemRevision) -> None:
-        self._revision = revision
-
-    def open_items(self) -> Never:
-        raise AssertionError("a public start reads only the named work item")
-
-    def snapshot(self, reference: TrackerItemReference) -> WorkItemRevisionObserved:
-        assert reference == self._revision.item
-        return WorkItemRevisionObserved(self._revision)
-
-
 def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
     github = GitHubEffectAdapterFactory(
         root / "github.sqlite",
@@ -297,7 +285,10 @@ def _seed_public_run(root: Path) -> None:
         response = durable_api_client(
             runtime,
             served_project_id=PROJECT,
-            tracker_item_source=_Tracker(item),
+            tracker_item_source=FakeTrackerItemSource(
+                snapshot_answer=WorkItemRevisionObserved(item),
+                expected_snapshot_reference=item.item,
+            ),
         ).post(
             API_PREFIX + "/runs",
             json={
