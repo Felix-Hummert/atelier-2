@@ -10,6 +10,7 @@
   import { whenFacts } from "../lib/runProjection";
   import { parseUtc } from "../lib/when";
   import { stateLabels } from "../lib/stateMarkCopy";
+  import LoadingState from "./LoadingState.svelte";
 
   /**
    * The wire already substituted this marker for credential-shaped text.
@@ -77,11 +78,7 @@
 </script>
 
 {#if loading}
-  <div class="transcript-state loading" role="status">
-    <span class="loading-mark" aria-hidden="true"></span>
-    <span class="loading-lines" aria-hidden="true"><span></span><span class="short"></span></span>
-    <span>{wrapDisplayCopy(runPageCopy.questionLooking)}</span>
-  </div>
+  <LoadingState label={wrapDisplayCopy(runPageCopy.questionLooking)} />
 {:else if transcript === null}
   <div class="transcript-state" role="status">
     <span class="empty-mark" aria-hidden="true"></span>
@@ -390,44 +387,5 @@
     border: var(--edge-strong) solid var(--ink-faint);
     border-radius: 50%;
     flex: none;
-  }
-
-  .transcript-state.loading {
-    border-style: dashed;
-    border-color: var(--signal-live);
-  }
-
-  .loading-mark {
-    width: var(--mark);
-    height: var(--mark);
-    border: var(--edge-strong) solid var(--signal-live);
-    border-radius: var(--r);
-    position: relative;
-    flex: none;
-  }
-
-  .loading-mark::after {
-    content: "";
-    position: absolute;
-    inset: var(--space-1);
-    background: var(--signal-live);
-    opacity: 0.35;
-  }
-
-  .loading-lines {
-    display: grid;
-    gap: var(--space-1);
-    flex: 1;
-  }
-
-  .loading-lines span {
-    display: block;
-    height: var(--space-2);
-    border-radius: var(--r-pill);
-    background: var(--chip);
-  }
-
-  .loading-lines .short {
-    width: 62%;
   }
 </style>

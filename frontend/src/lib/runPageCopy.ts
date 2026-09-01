@@ -1,4 +1,5 @@
 import type { RunNotCancellableReason, RunStateV3 } from "../api/client";
+import { readStateCopy } from "./readStateCopy";
 import type { NodeState } from "./runProjection";
 import type { ForkPlan } from "./runFork";
 
@@ -20,7 +21,6 @@ import type { ForkPlan } from "./runFork";
  * run's identity nor the pending decision lives inside the node panel's tabs.
  */
 
-const looking = "Looking…";
 const retry = "Retry";
 const discard = "Discard";
 
@@ -55,7 +55,7 @@ export const runPageCopy = {
   processLogInLease: "Process log stays in the lease.",
   needsYou: "Needs you",
   questionMissing: "This step is waiting for you, but it carries no question.",
-  questionLooking: looking,
+  questionLooking: readStateCopy.looking,
   answerLabel: "Your answer",
   answerSubmit: "Answer",
   answerYes: "Yes",
@@ -117,7 +117,7 @@ export const runPageCopy = {
   retry,
   discard,
   eventInvalid: "Event invalid",
-  looking,
+  looking: readStateCopy.looking,
   workflowUnavailable: "Workflow unavailable",
   whereThisRunStands: "Where this run stands",
   waitQuestionUnreadable: "The wait question could not be read",

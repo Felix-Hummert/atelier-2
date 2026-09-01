@@ -13,6 +13,7 @@
   import type { WaitMutation } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
   import { confirmedDecisionLabel, decisionLabel } from "../lib/waitDecision";
+  import LoadingState from "./LoadingState.svelte";
   import ReadableResult from "./ReadableResult.svelte";
 
   /**
@@ -111,13 +112,15 @@
     {:else if questionFailed}
       <h2 id="v3-wait-action-title">{wrapDisplayCopy(runPageCopy.needsYou)}</h2>
     {:else}
-      <h2 id="v3-wait-action-title" class="looking">{wrapDisplayCopy(runPageCopy.questionLooking)}</h2>
+      <h2 id="v3-wait-action-title">
+        <LoadingState label={wrapDisplayCopy(runPageCopy.questionLooking)} compact />
+      </h2>
     {/if}
 
     <section class="decision-context" aria-labelledby="v3-wait-context-title">
       <h3 id="v3-wait-context-title">{wrapDisplayCopy(runPageCopy.answerContext)}</h3>
       {#if sourcesLoading}
-        <p class="muted" role="status">{wrapDisplayCopy(runPageCopy.answerContextLooking)}</p>
+        <LoadingState label={wrapDisplayCopy(runPageCopy.answerContextLooking)} compact />
       {:else if sources.length === 0}
         <p class="muted">{wrapDisplayCopy(runPageCopy.answerContextNone)}</p>
       {:else}
@@ -218,10 +221,6 @@
     font-size: var(--text-lg);
     line-height: var(--leading-tight);
     overflow-wrap: anywhere;
-  }
-
-  h2.looking {
-    color: var(--ink-dim);
   }
 
   h3 {

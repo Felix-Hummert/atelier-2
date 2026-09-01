@@ -2,6 +2,7 @@
   import { connectionState } from "../lib/connectionState";
   import type { RetainedRead } from "../lib/readResource";
   import { readStateCopy, retryLabel } from "../lib/readStateCopy";
+  import LoadingState from "./LoadingState.svelte";
 
   type ReadStateFailure =
     | { kind: "unavailable"; title: string }
@@ -47,10 +48,10 @@
 {#if read.request.state === "loading"}
   <div class="read-state">
     <div class="read-truth">
-      <span class="read-progress" role="status">
-        <span aria-hidden="true">↻</span>
-        {read.confirmed === null ? readStateCopy.looking : readStateCopy.refreshing}
-      </span>
+      <LoadingState
+        label={read.confirmed === null ? readStateCopy.looking : readStateCopy.refreshing}
+        compact
+      />
     </div>
   </div>
 {:else if read.request.state === "failed" && $connectionState !== "reconnecting"}
@@ -84,15 +85,10 @@
     flex: 1;
   }
 
-  .read-progress,
   .read-failure {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
-    color: var(--ink-dim);
-  }
-
-  .read-failure {
     color: var(--signal-failure);
   }
 

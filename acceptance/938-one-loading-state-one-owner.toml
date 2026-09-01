@@ -1,0 +1,16 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/938"
+
+# REQ-UIQ-10/13: named means designed, not captioned, and one behaviour has
+# flaech-uebergreifend exactly one component. Loading state had two copy
+# owners and eight duplicated renderings across Katalog, Werkbank, History,
+# RunCockpitPage, V3RunView (rail and title), NodeDetailPanel, and
+# V3AnswerCard; all now render the one owner, components/LoadingState.svelte.
+
+[[sentence]]
+id = "the-loading-state-is-one-component"
+text = "The room's loading state is the shared skeleton owner, consumed by exactly its named sites."
+
+[[sentence]]
+id = "no-loading-state-renders-outside-the-owner"
+text = "Every loading-family reference in the whole room tree renders through LoadingState, and the retired literal never reappears."

@@ -1,3 +1,5 @@
+import { readStateCopy } from "./readStateCopy";
+
 /**
  * Copy the History surface renders: only finished runs, as ruhige Zeilen
  * (mockup v8 §05) -- no Start, no Refresh, no queue prose.
@@ -12,9 +14,10 @@
  * result cell is the derived half-sentence `historyOutcome.ts` maps, not the
  * standing word "Done" and not the raw result bytes.
  */
+
 export const historyPageCopy = {
   title: "History",
-  looking: "Looking…",
+  looking: readStateCopy.looking,
   retry: "Retry",
   listUnavailable: "History unavailable",
   listIncomplete: "History incomplete",

@@ -28,6 +28,7 @@
     prepareWaitAnswer
   } from "../lib/waitAnswerDelivery";
   import { ageLabel } from "../lib/when";
+  import LoadingState from "./LoadingState.svelte";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
   import RunCancelCard from "./RunCancelCard.svelte";
@@ -535,7 +536,13 @@
 
 <section class="v3-run" aria-labelledby="v3-run-title">
   <header class="run-head">
-    <h1 id="v3-run-title">{headerTitle}</h1>
+    <h1 id="v3-run-title">
+      {#if graphRequest.state === "loading"}
+        <LoadingState label={wrapDisplayCopy(runPageCopy.looking)} compact />
+      {:else}
+        {headerTitle}
+      {/if}
+    </h1>
     {#if description !== null}
       <p class="run-description">{description}</p>
     {/if}
@@ -617,7 +624,7 @@
   {/if}
 
   {#if graphRequest.state === "loading"}
-    <p class="muted" role="status">{runPageCopy.looking}</p>
+    <LoadingState label={wrapDisplayCopy(runPageCopy.looking)} compact />
   {:else if graphRequest.state === "failed"}
     <ProblemNotice title={runPageCopy.graphUnreadable} message={graphRequest.message} />
     <ol class="rail">
@@ -806,9 +813,5 @@
     font: inherit;
     color: inherit;
     text-align: left;
-  }
-
-  .muted {
-    color: var(--ink-dim);
   }
 </style>

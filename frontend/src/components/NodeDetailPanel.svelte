@@ -40,6 +40,7 @@
   import { stateLabels } from "../lib/stateMarkCopy";
   import AttemptTranscript from "./AttemptTranscript.svelte";
   import InfoHint from "./InfoHint.svelte";
+  import LoadingState from "./LoadingState.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
   import ReadableResult from "./ReadableResult.svelte";
 
@@ -290,7 +291,7 @@
       {#if tab === "log"}
         <AttemptTranscript loading />
       {:else}
-        <p class="muted">{wrapDisplayCopy(runPageCopy.questionLooking)}</p>
+        <LoadingState label={wrapDisplayCopy(runPageCopy.questionLooking)} compact />
       {/if}
     {:else}
     {#if tab === "result"}

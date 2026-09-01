@@ -18,6 +18,7 @@
   import { confirmedDecisionLabel, decisionLabel } from "../lib/waitDecision";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
   import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
+  import LoadingState from "./LoadingState.svelte";
 
   /**
    * One open decision, pinned so it cannot scroll away in the Workbench stream
@@ -349,13 +350,15 @@
         {/if}
       </span>
       <span id="pinned-decision-title-{run.public_run_reference}" class="compact-question">
-        {question.state === "present"
-          ? question.text
-          : question.state === "missing"
-            ? wrapDisplayCopy(runPageCopy.questionMissing)
-            : question.state === "failed"
-              ? wrapDisplayCopy(runPageCopy.needsYou)
-              : wrapDisplayCopy(runPageCopy.questionLooking)}
+        {#if question.state === "present"}
+          {question.text}
+        {:else if question.state === "missing"}
+          {wrapDisplayCopy(runPageCopy.questionMissing)}
+        {:else if question.state === "failed"}
+          {wrapDisplayCopy(runPageCopy.needsYou)}
+        {:else}
+          <LoadingState label={wrapDisplayCopy(runPageCopy.questionLooking)} compact />
+        {/if}
       </span>
       <span class="compact-action">{wrapDisplayCopy(workbenchPageCopy.answerDecision)}</span>
     </button>
@@ -416,7 +419,9 @@
     {:else if question.state === "failed"}
       <h3 id="pinned-decision-title-{run.public_run_reference}" class="question">{wrapDisplayCopy(runPageCopy.needsYou)}</h3>
     {:else}
-      <h3 id="pinned-decision-title-{run.public_run_reference}" class="question looking">{wrapDisplayCopy(runPageCopy.questionLooking)}</h3>
+      <h3 id="pinned-decision-title-{run.public_run_reference}" class="question">
+        <LoadingState label={wrapDisplayCopy(runPageCopy.questionLooking)} compact />
+      </h3>
     {/if}
 
     {#if waitFailureMessage !== null}
@@ -432,7 +437,9 @@
          kept as the stage's aside rather than a second decision control. -->
     <div class="pinned-acts">
       {#if pendingWait === null && graph.state === "loading"}
-        <p class="pinned-status" role="status">{wrapDisplayCopy(runPageCopy.questionLooking)}</p>
+        <p class="pinned-status">
+          <LoadingState label={wrapDisplayCopy(runPageCopy.questionLooking)} compact />
+        </p>
       {:else if pendingWait === null && graph.state === "ready" && graph.kind === "boolean"}
         <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
           <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide("true"); }}>{wrapDisplayCopy(runPageCopy.answerYes)}</button>
@@ -526,10 +533,6 @@
     font-size: var(--text-lg);
     line-height: var(--leading-tight);
     overflow-wrap: anywhere;
-  }
-
-  .question.looking {
-    color: var(--ink-dim);
   }
 
   .landed-sentence {
