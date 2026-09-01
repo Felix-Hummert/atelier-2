@@ -4,7 +4,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 from sqlalchemy import event
@@ -23,7 +22,7 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 from atelier2.contracts.run_forks import RunForkCommandId, successor_run_id_for
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.runs import RunId, RunState
 from atelier2.ports.durable_run_forks import (
     DurableRunForkCreated,
     DurableRunForkExisting,
@@ -34,6 +33,7 @@ from atelier2.ports.effects import EffectAdapter
 from tests.crash.effect_harness import CRASHED, install_crash
 from tests.integration.test_v3_open_pr_action import TREE, publish_line
 from tests.scenarios.agents import RecordingAgentExecutorFactoryV2, agent_scratch_root
+from tests.scenarios.run_waiting import wait_for_sqlite_run_state
 
 HARNESS = Path(__file__)
 VERSION = "run-fork-crash-v1"
@@ -98,21 +98,6 @@ def _runtime(root: Path) -> DbosRuntime:
     )
 
 
-def _wait_for_state(root: Path, run_id: RunId, expected: str) -> None:
-    deadline = time.monotonic() + 12
-    observed = ""
-    while time.monotonic() < deadline:
-        with sqlite3.connect(root / "atelier.sqlite", timeout=30) as connection:
-            row = connection.execute(
-                "SELECT state FROM runs WHERE run_id=?", (run_id.value,)
-            ).fetchone()
-        observed = "" if row is None else str(row[0])
-        if observed == expected:
-            return
-        time.sleep(0.025)
-    raise TimeoutError(f"run {run_id.value!r} stayed {observed!r}")
-
-
 def _seed(root: Path) -> None:
     runtime = _runtime(root)
     try:
@@ -127,7 +112,7 @@ def _seed(root: Path) -> None:
         if not isinstance(started, DurableRunCreated):
             raise TypeError(f"origin start was refused: {started!r}")
         runtime.launch()
-        _wait_for_state(root, ORIGIN, "COMPLETED")
+        wait_for_sqlite_run_state(root / "atelier.sqlite", ORIGIN, RunState.COMPLETED)
     finally:
         runtime.close()
 
@@ -145,7 +130,9 @@ def _fork_and_run(root: Path, operation: str | None, marker: Path | None) -> Non
             install_crash(marker, operation, "before-record")
         runtime.launch()
         successor = successor_run_id_for(RunForkCommandId.for_request(ORIGIN, KEY))
-        _wait_for_state(root, successor, "COMPLETED")
+        wait_for_sqlite_run_state(
+            root / "atelier.sqlite", successor, RunState.COMPLETED
+        )
     finally:
         runtime.close()
 

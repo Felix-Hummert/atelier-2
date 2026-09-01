@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -33,7 +32,6 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
     run_inputs_v3,
-    runs,
 )
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
@@ -118,6 +116,7 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
@@ -282,24 +281,6 @@ nodes:
     )
 
 
-def _wait_for_state(
-    runtime: DbosRuntime, expected: RunState, run_id: RunId = RUN
-) -> None:
-    deadline = time.monotonic() + 10
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
-                )
-            )
-        if observed == expected.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {expected.value!r}")
-
-
 @pytest.mark.proves("an-authorised-candidate-is-pushed-before-its-pr-opens")
 def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
     tmp_path: Path,
@@ -384,7 +365,7 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         )
         assert response.status_code == 201, response.text
         runtime.launch()
-        _wait_for_state(runtime, RunState.WAITING_RECONCILIATION)
+        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_RECONCILIATION)
 
         with runtime.engine.connect() as connection:
             push_intent = intent_snapshot_from_record(
@@ -409,7 +390,7 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
                 OperatorAuthoritativeAbsence(),
             ),
         )
-        _wait_for_state(runtime, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
 
         branch = head_branch_for_queue_item(
             WorkItemReference(PROJECT, ITEM).item_id
@@ -852,7 +833,7 @@ def test_the_real_release_entry_binds_approval_to_the_exact_candidate_before_eff
             return
 
         runtime.launch()
-        _wait_for_state(runtime, RunState.COMPLETED, RELEASE_RUN)
+        wait_for_run_state(runtime.engine, RELEASE_RUN, RunState.COMPLETED)
         pull_requests = github.recorded_pull_requests()
         assert runner.push_calls == 1
         assert len(pull_requests) == 1
