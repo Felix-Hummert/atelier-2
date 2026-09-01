@@ -6,7 +6,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -17,15 +16,16 @@ from atelier2.adapters.dbos.schema import (
     agent_attempt_receipts_v3,
     agent_attempts,
     agent_receipts_v2,
-    runs,
 )
 from atelier2.adapters.dbos.workflow import AgentExecutorMap, reconstruct_agent_attempt
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.runs import RunState
 from atelier2.ports.agent_executions import AgentExecutionResult
 from tests.integration.test_v3_output_enforcement import (
+    RUN,
     THE_ANSWER_THE_SCHEMA_ADMITS,
     THE_ANSWER_THE_SCHEMA_REFUSES,
     armed_attempt,
@@ -35,6 +35,7 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
 )
+from tests.scenarios.run_waiting import wait_for_run_state
 
 CRASHED = 86
 HARNESS = Path(__file__).with_name("agent_attempt_harness.py")
@@ -87,18 +88,6 @@ def output_schema_runtime(
     )
     started.initialize_storage()
     return started
-
-
-def wait_for_run_state(runtime: DbosRuntime, state: str) -> None:
-    deadline = time.monotonic() + 10
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(connection.scalar(sa.select(runs.c.state)))
-        if observed == state:
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"run stayed {observed!r}, expected {state!r}")
 
 
 def _executor_map_of(runtime: DbosRuntime) -> AgentExecutorMap:
@@ -181,7 +170,7 @@ def test_restart_after_a_schema_refusal_runs_its_repair_once(
     recovered = output_schema_runtime(tmp_path, recovered_executor)
     try:
         recovered.launch()
-        wait_for_run_state(recovered, "COMPLETED")
+        wait_for_run_state(recovered.engine, RUN, RunState.COMPLETED)
         with recovered.engine.connect() as connection:
             attempts = tuple(
                 connection.execute(
