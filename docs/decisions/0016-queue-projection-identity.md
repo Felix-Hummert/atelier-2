@@ -10,7 +10,8 @@
 
 ## Context
 
-The tracker owns item content and lifecycle facts. Core owns only the durable
+The tracker owns item content and lifecycle facts, and core never becomes their
+owner: of them it holds at most a dated observation. Core owns the durable
 orchestration decision keyed by a project and opaque tracker reference. The
 earlier queue row jumped directly from `OBSERVED` to `ADMITTED`, named no
 priority or prerequisites, held no project capacity policy, and resolved the
@@ -95,10 +96,11 @@ blockers. The former observed/admitted split reads are removed. Tracker display
 enrichment is explicitly separate: if it cannot be read, the durable row still
 appears with `tracker_enrichment: ENRICHMENT_UNAVAILABLE` and no invented title.
 
-**2026-09-01 amendment (Operator-Ruling, [#962](https://github.com/FlexOr2/atelier-2/issues/962);
-[Issue #79](https://github.com/FlexOr2/atelier-2/issues/79) ruled line 21 of
-31.08.2026): the projection may hold a last-observed title, and closedness is
-derived at import.** Two facts a queue row could not carry may now be written,
+**2026-09-01 amendment (Operator-Ruling of 01.09.2026,
+[#962](https://github.com/FlexOr2/atelier-2/issues/962), over the ruled lines 21
+and 22 of [Issue #79](https://github.com/FlexOr2/atelier-2/issues/79)): the
+projection may hold a last-observed title, and closedness is derived at
+import.** Two facts a queue row could not carry may now be written,
 both at import time and both as observations rather than as core truth.
 
 **A title is an observation of a fact the tracker owns.** The projection may hold
@@ -129,10 +131,12 @@ bytes are the item body alone, the queue never takes such a snapshot, and adding
 a field would invalidate every workflow document pinned against the current
 `WORK_ITEM_ORDER_SCHEMA_REVISION`.
 
-Both facts are durable state, so recording them requires a further published
-schema hop above this record's V44 — the title, its observation marker, and the
-retirement fact — serial on the one live store like every other hop. This
-amendment authorizes that hop; it does not design it.
+Both facts are durable state, so recording them requires its own published schema
+hop — the title, its observation marker, and the retirement fact — serial on the
+one live store like every other hop. Its predecessor is whichever published
+version is live when it is cut, which the schema shapes owner names; the V43→V44
+passage above records what this record decided and is not that floor. This
+amendment authorizes the hop; it does not design it.
 
 ## Consequences
 
