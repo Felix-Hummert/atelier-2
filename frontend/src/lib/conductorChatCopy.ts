@@ -8,12 +8,6 @@
  * every `*Copy` owner: one source per string, provable by `?pseudo-locale=1`.
  */
 export const conductorChatCopy = {
-  emptyDescription:
-    "The conductor is listening. Each message becomes one bounded run, and its reply returns to this conversation.",
-  composerHint:
-    "The conductor is connected: each message becomes one bounded run whose reply returns here.",
-  /** The pinned placeholder a sent message holds until its episode ends. */
-  reading: "The conductor is reading your message…",
   startRefused: "The conductor could not start a run for this message:",
   /**
    * A failed episode in words, not in its failure code (#664).
@@ -28,10 +22,6 @@ export const conductorChatCopy = {
   episodeFailed:
     "The conductor's run ended without an answer — the run shows where it stopped.",
   replyUnreadable: "The conductor's run finished, but its reply could not be read.",
-  streamLost:
-    "The reply could not be followed here. Open the run to read how it ended.",
-  /** Leads the run ids a reply set in motion, exactly as the episode reported them. */
-  startedRuns: "Started:",
   openEpisode: "See the run",
   /**
    * The composer hint when the connection read itself failed: neither

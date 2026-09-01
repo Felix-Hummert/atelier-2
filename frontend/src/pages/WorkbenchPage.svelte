@@ -55,11 +55,12 @@
     updateConfirmed,
     type RetainedRead
   } from "../lib/readResource";
+  import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
   import { newestReadOfEachRun, resolveWorkflowName } from "../lib/runList";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { loadPendingWaitAnswer } from "../lib/waitAnswerDelivery";
-  import { humanMove, runStanding, standingMarks } from "../lib/runState";
+  import { humanMove, runHasEnded, runStanding, standingMarks } from "../lib/runState";
   import {
     connectionLabel,
     protocolDetail,
@@ -148,12 +149,7 @@
     holdAttention();
     void resolveConductor();
     const unsubscribe = subscribeChatTranscript((next) => {
-      const settledALine =
-        transcript.some((line) => line.pending) && !next.some((line) => line.pending);
       transcript = next;
-      // A settled conductor round may have started runs or opened waits; the room
-      // re-reads so a new decision does not wait for the next visit.
-      if (settledALine) void load();
     });
     // A read that failed while the connection was lost stays failed once the
     // connection returns until something asks again -- reload was the only
@@ -467,7 +463,7 @@
         conductorDeliveryBusy ||
         (conductorRun !== null &&
           conductorRun.state !== "WAITING_INPUT" &&
-          conductorRun.state !== "COMPLETED")
+          !runHasEnded(conductorRun.state))
       ) {
         return;
       }
@@ -500,14 +496,24 @@
 
   async function deliverConductorMessage(run: RunV3, message: string): Promise<void> {
     conductorDeliveryBusy = true;
-    const outcome = await answerConductorWait(cockpitApi, mutationJournal, run, message);
-    if (outcome.kind === "failed") {
-      conductorDeliveryBusy = false;
+    try {
+      const outcome = await answerConductorWait(cockpitApi, mutationJournal, run, message);
+      if (outcome.kind === "failed") {
+        typed = message;
+        conductorDeliveryFailure = outcome.message;
+        return;
+      }
+      conductorRun = outcome.run;
+    } catch (error) {
+      // A retry of an already-open wait with edited text can conflict with
+      // its own earlier, differently-worded attempt still in the journal
+      // (mutationJournal.ts) -- the composer unlocks and keeps the words
+      // instead of leaving the room silently stuck (#959).
       typed = message;
-      conductorDeliveryFailure = outcome.message;
-      return;
+      conductorDeliveryFailure = humanErrorMessage(error, runPageCopy.answerUnconfirmed);
+    } finally {
+      conductorDeliveryBusy = false;
     }
-    conductorRun = outcome.run;
   }
 
   /**
@@ -702,7 +708,7 @@
         disabled={$connectionState === "reconnecting" || conductorDeliveryBusy ||
           (conductorRun !== null &&
             conductorRun.state !== "WAITING_INPUT" &&
-            conductorRun.state !== "COMPLETED")}
+            !runHasEnded(conductorRun.state))}
         {...{ [workbenchQuestionAttribute]: workbenchQuestions.saySomething.id }}
       >{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
@@ -713,7 +719,13 @@
            repeats it above (#700, App.svelte). -->
       <p class="composer-hint">{wrapDisplayCopy(restartNoticeCopy)}</p>
     {:else if conductorLink.kind === "connected"}
-      <p class="composer-hint">{wrapDisplayCopy(conductorConversationCopy.composerHint)}</p>
+      <p class="composer-hint">
+        {wrapDisplayCopy(
+          conductorRun !== null && runHasEnded(conductorRun.state) && conductorRun.state !== "COMPLETED"
+            ? conductorConversationCopy.endedHint
+            : conductorConversationCopy.composerHint
+        )}
+      </p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
     {:else if conductorLink.kind === "unreadable"}
@@ -867,13 +879,6 @@
     /* A conductor reply may carry its own line breaks; they are part of what
        it said. */
     white-space: pre-line;
-  }
-
-  /* A line still waiting for its round is visibly provisional, nothing more:
-     dimming is state, the settled text is the event. */
-  .conversation-message-pending {
-    color: var(--ink-dim);
-    font-style: italic;
   }
 
   .conversation-run-link {

@@ -31,6 +31,10 @@ const CONDUCTOR_CONVERSATION_RUN_STORAGE_KEY = "atelier2.conductor-conversation-
 export const conductorConversationCopy = {
   emptyDescription: "The conductor is ready for the first message.",
   composerHint: "The conductor is listening. Your next message begins the conversation.",
+  /** Shown once a run ended without completing (failed or cancelled): the
+   * composer stays open, but a new message starts a new conversation rather
+   * than continuing the one that ended. */
+  endedHint: "That conversation ended. Your next message starts a new one.",
   complete: "Conversation completed"
 } as const;
 

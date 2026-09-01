@@ -184,6 +184,15 @@ test("a message meets the honest refusal without a conductor, then starts one co
   await expect(page.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toHaveCount(2, {
     timeout: 60_000
   });
+
+  // A reload re-resolves the connection and re-opens the run's durable event
+  // stream, whose full history the server replays (#7): the conversation
+  // survives a reload rather than starting over.
+  await page.reload();
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toHaveCount(2, {
+    timeout: 60_000
+  });
+
   const waitingConversations = await page.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
   expect(waitingConversations.status()).toBe(200);
   expect(
@@ -293,10 +302,15 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
   await pinnedRegion.evaluate((element) => {
     element.scrollTop = 0;
   });
-  const promotedDecisionLabel = await compactControls.first().locator("..").getAttribute("aria-labelledby");
+  // One locator identity, resolved once: a second `.first()` call after the
+  // rail re-renders could pick a different section than the one whose label
+  // was just read, promoting the wrong decision and leaving this one compact
+  // (CI run 33494214855, attempt 1).
+  const firstCompactControl = compactControls.first();
+  const promotedDecisionLabel = await firstCompactControl.locator("..").getAttribute("aria-labelledby");
   if (promotedDecisionLabel === null) throw new Error("The compact decision has no accessible label.");
   const promotedDecision = pinnedRegion.locator(`section[aria-labelledby="${promotedDecisionLabel}"]`);
-  await compactControls.first().click();
+  await promotedDecision.getByRole("button", { name: workbenchPageCopy.answerDecision }).click();
   await expect(expandedDecision).toHaveCount(1);
   await expect(promotedDecision).not.toHaveClass(/pinned-decision-compact/);
   await expect(promotedDecision.getByRole("link", { name: workbenchPageCopy.openTheRun })).toHaveCount(1);
