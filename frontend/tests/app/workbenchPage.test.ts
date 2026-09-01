@@ -449,9 +449,10 @@ describe("the workbench conductor conversation", () => {
     // (verified against `tests/e2e/serve_cockpit.py`), and it fences the answer
     // to the exact execution it was written for -- so this double refuses an
     // answer aimed at a round the run has already left.
-    const answer: CockpitApi["answer"] = vi.fn(async (mutation) => {
+    const staleWaitRefusal = "that wait is no longer open";
+    const answer = vi.fn<CockpitApi["answer"]>(async (mutation) => {
       if (mutation.expected_node_execution_id !== standing.current_node_execution_id) {
-        throw new Error("that wait is no longer open");
+        throw new Error(staleWaitRefusal);
       }
       const accepted = standing;
       standing = waitingSecondRound;
@@ -498,6 +499,20 @@ describe("the workbench conductor conversation", () => {
       )
     );
     await sendAndSettle("Zweite Nachricht");
+
+    // The second message went out as its own round's answer, aimed at the wait
+    // the run stands in now rather than at the one round 1 already closed.
+    // Read from the call and from the room, because the transcript below is fed
+    // by the stream either way and would look the same had this answer been
+    // refused -- a refusal leaves the composer holding the words back with the
+    // refusal on screen.
+    expect(answer).toHaveBeenCalledTimes(2);
+    expect(answer.mock.calls[1]?.[0].expected_node_execution_id).toBe(
+      waitingSecondRound.current_node_execution_id
+    );
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
+    expect(screen.queryByText(staleWaitRefusal)).toBeNull();
+
     feed.handlers?.event(
       JSON.stringify(
         await completedAnswerEvent(
