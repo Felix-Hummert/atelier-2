@@ -182,7 +182,9 @@ ACCEPTED_SENTENCES = {
         }
     ]
 }
-ACCEPTED_SENTENCES_DOCUMENT = json.dumps(ACCEPTED_SENTENCES, ensure_ascii=False).encode()
+ACCEPTED_SENTENCES_DOCUMENT = json.dumps(
+    ACCEPTED_SENTENCES, ensure_ascii=False
+).encode()
 NO_ACCEPTED_SENTENCES_DOCUMENT = b'{"sentences":[]}'
 BREAKDOWN = {
     "slices": [
@@ -375,7 +377,9 @@ def test_a_breakdown_run_accepts_accepted_sentences_and_returns_an_object_result
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
     accepted_sentences_schema = read_schema_document(ACCEPTED_SENTENCES_SCHEMA.document)
-    assert isinstance(accepted_sentences_schema, SchemaAccepted), accepted_sentences_schema
+    assert isinstance(accepted_sentences_schema, SchemaAccepted), (
+        accepted_sentences_schema
+    )
     assert isinstance(
         read_instance_document(ACCEPTED_SENTENCES_DOCUMENT, accepted_sentences_schema),
         InstanceAccepted,
@@ -428,7 +432,9 @@ def test_a_breakdown_run_without_sentences_remains_valid_and_names_that_result(
     assert detail.detail.answer.value == NO_SENTENCES_ANSWER
 
 
-@pytest.mark.parametrize("provider", [json.dumps(INVALID_BREAKDOWN).encode()], indirect=True)
+@pytest.mark.parametrize(
+    "provider", [json.dumps(INVALID_BREAKDOWN).encode()], indirect=True
+)
 def test_a_breakdown_object_without_proves_defers_and_rank_fails_admission(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
