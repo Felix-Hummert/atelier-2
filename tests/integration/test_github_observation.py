@@ -267,7 +267,7 @@ def test_a_missing_credential_is_unavailable_and_leaks_no_token(
 def test_no_token_appears_in_any_observation_output(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    github.issues = [{"number": 79}]
+    github.issues = [{"number": 79, "title": "Token canary issue"}]
 
     observed = source.open_items()
 

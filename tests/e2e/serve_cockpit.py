@@ -108,6 +108,7 @@ from atelier2.ports.agent_executions import (
 )
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 from atelier2.ports.issue_observation import (
+    ObservedOpenTrackerItem,
     OpenTrackerItemsObserved,
     TrackerItemUnknown,
     WorkItemRevisionObserved,
@@ -179,6 +180,7 @@ RUN_IDS = ("found-run", "absent-run")
 # drain of live git capture owns GENERATION_DRAIN_SECONDS separately.
 TIMEOUT_SECONDS = 60.0
 E2E_OBSERVED_WORK_ITEM_BODY = "e2e observed work item gh:450 — Grüße 東京"
+_E2E_TRACKER_ITEM_TITLE = "e2e observed work item gh:450"
 _E2E_TRACKER_ITEM = TrackerItemReference("gh:450")
 _E2E_WORK_ITEM = WorkItemReference(ProjectId("e2e-workshop"), _E2E_TRACKER_ITEM)
 _E2E_OBSERVED_REVISION = ObservedWorkItemRevision(
@@ -1312,7 +1314,13 @@ def main() -> None:
         seeded = replace(
             ports,
             tracker_item_source=FakeTrackerItemSource(
-                open_items_answer=OpenTrackerItemsObserved((_E2E_TRACKER_ITEM,)),
+                open_items_answer=OpenTrackerItemsObserved(
+                    (
+                        ObservedOpenTrackerItem(
+                            _E2E_TRACKER_ITEM, _E2E_TRACKER_ITEM_TITLE
+                        ),
+                    )
+                ),
                 snapshot_answer=WorkItemRevisionObserved(_E2E_OBSERVED_REVISION),
                 expected_snapshot_reference=_E2E_TRACKER_ITEM,
                 unexpected_snapshot_answer=TrackerItemUnknown,
