@@ -80,6 +80,8 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.workflow_projections import (
+    DescribedWorkflowRevisionPage,
+    EnrichedPageBudget,
     WorkflowRevisionPage,
 )
 from atelier2.ports.agent_executions import AgentExecutorRegistry
@@ -414,6 +416,93 @@ def test_projection_document_limit_refuses_before_workflow_parse(
     ).get_workflow_revision(revision.revision_hash)
 
     assert result == ProjectionTooLarge()
+
+
+def _store_workflow_revisions(
+    engine: Engine, revisions: tuple[WorkflowRevision, ...]
+) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert(),
+            tuple(
+                {
+                    "revision_hash": revision.revision_hash.value,
+                    "document": revision.document,
+                }
+                for revision in revisions
+            ),
+        )
+
+
+def test_workflow_revision_parse_is_reused_across_readers(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = WorkflowRevision(_v3_workflow_document("parse-cache-shared"))
+    _store_workflow_revisions(engine, (revision,))
+    original_parse = queries_module.parse_workflow_document
+    parse_count = 0
+
+    def count_parse(document: bytes) -> object:
+        nonlocal parse_count
+        parse_count += 1
+        return original_parse(document)
+
+    monkeypatch.setattr(queries_module, "parse_workflow_document", count_parse)
+
+    first = durable_queries(engine).get_workflow_revision(revision.revision_hash)
+    second = durable_queries(engine).get_workflow_revision(revision.revision_hash)
+
+    assert isinstance(first, WorkflowRevisionFound)
+    assert second == first
+    assert parse_count == 1
+
+
+def test_each_workflow_revision_hash_is_parsed_once(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revisions = (
+        WorkflowRevision(_v3_workflow_document("parse-cache-first")),
+        WorkflowRevision(_v3_workflow_document("parse-cache-second")),
+    )
+    _store_workflow_revisions(engine, revisions)
+    original_parse = queries_module.parse_workflow_document
+    parse_counts = {revision.document: 0 for revision in revisions}
+
+    def count_parse(document: bytes) -> object:
+        parse_counts[document] += 1
+        return original_parse(document)
+
+    monkeypatch.setattr(queries_module, "parse_workflow_document", count_parse)
+    budget = EnrichedPageBudget(maximum_nodes=100, maximum_document_bytes=100_000)
+
+    first = durable_queries(engine).list_described_workflow_revisions(None, 50, budget)
+    second = durable_queries(engine).list_described_workflow_revisions(None, 50, budget)
+
+    assert isinstance(first, DescribedWorkflowRevisionPage)
+    assert second == first
+    assert parse_counts == {revision.document: 1 for revision in revisions}
+
+
+def test_workflow_revision_parse_failure_is_retried(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = WorkflowRevision(_v3_workflow_document("parse-cache-retry"))
+    _store_workflow_revisions(engine, (revision,))
+    parse_count = 0
+
+    def fail_parse(_document: bytes) -> object:
+        nonlocal parse_count
+        parse_count += 1
+        raise ValueError("temporary parser failure")
+
+    monkeypatch.setattr(queries_module, "parse_workflow_document", fail_parse)
+
+    first = durable_queries(engine).get_workflow_revision(revision.revision_hash)
+    second = durable_queries(engine).get_workflow_revision(revision.revision_hash)
+
+    assert first == QueryDurableStateCorrupt()
+    assert second == QueryDurableStateCorrupt()
+    assert parse_count == 2
 
 
 def test_event_payload_limit_refuses_before_event_materialization(
