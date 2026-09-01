@@ -121,6 +121,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
 )
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import start_published_v3_run
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
@@ -187,20 +188,6 @@ _E2E_OBSERVED_REVISION = ObservedWorkItemRevision(
     WorkItemChangeMarker("e2e-etag-gh-450"),
     RecordedAt("2026-08-26T09:15:00Z"),
 )
-
-
-class FixtureTracker:
-    """Local tracker the browser proof reads; never a live GitHub adapter."""
-
-    def open_items(self) -> OpenTrackerItemsObserved:
-        return OpenTrackerItemsObserved((_E2E_TRACKER_ITEM,))
-
-    def snapshot(
-        self, reference: TrackerItemReference
-    ) -> WorkItemRevisionObserved | TrackerItemUnknown:
-        if reference != _E2E_TRACKER_ITEM:
-            return TrackerItemUnknown(reference)
-        return WorkItemRevisionObserved(_E2E_OBSERVED_REVISION)
 
 
 # Deadlock brake for generation drain. In-process Event waits own
@@ -1322,7 +1309,15 @@ def main() -> None:
         served_project_id: ProjectId | None = None,
         lifespan: Lifespan[FastAPI] | None = None,
     ) -> FastAPI:
-        seeded = replace(ports, tracker_item_source=FixtureTracker())
+        seeded = replace(
+            ports,
+            tracker_item_source=FakeTrackerItemSource(
+                open_items_answer=OpenTrackerItemsObserved((_E2E_TRACKER_ITEM,)),
+                snapshot_answer=WorkItemRevisionObserved(_E2E_OBSERVED_REVISION),
+                expected_snapshot_reference=_E2E_TRACKER_ITEM,
+                unexpected_snapshot_answer=TrackerItemUnknown,
+            ),
+        )
         app = original_create_app(
             source_commit=source_commit,
             source_tree=source_tree,

@@ -61,6 +61,7 @@ from atelier2.contracts.work_items import (
     WorkItemKind,
 )
 from atelier2.ports.effects import EffectAdapterRegistration, EffectAdapterRegistry
+from atelier2.ports.issue_observation import WorkItemRevisionObserved
 from tests.acceptance.test_v3_push_before_open_pr import (
     _WRITE_CANDIDATE,
     AGENT_OUTPUT,
@@ -71,7 +72,6 @@ from tests.acceptance.test_v3_push_before_open_pr import (
     _git,
     _publish,
     _repositories,
-    _Tracker,
 )
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
@@ -79,6 +79,7 @@ from tests.scenarios.agents import (
     launching,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import submit_reconcile_command
 
 _STANDARD_LOG_RECORD_ATTRIBUTES = frozenset(logging.makeLogRecord({}).__dict__)
@@ -459,14 +460,17 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
             client = durable_api_client(
                 runtime,
                 served_project_id=PROJECT,
-                tracker_item_source=_Tracker(
-                    ObservedWorkItemRevision(
-                        ITEM,
-                        WorkItemKind.ISSUE,
-                        b"Implement P3.",
-                        WorkItemChangeMarker("issue-642-canary"),
-                        RecordedAt("2026-08-27T12:00:00Z"),
-                    )
+                tracker_item_source=FakeTrackerItemSource(
+                    snapshot_answer=WorkItemRevisionObserved(
+                        ObservedWorkItemRevision(
+                            ITEM,
+                            WorkItemKind.ISSUE,
+                            b"Implement P3.",
+                            WorkItemChangeMarker("issue-642-canary"),
+                            RecordedAt("2026-08-27T12:00:00Z"),
+                        )
+                    ),
+                    expected_snapshot_reference=ITEM,
                 ),
             )
             binding = bindings.bindings[0]
