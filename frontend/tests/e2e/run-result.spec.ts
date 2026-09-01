@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
+import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { runResultCopy } from "../../src/lib/runResultCopy";
@@ -23,7 +24,7 @@ const api = "/atelier/api/v1";
  *   test-results/result-666/result-{1280,390}-{light,dark}.png
  *
  * The scenario is the exact one the issue was filed against: the harness's
- * fake conductor episode (`/__e2e/seed-conductor` in `tests/e2e/serve_cockpit.py`)
+ * fake conductor conversation (`/__e2e/seed-conductor` in `tests/e2e/serve_cockpit.py`)
  * answers with `CONDUCTOR_REPORT_SCHEMA`'s own shape --
  * `{"answer": "...", "started_run_ids": []}` -- the same declared object the
  * bug report's screenshot showed printed as a raw JSON line. Its one node is
@@ -44,7 +45,7 @@ const CONDUCTOR_FAKE_ANSWER =
   "Nothing started: the workbench probe only asked for an answer.";
 // The exact bytes `json.dumps` in `tests/e2e/serve_cockpit.py` wrote -- its
 // default separators, not a compact re-serialization this page invents.
-const CONDUCTOR_FAKE_REPORT_RAW = `{"answer": "${CONDUCTOR_FAKE_ANSWER}", "started_run_ids": []}`;
+const CONDUCTOR_FAKE_REPORT_RAW = `{"answer": "${CONDUCTOR_FAKE_ANSWER}", "started_run_ids": [], "carried_context": "The workbench probe asked only for an answer.", "carried_context_truncated": false}`;
 
 const frontendRoot = resolve(import.meta.dirname, "../..");
 const shotDir = resolve(frontendRoot, "test-results/result-666");
@@ -72,7 +73,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
-async function completedConductorRun(page: Page): Promise<string> {
+async function waitingConductorConversation(page: Page): Promise<string> {
   // This suite shares one server across every spec file and across
   // `--repeat-each` (#742): a previous seed of the same conductor catalog
   // would conflict on the model registry. Reset to the cold-boot baseline,
@@ -90,7 +91,7 @@ async function completedConductorRun(page: Page): Promise<string> {
   // spec files that run in no particular order (#742), so it proves the
   // connection itself rather than assuming the seed above was the only
   // thing that could have changed it.
-  await expect(page.getByText(conductorChatCopy.composerHint)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible({ timeout: 15_000 });
   await page.getByLabel(workbenchPageCopy.composerLabel).fill("Starte nichts, antworte nur kurz.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
   const episodeLink = page.getByRole("link", { name: conductorChatCopy.openEpisode });
@@ -249,22 +250,13 @@ async function startV3Line(
   return { public_run_reference: createdRun.public_run_reference as string };
 }
 
-// RETIRED 01.09.2026 (#658 P4): this journey drove `completedConductorRun`,
-// which proves the EPISODIC conductor connection -- "one order = one brief,
-// one message = one run" -- that P3 (#931) deliberately retires.
-// `episodeShapeOf` (conductorEpisode.ts) reads `graph.orders`, requiring
-// exactly one; the loop document P3 now publishes declares zero
-// `graph_inputs` by design, so the episode shape it looked for no longer
-// exists. The loop-aware conversation flow -- connection detection and a
-// wait-answer composer -- is #658 P4's own named slice; this journey returns
-// as one of P4's driver proofs once that lands.
-test.skip("the Result tab carries the decoded result; the run head is only the standing sentence", async ({
+test("the Result tab carries the decoded result; the run head is only the standing sentence", async ({
   page
 }) => {
   test.setTimeout(120_000);
 
-  await completedConductorRun(page);
-  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.done, {
+  await waitingConductorConversation(page);
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.waiting, {
     timeout: 30_000
   });
 

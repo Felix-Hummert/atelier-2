@@ -207,12 +207,17 @@ class FixtureTracker:
 # TIMEOUT_SECONDS; git capture of the pinned project under CI CPU
 # pressure owns this bound (issue #747 c2).
 GENERATION_DRAIN_SECONDS = 60.0
-# The fake conductor's fixed episode report: valid against the production
+# The fake conductor's fixed round report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
 # doors-armed conductor would return -- same vector, unbilled.
 CONDUCTOR_FAKE_ANSWER = "Nothing started: the workbench probe only asked for an answer."
 CONDUCTOR_FAKE_REPORT = json.dumps(
-    {"answer": CONDUCTOR_FAKE_ANSWER, "started_run_ids": []}
+    {
+        "answer": CONDUCTOR_FAKE_ANSWER,
+        "started_run_ids": [],
+        "carried_context": "The workbench probe asked only for an answer.",
+        "carried_context_truncated": False,
+    }
 ).encode()
 CONDUCTOR_FAKE_PROVIDER = "e2e-conductor"
 CONDUCTOR_FAKE_REVISION = "conductor-fake/v1"
@@ -1011,7 +1016,7 @@ class BrowserProofHarness:
         executor, and the project level-2 model default selecting that exact
         model. On demand rather than at startup, so one served
         instance proves BOTH workbench states: the honest refusal before this
-        endpoint is called, the real episode after.
+        endpoint is called, the real conversation after.
         """
 
         context: ApiContext = self.app.state.api_context  # type: ignore[attr-defined]
