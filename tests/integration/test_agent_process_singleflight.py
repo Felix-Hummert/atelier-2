@@ -53,7 +53,7 @@ def test_concurrent_local_waiters_share_one_process_completion(
             (
                 sys.executable,
                 "-c",
-                "from pathlib import Path; import os,sys,time; Path(sys.argv[1]).open('ab').write(b'x'); time.sleep(.2); os.write(1,b'done')",
+                "from pathlib import Path; import os,sys,time; Path(sys.argv[1]).open('ab').write(b'x'); time.sleep(.2); os.write(1,b'\"done\"')",
                 str(counter),
             ),
             Path.cwd(),
@@ -95,7 +95,7 @@ def test_concurrent_local_waiters_share_one_process_completion(
         assert len(outcomes) == 2
         assert decode_count == 1
         assert outcomes[0] is outcomes[1]
-        assert outcomes[0].standard_output == b"done"
+        assert outcomes[0].standard_output == b'"done"'
         assert counter.read_bytes() == b"x"
         terminal = store.complete_success(
             execution, AgentExecutionResult(outcomes[0].standard_output)
@@ -127,7 +127,7 @@ def test_changed_launch_refuses_without_stopping_the_valid_process(
             (
                 sys.executable,
                 "-c",
-                "from pathlib import Path; import os,sys,time; counter=Path(sys.argv[1]); ready=Path(sys.argv[2]); finish=Path(sys.argv[3]); counter.open('ab').write(b'x'); ready.touch();\nwhile not finish.exists(): time.sleep(.01)\nos.write(1,b'done')",
+                "from pathlib import Path; import os,sys,time; counter=Path(sys.argv[1]); ready=Path(sys.argv[2]); finish=Path(sys.argv[3]); counter.open('ab').write(b'x'); ready.touch();\nwhile not finish.exists(): time.sleep(.01)\nos.write(1,b'\"done\"')",
                 str(counter),
                 str(ready),
                 str(finish),

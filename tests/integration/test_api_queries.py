@@ -550,7 +550,7 @@ def test_restored_timeout_preserves_a_subsequent_contended_write(
 def test_real_deadline_returns_typed_result_and_clears_progress_handler(
     engine: Engine,
 ) -> None:
-    revision = WorkflowRevision(_workflow_document("deadline"))
+    revision = WorkflowRevision(_v3_workflow_document("deadline"))
     with engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(
@@ -620,7 +620,7 @@ def test_real_deadline_returns_typed_result_and_clears_progress_handler(
 def test_cancelled_real_query_restores_pooled_connection_before_reuse(
     engine: Engine,
 ) -> None:
-    revision = WorkflowRevision(_workflow_document("cancelled"))
+    revision = WorkflowRevision(_v3_workflow_document("cancelled"))
     with engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(
@@ -1381,12 +1381,21 @@ def test_run_page_batches_waiting_reconciliation_and_projects_command_owner_stat
     engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     revision = WorkflowRevision(
-        b"""format_version: 1
-start: agent
+        b"""format_version: 3
+name: Waiting reconciliation batch
 nodes:
-  - {id: agent, type: agent, job: test, output: request, next: action}
-  - {id: action, type: action, next: final}
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Request the effect this run reconciles.
+    outputs:
+      - name: request
+        schema: {ref: request-schema, revision: schema-request}
+  - id: action
+    type: action
+    operation: {ref: open-pr, revision: schema-operation}
+    depends_on: [agent]
 """
     )
     waiting_run_id = RunId("waiting")
@@ -1398,6 +1407,19 @@ nodes:
         for run_id in (waiting_run_id, owned_run_id)
     }
     request = b"request"
+    registry = AgentExecutorRegistry((failing_agent_executor_factory("exact", []),))
+    bindings = publish_v3_agent_bindings(engine, registry)
+    binding_set = AgentBindingSet(
+        tuple(
+            AgentBinding(
+                AgentRole(binding.role),
+                AgentConfigurationRevisionHash(
+                    binding.agent_configuration_revision_hash
+                ),
+            )
+            for binding in bindings
+        )
+    )
     with engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(
@@ -1406,14 +1428,27 @@ nodes:
             )
         )
         connection.execute(
+            run_configuration_revisions.insert(),
+            [
+                {
+                    "revision_hash": _digest(f"configuration-{run_id.value}"),
+                    "preimage": f"seeded {run_id.value} configuration".encode(),
+                }
+                for run_id in (waiting_run_id, owned_run_id)
+            ],
+        )
+        connection.execute(
             runs.insert(),
             [
                 {
                     "run_id": run_id.value,
                     "bootstrap_workflow_id": f"workflow-{run_id.value}",
                     "revision_hash": revision.revision_hash.value,
-                    "workflow_format_version": 1,
-                    "agent_binding_set_hash": None,
+                    "workflow_format_version": 3,
+                    "agent_binding_set_hash": binding_set.binding_set_hash.value,
+                    "run_configuration_revision_hash": _digest(
+                        f"configuration-{run_id.value}"
+                    ),
                     "current_node_id": "action",
                     "current_round_ordinal": FIRST_ROUND_ORDINAL,
                     "state": RunState.WAITING_RECONCILIATION.value,
@@ -1422,6 +1457,22 @@ nodes:
                     "terminal_hash": None,
                 }
                 for run_id in (waiting_run_id, owned_run_id)
+            ],
+        )
+        connection.execute(
+            run_agent_bindings.insert(),
+            [
+                {
+                    "run_id": run_id.value,
+                    "revision_hash": revision.revision_hash.value,
+                    "binding_set_hash": binding_set.binding_set_hash.value,
+                    "role": binding.role,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash
+                    ),
+                }
+                for run_id in (waiting_run_id, owned_run_id)
+                for binding in bindings
             ],
         )
         connection.execute(
@@ -1493,7 +1544,11 @@ nodes:
         event.remove(engine, "before_cursor_execute", count_selects)
 
     assert isinstance(page, RunPage)
-    assert selects == 8
+    # One more than the eight a format-1 fixture once measured: a V3 run reads
+    # its bound roles too, in the one batched `run_agent_bindings` statement
+    # `runs_from_records_with_bindings` issues for the whole page rather than
+    # per run.
+    assert selects == 9
     assert len(intent_selects) == 1
     assert "effect_intents.logical_key IN" in intent_selects[0]
     assert "effect_intents.run_id IN" not in intent_selects[0]
@@ -1569,7 +1624,7 @@ def test_the_bound_a_reader_holds_is_the_bound_it_applies(engine: Engine) -> Non
     """No caller passes a bound, so the one it was built with has to be the one
     that governs — otherwise the parameter's removal would have quietly removed
     the enforcement with it."""
-    revision = WorkflowRevision(_workflow_document("bounded"))
+    revision = WorkflowRevision(_v3_workflow_document("bounded"))
     with engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(

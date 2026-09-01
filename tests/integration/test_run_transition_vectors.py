@@ -9,6 +9,7 @@ was not a move.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -27,9 +28,17 @@ from atelier2.adapters.dbos.run_transitions import (
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     initialize_schema,
+    run_agent_bindings,
+    run_configuration_revisions,
     run_events,
     runs,
     workflow_revisions,
+)
+from atelier2.contracts.agents import (
+    AgentBinding,
+    AgentBindingSet,
+    AgentConfigurationRevisionHash,
+    AgentRole,
 )
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
@@ -41,17 +50,40 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.ports.agent_executions import AgentExecutorRegistry
+from tests.scenarios.agents import failing_agent_executor_factory
+from tests.scenarios.runs import publish_v3_agent_bindings
 
-DOCUMENT = b"""format_version: 1
-start: agent
+DOCUMENT = b"""format_version: 3
+name: Run transition vectors
 nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: waiting, type: wait, answer_type: integer, next: final}
-  - {id: action, type: action, next: waiting}
-  - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
+  - id: agent
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Draft the answer this line reconciles around.
+    outputs:
+      - name: draft
+        schema: {ref: draft-schema, revision: schema-draft}
+  - id: action
+    type: action
+    operation: {ref: open-pr, revision: schema-operation}
+    depends_on: [agent]
+  - id: waiting
+    type: wait
+    prompt: Approve what the action opened.
+    depends_on: [action]
+    outputs:
+      - name: approval
+        schema: {ref: approval-schema, revision: schema-approval}
 """
 RUN_ID = RunId("run-transition-vectors")
 RESULT = b"7"
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
 
 WriteTransition = Callable[[Session, WorkflowRevisionHash, str], object]
 
@@ -112,7 +144,7 @@ VECTORS: tuple[
     ),
     (
         "no node but an effect-owning node begins reconciling",
-        "agent",
+        "waiting",
         RunState.STARTED,
         require_reconciliation,
         None,
@@ -173,6 +205,20 @@ def engine(tmp_path: Path) -> Iterator[Engine]:
 
 def standing(engine: Engine, node: str, state: RunState) -> WorkflowRevisionHash:
     revision = WorkflowRevision(DOCUMENT)
+    registry = AgentExecutorRegistry((failing_agent_executor_factory("exact", []),))
+    bindings = publish_v3_agent_bindings(engine, registry)
+    binding_set = AgentBindingSet(
+        tuple(
+            AgentBinding(
+                AgentRole(binding.role),
+                AgentConfigurationRevisionHash(
+                    binding.agent_configuration_revision_hash
+                ),
+            )
+            for binding in bindings
+        )
+    )
+    configuration_hash = _digest(f"configuration-{RUN_ID.value}")
     with Session(engine) as session:
         session.execute(
             workflow_revisions.insert().values(
@@ -180,17 +226,40 @@ def standing(engine: Engine, node: str, state: RunState) -> WorkflowRevisionHash
             )
         )
         session.execute(
+            run_configuration_revisions.insert().values(
+                revision_hash=configuration_hash,
+                preimage=b"seeded run-transition-vectors configuration",
+            )
+        )
+        session.execute(
             runs.insert().values(
                 run_id=RUN_ID.value,
                 bootstrap_workflow_id=f"bootstrap-{RUN_ID.value}",
                 revision_hash=revision.revision_hash.value,
-                workflow_format_version=1,
+                workflow_format_version=3,
+                run_configuration_revision_hash=configuration_hash,
+                agent_binding_set_hash=binding_set.binding_set_hash.value,
                 current_node_id=node,
                 current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state=state.value,
                 state_version=0,
                 last_event_sequence=0,
             )
+        )
+        session.execute(
+            run_agent_bindings.insert(),
+            [
+                {
+                    "run_id": RUN_ID.value,
+                    "revision_hash": revision.revision_hash.value,
+                    "binding_set_hash": binding_set.binding_set_hash.value,
+                    "role": binding.role,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash
+                    ),
+                }
+                for binding in bindings
+            ],
         )
         session.commit()
     return revision.revision_hash

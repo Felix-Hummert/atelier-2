@@ -69,22 +69,6 @@ nodes:
 SECOND_DOCUMENT = DOCUMENT.replace(b"Review one bounded diff.", b"Review it again.")
 SECOND_NAME = "review-bounded-diff-again"
 RENAMED_DOCUMENT = SECOND_DOCUMENT.replace(NAME.encode(), SECOND_NAME.encode())
-V1_DOCUMENT = b"""format_version: 1
-start: calculate
-nodes:
-  - id: calculate
-    type: subworkflow
-    operation: add
-    operands: [1, 2]
-    next:
-"""
-SECOND_V1_DOCUMENT = V1_DOCUMENT.replace(b"operands: [1, 2]", b"operands: [2, 3]")
-V2_DOCUMENT = b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: implement, next: done}
-"""
 LINEAGES = f"{API_PREFIX}/workflow-lineages"
 REVISIONS = f"{API_PREFIX}/workflow-revisions"
 
@@ -418,11 +402,10 @@ def test_an_invalid_authored_v3_name_writes_no_catalog_row(
 
 
 @pytest.mark.parametrize("explicit_name", ["a" * 64, "Invalid Name"])
-@pytest.mark.parametrize("document", [V1_DOCUMENT, V2_DOCUMENT], ids=["v1", "v2"])
-def test_an_invalid_explicit_legacy_name_writes_no_catalog_row(
-    runtime: DbosRuntime, explicit_name: str, document: bytes
+def test_an_invalid_explicit_display_name_writes_no_catalog_row(
+    runtime: DbosRuntime, explicit_name: str
 ) -> None:
-    revision = published(runtime, document)
+    revision = published(runtime)
     before = catalog_snapshot(runtime)
 
     response = client(runtime).post(LINEAGES, json=founding(revision, explicit_name))
@@ -432,30 +415,12 @@ def test_an_invalid_explicit_legacy_name_writes_no_catalog_row(
     assert catalog_snapshot(runtime) == before
 
 
-@pytest.mark.parametrize("document", [V1_DOCUMENT, V2_DOCUMENT], ids=["v1", "v2"])
-def test_a_legacy_format_requires_and_accepts_one_valid_explicit_name(
-    runtime: DbosRuntime, document: bytes
-) -> None:
-    missing_name = published(runtime, document)
-    before = catalog_snapshot(runtime)
-
-    refused = client(runtime).post(LINEAGES, json=founding(missing_name))
-
-    assert refused.status_code == 422
-    assert refused.json()["type"].endswith("invalid-request")
-    assert catalog_snapshot(runtime) == before
-
-    accepted = client(runtime).post(LINEAGES, json=founding(missing_name, NAME))
-    assert accepted.status_code == 201, accepted.text
-    assert accepted.json()["display_name"] == NAME
-
-
 def test_an_impossible_founding_time_writes_no_catalog_row(
     runtime: DbosRuntime,
 ) -> None:
-    revision = published(runtime, V1_DOCUMENT)
+    revision = published(runtime)
     before = catalog_snapshot(runtime)
-    request = founding(revision, NAME)
+    request = founding(revision)
     request["activated_at"] = "2026-13-17T00:00:00Z"
 
     response = client(runtime).post(LINEAGES, json=request)
@@ -468,10 +433,10 @@ def test_an_impossible_founding_time_writes_no_catalog_row(
 def test_an_impossible_admission_time_changes_no_catalog_row(
     runtime: DbosRuntime,
 ) -> None:
-    first = published(runtime, V1_DOCUMENT)
-    second = published(runtime, SECOND_V1_DOCUMENT)
+    first = published(runtime)
+    second = published(runtime, RENAMED_DOCUMENT)
     api = client(runtime)
-    lineage_id = api.post(LINEAGES, json=founding(first, NAME)).json()["lineage_id"]
+    lineage_id = api.post(LINEAGES, json=founding(first)).json()["lineage_id"]
     before = catalog_snapshot(runtime)
 
     response = api.post(
@@ -522,11 +487,23 @@ def test_a_name_another_lineage_holds_is_refused_by_name(
 def test_a_revision_another_lineage_owns_is_refused_by_name(
     runtime: DbosRuntime,
 ) -> None:
-    revision = published(runtime, V1_DOCUMENT)
+    # A V3 revision's name comes from its own bytes, so the only way to ask the
+    # catalog to found a second lineage over a revision is to name a revision
+    # that already belongs to a lineage as someone else's later member.
+    first = published(runtime)
+    second = published(runtime, RENAMED_DOCUMENT)
     api = client(runtime)
-    api.post(LINEAGES, json=founding(revision, NAME))
+    lineage_id = api.post(LINEAGES, json=founding(first)).json()["lineage_id"]
+    api.post(
+        f"{LINEAGES}/{lineage_id}/members",
+        json={
+            "workflow_revision_hash": second.revision_hash.value,
+            "actor": "operator",
+            "activated_at": "2026-08-17T00:01:00Z",
+        },
+    )
 
-    response = api.post(LINEAGES, json=founding(revision, "another-name"))
+    response = api.post(LINEAGES, json=founding(second))
 
     assert response.status_code == 409
     assert response.json()["type"].endswith("catalog-revision-owned")

@@ -151,7 +151,6 @@ from atelier2.contracts.tool_grants_v3 import (
     redeems_as_platform_effect,
 )
 from atelier2.contracts.workflows import (
-    AgentNodeV2,
     RunCompletes,
     RunContinues,
 )
@@ -357,7 +356,7 @@ def _pinned_source(
     head -- a Wait or Subworkflow node that resolved it would make a run depend
     on a repository it never reads.
     """
-    if project is None or not isinstance(node, (AgentNodeV2, AgentNodeV3)):
+    if project is None or not isinstance(node, AgentNodeV3):
         return None
     return project.source.head()
 
@@ -437,7 +436,7 @@ def _reconstructed_agent_job_candidates(
             )
             if prior_receipt_attempt_id is not None:
                 raise RunTransitionConflict(
-                    "repair receipt belongs to a non-V3 agent node"
+                    "repair receipt belongs to a node that is not an agent node"
                 )
             return None, None
         receipt = load_prior_output_schema_refusal_receipt(

@@ -126,7 +126,7 @@ for name in directories.split(","):
 for name in files.split(","):
     Path(name).write_bytes(b"")
 Path(sys.argv[5]).symlink_to(sentinel)
-os.write(1, b"done")
+os.write(1, b'"done"')
 raise SystemExit(int(return_code))
 """
 
@@ -1166,7 +1166,11 @@ class DirectoryReportingExecutor:
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         del request
         return AgentProcessCommand(
-            (sys.executable, "-c", "import os; print(os.getcwd(), end='')"),
+            (
+                sys.executable,
+                "-c",
+                "import json, os; print(json.dumps(os.getcwd()), end='')",
+            ),
             standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
 

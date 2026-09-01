@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
-from atelier2.contracts.workflows import WorkflowGraph, WorkflowGraphV2
 from atelier2.contracts.workflows_v3 import (
     AnyWorkflowDocument,
     WorkflowGraphV3,
@@ -35,31 +34,16 @@ class WorkflowDocumentFormat:
     read: Callable[[Mapping[str, object]], AnyWorkflowDocument]
 
 
-def _strictly[GraphT: BaseModel](
-    model: type[GraphT],
-) -> Callable[[Mapping[str, object]], GraphT]:
-    """Read one document against a model that carries every rule itself."""
-
-    def read(document: Mapping[str, object]) -> GraphT:
-        return model.model_validate(document, strict=True)
-
-    return read
-
-
 WORKFLOW_DOCUMENT_FORMATS: Mapping[WorkflowFormatVersion, WorkflowDocumentFormat] = {
-    WorkflowFormatVersion.V1: WorkflowDocumentFormat(
-        WorkflowGraph, _strictly(WorkflowGraph)
-    ),
-    WorkflowFormatVersion.V2: WorkflowDocumentFormat(
-        WorkflowGraphV2, _strictly(WorkflowGraphV2)
-    ),
     WorkflowFormatVersion.V3: WorkflowDocumentFormat(
         WorkflowGraphV3, validate_workflow_graph_v3
     ),
 }
 """Every format version a published document may declare, and nothing else.
 
-V3 does not read through `_strictly`: it refuses a retired key by the name that
-replaced it before the model ever sees the document, and translates what the
-model refuses into the named refusal an author can act on.
+V1 and V2 stay named `WorkflowFormatVersion` members -- the durable layer's
+`runs.workflow_format_version` column and its frozen schema still read those
+historical values -- but no model reads a document that declares one anymore
+(#901 slice 5): the retired key is refused by name in `parse_workflow_document`
+rather than reaching this table as an unhandled key.
 """

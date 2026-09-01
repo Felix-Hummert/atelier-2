@@ -79,17 +79,17 @@ describe("native durable event transport", () => {
         workflow_revision_hash: other,
         document_base64: "",
         graph: {
-          workflow_format_version: 1,
-          start_node_id: "final",
-          nodes: [
-            {
-              type: "subworkflow",
-              node_id: "final",
-              operation: "add",
-              operands: [2, 3],
-              next_node_id: null
-            }
-          ]
+          workflow_format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          node_count: 1,
+          agent_roles: [],
+          orders: [],
+          wait_answer_schemas: [],
+          node_previews: [],
+          loops: [],
+          name: "Not the requested revision",
+          description: null
         }
       })
     );

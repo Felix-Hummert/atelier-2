@@ -65,7 +65,6 @@ from atelier2.contracts.workflow_refusals import (
     WorkflowRefusal,
     WorkflowRefusalReason,
 )
-from atelier2.contracts.workflows import WorkflowGraph
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorCapabilityUnavailable,
@@ -99,6 +98,7 @@ from atelier2.ports.effects import (
     TransactionalEffectReconcileCommander,
 )
 from atelier2.ports.published_revisions import (
+    PublishedRevisionMissing,
     PublishedRevisionResolver,
     PublishedRevisionsUnavailable,
 )
@@ -112,6 +112,7 @@ from tests.scenarios.api import permissive_projection_limit
 from tests.scenarios.workflows import (
     V3_CONTROL_EDGE_LINE,
     V3_DOCUMENT,
+    V3_WAIT_LINE_DOCUMENT,
     declared_output,
 )
 
@@ -133,7 +134,7 @@ class FakePort:
         return self.result
 
 
-V1_DOCUMENT = b"format_version: 1\nstart: final\nnodes:\n  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
+SMALL_DOCUMENT = V3_WAIT_LINE_DOCUMENT
 REVISION = WorkflowRevision(b"format_version: nope")
 HASH = WorkflowRevisionHash("0" * 64)
 RUN = cast(Run, object())
@@ -164,11 +165,11 @@ def test_publication_maps_every_durable_result(
     port_result: object, application_type: type[object]
 ) -> None:
     result = publish_workflow_revision(
-        b"format_version: 1\nstart: final\nnodes:\n  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n",
+        SMALL_DOCUMENT,
         cast(WorkflowRevisionPublisher, FakePort(port_result)),
         parse_workflow_document,
         permissive_projection_limit(),
-        cast(PublishedRevisionResolver, FakePort(None)),
+        cast(PublishedRevisionResolver, FakePort(PublishedRevisionMissing())),
     )
 
     assert isinstance(result, application_type)
@@ -180,7 +181,7 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
         cast(WorkflowRevisionPublisher, FakePort(None)),
         parse_workflow_document,
         permissive_projection_limit(),
-        cast(PublishedRevisionResolver, FakePort(None)),
+        cast(PublishedRevisionResolver, FakePort(PublishedRevisionMissing())),
     )
 
     assert isinstance(result, PublicationInvalid)
@@ -196,7 +197,7 @@ def test_publication_projects_a_valid_v3_document_it_reached_the_write_port_with
         cast(WorkflowRevisionPublisher, FakePort(DurableRevisionCreated(revision))),
         parse_workflow_document,
         permissive_projection_limit(),
-        cast(PublishedRevisionResolver, FakePort(None)),
+        cast(PublishedRevisionResolver, FakePort(PublishedRevisionMissing())),
     )
 
     assert isinstance(result, PublicationCreated)
@@ -239,7 +240,7 @@ def test_publication_refuses_an_invalid_v3_document_carrying_its_named_refusal()
         cast(WorkflowRevisionPublisher, FakePort(None)),
         parse_workflow_document,
         permissive_projection_limit(),
-        cast(PublishedRevisionResolver, FakePort(None)),
+        cast(PublishedRevisionResolver, FakePort(PublishedRevisionMissing())),
     )
 
     assert isinstance(result, PublicationInvalid)
@@ -254,7 +255,7 @@ def test_publication_refuses_an_invalid_v3_document_carrying_its_named_refusal()
 
 
 def test_publication_returns_the_graph_validated_before_the_write() -> None:
-    document = b"format_version: 1\nstart: final\nnodes:\n  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
+    document = SMALL_DOCUMENT
     revision = WorkflowRevision(document)
 
     result = publish_workflow_revision(
@@ -265,13 +266,15 @@ def test_publication_returns_the_graph_validated_before_the_write() -> None:
         ),
         parse_workflow_document,
         permissive_projection_limit(),
-        cast(PublishedRevisionResolver, FakePort(None)),
+        cast(PublishedRevisionResolver, FakePort(PublishedRevisionMissing())),
     )
 
     assert isinstance(result, PublicationCreated)
     assert result.read.projection.revision == revision
-    assert isinstance(result.read.projection.graph, WorkflowGraph)
-    assert result.read.projection.graph.start == "final"
+    assert isinstance(result.read.projection.graph, WorkflowGraphV3)
+    assert (
+        result.read.projection.graph.name == "A person answers, then the line is done"
+    )
 
 
 @pytest.mark.proves("no-write-path-can-be-reached-with-a-dependency-left-out")
@@ -284,7 +287,7 @@ def test_a_publication_cannot_be_made_without_the_bound_it_applies() -> None:
     """
     with pytest.raises(TypeError):
         publish_workflow_revision(  # type: ignore[call-arg]
-            V1_DOCUMENT,
+            SMALL_DOCUMENT,
             cast(WorkflowRevisionPublisher, FakePort(None)),
             parse_workflow_document,
         )
@@ -293,28 +296,28 @@ def test_a_publication_cannot_be_made_without_the_bound_it_applies() -> None:
 @pytest.mark.proves("no-write-path-can-be-reached-with-a-dependency-left-out")
 def test_the_bound_a_publication_is_handed_is_the_bound_it_applies() -> None:
     """Making the bound required would be empty if it were not the one enforced."""
-    revision = WorkflowRevision(V1_DOCUMENT)
+    revision = WorkflowRevision(SMALL_DOCUMENT)
     publisher = cast(
         WorkflowRevisionPublisher, FakePort(DurableRevisionCreated(revision))
     )
     tighter_than_the_document = WorkflowPublicationLimits(
-        maximum_document_bytes=len(V1_DOCUMENT) - 1,
+        maximum_document_bytes=len(SMALL_DOCUMENT) - 1,
         maximum_nodes=100,
         maximum_string_characters=1_024,
         maximum_payload_bytes=49_152,
     )
 
-    resolver = cast(PublishedRevisionResolver, FakePort(None))
+    resolver = cast(PublishedRevisionResolver, FakePort(PublishedRevisionMissing()))
 
     published = publish_workflow_revision(
-        V1_DOCUMENT,
+        SMALL_DOCUMENT,
         publisher,
         parse_workflow_document,
         permissive_projection_limit(),
         resolver,
     )
     refused = publish_workflow_revision(
-        V1_DOCUMENT,
+        SMALL_DOCUMENT,
         publisher,
         parse_workflow_document,
         tighter_than_the_document,

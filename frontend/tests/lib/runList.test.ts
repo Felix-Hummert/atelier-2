@@ -180,25 +180,28 @@ describe("the project run list reads published workflow names", () => {
   });
 
   it("refuses a non-V3 revision as the name of a V3 run", async () => {
-    const v1Revision = {
+    // No document may declare a retired format anymore (#901 slice 5), but the
+    // durable layer could still theoretically answer a corrupted row; the
+    // cast stands in for that -- the type system itself now refuses this shape.
+    const nonV3Revision = {
       workflow_revision_hash: revisionHash,
       document_base64: "",
       graph: {
-        workflow_format_version: 1 as const,
+        workflow_format_version: 1,
         start_node_id: "final",
         nodes: [
           {
-            type: "subworkflow" as const,
+            type: "subworkflow",
             node_id: "final",
-            operation: "add" as const,
-            operands: [2, 3] as [number, number],
+            operation: "add",
+            operands: [2, 3],
             next_node_id: null
           }
         ]
       }
-    };
+    } as unknown as WorkflowRevisionDetail;
     await expect(
-      workflowNamesOf([v3Run()], async () => v1Revision)
+      workflowNamesOf([v3Run()], async () => nonV3Revision)
     ).rejects.toThrow("a V3 run referenced a workflow revision of another format");
   });
 

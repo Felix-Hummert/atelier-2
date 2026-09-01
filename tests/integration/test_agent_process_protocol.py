@@ -80,7 +80,7 @@ def _decode_padded_envelope(
     completion: AgentProcessCompletion,
 ) -> AgentExecutionResult:
     envelope = json.loads(completion.standard_output.decode("utf-8"))
-    return AgentExecutionResult(str(envelope["result"]).encode("utf-8"))
+    return AgentExecutionResult(json.dumps(envelope["result"]).encode("utf-8"))
 
 
 def _padded_envelope_executor(
@@ -514,9 +514,11 @@ for thread in threads:
             completion.standard_error
             == b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
         )
-        terminal = store.complete_success(
-            execution, AgentExecutionResult(completion.standard_output)
-        )
+        # The draining frame's own bytes are what this test measures; the
+        # attempt's recorded output is a fixed valid-JSON value instead of the
+        # frame itself, since a completed V3 attempt now proves its output
+        # against a schema and the frame's raw repeated character is not one.
+        terminal = store.complete_success(execution, AgentExecutionResult(b'"drained"'))
         assert isinstance(terminal, AgentAttemptSucceeded)
         supervisor.finalize(execution)
     finally:
@@ -644,7 +646,7 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
 
         assert isinstance(accepted, AgentAttemptSucceeded)
         observed_frame = generous.completions[0].standard_output
-        assert generous.results == [AgentExecutionResult(b"ok")]
+        assert generous.results == [AgentExecutionResult(b'"ok"')]
         assert len(generous.released_commands) == 1
         assert len(observed_frame) > MAXIMUM_AGENT_OUTPUT_BYTES_V2
         assert frugal.results == []
@@ -674,7 +676,7 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
             (
                 sys.executable,
                 "-c",
-                "from pathlib import Path; import os,sys; Path(sys.argv[1]).open('ab').write(b'x'); Path(sys.argv[2]).open('rb', buffering=0).read(1); os.write(1,b'done')",
+                "from pathlib import Path; import os,sys; Path(sys.argv[1]).open('ab').write(b'x'); Path(sys.argv[2]).open('rb', buffering=0).read(1); os.write(1,b'\"done\"')",
                 str(counter),
                 str(tmp_path / "provider-release"),
             ),
@@ -704,7 +706,7 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
 
         completion = supervisor.launch_and_wait(execution, invocation)
 
-        assert completion.standard_output == b"done"
+        assert completion.standard_output == b'"done"'
         assert counter.read_bytes() == b"x"
         terminal = store.complete_success(
             execution, AgentExecutionResult(completion.standard_output)

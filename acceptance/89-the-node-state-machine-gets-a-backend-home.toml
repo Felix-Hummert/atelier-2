@@ -22,6 +22,15 @@ story = "https://github.com/FlexOr2/atelier-2/issues/89"
 #   only on the deleted V1/V2 cockpit; the V3 view renders the rail the server
 #   walked.
 #
+# A third sentence was retired on 31.08.2026 (#901 slice 5, #934), dated per
+# the same discipline as the two above:
+#
+#   "the-run-resource-names-the-state-of-every-node" -- it promised this for a
+#   *served V2* run. The V1/V2 document grammar fell with this slice, so no
+#   V2 run is ever served again; the sentence's own subject is gone. The
+#   behavior it measured survives, ordinary (unclaimed) test coverage of the
+#   V3 run resource in `tests/api/test_agent_attempts.py`.
+#
 # This file therefore does not list every sentence of #89.
 
 [[sentence]]
@@ -31,10 +40,6 @@ text = "The state of every node of a run is derived by a pure function in src/, 
 [[sentence]]
 id = "a-node-ending-in-success-has-exactly-one-name"
 text = "A node that ended in success has exactly one name everywhere it is named; the second spelling is deleted rather than kept as an alias."
-
-[[sentence]]
-id = "the-run-resource-names-the-state-of-every-node"
-text = "A served V2 run names the state of every node of the revision it is bound to, so the browser renders that state instead of inventing it."
 
 [[sentence]]
 id = "the-browser-and-the-served-contract-know-the-same-node-states"

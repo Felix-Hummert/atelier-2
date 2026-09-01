@@ -318,7 +318,6 @@
   }
 
   function declaredOrders(): OrderDraft[] {
-    if (revision.graph.workflow_format_version !== 3) return [];
     return revision.graph.orders.map((order) => ({
       name: order.name,
       schemaRevision: order.schema.revision,
@@ -578,7 +577,7 @@
   }
 
   async function start(): Promise<void> {
-    if (!canStart || revision.graph.workflow_format_version !== 3) return;
+    if (!canStart) return;
     starting = true;
     startFailure = null;
     try {

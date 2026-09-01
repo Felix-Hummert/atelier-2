@@ -136,10 +136,7 @@
     try {
       const revision = await cockpitApi.getWorkflowRevision(workflowRevisionHash);
       if (key !== loadedNodeKey) return;
-      if (
-        revision.workflow_revision_hash !== workflowRevisionHash ||
-        revision.graph.workflow_format_version !== 3
-      ) {
+      if (revision.workflow_revision_hash !== workflowRevisionHash) {
         graph = { state: "failed" };
         return;
       }

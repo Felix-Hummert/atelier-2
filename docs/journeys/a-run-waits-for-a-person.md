@@ -21,7 +21,6 @@ What the cockpit shows of that state, on `main`:
    `POST /runs/{ref}/answers`, and a named refusal of that door stays on the card.
    A wait whose published document carries no question is named as such, not as
    a bare node id.
-4. V1/V2 runs keep their own **Integer answer** card. The door is the same.
 
 The V3 card is e2e-proven both on a wait-only run and on the committed
 `vision-variants` chain whose question includes the visioner's result.

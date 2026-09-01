@@ -1006,7 +1006,7 @@ def durably_attempted(
         outcome = execute_agent_attempt(
             claude_subscription_attempt(runtime, run_name),
             ClaudeSubscriptionExecutorFactory(settings).open(),
-            DbosAgentAttemptStore(runtime.engine),
+            DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
         )
@@ -1238,7 +1238,9 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
 def test_a_supervised_provider_answer_becomes_exactly_one_durable_receipt(
     tmp_path: Path,
 ) -> None:
-    answer = "pong — through the real supervisor"
+    # A JSON string, not bare text: the declared output is schema-validated
+    # JSON now (#901 slice 5), so even a plain answer has to parse.
+    answer = json.dumps("pong — through the real supervisor")
 
     outcome, receipts = durably_attempted(
         tmp_path, emitting_claude(success_envelope(answer)), "claude/receipt"
@@ -1259,7 +1261,18 @@ def test_a_supervised_provider_answer_becomes_exactly_one_durable_receipt(
 def test_the_largest_durable_answer_survives_the_supervised_provider_frame(
     tmp_path: Path,
 ) -> None:
-    answer = "a" * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    """The output door reads its own route bound, not the inline-order default.
+
+    Route-owned bounds (schemas_v3.py): an agent output arrives through the
+    provider frame, whose door is MAXIMUM_AGENT_OUTPUT_BYTES_V2 -- not the
+    smaller inline-order default a declared-output schema would otherwise
+    inherit (#901 slice 5 first exposed the collision; the door is fixed in
+    agent_attempt_store.py). The answer is wrapped as one JSON string of
+    exactly that many bytes, since the declared output is schema-validated
+    JSON now.
+    """
+    answer = json.dumps("a" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - 2))
+    assert len(answer) == MAXIMUM_AGENT_OUTPUT_BYTES_V2
 
     outcome, receipts = durably_attempted(
         tmp_path, emitting_claude(success_envelope(answer)), "claude/frame-edge"
@@ -1292,7 +1305,9 @@ def padded_envelope(result: str, frame_bytes: int) -> str:
 def test_a_raw_frame_at_exactly_its_bound_still_yields_one_durable_receipt(
     tmp_path: Path,
 ) -> None:
-    frame = padded_envelope("pong", CLAUDE_SUBSCRIPTION_FRAME_BYTES)
+    # A JSON string, not bare text: the declared output is schema-validated
+    # JSON now (#901 slice 5).
+    frame = padded_envelope('"pong"', CLAUDE_SUBSCRIPTION_FRAME_BYTES)
 
     outcome, receipts = durably_attempted(
         tmp_path, emitting_claude(frame), "claude/frame-at-bound"
@@ -1301,7 +1316,7 @@ def test_a_raw_frame_at_exactly_its_bound_still_yields_one_durable_receipt(
     assert len(frame.encode("utf-8")) == CLAUDE_SUBSCRIPTION_FRAME_BYTES
     assert isinstance(outcome, AgentAttemptSucceeded)
     assert len(receipts) == 1
-    assert receipts[0]["output_bytes"] == b"pong"
+    assert receipts[0]["output_bytes"] == b'"pong"'
 
 
 def test_a_raw_frame_one_byte_past_its_bound_never_becomes_an_answer(

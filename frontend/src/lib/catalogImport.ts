@@ -36,7 +36,7 @@ export function importSheetReport(
     return {
       glyph: "⧉",
       count: catalogPageCopy.oneWorkflow,
-      name: recognition.name ?? catalogPageCopy.unnamedWorkflow
+      name: recognition.name
     };
   }
   if (recognition.outcome === "agent_definition") {

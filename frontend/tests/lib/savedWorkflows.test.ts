@@ -22,17 +22,6 @@ function named(
   };
 }
 
-function unnamed(hashChar: string): WorkflowRevisionSummary {
-  return {
-    workflow_revision_hash: hashChar.repeat(64),
-    workflow_format_version: 2,
-    executable: true,
-    not_executable_reason: null,
-    name: null,
-    description: null
-  };
-}
-
 describe("grouping saved workflows by the name the listing already publishes", () => {
   it("keeps two revisions of one name as one row and puts the catalog head first", () => {
     const older = named("a", "drei-saetze-review-sehend");
@@ -62,20 +51,6 @@ describe("grouping saved workflows by the name the listing already publishes", (
     expect(rows[0]?.revisions).toEqual([only]);
   });
 
-  it("leaves unnamed documents as their own rows, never one unnamed pile", () => {
-    const first = unnamed("a");
-    const second = unnamed("b");
-
-    const rows = groupSavedWorkflows([first, second]);
-
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.revisions.map((item) => item.workflow_revision_hash))).toEqual([
-      [first.workflow_revision_hash],
-      [second.workflow_revision_hash]
-    ]);
-    expect(rows.every((row) => row.name === null)).toBe(true);
-  });
-
   it("keeps two different names as two rows", () => {
     const first = named("a", "alpha");
     const second = named("b", "beta");
@@ -99,9 +74,9 @@ describe("grouping saved workflows by the name the listing already publishes", (
 });
 
 describe("the authored agent roles a second consumer may edit", () => {
-  it("keeps only real V2/V3 roles once and never invents one for V1", () => {
-    const graph = (workflow_format_version: 1 | 2 | 3, roles: string[]) => ({
-      workflow_format_version,
+  it("keeps each declared role once, in the document's own order", () => {
+    const graph = (roles: string[]): WorkflowRevisionDetail["graph"] => ({
+      workflow_format_version: 3,
       executable: true,
       not_executable_reason: null,
       node_count: 1,
@@ -112,22 +87,12 @@ describe("the authored agent roles a second consumer may edit", () => {
       loops: [],
       name: "roles",
       description: null
-    }) as WorkflowRevisionDetail["graph"];
+    });
 
-    expect(agentRolesOf(graph(3, ["builder", "reviewer", "builder"]))).toEqual(["builder", "reviewer"]);
-    expect(agentRolesOf({
-      workflow_format_version: 2,
-      start_node_id: "one",
-      nodes: [
-        { type: "agent", node_id: "one", role: "builder", job: "one", next_node_id: "two" },
-        { type: "agent", node_id: "two", role: "builder", job: "two", next_node_id: "done" },
-        { type: "subworkflow", node_id: "done", operation: "add", operands: [1, 2], next_node_id: null }
-      ]
-    })).toEqual(["builder"]);
-    expect(agentRolesOf({
-      workflow_format_version: 1,
-      start_node_id: "done",
-      nodes: [{ type: "subworkflow", node_id: "done", operation: "add", operands: [1, 2], next_node_id: null }]
-    })).toEqual([]);
+    expect(agentRolesOf(graph(["builder", "reviewer", "builder"]))).toEqual([
+      "builder",
+      "reviewer"
+    ]);
+    expect(agentRolesOf(graph([]))).toEqual([]);
   });
 });

@@ -1226,6 +1226,27 @@ platform adapter's operations, addressing and authorization (#24); budget units
 (#26); interactive attach, transcripts and remote runners (#9 parts 2 and 3); or the
 privileged context resolver with its access receipts (#1 story 5).
 
+## Amendment 2026-08-31 — the V1 and V2 document grammar is deleted
+
+This record described V1 and V2 as living document formats beside V3: "V1/V2
+keep their integer-answer form and empty pause payload" (Decision), "V1 and V2
+documents stay valid and keep their meaning" (Implementation status), and "the
+V1/V2 example documents from the existing suites still parse unchanged" (Proof
+obligations). All three are withdrawn.
+
+#901 slice 5 (#934) deleted the V1/V2 document grammar: `parse_workflow_document`
+refuses `format_version: 1` and `format_version: 2` by name, and
+`WORKFLOW_DOCUMENT_FORMATS` (`contracts/workflow_documents.py`) lists only V3. The
+parser admits format 3 only. `AnyWorkflowDocument` is `WorkflowGraphV3`; no
+format branch beside it remains reachable in the code this record governs.
+
+Durable/historical representation is unchanged by this amendment: the frozen
+migration `CHECK`s in `adapters/dbos/schema.py`, the `Run`/`RunV2`/`RunV3`
+binding-shape axis, and `WorkflowFormatVersion`'s V1/V2 members for rows the
+frozen schema still reads all stay exactly as this record and ADR 0003 already
+describe them. What ends is a document declaring format 1 or 2 ever being
+*read* again — the grammar, not the historical value.
+
 ## Supersedes
 
 None. This record extends [ADR 0002](0002-exact-yaml-graph.md), which remains the

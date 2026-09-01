@@ -72,7 +72,6 @@ from atelier2.contracts.executions import (
     WaitAnswerAttributionKind,
     WaitAnswerSnapshot,
     WaitAnswerState,
-    is_canonical_integer_bytes,
     logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -108,16 +107,12 @@ from atelier2.contracts.tool_grants_v3 import (
 from atelier2.contracts.workflows import (
     RunCompletes,
     RunContinues,
-    WaitNode,
     completion_after_node,
     producing_round,
 )
 from atelier2.contracts.workflows_v3 import (
-    ANY_ACTION_NODE_KINDS,
-    ANY_WAIT_NODE_KINDS,
     ActionNodeV3,
     AgentNodeV3,
-    AnyWaitNode,
     AnyWorkflowDocument,
     GraphInputSource,
     LoopVerdictNotRead,
@@ -655,19 +650,17 @@ def why_a_value_its_declared_schema_refuses(
 def entry_node_of(graph: AnyWorkflowDocument) -> str:
     """Where a run of this document begins.
 
-    V1 and V2 name it directly; a V3 graph derives its entry set from the nodes
-    that depend on nothing. Only a single-entry V3 document starts today — a
-    fan-out start needs the ready set ADR 0006 hands the scheduler, and refusing
-    it here is what keeps this head from implying one.
+    A graph derives its entry set from the nodes that depend on nothing. Only
+    a single-entry document starts today — a fan-out start needs the ready set
+    ADR 0006 hands the scheduler, and refusing it here is what keeps this head
+    from implying one.
     """
-    if isinstance(graph, WorkflowGraphV3):
-        entry = graph.entry_node_ids
-        if len(entry) != 1:
-            raise RunTransitionConflict(
-                f"a V3 run starts at exactly one entry node, not {len(entry)}"
-            )
-        return entry[0]
-    return graph.start
+    entry = graph.entry_node_ids
+    if len(entry) != 1:
+        raise RunTransitionConflict(
+            f"a run starts at exactly one entry node, not {len(entry)}"
+        )
+    return entry[0]
 
 
 def _agent_receipt_v2_values(receipt: AgentReceiptV2) -> dict[str, object]:
@@ -818,7 +811,7 @@ def commit_confirmed_effect(
     if (
         run.revision_hash != revision_hash
         or run.state is not RunState.STARTED
-        or not isinstance(node, (*ANY_ACTION_NODE_KINDS, AgentNodeV3))
+        or not isinstance(node, (ActionNodeV3, AgentNodeV3))
         or logical_key
         != logical_effect_key_for_node(
             run_id, revision_hash, node.id, run.current_round_ordinal
@@ -971,34 +964,21 @@ def commit_subworkflow_completed(
 
 
 def why_a_wait_node_does_not_admit_an_answer(
-    session: Any, node: AnyWaitNode, answer_bytes: bytes
+    session: Any, node: WaitNodeV3, answer_bytes: bytes
 ) -> str | None:
     """Why these bytes are no answer to this waiting node, or nothing where they are.
 
-    One question, two vocabularies, because the two formats declare different
-    things. A V1 or V2 Wait node declares `answer_type`, and the one type this
-    product implements is the canonical text of an integer. A V3 Wait node
-    declares no answer type at all: it declares one output with a schema, and
-    that schema is what judges the value -- the same owner that reads every other
-    value a run produces, asked here about the one a person typed.
+    A Wait node declares no answer type: it declares one output with a schema,
+    and that schema is what judges the value -- the same owner that reads every
+    other value a run produces, asked here about the one a person typed.
 
     It is answered here rather than in the use case that receives the submission,
     because which vocabulary applies is a fact about the node, and the node is
     only reachable from the document this store holds.
     """
-    match node:
-        case WaitNodeV3():
-            return why_a_value_its_declared_schema_refuses(
-                session, node.id, node.outputs[0], answer_bytes
-            )
-        case WaitNode():
-            if node.answer_type != "integer":
-                return f"no runtime answers a wait of type {node.answer_type!r}"
-            if not is_canonical_integer_bytes(answer_bytes):
-                return "a wait of type 'integer' admits canonical integer text only"
-            return None
-        case _ as unreachable:
-            assert_never(unreachable)
+    return why_a_value_its_declared_schema_refuses(
+        session, node.id, node.outputs[0], answer_bytes
+    )
 
 
 def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSnapshot:
@@ -1303,7 +1283,7 @@ class DbosWaitAnswerer:
                         return DurableStateCorrupt()
                     if run.state is RunState.WAITING_INPUT:
                         if (
-                            not isinstance(current_node, ANY_WAIT_NODE_KINDS)
+                            not isinstance(current_node, WaitNodeV3)
                             or head_event.event_kind is not RunEventKind.WAITING_INPUT
                             or (
                                 current_snapshot is not None
@@ -1415,7 +1395,7 @@ class DbosWaitAnswerer:
                     if run.state is not RunState.WAITING_INPUT:
                         connection.rollback()
                         return DurableAnswerStateConflict()
-                    if not isinstance(current_node, ANY_WAIT_NODE_KINDS):
+                    if not isinstance(current_node, WaitNodeV3):
                         connection.rollback()
                         return DurableStateCorrupt()
                     if head_event.wait_answer_actor != request.actor:

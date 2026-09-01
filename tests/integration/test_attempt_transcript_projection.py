@@ -213,7 +213,7 @@ def arranged_transcript_node(tmp_path: Path) -> Iterator[ArrangeTranscriptNode]:
 
 
 def _success(transcript: AttemptTranscript | None = None) -> AgentExecutionResult:
-    return AgentExecutionResult(b"done", transcript)
+    return AgentExecutionResult(b'"done"', transcript)
 
 
 def _failure(transcript: AttemptTranscript) -> AgentExecutionFailure:

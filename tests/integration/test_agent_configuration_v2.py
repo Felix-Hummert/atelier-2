@@ -47,6 +47,7 @@ from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
 from atelier2.contracts.agent_attempts import (
+    AgentAttemptFailureCode,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
     RunnerGenerationBinding,
@@ -64,7 +65,6 @@ from atelier2.contracts.agents import (
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
-    AgentOutputLimitExceeded,
     AgentRole,
     AuthMode,
     AuthProfileRevision,
@@ -98,6 +98,8 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationStale,
     AgentAttemptClaimedByThisCall,
+    AgentAttemptFailed,
+    AgentAttemptSucceeded,
     AgentExecutorBindingRefusalFenced,
     AgentExecutorBindingRefusalNeedsPreparedCleanup,
     AgentExecutorBindingRefusalWritten,
@@ -142,13 +144,26 @@ from tests.scenarios.api import (
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
-_DOCUMENT = b"""format_version: 2
-start: build
+_DOCUMENT = (
+    b"""format_version: 3
+name: Builder then reviewer
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: review, type: agent, role: reviewer, job: review, next: done}
-  - {id: build, type: agent, role: builder, job: build, next: review}
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
 """
+    + declared_output()
+    + b"""  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: review
+    depends_on: [build]
+"""
+    + declared_output()
+)
 
 _V3_DOCUMENT = b"""format_version: 3
 name: One agent
@@ -245,6 +260,7 @@ def _publish_matrix(
             runtime.engine, ProviderId(provider), (configuration,)
         )
         bindings.append(AgentBinding(AgentRole(role), configuration.revision_hash))
+    _publish_output_schema(runtime)
     workflow = WorkflowRevision(_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(tuple(bindings))
@@ -280,16 +296,8 @@ def _publish_single_capability(
     publish_checked_model_registry(
         runtime.engine, ProviderId("anthropic"), (configuration,)
     )
-    workflow = WorkflowRevision(
-        b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
-        if document is None
-        else document
-    )
+    workflow = WorkflowRevision(_V3_DOCUMENT if document is None else document)
+    _publish_output_schema(runtime)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
@@ -301,11 +309,12 @@ def _encoded_binding(
     auth: AuthProfileRevision,
     *,
     include_contract: bool,
+    job: str = "build",
 ) -> dict[str, object]:
     encoded = dict(
         encode_node_binding(
             AgentNodeBindingV2(
-                ResolvedAgentBinding(AgentRole("builder"), configuration, auth), "build"
+                ResolvedAgentBinding(AgentRole("builder"), configuration, auth), job
             )
         )
     )
@@ -935,14 +944,11 @@ def test_list_publication_and_start_share_the_current_registry_decision(
             catalog.publish_agent_configuration_revision(sibling_configuration),
             AgentConfigurationRevisionCreated,
         )
-        workflow = WorkflowRevision(
-            b"""format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (claude,)
         )
+        workflow = WorkflowRevision(_V3_DOCUMENT)
+        _publish_output_schema(runtime)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
 
         listed = client.get(API_PREFIX + "/agent-configuration-revisions")
@@ -959,7 +965,7 @@ nodes:
         refused = client.post(
             API_PREFIX + "/runs",
             json={
-                "workflow_format_version": 2,
+                "workflow_format_version": 3,
                 "run_id": "unavailable-new-draft",
                 "workflow_revision_hash": workflow.revision_hash.value,
                 "agent_bindings": [
@@ -968,6 +974,7 @@ nodes:
                         "agent_configuration_revision_hash": claude.revision_hash.value,
                     }
                 ],
+                "orders": [],
             },
         )
         assert refused.status_code == 409
@@ -1086,13 +1093,24 @@ def test_bound_unstarted_run_fails_without_an_attempt_when_executor_is_unavailab
 def test_wait_predecessor_stays_intact_until_it_reaches_an_unavailable_executor(
     tmp_path: Path,
 ) -> None:
-    wait_then_agent = b"""format_version: 2
-start: ask
+    wait_then_agent = (
+        b"""format_version: 3
+name: Wait then agent
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-  - {id: ask, type: wait, answer_type: integer, next: build}
+  - id: ask
+    type: wait
+    prompt: Approve before the agent runs.
 """
+        + declared_output(name="approval")
+        + b"""  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
+    depends_on: [ask]
+"""
+        + declared_output()
+    )
     seeded_factory = RecordingAgentExecutorFactoryV2(
         "anthropic", "claude-cli/v1", "seed", b"unused"
     )
@@ -1197,7 +1215,9 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
             AgentConfigurationRevisionFormatVersion.V2,
         )
         request = _replayed_request(
-            _encoded_binding(configuration, auth, include_contract=True),
+            _encoded_binding(
+                configuration, auth, include_contract=True, job="Build the one thing."
+            ),
             run_id,
             workflow.revision_hash,
             "build",
@@ -1486,7 +1506,7 @@ def test_completed_v2_history_reopens_without_process_supervision(
         tmp_path,
         (
             RecordingAgentExecutorFactoryV2(
-                "anthropic", "claude-cli/v1", "completed-history", b"built"
+                "anthropic", "claude-cli/v1", "completed-history", b'"built"'
             ),
         ),
     )
@@ -1531,12 +1551,24 @@ def test_completed_v2_history_reopens_without_process_supervision(
 def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
     tmp_path: Path,
 ) -> None:
+    """Two roles, two providers, restarted mid-line: each keeps its own executor.
+
+    Retired 2026-09-01 (#901 slice 5, #934): this test once answered the
+    reviewer role with a raw non-UTF-8 byte string (b"\xffreview") and
+    asserted it survived a restart byte-exact, proving V1/V2's free-form
+    output carried anything. A V3 declared output is schema-validated JSON
+    (ANY_JSON_SCHEMA), so that claim is no longer representable -- an agent's
+    answer must decode as JSON before this product ever durably keeps it. The
+    surviving invariant -- each role's exact answer reaches its own receipt,
+    keyed to the provider that restarted with it -- is proven the same way,
+    with a JSON-valid answer standing in for the retired raw one.
+    """
     first_factories = (
         RecordingAgentExecutorFactoryV2(
-            "openai", "codex-cli/v1", "codex-before-restart", b"\xffreview"
+            "openai", "codex-cli/v1", "codex-before-restart", b'"review"'
         ),
         RecordingAgentExecutorFactoryV2(
-            "anthropic", "claude-cli/v1", "claude-before-restart", b"build"
+            "anthropic", "claude-cli/v1", "claude-before-restart", b'"build"'
         ),
     )
     first = _runtime(tmp_path, first_factories)
@@ -1555,10 +1587,10 @@ def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
 
     restarted_factories = (
         RecordingAgentExecutorFactoryV2(
-            "anthropic", "claude-cli/v1", "claude-after-restart", b"build"
+            "anthropic", "claude-cli/v1", "claude-after-restart", b'"build"'
         ),
         RecordingAgentExecutorFactoryV2(
-            "openai", "codex-cli/v1", "codex-after-restart", b"\xffreview"
+            "openai", "codex-cli/v1", "codex-after-restart", b'"review"'
         ),
     )
     restarted = _runtime(tmp_path, restarted_factories)
@@ -1569,7 +1601,7 @@ def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
         found = queried.get_run(run_id)
         page = queried.list_runs(None, 100)
         assert isinstance(found, RunFound)
-        assert isinstance(found.projection.run, RunV2)
+        assert isinstance(found.projection.run, RunV3)
         assert isinstance(page, RunPage)
         assert page.runs == (found.projection,)
         assert completed.binding_set_hash == bindings.binding_set_hash
@@ -1594,7 +1626,7 @@ def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
             "claude-after-restart",
             "codex-after-restart",
         ]
-        assert bytes(receipts[1]["output_bytes"]) == b"\xffreview"
+        assert bytes(receipts[1]["output_bytes"]) == b'"review"'
     finally:
         restarted.close()
 
@@ -1725,7 +1757,7 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
         assert workflow.status_code == 201
         revision_hash = workflow.json()["workflow_revision_hash"]
         request = {
-            "workflow_format_version": 2,
+            "workflow_format_version": 3,
             "run_id": "api/catalog-roundtrip",
             "workflow_revision_hash": revision_hash,
             "agent_bindings": [
@@ -1734,6 +1766,7 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
                     "agent_configuration_revision_hash": configuration_hash,
                 }
             ],
+            "orders": [],
         }
 
         created = client.post(API_PREFIX + "/runs", json=request)
@@ -2036,7 +2069,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
         return client.post(
             API_PREFIX + "/runs",
             json={
-                "workflow_format_version": 2,
+                "workflow_format_version": 3,
                 "run_id": run_id,
                 "workflow_revision_hash": revision_hash,
                 "agent_bindings": [
@@ -2045,6 +2078,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
                         "agent_configuration_revision_hash": configuration_hash,
                     }
                 ],
+                "orders": [],
             },
         )
 
@@ -2158,7 +2192,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
         unavailable = _api_client(production_empty).post(
             API_PREFIX + "/runs",
             json={
-                "workflow_format_version": 2,
+                "workflow_format_version": 3,
                 "run_id": "no-production-executor",
                 "workflow_revision_hash": seeded_revision,
                 "agent_bindings": [
@@ -2167,6 +2201,7 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
                         "agent_configuration_revision_hash": seeded_configuration,
                     }
                 ],
+                "orders": [],
             },
         )
         assert unavailable.status_code == 409
@@ -2184,9 +2219,20 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
 
 
 @pytest.mark.parametrize(("output_size", "accepted"), [(49_152, True), (49_153, False)])
-def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
+def test_the_output_schema_door_admits_the_route_bound_and_refuses_one_byte_past_it(
     tmp_path: Path, output_size: int, accepted: bool
 ) -> None:
+    """The output door reads MAXIMUM_AGENT_OUTPUT_BYTES_V2, not the inline-order default.
+
+    Route-owned bounds (schemas_v3.py): an agent output arrives through the
+    provider frame, whose door is 49_152 bytes, not the 16_384-byte inline
+    door a declared-output schema would otherwise inherit by default (#901
+    slice 5 first exposed the collision; the door is fixed in
+    agent_attempt_store.py). A byte over that bound is refused before any
+    receipt is written, and the refusal itself is one committed attempt
+    event -- unlike the pre-V3 receipt-construction guard this replaces, a
+    refusal here is durable rather than a raised exception nothing recorded.
+    """
     factories = (
         RecordingAgentExecutorFactoryV2(
             "anthropic", "claude-cli/v1", "claude-bound", b"build"
@@ -2208,7 +2254,7 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
         assert isinstance(started, DurableRunCreated)
-        assert isinstance(started.run, RunV2)
+        assert isinstance(started.run, RunV3)
         resolved = next(
             binding
             for binding in started.run.agent_bindings
@@ -2224,28 +2270,34 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
             b"build",
         )
 
+        # A JSON string of the exact target byte length: the door measures raw
+        # bytes before it ever decodes them, so an over-bound answer is refused
+        # by size alone, but an admitted one still has to be the value the
+        # declared schema (ANY_JSON_SCHEMA) accepts.
+        output = b'"' + b"x" * (output_size - 2) + b'"'
+        assert len(output) == output_size
+
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        store.prepare(agent_attempt_execution(request))
+        store.claim(agent_attempt_execution(request))
+        outcome = store.complete_success(
+            agent_attempt_execution(request), AgentExecutionResult(output)
+        )
+
         if accepted:
-            store = DbosAgentAttemptStore(runtime.engine)
-            store.prepare(agent_attempt_execution(request))
-            store.claim(agent_attempt_execution(request))
-            snapshot = store.complete_success(
-                agent_attempt_execution(request),
-                AgentExecutionResult(b"x" * output_size),
-            )
+            assert isinstance(outcome, AgentAttemptSucceeded)
             retried = store.claim(agent_attempt_execution(request))
-            assert snapshot.attempt.state_version == 2
-            assert retried == snapshot
-            expected_receipts = expected_events = 1
+            assert outcome.attempt.state_version == 2
+            assert retried == outcome
+            expected_receipts = 1
         else:
-            store = DbosAgentAttemptStore(runtime.engine)
-            store.prepare(agent_attempt_execution(request))
-            store.claim(agent_attempt_execution(request))
-            with pytest.raises(AgentOutputLimitExceeded):
-                store.complete_success(
-                    agent_attempt_execution(request),
-                    AgentExecutionResult(b"x" * output_size),
-                )
-            expected_receipts = expected_events = 0
+            assert isinstance(outcome, AgentAttemptFailed)
+            assert outcome.attempt.failure_code is (
+                AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
+            )
+            expected_receipts = 0
 
         with runtime.engine.connect() as connection:
             assert (
@@ -2256,7 +2308,7 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
             )
             assert (
                 connection.scalar(sa.select(sa.func.count()).select_from(run_events))
-                == expected_events
+                == 1
             )
             record = connection.execute(
                 sa.select(
@@ -2265,6 +2317,6 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
                     runs.c.last_event_sequence,
                 ).where(runs.c.run_id == run_id.value)
             ).one()
-        assert tuple(record) == (("review", 1, 1) if accepted else ("build", 0, 0))
+        assert tuple(record) == (("review", 1, 1) if accepted else ("build", 1, 1))
     finally:
         runtime.close()

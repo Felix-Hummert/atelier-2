@@ -68,12 +68,6 @@ def recognise(
             id="v3-workflow-carries-its-authored-name",
         ),
         pytest.param(
-            V1_DOCUMENT,
-            None,
-            RecognizedWorkflow(WorkflowFormatVersion.V1, None, None),
-            id="older-workflow-format-authors-no-name",
-        ),
-        pytest.param(
             AGENT_DOCUMENT,
             "agents/witness.md",
             RecognizedAgentDefinition(
@@ -158,6 +152,19 @@ def test_a_workflow_missing_its_format_version_is_refused_by_that_field() -> Non
         if refusal.kind is LibraryDocumentKind.WORKFLOW
     )
     assert "format_version" in workflow.refused_because
+
+
+def test_a_retired_workflow_format_is_refused_by_name() -> None:
+    """No document may declare V1 anymore (#901 slice 5); it is refused, not held."""
+    recognised = recognise(V1_DOCUMENT, "workflow.yaml")
+
+    assert isinstance(recognised, DocumentUnrecognized)
+    workflow = next(
+        refusal
+        for refusal in recognised.refusals
+        if refusal.kind is LibraryDocumentKind.WORKFLOW
+    )
+    assert "unsupported" in workflow.refused_because
 
 
 def test_a_skill_file_whose_frontmatter_is_a_valid_agent_is_refused_naming_both() -> (

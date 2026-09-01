@@ -87,8 +87,8 @@ class DocumentCase:
 
 
 DOCUMENT_CASES = (
-    DocumentCase("a v1 document", V1_DOCUMENT, True),
-    DocumentCase("a v2 document", V2_DOCUMENT, True),
+    DocumentCase("a retired v1 document", V1_DOCUMENT, False),
+    DocumentCase("a retired v2 document", V2_DOCUMENT, False),
     DocumentCase("a v3 chain", V3_DOCUMENT, True),
     DocumentCase("a single v3 agent", ONE_AGENT_DOCUMENT, True),
     DocumentCase(

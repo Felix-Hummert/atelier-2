@@ -21,7 +21,6 @@ from atelier2.contracts.host_configuration import (
     ProviderModelCheck,
     UncastRole,
 )
-from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     DeclaredRole,
@@ -69,17 +68,13 @@ class AuthProfileMissingForConfiguration(Exception):
         self.auth_profile_revision_hash = auth_profile_revision_hash
 
 
-def declared_agent_roles(graph: WorkflowGraphV2 | WorkflowGraphV3) -> frozenset[str]:
+def declared_agent_roles(graph: WorkflowGraphV3) -> frozenset[str]:
     """Every role this document declares an `Agent` node for."""
-    return frozenset(
-        node.role
-        for node in graph.nodes
-        if isinstance(node, (AgentNodeV2, AgentNodeV3))
-    )
+    return frozenset(node.role for node in graph.nodes if isinstance(node, AgentNodeV3))
 
 
 def agent_role_completeness_refusal(
-    graph: WorkflowGraphV2 | WorkflowGraphV3, agent_bindings: AgentBindingSet
+    graph: WorkflowGraphV3, agent_bindings: AgentBindingSet
 ) -> DurableInvalidAgentBindings | None:
     """Whether every declared `Agent` role has exactly one requested binding.
 
@@ -98,7 +93,7 @@ def agent_role_completeness_refusal(
 
 
 def undeclared_agent_role_refusal(
-    graph: WorkflowGraphV2 | WorkflowGraphV3, agent_bindings: AgentBindingSet
+    graph: WorkflowGraphV3, agent_bindings: AgentBindingSet
 ) -> DurableInvalidAgentBindings | None:
     """Whether a partial V3 override names a role the workflow lacks."""
     requested_roles = {binding.role.value for binding in agent_bindings.bindings}
@@ -492,7 +487,7 @@ def _select_component(
 
 
 def cast_unbound_roles(
-    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    graph: WorkflowGraphV3,
     requested: AgentBindingSet,
     defaults: ProjectModelDefaultsRevision | None,
     registries: tuple[ModelRegistryRevision, ...],
@@ -508,34 +503,6 @@ def cast_unbound_roles(
     existing completeness guard remains the start gate.
     """
     requested_by_role = {binding.role.value: binding for binding in requested.bindings}
-    if isinstance(graph, WorkflowGraphV2):
-        resolutions = tuple(
-            RoleModelResolution(
-                AgentRole(role),
-                (
-                    None
-                    if (binding := requested_by_role.get(role)) is None
-                    else binding.agent_configuration_revision_hash
-                ),
-                (
-                    ModelResolutionSource.UNCAST
-                    if binding is None
-                    else ModelResolutionSource.CHOSEN_NOW
-                ),
-                None,
-                None,
-                None,
-                (
-                    ModelResolutionUncastReason.NO_PROJECT_DEFAULT
-                    if binding is None
-                    else None
-                ),
-                None,
-            )
-            for role in sorted(declared_agent_roles(graph))
-        )
-        return CastUnboundRolesResult(requested, resolutions)
-
     declarations = declared_roles_of(graph)
     known_override_models = {} if override_models is None else override_models
     choices_by_role = {
@@ -593,7 +560,7 @@ def cast_unbound_roles(
 
 
 def resolve_start_bindings(
-    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    graph: WorkflowGraphV3,
     agent_bindings: AgentBindingSet,
     reads: AgentConfigurationBindingReads,
     registry: AgentExecutorRegistry,

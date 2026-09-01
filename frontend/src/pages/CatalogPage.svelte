@@ -127,11 +127,9 @@
   }
 
   async function catalogStates(
-    revisions: readonly { name: string | null }[]
+    revisions: readonly { name: string }[]
   ): Promise<Record<string, CatalogNameState>> {
-    const names = [
-      ...new Set(revisions.flatMap((item) => (item.name === null ? [] : [item.name])))
-    ];
+    const names = [...new Set(revisions.map((item) => item.name))];
     const states = await Promise.all(
       names.map(async (name) => [
         name,
@@ -314,7 +312,7 @@
               ariaLabel={wrapDisplayCopy(row.title)}
               description={row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}
               provenance={catalogRowFacts()}
-              href={row.name === null ? null : workflowPath(row.name)}
+              href={workflowPath(row.name)}
               status={workflowTileStatus(row)}
               onOpen={navigate}
             />

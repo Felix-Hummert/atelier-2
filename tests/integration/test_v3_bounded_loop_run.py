@@ -98,16 +98,18 @@ from tests.scenarios.workflows import (
     LOOPED_LINE_DOCUMENT,
     LOOPED_LINE_MAXIMUM_ROUNDS,
     LOOPED_LINE_NODE_IDS,
+    V3_WAIT_LINE_DOCUMENT,
 )
 
 RUN = RunId("v3/build-review-loop")
-HEALTHY_RUN = RunId("v1/healthy-query-peer")
+HEALTHY_RUN = RunId("v3/healthy-query-peer")
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 EXPECTED_ROUNDS = tuple(range(1, LOOPED_LINE_MAXIMUM_ROUNDS + 1))
-HEALTHY_DOCUMENT = b"""format_version: 1
-start: final
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+HEALTHY_DOCUMENT = V3_WAIT_LINE_DOCUMENT
+"""A run that stays alive and readable beside the loop, binding no agent role.
+
+`publish_looped_line` already published this line's own pinned `ANY_JSON_SCHEMA`
+before `start_healthy_peer` runs, so this needs no publication of its own.
 """
 
 

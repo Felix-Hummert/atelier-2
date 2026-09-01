@@ -85,6 +85,9 @@ export async function workflowNamesOf(
     if (revision.workflow_revision_hash !== hash) {
       throw new Error("a V3 run received a different workflow revision");
     }
+    // The wire type admits only format 3, so this guards corrupt durable state
+    // alone -- a V1/V2 row the server should never serve again (#901 slice 5)
+    // -- and stays the one remaining defense of its kind.
     if (revision.graph.workflow_format_version !== 3) {
       throw new Error("a V3 run referenced a workflow revision of another format");
     }

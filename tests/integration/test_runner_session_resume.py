@@ -544,7 +544,7 @@ def _committed_envelope(fixture: _StoreFixture) -> RunnerTerminalEvidenceEnvelop
     return RunnerTerminalEvidenceEnvelope(
         fixture.binding,
         fixture.invocation,
-        RunnerProviderResult(AgentExecutionResult(b"resume-tombstone-guard")),
+        RunnerProviderResult(AgentExecutionResult(b'"resume-tombstone-guard"')),
     )
 
 
@@ -726,7 +726,7 @@ def test_resume_after_a_core_crash_before_started_re_arms_idempotently(
         envelope = RunnerTerminalEvidenceEnvelope(
             fixture.binding,
             fixture.invocation,
-            RunnerProviderResult(AgentExecutionResult(b"resume-c6-result")),
+            RunnerProviderResult(AgentExecutionResult(b'"resume-c6-result"')),
         )
         evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
         ack = _drive_through_released(
@@ -754,7 +754,7 @@ def test_resume_after_a_core_crash_between_commit_and_ack_recommits_idempotently
         envelope = RunnerTerminalEvidenceEnvelope(
             fixture.binding,
             fixture.invocation,
-            RunnerProviderResult(AgentExecutionResult(b"resume-c4-result")),
+            RunnerProviderResult(AgentExecutionResult(b'"resume-c4-result"')),
         )
         evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
 
@@ -819,7 +819,7 @@ def test_a_retry_after_full_release_refuses_instead_of_repeating_the_work(
         envelope = RunnerTerminalEvidenceEnvelope(
             fixture.binding,
             fixture.invocation,
-            RunnerProviderResult(AgentExecutionResult(b"resume-finalize-result")),
+            RunnerProviderResult(AgentExecutionResult(b'"resume-finalize-result"')),
         )
         evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
 

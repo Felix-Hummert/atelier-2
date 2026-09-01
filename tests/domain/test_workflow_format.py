@@ -18,11 +18,15 @@ def test_the_workflow_format_set_is_written_once() -> None:
     assert tuple(member.value for member in WorkflowFormatVersion) == (1, 2, 3)
 
 
-def test_every_owned_format_version_names_the_model_that_reads_it() -> None:
-    """A version a document may declare is a version something can read.
+def test_only_the_live_format_may_be_published() -> None:
+    """A document may declare only the one format a model still reads.
 
-    The publication looks its format up in this table, so a member without an
-    entry would reach a caller as an unhandled key rather than as the named
-    refusal an author can act on.
+    V1 and V2 stay named `WorkflowFormatVersion` members -- the durable
+    layer's `runs.workflow_format_version` column and its frozen schema still
+    hold those historical values -- but this table, which decides what a
+    *published document* may declare, shrank to V3 alone when the V1/V2
+    document grammar fell (#901 slice 5). The parser refuses a retired member
+    by name instead of reaching this table as an unhandled key
+    (`tests/domain/test_yaml_workflows.py` proves the refusal).
     """
-    assert set(WORKFLOW_DOCUMENT_FORMATS) == set(WorkflowFormatVersion)
+    assert set(WORKFLOW_DOCUMENT_FORMATS) == {WorkflowFormatVersion.V3}

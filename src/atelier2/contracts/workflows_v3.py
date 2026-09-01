@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Literal, assert_never
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -25,15 +25,8 @@ from atelier2.contracts.workflow_refusals import (
     WorkflowRefusal,
     WorkflowRefusalReason,
 )
-from atelier2.contracts.workflows import (
-    ActionNode,
-    AnyWorkflowGraph,
-    AnyWorkflowNode,
-    NonemptyString,
-    WaitNode,
-    WorkflowGraph,
-    WorkflowGraphV2,
-)
+
+NonemptyString = Annotated[str, StringConstraints(min_length=1)]
 
 MAXIMUM_INSTRUCTION_BYTES = 16 * 1024
 MAXIMUM_DOCUMENT_NAME_BYTES = 200
@@ -557,27 +550,15 @@ def is_previous_round_data_edge(
     )
 
 
-type AnyWorkflowDocument = AnyWorkflowGraph | WorkflowGraphV3
-type AnyWorkflowDocumentNode = AnyWorkflowNode | WorkflowNodeV3
+type AnyWorkflowDocument = WorkflowGraphV3
+"""Every executable document format the runtime loads.
 
-type AnyWaitNode = WaitNode | WaitNodeV3
-ANY_WAIT_NODE_KINDS = (WaitNode, WaitNodeV3)
-"""The node classes that hold a run for a person, across every executable format.
-
-A store guard asks "is this the kind that may stand in WAITING_INPUT", and the
-answer is one question with two spellings. Kept together so a guard that admits
-one format cannot silently refuse the other, which is how a durable run ends up
-in a state its own reader calls impossible.
+One name because callers across the durable layer already spell it, not
+because more than one format exists behind it (#901 slice 5 retired the V1/V2
+document grammar this alias once spanned).
 """
 
-type AnyActionNode = ActionNode | ActionNodeV3
-ANY_ACTION_NODE_KINDS = (ActionNode, ActionNodeV3)
-"""The node classes that perform an external effect, across every executable format.
-
-A store guard asks "is this the kind that may stand in WAITING_RECONCILIATION",
-and the answer is one question with two spellings. Kept together so a V3 Action
-cannot be refused as the wrong kind while a V1 Action is admitted.
-"""
+type AnyWorkflowDocumentNode = WorkflowNodeV3
 
 
 class MultipleSinkCompletionUnsupported(ValueError):
@@ -662,29 +643,19 @@ def linear_successor_id(graph: WorkflowGraphV3, node_id: str) -> str:
     return successor.id
 
 
-def is_sink_node(graph: AnyWorkflowDocument, node_id: str) -> bool:
-    """Whether this node's completion completes the run, in any executable format.
+def is_sink_node(graph: WorkflowGraphV3, node_id: str) -> bool:
+    """Whether this node's completion completes the run.
 
-    One decider for every graph family the runtime can load, because the run's
-    terminal condition is one rule with two spellings: V1 and V2 configure a
-    single successor, so their sink is the node naming none; V3 declares
-    dependencies, so its sinks are the nodes nothing depends on. Asking a graph
-    object for the spelling it happens to carry would hold only until the other
-    family reaches the same call, and that break would surface in a completion
-    run rather than here.
+    V3 declares dependencies, so its sinks are the nodes nothing depends on;
+    more than one is refused in its own typed words rather than guessed at
+    (the ready set of #86 owns choosing between them).
     """
 
-    match graph:
-        case WorkflowGraphV3():
-            graph.node(node_id)
-            sink_node_ids = graph.sink_node_ids
-            if len(sink_node_ids) != 1:
-                raise MultipleSinkCompletionUnsupported(sink_node_ids)
-            return node_id == sink_node_ids[0]
-        case WorkflowGraph() | WorkflowGraphV2():
-            return graph.is_sink(node_id)
-        case _ as unreachable:
-            assert_never(unreachable)
+    graph.node(node_id)
+    sink_node_ids = graph.sink_node_ids
+    if len(sink_node_ids) != 1:
+        raise MultipleSinkCompletionUnsupported(sink_node_ids)
+    return node_id == sink_node_ids[0]
 
 
 def _refuse(

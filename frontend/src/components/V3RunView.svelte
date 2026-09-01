@@ -256,12 +256,9 @@
         state: "ready";
         name: string;
         description: string | null;
-        previews: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["node_previews"];
-        loops: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["loops"];
-        waitAnswerSchemas: Extract<
-          WorkflowRevisionDetail["graph"],
-          { workflow_format_version: 3 }
-        >["wait_answer_schemas"];
+        previews: WorkflowRevisionDetail["graph"]["node_previews"];
+        loops: WorkflowRevisionDetail["graph"]["loops"];
+        waitAnswerSchemas: WorkflowRevisionDetail["graph"]["wait_answer_schemas"];
       }
     | { state: "failed"; message: string };
 
@@ -501,9 +498,6 @@
       const revision = await cockpitApi.getWorkflowRevision(run.workflow_revision_hash);
       if (revision.workflow_revision_hash !== run.workflow_revision_hash) {
         throw new Error(runPageCopy.documentMismatch);
-      }
-      if (revision.graph.workflow_format_version !== 3) {
-        throw new Error(runPageCopy.olderDocumentFormat);
       }
       graphRequest = {
         state: "ready",

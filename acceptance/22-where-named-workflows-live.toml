@@ -31,16 +31,23 @@ story = "https://github.com/FlexOr2/atelier-2/issues/22"
 # a revision no run can start says so before the operator tries. Its proof is
 # untouched.
 #
+# A third sentence was retired on 31.08.2026 (#901 slice 5, #934), dated per
+# the same discipline as the two above:
+#
+#   "a-format-that-declares-no-name-is-listed-as-unnamed" -- it promised a
+#   listing for the format family that could publish with no name at all. The
+#   V1/V2 document grammar fell with this slice, so no format left in
+#   `WORKFLOW_DOCUMENT_FORMATS` admits a document without one: a format-3
+#   document always declares `name` (`contracts/workflows_v3.py`,
+#   `WorkflowGraphV3.name: NonemptyString`), so the unnamed state the sentence
+#   named is unrepresentable, not merely unproven. Its former proof,
+#   `tests/integration/test_catalog_descriptions.py`, is retired with it.
+#
 # This file therefore does not list every sentence of #22.
 
 [[sentence]]
 id = "a-published-revision-is-listed-with-the-name-its-author-wrote"
 text = "A published workflow revision is listed with the name its author wrote into the document, not with its hash."
-requirement = "REQ-KATALOG-04"
-
-[[sentence]]
-id = "a-format-that-declares-no-name-is-listed-as-unnamed"
-text = "A revision whose format declares no name is listed as unnamed, and no name is invented for it."
 requirement = "REQ-KATALOG-04"
 
 [[sentence]]

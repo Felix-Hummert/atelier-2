@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.wire.resources import NodeRailResource
@@ -119,8 +117,7 @@ nodes:
     )
 
 
-@pytest.mark.proves("the-run-resource-names-the-state-of-every-node")
-def test_the_served_v2_run_names_the_state_of_every_node_of_its_revision() -> None:
+def test_the_served_run_names_the_state_of_every_node_of_its_revision() -> None:
     projection = run_projection(PublicAgentAttemptState.POSSIBLY_RAN)
 
     payload = run_resource(projection).model_dump(mode="json")

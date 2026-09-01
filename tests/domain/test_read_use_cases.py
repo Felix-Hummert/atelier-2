@@ -94,18 +94,25 @@ from atelier2.ports.workflow_revisions import (
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
 )
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
+
+ONE_AGENT_DOCUMENT = b"""format_version: 3
+name: One agent, nothing a resolver classifies
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+""" + declared_output()
 
 REVISION_HASH = WorkflowRevisionHash("a" * 64)
 RUN_ID = RunId("run")
-V1_DOCUMENT = b"""format_version: 1
-start: final
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}
-"""
 REVISION_PROJECTION = WorkflowRevisionProjection(
-    WorkflowRevision(V1_DOCUMENT), parse_workflow_document(V1_DOCUMENT)
+    WorkflowRevision(ONE_AGENT_DOCUMENT),
+    parse_workflow_document(ONE_AGENT_DOCUMENT),
 )
-"""A V1 revision: executable whole, declaring nothing a resolver would be asked."""
+"""An executable revision, its one declared output schema resolved by name."""
 RUN_PROJECTION: Any = object()
 
 
@@ -181,7 +188,9 @@ READS: list[
     (
         "get-workflow-revision",
         lambda queries: get_workflow_revision(
-            REVISION_HASH, queries, ScriptedResolver(PublishedRevisionMissing())
+            REVISION_HASH,
+            queries,
+            ScriptedResolver(PublishedRevisionFound(ANY_JSON_SCHEMA)),
         ),
         [
             (

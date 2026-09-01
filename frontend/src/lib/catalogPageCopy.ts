@@ -43,9 +43,6 @@ export const catalogPageCopy = {
   // A door for another format (`.toml` for Codex) names its own.
   agentProviderClaude: "Claude",
   noDescription: "No description.",
-  // The same words a run header already uses for a document that declares no
-  // name, so one thing is called one thing across the workshop.
-  unnamedWorkflow: "Unnamed workflow",
 
   newerRevisionHint: "A newer published revision is available.",
   notAdmittedHint: "This published workflow is not in the catalog yet.",

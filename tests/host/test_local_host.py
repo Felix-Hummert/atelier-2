@@ -26,6 +26,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeSubscriptionSettings,
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import (
     DbosHostConfigurationChannel,
     append_project_root,
@@ -105,6 +106,7 @@ from tests.integration.test_grok_subscription import (
 from tests.scenarios.agents import (
     agent_scratch_root,
     claude_subscription_deployment,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import api_limits as scenario_api_limits
 from tests.scenarios.api import durable_ports
@@ -122,6 +124,7 @@ from tests.scenarios.projects import (
     git_project,
     write_into_checkout,
 )
+from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 INERT_CLAUDE = "raise SystemExit(0)\n"
 
@@ -1041,6 +1044,10 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         assert runtime.agent_executor_registry.is_startable(
             GROK_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
         )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (configuration,)
+        )
+        DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
         workflow = WorkflowRevision(HOST_DOCUMENT)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         starter = DbosDurableRunStarter(

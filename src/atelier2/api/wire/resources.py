@@ -836,16 +836,16 @@ class WorkflowRevisionPageResource(ApiModel):
 class WorkflowRevisionSummaryResourceV2(ApiModel):
     """A listed revision: its hash, its format, and what its own bytes call it.
 
-    `name` and `description` are absent where the authoring format declares
-    neither, which is the truthful answer for a V1 or V2 document rather than a
-    line invented to fill the column.
+    A format-3 document always declares a name, so `name` is never absent here.
+    `description` is absent where the document declares none, which is the
+    truthful answer rather than a line invented to fill the column.
     """
 
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    workflow_format_version: Literal[1, 2, 3]
+    workflow_format_version: Literal[3]
     executable: bool
     not_executable_reason: str | None
-    name: str | None
+    name: str
     description: str | None
 
     @model_validator(mode="after")

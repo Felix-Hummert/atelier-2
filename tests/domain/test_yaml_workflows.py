@@ -9,109 +9,74 @@ from atelier2.adapters.yaml_workflows import (
     InvalidWorkflowDocument,
     parse_workflow_document,
 )
-from atelier2.contracts.workflows import AgentNode, SubworkflowNode, WorkflowGraph
+from atelier2.contracts.workflows_v3 import WaitNodeV3, WorkflowGraphV3
+from tests.scenarios.workflows import V3_WAIT_LINE_DOCUMENT
 
-VALID_DOCUMENT = b"""format_version: 1
-start: agent
-nodes:
-  - id: final
-    type: subworkflow
-    operation: add
-    operands: [2, 3]
-    next: null
-  - id: waiting
-    type: wait
-    answer_type: integer
-    next: final
-  - id: action
-    type: action
-    next: waiting
-  - id: agent
-    type: agent
-    job: job-17
-    output: draft-17
-    next: action
-"""
+VALID_DOCUMENT = V3_WAIT_LINE_DOCUMENT
 
 
-def test_safe_yaml_v1_preserves_list_order_but_graph_edges_own_execution_order() -> (
-    None
-):
+def test_the_safe_yaml_wrapper_reads_a_document_into_its_declared_format() -> None:
     graph = parse_workflow_document(VALID_DOCUMENT)
 
-    assert isinstance(graph, WorkflowGraph)
-    assert [node.id for node in graph.nodes] == ["final", "waiting", "action", "agent"]
-    assert isinstance(graph.node("agent"), AgentNode)
-    assert graph.successor("agent").id == "action"
+    assert isinstance(graph, WorkflowGraphV3)
+    assert isinstance(graph.node("approve"), WaitNodeV3)
 
 
 def test_validated_graph_collections_are_deeply_immutable() -> None:
     graph = parse_workflow_document(VALID_DOCUMENT)
-    terminal = graph.node("final")
-    assert isinstance(terminal, SubworkflowNode)
+    node = graph.node("approve")
+    assert isinstance(node, WaitNodeV3)
 
     with pytest.raises(AttributeError):
         cast(MutableSequence[object], graph.nodes).clear()
     with pytest.raises(AttributeError):
-        cast(MutableSequence[int], terminal.operands).append(99)
+        cast(MutableSequence[object], node.outputs).clear()
 
 
 INVALID_DOCUMENTS = {
     "invalid-utf8": b"\xff",
-    "bom": b"\xef\xbb\xbfformat_version: 1\nstart: a\nnodes: []\n",
+    "bom": b"\xef\xbb\xbf" + VALID_DOCUMENT,
     "empty": b"",
     "multiple-documents": VALID_DOCUMENT + b"---\n{}\n",
     "duplicate-key": VALID_DOCUMENT.replace(
-        b"start: agent\n", b"start: agent\nstart: agent\n"
+        b"name: A person answers, then the line is done\n",
+        b"name: A person answers, then the line is done\n"
+        b"name: A person answers, then the line is done\n",
     ),
-    "alias": b"format_version: 1\nstart: a\nnodes: &nodes []\ncopy: *nodes\n",
-    "merge": b"format_version: 1\nstart: a\nnodes: [{<<: {id: a}, type: agent}]\n",
+    "alias": b"format_version: 3\nname: a\nnodes: &nodes []\ncopy: *nodes\n",
+    "merge": b"format_version: 3\nname: a\nnodes: [{<<: {id: a}, type: wait}]\n",
     "unsafe-tag": b"!!python/object/apply:os.system ['true']\n",
-    "explicit-core-tag": b"format_version: !!int 1\nstart: a\nnodes: []\n",
+    "explicit-core-tag": VALID_DOCUMENT.replace(
+        b"format_version: 3", b"format_version: !!int 3"
+    ),
     "unknown-top-field": VALID_DOCUMENT + b"other: true\n",
     "unknown-node-field": VALID_DOCUMENT.replace(
-        b"    next: action\n", b"    next: action\n    other: x\n"
+        b"    prompt: Approve this line.\n",
+        b"    prompt: Approve this line.\n    other: x\n",
     ),
     "bool-version": VALID_DOCUMENT.replace(
-        b"format_version: 1", b"format_version: true"
+        b"format_version: 3", b"format_version: true"
     ),
-    "wrong-version": VALID_DOCUMENT.replace(b"format_version: 1", b"format_version: 2"),
-    "empty-start": VALID_DOCUMENT.replace(b"start: agent", b"start: ''"),
-    "missing-start": VALID_DOCUMENT.replace(b"start: agent\n", b""),
-    "duplicate-node": VALID_DOCUMENT.replace(
-        b"  - id: action\n", b"  - id: agent\n", 1
-    ),
-    "missing-reference": VALID_DOCUMENT.replace(b"next: action", b"next: absent"),
-    "cycle": VALID_DOCUMENT.replace(b"next: final", b"next: agent", 1),
-    "unreachable": VALID_DOCUMENT.replace(
-        b"nodes:\n",
-        b"nodes:\n  - id: lost\n    type: wait\n    answer_type: integer\n    next: final\n",
-    ),
-    "second-action": VALID_DOCUMENT.replace(
-        b"nodes:\n",
-        b"nodes:\n  - id: other-action\n    type: action\n    next: final\n",
-    ),
-    "wrong-terminal": VALID_DOCUMENT.replace(
-        b"type: subworkflow", b"type: wait"
-    ).replace(
-        b"    operation: add\n    operands: [2, 3]\n", b"    answer_type: integer\n"
-    ),
-    "action-as-start": VALID_DOCUMENT.replace(b"start: agent", b"start: action"),
-    "empty-agent-output": VALID_DOCUMENT.replace(b"output: draft-17", b"output: ''"),
-    "bool-operand": VALID_DOCUMENT.replace(b"operands: [2, 3]", b"operands: [true, 3]"),
-    "unknown-node-type": VALID_DOCUMENT.replace(b"type: wait", b"type: mystery"),
-    "action-predecessor-not-agent": b"""format_version: 1
-start: agent
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: action, type: action, next: final}
-  - {id: waiting, type: wait, answer_type: integer, next: action}
-  - {id: agent, type: agent, job: job-17, output: draft-17, next: waiting}
-""",
 }
 
 
 @pytest.mark.parametrize("document", INVALID_DOCUMENTS.values(), ids=INVALID_DOCUMENTS)
-def test_every_unsafe_or_invalid_yaml_v1_form_is_rejected(document: bytes) -> None:
+def test_every_unsafe_or_invalid_yaml_form_is_rejected_before_a_format_reads_it(
+    document: bytes,
+) -> None:
     with pytest.raises(InvalidWorkflowDocument):
+        parse_workflow_document(document)
+
+
+@pytest.mark.parametrize("declared", [1, 2])
+def test_a_retired_document_format_is_refused_by_name(declared: int) -> None:
+    """V1 and V2 stay named `WorkflowFormatVersion` members for the durable
+    layer's historical rows, but no model reads a document that declares one
+    (#901 slice 5): the retired key is refused, not looked up into a `KeyError`.
+    """
+    document = VALID_DOCUMENT.replace(
+        b"format_version: 3", f"format_version: {declared}".encode()
+    )
+
+    with pytest.raises(InvalidWorkflowDocument, match="unsupported"):
         parse_workflow_document(document)

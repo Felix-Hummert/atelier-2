@@ -153,12 +153,7 @@ from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
-from atelier2.contracts.workflows import (
-    ActionNode,
-    AgentNodeV2,
-    WorkflowGraphV2,
-    round_of,
-)
+from atelier2.contracts.workflows import round_of
 from atelier2.contracts.workflows_v3 import (
     ActionNodeV3,
     AgentNodeV3,
@@ -351,29 +346,24 @@ _AGENT_FAILURE_FORMATS = frozenset((WorkflowFormatVersion.V2, WorkflowFormatVers
 
 
 def _run_ending_event_predicate(
-    workflow_format_version: WorkflowFormatVersion,
     current_node_execution_id: NodeExecutionId,
 ) -> Callable[[tuple[str, NodeExecutionId]], bool]:
     """Whether one event is the event that ended this run.
 
-    Two families spell an ending differently, and both readers have to ask the
-    question rather than name one spelling. A V1 or V2 line ends on the
-    subworkflow completion of its final node, so the kind alone identifies it.
+    #194 H1b lifted the terminal condition off a dedicated terminal node onto
+    the run, so no single event kind identifies an ending alone. The kind
+    cannot, because every agent node completes or fails with the same pair, a
+    linear Action completes with its own kind, and a Wait node's answer
+    completes with a third. The execution cannot either, and that is the less
+    obvious half: an attempt event can advance the run's head without moving
+    it. What ends a run is the **completion or failure** of the exact
+    execution it stands on, so both halves are asked. Exact identity also
+    keeps an earlier round's completion at the same looped node from posing as
+    the current round's ending.
 
-    A V3 line ends on the node it stands on -- #194 H1b lifted the terminal
-    condition off the subworkflow node onto the run -- and there neither half
-    identifies it alone. The kind cannot, because every agent node completes or
-    fails with the same pair, a linear Action completes with its own kind, and a
-    Wait node's answer completes with a third. The execution cannot either, and
-    that is the less obvious half: an attempt event can advance the run's head
-    without moving it. What ends a V3 run is the **completion or failure** of
-    the exact execution it stands on, so both halves are asked. Exact identity
-    also keeps an earlier round's completion at the same looped node from
-    posing as the current round's ending.
-
-    The four kinds below are exhaustive for every V3 node the runtime can
+    The four kinds below are exhaustive for every node the runtime can
     currently stand a run's sink on -- Agent (two kinds), Action and Wait
-    (#510). A Deterministic or Subworkflow V3 node has no execution path yet
+    (#510). A Deterministic or Subworkflow node has no execution path yet
     (`bind_node` refuses one before any event could be written for it), so
     neither belongs here until that gap is closed with its own runtime wiring.
 
@@ -382,21 +372,14 @@ def _run_ending_event_predicate(
     projection.
     """
 
-    if workflow_format_version is WorkflowFormatVersion.V3:
-        ending = {
-            RunEventKind.AGENT_COMPLETED.value,
-            RunEventKind.AGENT_FAILED.value,
-            RunEventKind.ACTION_COMPLETED.value,
-            RunEventKind.WAIT_ANSWERED.value,
-        }
-        return lambda endpoint: (
-            endpoint[0] in ending and endpoint[1] == current_node_execution_id
-        )
-    terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
-    failed = RunEventKind.AGENT_FAILED.value
+    ending = {
+        RunEventKind.AGENT_COMPLETED.value,
+        RunEventKind.AGENT_FAILED.value,
+        RunEventKind.ACTION_COMPLETED.value,
+        RunEventKind.WAIT_ANSWERED.value,
+    }
     return lambda endpoint: (
-        endpoint[0] == terminal_kind
-        or (endpoint[0] == failed and endpoint[1] == current_node_execution_id)
+        endpoint[0] in ending and endpoint[1] == current_node_execution_id
     )
 
 
@@ -457,10 +440,10 @@ def _current_attempt_projection(
     *,
     session: Connection,
     run: RunV2 | RunV3,
-    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    graph: WorkflowGraphV3,
 ) -> AgentAttemptProjection:
     node = graph.node(run.current_node_id)
-    if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
+    if not isinstance(node, AgentNodeV3):
         raise RunTransitionConflict("current attempt does not belong to an agent")
     binding = next(
         (binding for binding in run.agent_bindings if binding.role.value == node.role),
@@ -494,52 +477,48 @@ def _current_attempt_projection(
             _pinned_maximum_assistant_turns(session, node),
         )
 
-    if isinstance(node, AgentNodeV2):
-        exact_request = request_for(node.job.encode("utf-8"))
-    else:
-        orders = load_run_inputs(session, run.run_id, node)
-        results = load_node_outputs(
-            session,
-            run.run_id,
-            run.revision_hash,
-            graph,
+    orders = load_run_inputs(session, run.run_id, node)
+    results = load_node_outputs(
+        session,
+        run.run_id,
+        run.revision_hash,
+        graph,
+        node,
+        run.current_round_ordinal,
+    )
+    attempt_id = AgentAttemptId(str(record["attempt_id"]))
+    repair_receipt = load_prior_output_schema_refusal_receipt(
+        session,
+        target_attempt_id=attempt_id,
+        target_node_execution_id=execution_id,
+        target_attempt_ordinal=ordinal,
+        expected_schema_revision=PublishedRevisionHash(
+            node.outputs[0].schema_reference.revision
+        ),
+    )
+    exact_request = request_for(
+        compose_agent_node_job_for_attempt(
             node,
-            run.current_round_ordinal,
-        )
-        attempt_id = AgentAttemptId(str(record["attempt_id"]))
-        repair_receipt = load_prior_output_schema_refusal_receipt(
-            session,
-            target_attempt_id=attempt_id,
+            orders,
+            results,
+            base_composition_version=NodeJobCompositionVersion.CURRENT,
             target_node_execution_id=execution_id,
             target_attempt_ordinal=ordinal,
-            expected_schema_revision=PublishedRevisionHash(
-                node.outputs[0].schema_reference.revision
-            ),
+            prior_refusal_receipt=repair_receipt,
         )
+    )
+    if repair_receipt is None and request_hash != exact_request.request_hash:
         exact_request = request_for(
             compose_agent_node_job_for_attempt(
                 node,
                 orders,
                 results,
-                base_composition_version=NodeJobCompositionVersion.CURRENT,
+                base_composition_version=NodeJobCompositionVersion.LEGACY,
                 target_node_execution_id=execution_id,
                 target_attempt_ordinal=ordinal,
-                prior_refusal_receipt=repair_receipt,
+                prior_refusal_receipt=None,
             )
         )
-        if repair_receipt is None and request_hash != exact_request.request_hash:
-            exact_request = request_for(
-                compose_agent_node_job_for_attempt(
-                    node,
-                    orders,
-                    results,
-                    base_composition_version=NodeJobCompositionVersion.LEGACY,
-                    target_node_execution_id=execution_id,
-                    target_attempt_ordinal=ordinal,
-                    prior_refusal_receipt=None,
-                )
-            )
-    attempt_id = AgentAttemptId(str(record["attempt_id"]))
     expected_attempt_id = AgentAttemptId.for_execution(
         execution_id, exact_request.request_hash, ordinal
     )
@@ -843,12 +822,11 @@ def _node_job_and_refusal(
 ) -> tuple[bytes | None, str | None, str | None]:
     """What this node was handed, and what stops it if something does.
 
-    A V1 or V2 node's job is the text its author wrote and nothing else, so there
-    is nothing to refuse. A no-input V3 Wait has the same answer: its authored
-    prompt. An input-bearing V3 Wait that has paused reads the exact question
+    A no-input Wait's job is its authored prompt, and there is nothing to
+    refuse. An input-bearing Wait that has paused reads the exact question
     from that execution's durable event; composition is only a preview before
     the pause or a diagnostic when a corrupt nonlive execution lacks its pause.
-    A V3 Agent job is composed from its authored opening and declared inputs.
+    An Agent job is composed from its authored opening and declared inputs.
 
     Composition is exactly where a refusal surfaces, because reading an earlier
     node's value against the schema its author pinned happens there. The
@@ -856,9 +834,6 @@ def _node_job_and_refusal(
     stuck node wants to be told the reason, not to be refused the question.
     """
 
-    if isinstance(node, AgentNodeV2):
-        job = node.job.encode("utf-8")
-        return job, Sha256Hash.of(job).value, None
     if isinstance(node, WaitNodeV3):
         if not node.inputs:
             question_bytes = node.prompt.encode("utf-8")
@@ -1087,12 +1062,12 @@ ANSWER_BEARING_EVENT_KINDS: frozenset[str] = frozenset(
 )
 """Every event kind whose payload is a node's produced value.
 
-This is its own set rather than a reuse of `_run_ending_event_predicate`'s V3
-ending kinds: that one names what closes a V3 run's current execution, scoped
-to the format that can stand a run's sink on a bare Action or Wait node. This
-one names what a value-bearing write looks like at all, read for V1, V2 and V3
-alike wherever a node's own answer is asked for -- the two sets share members
-by coincidence of what "finished" means, not by one owning the other's rule.
+This is its own set rather than a reuse of `_run_ending_event_predicate`'s
+ending kinds: that one names what closes a run's current execution, scoped to
+the node kinds that can stand a run's sink today. This one names what a
+value-bearing write looks like at all, read wherever a node's own answer is
+asked for -- the two sets share members by coincidence of what "finished"
+means, not by one owning the other's rule.
 """
 
 
@@ -1779,7 +1754,7 @@ class DbosQueries:
             for run in loaded_runs
             if isinstance(
                 graphs[run.revision_hash].node(run.current_node_id),
-                (AgentNodeV2, AgentNodeV3),
+                AgentNodeV3,
             )
         }
         attempt_records: dict[str, list[Mapping[Any, Any]]] = {}
@@ -1826,7 +1801,7 @@ class DbosQueries:
             if run.state in {RunState.FAILED, RunState.CANCELLED, RunState.COMPLETED}
             and isinstance(
                 graphs[run.revision_hash].node(run.current_node_id),
-                (ActionNode, ActionNodeV3),
+                ActionNodeV3,
             )
         )
         intent_runs = waiting_runs + ended_action_runs
@@ -1994,8 +1969,6 @@ class DbosQueries:
                 # public node ending.
                 if records_for_execution and run.state is not RunState.COMPLETED:
                     graph = graphs[run.revision_hash]
-                    if not isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
-                        raise RunTransitionConflict("bound run has a V1 workflow graph")
                     attempt_projections = tuple(
                         _current_attempt_projection(
                             attempt_record,
@@ -2096,7 +2069,6 @@ class DbosQueries:
                 if set(endpoint_records) != required_sequences:
                     return EventHistoryCorrupt()
                 ended_the_run = _run_ending_event_predicate(
-                    WorkflowFormatVersion(int(record["workflow_format_version"])),
                     NodeExecutionId.for_node(
                         run_id,
                         WorkflowRevisionHash(str(record["revision_hash"])),
@@ -2185,7 +2157,6 @@ class DbosQueries:
                 if sequences != expected_sequences:
                     return EventHistoryCorrupt()
                 ended_the_run = _run_ending_event_predicate(
-                    WorkflowFormatVersion(int(run_record["workflow_format_version"])),
                     NodeExecutionId.for_node(
                         run_id,
                         WorkflowRevisionHash(str(run_record["revision_hash"])),

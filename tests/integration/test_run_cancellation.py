@@ -516,7 +516,7 @@ def test_runner_success_overtakes_an_accepted_run_cancel_command(
             RunnerTerminalEvidenceEnvelope(
                 binding,
                 invocation,
-                RunnerProviderResult(AgentExecutionResult(b"finished in hand")),
+                RunnerProviderResult(AgentExecutionResult(b'"finished in hand"')),
             ),
         )
         assert isinstance(committed, RunnerTerminalEvidenceCommitted)

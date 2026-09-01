@@ -145,19 +145,6 @@ from tests.scenarios.runs import (
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, V3_DOCUMENT, declared_output
 
-DOCUMENT = b"""format_version: 1
-start: wait
-nodes:
-  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: wait, type: wait, answer_type: integer, next: final}
-"""
-"""The format-1 document the publisher and V1 start-door tests still stand on.
-
-The publisher and the format-1 start request are live production doors until
-the V1 grammar falls, so the tests that measure them keep a format-1 document.
-It declares no agent node: nothing that stands on it can reach one.
-"""
-
 
 def _wait_sink_document(prompt: str) -> bytes:
     """A served line whose single node is the answer a person owes it.
@@ -459,7 +446,7 @@ def test_revision_publication_created_and_existing_are_decided_by_one_write(
     runtime: DbosRuntime,
 ) -> None:
     publisher = DbosWorkflowRevisionPublisher(runtime.engine)
-    revision = WorkflowRevision(DOCUMENT)
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
 
     first = publisher.publish(revision)
     retry = publisher.publish(revision)
@@ -477,7 +464,7 @@ def test_revision_publication_created_and_existing_are_decided_by_one_write(
 
 def test_concurrent_publication_has_one_created_fact(runtime: DbosRuntime) -> None:
     publisher = DbosWorkflowRevisionPublisher(runtime.engine)
-    revision = WorkflowRevision(DOCUMENT)
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
     barrier = Barrier(4)
 
     def publish(_: int) -> object:
@@ -578,7 +565,9 @@ def test_missing_revision_start_never_acquires_a_write_lock_or_blocks_publicatio
 ) -> None:
     requested = WorkflowRevisionHash("0" * 64)
     concurrent_revision = WorkflowRevision(
-        DOCUMENT.replace(b"operands: [2, 3]", b"operands: [2, 4]")
+        WAIT_SINK_DOCUMENT.replace(
+            b"What is the answer?", b"What is a different answer?"
+        )
     )
     statements: list[str] = []
     publication_completed = False
@@ -635,7 +624,8 @@ def test_missing_revision_start_never_acquires_a_write_lock_or_blocks_publicatio
 def test_concurrent_start_enqueues_only_the_transaction_that_created_the_run(
     runtime: DbosRuntime,
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
     assert isinstance(
         DbosWorkflowRevisionPublisher(runtime.engine).publish(revision),
         DurableRevisionCreated,
@@ -1044,9 +1034,11 @@ def _client(
 def test_valid_revision_over_projection_limit_is_unrepresentable(
     runtime: DbosRuntime,
 ) -> None:
-    revision = WorkflowRevision(
-        DOCUMENT.replace(b"final", b"final-node-beyond-the-bound")
-    )
+    # A V3 projection renders no per-field character bound; only its node count
+    # is read-side-bounded, so the over-limit revision here is a valid document
+    # whose node count exceeds a read configured tighter than the document's
+    # own shape -- not, as a format-1 document could, an oversized field value.
+    revision = WorkflowRevision(PAUSED_LINE_DOCUMENT)
     assert isinstance(
         DbosWorkflowRevisionPublisher(runtime.engine).publish(revision),
         DurableRevisionCreated,
@@ -1056,7 +1048,7 @@ def test_valid_revision_over_projection_limit_is_unrepresentable(
             sa.select(sa.func.count()).select_from(workflow_revisions)
         )
 
-    response = _client(runtime, api_limits(maximum_field_characters=5)).get(
+    response = _client(runtime, api_limits(maximum_workflow_nodes=1)).get(
         "/atelier/api/v1/workflow-revisions/" + revision.revision_hash.value
     )
 
@@ -1077,8 +1069,10 @@ def test_valid_revision_over_projection_limit_is_unrepresentable(
 def test_http_publication_collision_changes_no_durable_state_or_workflow(
     runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    requested = WorkflowRevision(DOCUMENT)
-    stored_document = DOCUMENT.replace(b"operands: [2, 3]", b"operands: [2, 5]")
+    requested = WorkflowRevision(WAIT_SINK_DOCUMENT)
+    stored_document = WAIT_SINK_DOCUMENT.replace(
+        b"What is the answer?", b"What is a stored answer?"
+    )
     with runtime.engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(
@@ -1101,7 +1095,7 @@ def test_http_publication_collision_changes_no_durable_state_or_workflow(
 
     response = _client(runtime).post(
         "/atelier/api/v1/workflow-revisions",
-        content=DOCUMENT,
+        content=WAIT_SINK_DOCUMENT,
         headers={"content-type": "application/yaml"},
     )
 
@@ -2135,7 +2129,8 @@ def _assert_parser_has_no_serialized_write_lock(
 def test_start_parses_workflow_before_begin_immediate(
     runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
     publisher = DbosWorkflowRevisionPublisher(runtime.engine)
     assert isinstance(publisher.publish(revision), DurableRevisionCreated)
     original_parser = starter_module.parse_workflow_document
@@ -2193,12 +2188,15 @@ def test_wait_answer_parses_workflow_before_begin_immediate(
 def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
     runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    revision = WorkflowRevision(DOCUMENT)
+    _publish_referenced_revisions(runtime, ANY_JSON_SCHEMA)
+    revision = WorkflowRevision(WAIT_SINK_DOCUMENT)
     assert isinstance(
         DbosWorkflowRevisionPublisher(runtime.engine).publish(revision),
         DurableRevisionCreated,
     )
-    changed_document = DOCUMENT.replace(b"operands: [2, 3]", b"operands: [2, 4]")
+    changed_document = WAIT_SINK_DOCUMENT.replace(
+        b"What is the answer?", b"What is a different answer?"
+    )
     original_parser = starter_module.parse_workflow_document
 
     def drift_revision(document: bytes):

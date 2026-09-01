@@ -127,7 +127,7 @@ function episodeShapeOf(
   revision: WorkflowRevisionDetail
 ): { role: string; briefOrderName: string } | null {
   const graph = revision.graph;
-  if (graph.workflow_format_version !== 3 || !graph.executable) return null;
+  if (!graph.executable) return null;
   const [role, ...moreRoles] = graph.agent_roles;
   const [order, ...moreOrders] = graph.orders;
   if (role === undefined || moreRoles.length > 0) return null;

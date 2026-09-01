@@ -79,15 +79,12 @@ from atelier2.contracts.work_items import (
     read_work_item_order_document,
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
-from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
 from atelier2.contracts.workflows_v3 import (
-    ANY_ACTION_NODE_KINDS,
     ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocument,
     AnyWorkflowDocumentNode,
     GraphInputSource,
-    WorkflowGraphV3,
 )
 from atelier2.ports.agent_tool_effects import (
     AgentToolEffectPending,
@@ -117,10 +114,10 @@ def graph_action_intent(
     if (
         run.revision_hash != revision_hash
         or run.state is not RunState.STARTED
-        or not isinstance(action, ANY_ACTION_NODE_KINDS)
+        or not isinstance(action, ActionNodeV3)
     ):
         raise RunEffectConflict("effect requires the current STARTED Action")
-    if isinstance(action, ActionNodeV3) and action.inputs:
+    if action.inputs:
         return _documentation_release_action_intent(
             session,
             run_id,
@@ -130,52 +127,19 @@ def graph_action_intent(
             project_id,
         )
     predecessor = _action_predecessor(graph, action)
-    if not isinstance(predecessor, (AgentNode, AgentNodeV2, AgentNodeV3)):
-        raise RunEffectConflict("Action predecessor is not an Agent")
-    record = None
-    if isinstance(graph, WorkflowGraphV3):
-        payload = load_node_output_payload(
-            session,
-            run_id,
-            revision_hash,
-            graph,
-            predecessor.id,
-            run.current_round_ordinal,
-        )
-    else:
-        record = session.execute(
-            sa.select(run_events.c.payload, run_events.c.payload_hash).where(
-                run_events.c.run_id == run_id.value,
-                run_events.c.revision_hash == revision_hash.value,
-                run_events.c.node_id == predecessor.id,
-                run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
-            )
-        ).one_or_none()
-        if record is None:
-            raise RunEffectConflict("Action has no durable Agent output")
-        payload = bytes(record.payload)
-    expected_output = (
-        predecessor.output.encode("utf-8")
-        if isinstance(predecessor, AgentNode)
-        else payload
+    payload = load_node_output_payload(
+        session,
+        run_id,
+        revision_hash,
+        graph,
+        predecessor.id,
+        run.current_round_ordinal,
     )
-    if (
-        record is not None and Sha256Hash.of(payload).value != record.payload_hash
-    ) or payload != expected_output:
-        raise RunEffectConflict("Action predecessor output binding changed")
-    operation = (
-        _operation_for(session, action.operation)
-        if isinstance(action, ActionNodeV3)
-        else AdapterOperationAccepted(AdapterOperationName.OPEN_PR)
-    )
+    operation = _operation_for(session, action.operation)
     effect_adapter_binding = _binding_for(effect_adapter_bindings, operation.operation)
     request = CanonicalRequest(payload)
     if operation.operation is AdapterOperationName.OPEN_PR:
-        if isinstance(action, ActionNodeV3) and project_id is not None:
-            if not isinstance(predecessor, AgentNodeV3):
-                raise RunEffectConflict(
-                    "V3 open-pr Action predecessor is not a V3 Agent"
-                )
+        if project_id is not None:
             head_branch = _confirmed_push_branch(
                 session,
                 run_id,
@@ -688,16 +652,14 @@ def _agent_output(session: Any, execution_id: NodeExecutionId) -> bytes:
 
 
 def _action_predecessor(
-    graph: AnyWorkflowDocument, action: ActionNode | ActionNodeV3
-) -> object:
-    if isinstance(graph, WorkflowGraphV3):
-        if not isinstance(action, ActionNodeV3) or len(action.depends_on) != 1:
-            raise RunEffectConflict("Action predecessor is not an Agent")
-        predecessor = graph.node(action.depends_on[0])
-        if not isinstance(predecessor, AgentNodeV3):
-            raise RunEffectConflict("Action predecessor is not an Agent")
-        return predecessor
-    return graph.predecessor(action.id)
+    graph: AnyWorkflowDocument, action: ActionNodeV3
+) -> AgentNodeV3:
+    if len(action.depends_on) != 1:
+        raise RunEffectConflict("Action predecessor is not an Agent")
+    predecessor = graph.node(action.depends_on[0])
+    if not isinstance(predecessor, AgentNodeV3):
+        raise RunEffectConflict("Action predecessor is not an Agent")
+    return predecessor
 
 
 def _confirmed_push_branch(

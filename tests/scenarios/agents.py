@@ -24,6 +24,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeWorkspaceToolExecutorFactory,
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import (
@@ -73,7 +74,7 @@ from atelier2.contracts.host_configuration import (
     ModelRegistryRevision,
     ProviderModelCheck,
 )
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
@@ -92,6 +93,7 @@ from atelier2.ports.host_configuration import (
     ModelRegistryRevisionCreated,
     ModelRegistryRevisionExisting,
 )
+from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 SCENARIO_PROVIDER_FRAME_BYTES = 49_152
 """The raw stdout frame a scenario provider declares when it is not the subject."""
@@ -329,12 +331,18 @@ def claude_subscription_deployment(
     )
 
 
-CLAUDE_SUBSCRIPTION_WORKFLOW = b"""format_version: 2
-start: build
+CLAUDE_SUBSCRIPTION_WORKFLOW = f"""format_version: 3
+name: Claude subscription host document
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
+    outputs:
+      - name: result
+        schema: {{ref: result-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
+""".encode()
 
 
 def claude_subscription_runtime(
@@ -401,6 +409,10 @@ def claude_subscription_publication(
         AgentConfigurationRevisionFormatVersion.V2,
     )
     catalog.publish_agent_configuration_revision(configuration)
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("anthropic"), (configuration,)
+    )
+    DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
     workflow = WorkflowRevision(CLAUDE_SUBSCRIPTION_WORKFLOW)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return configuration, workflow
@@ -455,7 +467,7 @@ def claude_subscription_attempt(
         runtime, run_name, model, requested_capability, executor_revision
     )
     assert isinstance(started, DurableRunCreated)
-    assert isinstance(started.run, RunV2)
+    assert isinstance(started.run, RunV3)
     return agent_attempt_execution(
         AgentExecutionRequestV2(
             NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),

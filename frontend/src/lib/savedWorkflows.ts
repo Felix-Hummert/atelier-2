@@ -1,15 +1,14 @@
 import type { WorkflowRevisionDetail, WorkflowRevisionSummary } from "../api/client";
 
 /**
- * One picker row: either a published name with every listed revision of it,
- * or one unnamed document that cannot share a name.
+ * One picker row: a published name with every listed revision of it.
  *
  * `revisions[0]` is the default choice — the catalog head when the caller
  * supplied it, otherwise the first listed member of that name.
  */
 export interface SavedWorkflowRow {
   key: string;
-  name: string | null;
+  name: string;
   revisions: WorkflowRevisionSummary[];
 }
 
@@ -21,10 +20,7 @@ export function groupSavedWorkflows(
   const order: string[] = [];
 
   for (const revision of revisions) {
-    const key =
-      revision.name === null
-        ? `unnamed:${revision.workflow_revision_hash}`
-        : `named:${revision.name}`;
+    const key = `named:${revision.name}`;
     const existing = grouped.get(key);
     if (existing === undefined) {
       grouped.set(key, [revision]);
@@ -36,23 +32,18 @@ export function groupSavedWorkflows(
 
   return order.map((key) => {
     const group = grouped.get(key) ?? [];
-    const name = group[0]?.name ?? null;
-    const newest = name === null ? undefined : newestByName[name];
+    const name = group[0]?.name ?? "";
     return {
       key,
       name,
-      revisions: withHeadFirst(group, newest)
+      revisions: withHeadFirst(group, newestByName[name])
     };
   });
 }
 
 /** The roles authored by an executable workflow document, once each. */
 export function agentRolesOf(graph: WorkflowRevisionDetail["graph"]): string[] {
-  if (graph.workflow_format_version === 3) return [...new Set(graph.agent_roles)];
-  if (graph.workflow_format_version === 2) {
-    return [...new Set(graph.nodes.filter((node) => node.type === "agent").map((node) => node.role))];
-  }
-  return [];
+  return [...new Set(graph.agent_roles)];
 }
 
 function withHeadFirst(

@@ -25,11 +25,10 @@ export interface CatalogWorkflowRow {
   revisionHash: string;
   title: string;
   /**
-   * The document's own declared name, `null` for the same revisions `title`
-   * falls back to a placeholder for. The Details door (#695) needs the real
-   * name, never the placeholder, to build the workflow detail page's path.
+   * The document's own declared name. The Details door (#695) needs it to
+   * build the workflow detail page's path.
    */
-  name: string | null;
+  name: string;
   description: string | null;
   /**
    * `null` where this room cannot honestly answer: the catalog is asked by
@@ -114,7 +113,7 @@ export function catalogWorkflowRows(
     const kept = isAdmittedName ? row.revisions.slice(0, 1) : row.revisions;
     return kept.map((revision, index) => ({
       revisionHash: revision.workflow_revision_hash,
-      title: revision.name ?? catalogPageCopy.unnamedWorkflow,
+      title: revision.name,
       name: revision.name,
       description: revision.description,
       state: workflowEntryState(revision, catalogByName),
@@ -166,9 +165,6 @@ function workflowEntryState(
       kind: "not-executable",
       reason: humanStartRefusal(revision.not_executable_reason ?? "")
     };
-  }
-  if (revision.name === null) {
-    return null;
   }
   const held = catalogByName[revision.name];
   if (held?.kind === "admitted" && held.revisionHash === revision.workflow_revision_hash) {

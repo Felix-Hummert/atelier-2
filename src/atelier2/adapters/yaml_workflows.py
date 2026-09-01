@@ -159,13 +159,18 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
         declared = loaded["format_version"]
         try:
             version = WorkflowFormatVersion(declared)
-        except ValueError as error:
+        except ValueError:
+            version = None
+        document_format = (
+            None if version is None else WORKFLOW_DOCUMENT_FORMATS.get(version)
+        )
+        if document_format is None:
             raise _refused(
                 WorkflowRefusalReason.INVALID_VALUE,
                 "format_version",
                 f"workflow format version {declared} is unsupported",
-            ) from error
-        return WORKFLOW_DOCUMENT_FORMATS[version].read(loaded)
+            )
+        return document_format.read(loaded)
     except InvalidWorkflowDocument:
         raise
     except WorkflowDocumentRefused as refused:

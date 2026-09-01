@@ -17,6 +17,7 @@ import atelier2.adapters.dbos.workflow as dbos_workflow
 from atelier2.adapters.candidate_store import GitCandidateTreeStore
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_transitions import load_run
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
@@ -88,14 +89,21 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_queries
 from tests.scenarios.projects import git_project
+from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 CRASHED = 86
-DOCUMENT = b"""format_version: 2
-start: build
+DOCUMENT = f"""format_version: 3
+name: Agent attempt crash harness document
 nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: build, next: done}
-"""
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
+    outputs:
+      - name: result
+        schema: {{ref: result-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
+""".encode()
 
 
 _APPENDS_TO_COUNTER = (
@@ -122,7 +130,10 @@ def controlled_process_executor(counter: Path) -> RecordingAgentExecutorV2:
 
     return RecordingAgentExecutorV2(
         command=launching(sys.executable, "-c", _APPENDS_TO_COUNTER, str(counter)),
-        decoder=decoding_to(b"done"),
+        # A JSON string, not bare text: the declared output schema is
+        # schema-validated JSON now (#901 slice 5), so an answer this harness
+        # never contends over still has to parse.
+        decoder=decoding_to(b'"done"'),
     )
 
 
@@ -320,6 +331,7 @@ def request(lease: DbosRuntime) -> AgentExecutionRequestV2:
     publish_checked_model_registry(
         lease.engine, ProviderId("anthropic"), (configuration,)
     )
+    DbosCatalogStore(lease.engine).publish_revision(ANY_JSON_SCHEMA)
     workflow = WorkflowRevision(DOCUMENT)
     DbosWorkflowRevisionPublisher(lease.engine).publish(workflow)
     binding_set = AgentBindingSet(
@@ -355,7 +367,7 @@ def main(root: Path, mode: str) -> None:
     lease = runtime(root)
     try:
         exact_request = request(lease)
-        store = DbosAgentAttemptStore(lease.engine)
+        store = DbosAgentAttemptStore(lease.engine, lease.settings.application_version)
         if mode == "crash-prepared":
             store.prepare(agent_attempt_execution(exact_request))
             os._exit(CRASHED)
