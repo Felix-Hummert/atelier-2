@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.references import MAX_SIGNED_INT64
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -36,6 +37,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.orders import ArtifactOrderValue
+from atelier2.contracts.queue_projection import QueuePriorityRank
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -144,7 +146,9 @@ RESULT_SCHEMA = PublishedRevision(
             "type": "object",
             "additionalProperties": false,
             "required": ["rank"],
-            "properties": {"rank": {"type": "integer", "minimum": 1}}
+            "properties": {
+              "rank": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}
+            }
           }
         }
       }
@@ -220,6 +224,33 @@ INVALID_BREAKDOWN = {
     "sentence_assignment": "all_assigned",
     "verdict": "buildable",
 }
+
+
+@pytest.mark.parametrize("rank", [0, 1, MAX_SIGNED_INT64, MAX_SIGNED_INT64 + 1])
+def test_the_shipped_result_schema_accepts_a_rank_exactly_when_queuepriorityrank_and_the_wire_ceiling_do(
+    rank: int,
+) -> None:
+    """The `priority.rank` fragment cannot `$ref` its owner (schemas_v3 forbids
+    cross-schema references), so it is a copy that must be kept honest by test:
+    `QueuePriorityRank` owns the positive-integer floor, and the wire resource
+    `QueuePriorityRankRequestResource` additionally owns the `MAX_SIGNED_INT64`
+    ceiling. A schema fragment wider or narrower than both together is drift.
+    """
+    try:
+        QueuePriorityRank(rank)
+        domain_accepts = True
+    except ValueError:
+        domain_accepts = False
+    schema_should_accept = domain_accepts and rank <= MAX_SIGNED_INT64
+
+    schema = read_schema_document(RESULT_SCHEMA.document)
+    assert isinstance(schema, SchemaAccepted), schema
+    slice_with_rank = {**BREAKDOWN["slices"][0], "priority": {"rank": rank}}
+    instance = json.dumps(
+        {**BREAKDOWN, "slices": [slice_with_rank]}, ensure_ascii=False
+    ).encode()
+    result = read_instance_document(instance, schema)
+    assert isinstance(result, InstanceAccepted) == schema_should_accept
 
 
 def runtime_over(

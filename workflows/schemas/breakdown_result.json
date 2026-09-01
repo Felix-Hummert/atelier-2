@@ -44,7 +44,9 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["rank"],
-            "properties": {"rank": {"type": "integer", "minimum": 1}}
+            "properties": {
+              "rank": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}
+            }
           }
         }
       }

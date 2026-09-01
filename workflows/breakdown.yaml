@@ -39,8 +39,7 @@ nodes:
       without a sentence assignment when sentences were handed. When the named
       form contains no sentences, leave every slice's proves and defers empty
       and set sentence_assignment to no_regulated_sentences_supplied; otherwise
-      set it to all_assigned. Name live admission of this new workflow revision
-      as the landing step in the slice that publishes it.
+      set it to all_assigned.
     inputs:
       - name: item_body
         from:
@@ -55,4 +54,4 @@ nodes:
       - name: result
         schema:
           ref: breakdown_result
-          revision: "d4275eb30c4433f8d8e7a57f3734023af3933bf3fbed9d0c30ed3419423546ce"
+          revision: "eb94d4d152de7e3df3105b66e50cda3df87630eab8a64ee7b9569a9a164c27ca"
