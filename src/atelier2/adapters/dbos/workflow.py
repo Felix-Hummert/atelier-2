@@ -436,7 +436,7 @@ def _reconstructed_agent_job_candidates(
             )
             if prior_receipt_attempt_id is not None:
                 raise RunTransitionConflict(
-                    "repair receipt belongs to a non-V3 agent node"
+                    "repair receipt belongs to a node that is not an agent node"
                 )
             return None, None
         receipt = load_prior_output_schema_refusal_receipt(

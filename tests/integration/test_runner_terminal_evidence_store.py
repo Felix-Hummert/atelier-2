@@ -521,7 +521,7 @@ def test_typed_runner_failures_reach_one_named_product_seam(
                 ),
                 {"execution": execution.request.node_execution_id.value},
             )
-            assert stored_reason is None or stored_reason == reason
+            assert stored_reason == reason
     finally:
         runtime.close()
 
