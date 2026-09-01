@@ -8,6 +8,11 @@ from typing import NoReturn
 import pytest
 from referencing.exceptions import Unretrievable
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.evaluate_executability import (
+    DocumentNotExecutable,
+    resolve_document_references,
+)
 from atelier2.application.resolve_references import resolve_declared_reference
 from atelier2.contracts import schemas_v3
 from atelier2.contracts.revisions_v3 import (
@@ -34,7 +39,7 @@ from atelier2.contracts.schemas_v3 import (
     refuse_retrieval,
     schema_registry,
 )
-from atelier2.contracts.workflows_v3 import VersionedReference
+from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
@@ -208,6 +213,45 @@ def test_a_revision_of_another_kind_is_never_read_as_a_schema() -> None:
     resolved = resolution_of(b"the standing method of a builder", RevisionKind.PROFILE)
 
     assert isinstance(resolved, ResolvedReference)
+
+
+def one_node_document_pinning(schema: PublishedRevision) -> WorkflowGraphV3:
+    """The smallest document that declares one output and pins its schema."""
+    document = f"""format_version: 3
+name: Settle one verdict
+nodes:
+  - id: decide
+    type: agent
+    role: judge
+    mode: headless
+    instruction: Settle the verdict this panel was asked for.
+    outputs:
+      - name: verdict
+        schema: {{ref: verdict_schema, revision: {schema.revision_hash.value}}}
+"""
+    graph = parse_workflow_document(document.encode("utf-8"))
+    assert isinstance(graph, WorkflowGraphV3)
+    return graph
+
+
+@pytest.mark.proves("a-schema-revision-outside-the-profile-is-refused-by-name")
+def test_a_document_pinning_an_unusable_schema_never_becomes_bindable() -> None:
+    """The whole document is refused, not merely the one reference read alone.
+
+    The tests above ask the resolver about a single declared reference. What a
+    start asks is whether the document binds at all, and that answer must name the
+    same fault -- otherwise a revision could be called bindable and then refused.
+    """
+    prose = PublishedRevision(RevisionKind.SCHEMA, b"the verdict a panel returns")
+
+    refused = resolve_document_references(
+        one_node_document_pinning(prose), OneRevisionRegistry(prose)
+    )
+
+    assert isinstance(refused, DocumentNotExecutable), refused
+    assert refused.refusal is not None
+    assert refused.refusal.reason is ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT
+    assert refused.refusal.site == ReferenceSite("outputs.schema", "decide", "verdict")
 
 
 THE_THREE_THAT_EVALUATION_CANNOT_SURVIVE: tuple[

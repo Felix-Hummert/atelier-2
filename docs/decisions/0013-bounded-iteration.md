@@ -35,10 +35,14 @@ The parser preserves the bound, green condition and handover exactly as authored
 It refuses a missing, non-positive or out-of-range bound; a green condition that
 contradicts the node's own output schema; duplicate handovers; and a seed the
 document cannot order or declare. `iterate` on another node kind is refused rather
-than ignored. The composed preview names the bound and condition before any start.
+than ignored.
 
 These document-level checks do not bind a referenced workflow or make a run
-executable. That boundary is intentionally absent after #449.
+executable. That boundary is intentionally absent after #449. Neither does any
+surface read the bound and condition back before a start: this ADR once concluded
+that a composed preview would name them, and #450 tore that derivation out
+unbuilt, so the first surface to draw a revision before it runs owns that
+conclusion afresh.
 
 ## Superseding record
 

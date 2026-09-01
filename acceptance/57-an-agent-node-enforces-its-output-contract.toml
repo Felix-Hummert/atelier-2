@@ -107,10 +107,12 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 #   one caller left and is no longer the thing it named. Its former proof,
 #   `test_the_binding_refuses_the_snapshot_the_preview_keeps_drawing` in
 #   `tests/domain/test_schemas_v3.py`, is retired with it; that file's schema
-#   half is untouched. The surviving half -- an unusable schema document refuses
-#   its reference under `unusable_schema_document` -- stays declared by the first
-#   sentence below and proven by the same file's
-#   `test_a_schema_document_outside_the_profile_is_refused_by_name`.
+#   half is untouched. The surviving caller is the run-configuration binding, and
+#   it keeps the strength it had. The first sentence below already declares that
+#   such a document is refused before anything binds or starts, and the same file
+#   now proves both levels the retired test crossed: one declared reference in
+#   `test_a_schema_document_outside_the_profile_is_refused_by_name`, and the whole
+#   document in `test_a_document_pinning_an_unusable_schema_never_becomes_bindable`.
 #
 # This file therefore does not list every sentence of #57.
 
