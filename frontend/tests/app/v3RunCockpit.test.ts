@@ -313,8 +313,18 @@ describe("a version 3 run in the cockpit", () => {
 
     // A V3 graph always declares a name once read; while it is still arriving
     // the title says that honestly instead of falling back to the raw run id.
+    // The title and the rail both carry their own loading region (the same
+    // shared component, REQ-UIQ-13), so both say the identical sentence.
     await screen.findByRole("heading", { level: 1, name: runPageCopy.looking });
-    expect(screen.getByRole("status").textContent).toBe(runPageCopy.looking);
+    const statuses = screen.getAllByRole("status");
+    expect(statuses.length).toBe(2);
+    for (const status of statuses) {
+      // Insignificant whitespace from the surrounding `{#if}` block's own
+      // indentation collapses visually in a browser; this normalizes it the
+      // same way `historyPage.test.ts`'s `visibleResultText` does, so the
+      // assertion pins the rendered sentence, not incidental DOM shape.
+      expect((status.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(runPageCopy.looking);
+    }
     expect(screen.queryByRole("region", { name: workflowGraphCopy.label })).toBeNull();
   });
 

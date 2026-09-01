@@ -7,38 +7,62 @@ import { FRONTEND_SRC, svelteImportClosure, svelteSourcesIn } from "../support/w
 /**
  * REQ-UIQ-10 (loading is a silent skeleton) and REQ-UIQ-13 (one behaviour,
  * one component across surfaces, proven here first): `ReadState`,
- * `AttemptTranscript`, `PinnedDecision`, `V3AnswerCard`, and `HistoryPage`
- * each once drew their own loading state -- a spinner glyph, a dimmed
- * heading, or a plain status line, only `AttemptTranscript`'s conforming to
- * REQ-UIQ-10's skeleton (a shape mark and shape lines, dashed border, no
- * glyph). `HistoryPage` was the fifth, unmeasured occurrence of the same
- * defect (its own `historyPageCopy.looking` literal, found while this issue
- * was already in flight); all five now render
- * `components/LoadingState.svelte`.
+ * `AttemptTranscript`, `PinnedDecision`, `V3AnswerCard`, `NodeDetailPanel`,
+ * `V3RunView`, `HistoryPage`, and `RunCockpitPage` each once drew at least
+ * one loading rendering of their own -- a spinner glyph, a dimmed heading, a
+ * plain status line, or a plain page title -- only `AttemptTranscript`'s
+ * conforming to REQ-UIQ-10's skeleton (a shape mark and shape lines, dashed
+ * border, no glyph). Four of those (`RunCockpitPage`, `V3RunView` twice,
+ * `NodeDetailPanel`, and `V3AnswerCard`'s own second spot) were an
+ * independent review's floor, not its ceiling -- re-inventoried by hand
+ * against every `*ooking`-named copy reference in the room, not just the
+ * lines named. All now render `components/LoadingState.svelte`.
  *
- * The proof follows `roomQuestionPattern.test.ts`'s shape: it discovers the
- * shared owner from the skeleton's own CSS signature -- the unique file in
- * the room tree that defines both `.loading-mark` and `.loading-lines` and
- * is imported by another file -- then pins the exact consumer list so a
- * sixth site or a dropped one is caught, not assumed (exact-pin: red on
- * growth and on shrinkage). A second file independently defining that same
- * signature is reported as a second implementation, whether or not it also
- * consumes the owner.
+ * The proof follows `roomQuestionPattern.test.ts`'s shape in two parts:
+ * 1. it discovers the shared owner from the skeleton's own CSS signature --
+ *    the unique file in the room tree that defines both `.loading-mark` and
+ *    `.loading-lines` and is imported by another file -- then pins the exact
+ *    consumer list so a further site or a dropped one is caught, not
+ *    assumed (exact-pin: red on growth and on shrinkage). A second file
+ *    independently defining that same signature is reported as a second
+ *    implementation, whether or not it also consumes the owner.
+ * 2. it runs a second, unpinned check over the *entire* room tree (not the
+ *    consumer list above) for any `*ooking`-named copy reference -- the
+ *    established naming convention every owner already uses (`looking`,
+ *    `questionLooking`, `answerContextLooking`, and any future sibling) --
+ *    that renders in a template outside a `<LoadingState>` tag, and for the
+ *    retired `"Looking…"` literal reappearing anywhere. A brand new page
+ *    that invents its own spinner from an existing or future owned copy
+ *    value goes red the moment it is written, before anyone has to
+ *    remember to pin it.
+ *
+ * What this cannot see: a value first built in a `<script>` block (for
+ * example a derived page title) and only later rendered as an opaque
+ * variable. That class of regression needs ordinary review or a behavioural
+ * test at the call site, not a source scan.
  */
 
+const SCRIPT_OR_STYLE = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi;
+const HTML_COMMENT = /<!--[\s\S]*?-->/g;
 const STYLE_BLOCK = /<style\b[^>]*>([\s\S]*?)<\/style>/i;
 const SVELTE_FROM = /\bfrom\s+["']([^"']+\.svelte)["']/g;
 const SKELETON_MARK_RULE = /\.loading-mark\b/;
 const SKELETON_LINES_RULE = /\.loading-lines\b/;
+const LOADING_STATE_OPEN_TAG = /<LoadingState\b/g;
+/** The established naming convention every copy owner uses for this exact behaviour. */
+const LOOKING_FAMILY_REFERENCE = /\.(?:looking|[A-Za-z0-9_]*Looking)\b/g;
 /** The retired literal every consumer must reach through the copy owner instead of re-declaring. */
 const LOOKING_LITERAL = "Looking…";
 
 const EXPECTED_CONSUMERS = [
   "components/AttemptTranscript.svelte",
+  "components/NodeDetailPanel.svelte",
   "components/PinnedDecision.svelte",
   "components/ReadState.svelte",
   "components/V3AnswerCard.svelte",
-  "pages/HistoryPage.svelte"
+  "components/V3RunView.svelte",
+  "pages/HistoryPage.svelte",
+  "pages/RunCockpitPage.svelte"
 ] as const;
 
 function roomTemplates(): string[] {
@@ -103,6 +127,113 @@ function skeletonConsumers(files: ReadonlyMap<string, string>, owner: string): s
     .filter(([file, source]) => file !== owner && svelteImports(file, source).includes(owner))
     .map(([file]) => file)
     .sort();
+}
+
+function keepNewlines(text: string): string {
+  return text.replace(/[^\n]/g, " ");
+}
+
+/** Blanks `<script>`, `<style>`, and comments to characters-preserving-lines, leaving template markup and mustaches. */
+function templateOnly(source: string): string {
+  return source.replace(SCRIPT_OR_STYLE, keepNewlines).replace(HTML_COMMENT, keepNewlines);
+}
+
+function lineAt(source: string, index: number): number {
+  let line = 1;
+  for (let i = 0; i < index; i += 1) {
+    if (source[i] === "\n") line += 1;
+  }
+  return line;
+}
+
+function skipJsQuoted(source: string, start: number): number {
+  const quote = source[start];
+  if (quote === undefined) return source.length;
+  let i = start + 1;
+  while (i < source.length) {
+    if (source[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (quote === "`" && source[i] === "$" && source[i + 1] === "{") {
+      i = matchingBrace(source, i + 1);
+      continue;
+    }
+    if (source[i] === quote) return i + 1;
+    i += 1;
+  }
+  return source.length;
+}
+
+function matchingBrace(source: string, open: number): number {
+  let depth = 1;
+  let i = open + 1;
+  while (i < source.length && depth > 0) {
+    const character = source[i];
+    if (character === "'" || character === '"' || character === "`") {
+      i = skipJsQuoted(source, i);
+      continue;
+    }
+    if (character === "{") depth += 1;
+    else if (character === "}") depth -= 1;
+    i += 1;
+  }
+  return i;
+}
+
+/** The end of an opening tag's `>`, skipping quoted attribute values and `{...}` expressions so neither hides one. */
+function openingTagEnd(source: string, from: number): number {
+  let i = from;
+  while (i < source.length) {
+    const character = source[i];
+    if (character === "'" || character === '"' || character === "`") {
+      i = skipJsQuoted(source, i);
+      continue;
+    }
+    if (character === "{") {
+      i = matchingBrace(source, i);
+      continue;
+    }
+    if (character === ">") return i + 1;
+    i += 1;
+  }
+  return source.length;
+}
+
+/** Every `<LoadingState ...>` opening tag's own span -- the one place a `*ooking` reference is allowed to render. */
+function loadingStateTagSpans(template: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  LOADING_STATE_OPEN_TAG.lastIndex = 0;
+  let match = LOADING_STATE_OPEN_TAG.exec(template);
+  while (match !== null) {
+    const end = openingTagEnd(template, match.index + match[0].length);
+    spans.push([match.index, end]);
+    LOADING_STATE_OPEN_TAG.lastIndex = end;
+    match = LOADING_STATE_OPEN_TAG.exec(template);
+  }
+  return spans;
+}
+
+/**
+ * Every `*ooking`-named copy reference rendered in this file's template
+ * outside a `<LoadingState>` tag, and every re-declaration of the retired
+ * `"Looking…"` literal -- unpinned, so it runs over any file, not only the
+ * ones already known to render loading.
+ */
+function inlineLoadingViolations(file: string, source: string): string[] {
+  const template = templateOnly(source);
+  const allowed = loadingStateTagSpans(template);
+  const found: string[] = [];
+  for (const match of template.matchAll(LOOKING_FAMILY_REFERENCE)) {
+    const index = match.index ?? 0;
+    const withinOwner = allowed.some(([start, end]) => index >= start && index < end);
+    if (!withinOwner) found.push(`${file}:${lineAt(template, index)}:${match[0]}`);
+  }
+  const literalIndex = template.indexOf(LOOKING_LITERAL);
+  if (literalIndex !== -1) {
+    found.push(`${file}:${lineAt(template, literalIndex)}: re-declares "${LOOKING_LITERAL}"`);
+  }
+  return found;
 }
 
 describe("the loading state has one component owner, consumed by name", () => {
@@ -174,12 +305,49 @@ describe("the loading state has one component owner, consumed by name", () => {
     expect(consumers).toEqual([...EXPECTED_CONSUMERS]);
   });
 
-  it("proves(the-loading-copy-is-not-redeclared): a named consumer reads the label through the copy owner, not a re-declared literal", () => {
+  it("flags a loading-family copy reference rendered as plain text outside LoadingState", () => {
+    expect(
+      inlineLoadingViolations("pages/Example.svelte", "<p>{runPageCopy.questionLooking}</p>")
+    ).toEqual(["pages/Example.svelte:1:.questionLooking"]);
+  });
+
+  it("does not flag the same reference passed as LoadingState's own label prop, single- or multi-line", () => {
+    expect(
+      inlineLoadingViolations(
+        "pages/Example.svelte",
+        '<LoadingState label={runPageCopy.questionLooking} compact />'
+      )
+    ).toEqual([]);
+    expect(
+      inlineLoadingViolations(
+        "pages/Example.svelte",
+        ['<LoadingState', '  label={x ? readStateCopy.looking : readStateCopy.refreshing}', '  compact', '/>'].join(
+          "\n"
+        )
+      )
+    ).toEqual([]);
+  });
+
+  it("flags a re-declared literal even in a file with no pinned consumer status", () => {
+    expect(
+      inlineLoadingViolations("pages/Example.svelte", '<p role="status">Looking…</p>')
+    ).toEqual(['pages/Example.svelte:1: re-declares "Looking…"']);
+  });
+
+  it("ignores a script-only definition of the retired literal, the copy owner's own case", () => {
+    expect(
+      inlineLoadingViolations(
+        "lib/readStateCopy.svelte",
+        '<script>export const looking = "Looking…";</script>\n<p></p>'
+      )
+    ).toEqual([]);
+  });
+
+  it("proves(no-loading-state-renders-outside-the-owner): every loading-family reference in the whole room tree renders through LoadingState, and the retired literal never reappears", () => {
     const sources = roomSources();
-    for (const file of EXPECTED_CONSUMERS) {
-      const source = sources.get(file);
-      expect(source, `${file} is part of the room tree`).toBeDefined();
-      expect(source?.includes(LOOKING_LITERAL), file).toBe(false);
-    }
+    const violations = [...sources.entries()].flatMap(([file, source]) =>
+      inlineLoadingViolations(file, source)
+    );
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 });

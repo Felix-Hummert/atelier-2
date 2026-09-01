@@ -120,7 +120,7 @@
     <section class="decision-context" aria-labelledby="v3-wait-context-title">
       <h3 id="v3-wait-context-title">{wrapDisplayCopy(runPageCopy.answerContext)}</h3>
       {#if sourcesLoading}
-        <p class="muted" role="status">{wrapDisplayCopy(runPageCopy.answerContextLooking)}</p>
+        <LoadingState label={wrapDisplayCopy(runPageCopy.answerContextLooking)} compact />
       {:else if sources.length === 0}
         <p class="muted">{wrapDisplayCopy(runPageCopy.answerContextNone)}</p>
       {:else}

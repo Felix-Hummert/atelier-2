@@ -10,6 +10,7 @@
     type RunEventSubscription
   } from "../api/client";
   import BackLink from "../components/BackLink.svelte";
+  import LoadingState from "../components/LoadingState.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import { MutationJournal } from "../lib/mutationJournal";
   import V3RunView from "../components/V3RunView.svelte";
@@ -219,7 +220,7 @@
 
   {#if run === null}
     {#if snapshot.request.state === "loading"}
-      <p class="status" role="status">{runPageCopy.looking}</p>
+      <p class="status"><LoadingState label={runPageCopy.looking} compact /></p>
     {:else}
       <button type="button" onclick={load}>{runPageCopy.retry}</button>
     {/if}

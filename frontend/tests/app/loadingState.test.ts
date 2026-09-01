@@ -23,10 +23,18 @@ describe("the shared loading state", () => {
     expect(status.textContent).not.toContain("↻");
   });
 
-  it("draws one line, no border chrome, in the compact form used inside a heading or button", () => {
+  it("draws one line and carries the compact class the CSS keys its own chrome-free, fixed-width bar off of", () => {
     const { container } = render(LoadingState, { props: { label: "Looking…", compact: true } });
     expect(container.querySelectorAll(".loading-mark")).toHaveLength(1);
     expect(container.querySelectorAll(".loading-lines > span")).toHaveLength(1);
+    // jsdom draws no layout, so the border-removal and fixed-width rules at
+    // LoadingState.svelte's `.loading-state.compact` and
+    // `.loading-state.compact .loading-lines` cannot be asserted here as
+    // computed style; this pins the one thing a unit test can -- that the
+    // class those rules key off of is actually present on the rendered
+    // root. The real-browser screenshots taken for issue #938 are the
+    // proof that the CSS itself renders a visible bar at both widths.
+    expect(container.querySelector(".loading-state.compact")).not.toBeNull();
   });
 
   it("defaults its label to the copy owner's looking sentence", () => {
