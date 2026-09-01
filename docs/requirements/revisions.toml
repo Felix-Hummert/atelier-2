@@ -41,10 +41,13 @@ source_thread = "github-issue:21"
 watermark_kind = "issue_body_revision"
 watermark = "3c1f663cd51a1c7aedbeffc39c3f38ee2ed6174d16103ab68d9d811014352ed0"
 
-[[legacy]]
+[[revision]]
 document = "0005"
 path = "docs/requirements/0005-katalog-und-benannte-workflows.md"
-content_sha256 = "a7270fa0ecda54e4e62980bea0ada58c54a76747546ba5a71053189ac57c9335"
+content_sha256 = "91b22e5ed95e6764d6af3122c13ce7b9ba2ccf472194bb1cc80c2ff819496a32"
+approval_comment_id = 5491488892
+approval_sha256 = "22d9735976f82af48cf8d0c8ff1a3281adb5cc8b1bec76edad0f24ace5c9dbe0"
+predecessor = "GENESIS"
 
 [[legacy]]
 document = "0007"
