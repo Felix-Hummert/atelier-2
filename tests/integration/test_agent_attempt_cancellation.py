@@ -237,7 +237,9 @@ def test_cancel_replacement_creates_exactly_ordinal_two_and_never_three(
         )
         assert isinstance(refused, AgentAttemptReplacementNotAllowed)
         runtime.launch()
-        replacement = _wait_for_state(store, expected, AgentAttemptState.SUCCEEDED)
+        replacement = _wait_for_attempt_state(
+            store, expected, AgentAttemptState.SUCCEEDED
+        )
         assert replacement.attempt_ordinal == 2
         with runtime.engine.connect() as connection:
             assert (
@@ -379,7 +381,7 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
 
         assert isinstance(result, AgentAttemptCancellationAccepted)
         runtime.launch()
-        terminal = _wait_for_state(
+        terminal = _wait_for_attempt_state(
             store, execution.attempt_id, AgentAttemptState.CANCELLED
         )
         worker.join(timeout=5)
@@ -421,7 +423,7 @@ def test_durable_cancellation_before_watchdog_attests_never_launched(
         assert isinstance(accepted, AgentAttemptCancellationAccepted)
 
         runtime.launch()
-        terminal = _wait_for_state(
+        terminal = _wait_for_attempt_state(
             store, execution.attempt_id, AgentAttemptState.CANCELLED
         )
 
@@ -585,11 +587,18 @@ def _only_event_row(runtime: DbosRuntime) -> Mapping[str, Any]:
     return dict(rows[0])
 
 
-def _wait_for_state(
+def _wait_for_attempt_state(
     store: DbosAgentAttemptStore,
     attempt_id: AgentAttemptId,
     state: AgentAttemptState,
 ) -> AgentAttempt:
+    """Wait for an AgentAttempt to reach ``state``, not a run.
+
+    Stays local rather than sharing tests/scenarios/run_waiting.py: it polls
+    the attempt store directly and must additionally retry the transient
+    "agent attempt is missing" conflict the store raises before the attempt
+    row exists, which the run-state waiters have no equivalent for.
+    """
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         try:
