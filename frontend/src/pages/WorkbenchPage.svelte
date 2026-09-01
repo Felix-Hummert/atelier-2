@@ -24,10 +24,23 @@
     subscribeChatTranscript,
     type ChatMessage
   } from "../lib/chatTranscript";
+  import {
+    answerConductorWait,
+    conductorConversationCopy,
+    decodeConductorEvent,
+    emptyConductorTranscript,
+    rememberConductorRun,
+    rememberedConductorRun,
+    reduceConductorEvent,
+    startConductorConversation,
+    type ConductorMessage,
+    type ConductorTranscript
+  } from "../lib/conductorConversation";
   import { conductorChatCopy } from "../lib/conductorChatCopy";
   import {
+    conductorConversationShape,
+    newestConductorConversation,
     resolveConductorConnection,
-    sendConductorMessage,
     type ConductorConnection
   } from "../lib/conductorEpisode";
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
@@ -42,10 +55,12 @@
     updateConfirmed,
     type RetainedRead
   } from "../lib/readResource";
+  import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
   import { newestReadOfEachRun, resolveWorkflowName } from "../lib/runList";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
-  import { humanMove, runStanding, standingMarks } from "../lib/runState";
+  import { loadPendingWaitAnswer } from "../lib/waitAnswerDelivery";
+  import { humanMove, runHasEnded, runStanding, standingMarks } from "../lib/runState";
   import {
     connectionLabel,
     protocolDetail,
@@ -109,6 +124,14 @@
   let eventQueue: Promise<void> = Promise.resolve();
   const pendingEvents: RunEvent[] = [];
   let transcript: readonly ChatMessage[] = currentChatTranscript();
+  let conversationTranscript: readonly (ChatMessage | ConductorMessage)[] = transcript;
+  let conductorTranscript: ConductorTranscript = emptyConductorTranscript();
+  let conductorRun: RunV3 | null = null;
+  let conductorStream: RunEventSubscription | null = null;
+  let conductorStreamReference: string | null = null;
+  let firstConversationMessage: string | null = null;
+  let conductorDeliveryBusy = false;
+  let conductorDeliveryFailure: string | null = null;
   let typed = "";
   let expandedPinReference: string | null = null;
   let composer: { focus(): void };
@@ -126,12 +149,7 @@
     holdAttention();
     void resolveConductor();
     const unsubscribe = subscribeChatTranscript((next) => {
-      const settledALine =
-        transcript.some((line) => line.pending) && !next.some((line) => line.pending);
       transcript = next;
-      // A settled episode may have started runs or opened waits; the room
-      // re-reads so a new decision does not wait for the next visit.
-      if (settledALine) void load();
     });
     // A read that failed while the connection was lost stays failed once the
     // connection returns until something asks again -- reload was the only
@@ -144,6 +162,8 @@
       disposed = true;
       stream?.close();
       stream = null;
+      conductorStream?.close();
+      conductorStream = null;
       unsubscribe();
       unsubscribeConnection();
     };
@@ -154,8 +174,98 @@
       const connection = await resolveConductorConnection(cockpitApi);
       conductorLink =
         connection === null ? { kind: "absent" } : { kind: "connected", connection };
+      if (connection !== null && live.confirmed !== null) {
+        void selectConductorConversation(live.confirmed.runs);
+      }
+      if (connection !== null) void restoreConductorConversation();
     } catch {
       conductorLink = { kind: "unreadable" };
+    }
+  }
+
+  function followConductor(run: RunV3): void {
+    if (conductorStreamReference === run.public_run_reference) return;
+    conductorStream?.close();
+    conductorStream = null;
+    conductorStreamReference = run.public_run_reference;
+    rememberConductorRun(sessionStorage, run.public_run_reference);
+    conductorTranscript = emptyConductorTranscript();
+    conductorStream = cockpitApi.openRunEvents(run.public_run_reference, {
+      opened: () => {},
+      event: (rawData) => {
+        const event = decodeConductorEvent(rawData);
+        if (event === null) return;
+        conductorTranscript = reduceConductorEvent(conductorTranscript, event);
+        void refreshConductorRun(run.public_run_reference);
+      },
+      disconnected: () => {}
+    });
+  }
+
+  async function restoreConductorConversation(): Promise<void> {
+    const publicRunReference = rememberedConductorRun(sessionStorage);
+    if (publicRunReference === null || conductorRun !== null) return;
+    try {
+      const run = await cockpitApi.getRun(publicRunReference);
+      const revision = await cockpitApi.getWorkflowRevision(run.workflow_revision_hash);
+      if (conductorConversationShape(revision) === null || conductorRun !== null) return;
+      conductorRun = run;
+      followConductor(run);
+      await refreshConductorRun(run.public_run_reference);
+    } catch {
+      // A stale local reference is not a conversation. The normal live-run
+      // selection remains the only fallback instead of inventing one.
+    }
+  }
+
+  async function selectConductorConversation(runs: readonly RunV3[]): Promise<void> {
+    const revisions = await Promise.all(
+      [...new Set(runs.map((run) => run.workflow_revision_hash))].map(async (workflowRevisionHash) => {
+        try {
+          const revision = await cockpitApi.getWorkflowRevision(workflowRevisionHash);
+          return conductorConversationShape(revision) === null ? null : workflowRevisionHash;
+        } catch {
+          return null;
+        }
+      })
+    );
+    const conductorRevisions = new Set(
+      revisions.filter((workflowRevisionHash): workflowRevisionHash is string => workflowRevisionHash !== null)
+    );
+    const selected = newestConductorConversation(runs, conductorRevisions);
+    if (selected === null || selected.public_run_reference === conductorRun?.public_run_reference) return;
+    conductorRun = selected;
+    followConductor(selected);
+    void refreshConductorRun(selected.public_run_reference);
+  }
+
+  async function refreshConductorRun(publicRunReference: string): Promise<void> {
+    try {
+      const refreshed = await cockpitApi.getRun(publicRunReference);
+      if (conductorRun?.public_run_reference !== publicRunReference) return;
+      conductorRun = refreshed;
+      if (firstConversationMessage !== null && refreshed.state === "WAITING_INPUT") {
+        const firstMessage = firstConversationMessage;
+        firstConversationMessage = null;
+        await deliverConductorMessage(refreshed, firstMessage);
+        return;
+      }
+      if (refreshed.state === "WAITING_INPUT") {
+        const pending = await loadPendingWaitAnswer(
+          mutationJournal,
+          refreshed.public_run_reference,
+          refreshed.workflow_revision_hash,
+          refreshed.current_node_id,
+          refreshed.current_node_execution_id
+        );
+        conductorDeliveryBusy = pending.kind === "found";
+        if (pending.kind === "corrupt") conductorDeliveryFailure = pending.message;
+      } else {
+        conductorDeliveryBusy = refreshed.state === "STARTED" || refreshed.state === "WAITING_RECONCILIATION";
+      }
+    } catch {
+      // The stream remains the durable transcript. The next frame retries the
+      // canonical run read without replacing it with a guess.
     }
   }
 
@@ -213,6 +323,9 @@
     live = confirmRead(live, generation, confirmed);
     if (live === before) return;
     publishCount(confirmed.runs);
+    if (conductorLink.kind === "connected") {
+      void selectConductorConversation(confirmed.runs);
+    }
     // An event that arrived while this read was in flight has truth to be
     // absorbed into now.
     if (pendingEvents.length > 0) queueDrain();
@@ -332,8 +445,8 @@
   }
 
   /**
-   * A connected conductor turns the message into one episodic run whose reply
-   * settles into this conversation; every other state keeps the standing
+   * A connected conductor starts one loop run for the first message, then
+   * turns every later message into its current wait answer; every other state keeps the standing
    * honest refusal -- including "unreadable", where nothing was started is
    * still the whole truth.
    *
@@ -343,16 +456,64 @@
    */
   async function send(event: Event): Promise<void> {
     event.preventDefault();
-    if (typed.trim().length === 0 || $connectionState === "reconnecting") return;
+    const message = typed.trim();
+    if (message.length === 0 || $connectionState === "reconnecting") return;
     if (conductorLink.kind === "connected") {
-      sendConductorMessage(cockpitApi, conductorLink.connection, typed);
+      if (
+        conductorDeliveryBusy ||
+        (conductorRun !== null &&
+          conductorRun.state !== "WAITING_INPUT" &&
+          !runHasEnded(conductorRun.state))
+      ) {
+        return;
+      }
+      conductorDeliveryFailure = null;
+      typed = "";
+      if (conductorRun?.state === "WAITING_INPUT") {
+        await deliverConductorMessage(conductorRun, message);
+      } else {
+        conductorDeliveryBusy = true;
+        firstConversationMessage = message;
+        try {
+          conductorRun = await startConductorConversation(cockpitApi, conductorLink.connection);
+          followConductor(conductorRun);
+          await refreshConductorRun(conductorRun.public_run_reference);
+        } catch (error) {
+          conductorDeliveryBusy = false;
+          firstConversationMessage = null;
+          typed = message;
+          conductorDeliveryFailure = humanErrorMessage(error, conductorChatCopy.startRefused);
+        }
+      }
     } else {
       sendChatTurn(typed);
+      transcript = currentChatTranscript();
+      typed = "";
     }
-    transcript = currentChatTranscript();
-    typed = "";
     await tick();
     composer.focus();
+  }
+
+  async function deliverConductorMessage(run: RunV3, message: string): Promise<void> {
+    conductorDeliveryBusy = true;
+    try {
+      const outcome = await answerConductorWait(cockpitApi, mutationJournal, run, message);
+      if (outcome.kind === "failed") {
+        typed = message;
+        conductorDeliveryFailure = outcome.message;
+        return;
+      }
+      conductorRun = outcome.run;
+    } catch (error) {
+      // A retry of an already-open wait with edited text can conflict with
+      // its own earlier, differently-worded attempt still in the journal
+      // (mutationJournal.ts) -- the composer unlocks and keeps the words
+      // instead of leaving the room silently stuck (#959).
+      typed = message;
+      conductorDeliveryFailure = humanErrorMessage(error, runPageCopy.answerUnconfirmed);
+    } finally {
+      conductorDeliveryBusy = false;
+    }
   }
 
   /**
@@ -367,10 +528,28 @@
 
   $: streamTitle = protocolTitle(hold);
   $: snapshot = live.confirmed;
-  $: pins = workbenchDecisionPins(snapshot?.runs ?? []).map((run) => ({
+  $: pins = workbenchDecisionPins(snapshot?.runs ?? [])
+    .filter(
+      (run) =>
+        run.public_run_reference !== conductorRun?.public_run_reference &&
+        (conductorLink.kind !== "connected" ||
+          run.workflow_revision_hash !== conductorLink.connection.workflowRevisionHash)
+    )
+    .map((run) => ({
     run,
     workflowName: resolveWorkflowName(run, snapshot?.workflowNames ?? null)
   }));
+  $: conversationTranscript = conductorLink.kind === "connected"
+    ? conductorTranscript.messages
+    : transcript;
+  $: conversationRunPath =
+    conductorLink.kind === "connected" && conductorRun !== null
+      ? runPath(conductorRun.public_run_reference)
+      : null;
+  $: conversationComplete = conductorLink.kind === "connected" &&
+    conductorRun?.state === "COMPLETED" &&
+    conductorTranscript.messages.filter((message) => message.speaker === "house").length >=
+      conductorLink.connection.maximumRounds;
   $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
     expandedPinReference = pins[0]?.run.public_run_reference ?? null;
   }
@@ -476,11 +655,11 @@
     </ul>
   {/if}
 
-  {#if transcript.length === 0}
+  {#if conversationTranscript.length === 0}
     <div class="workbench-empty card empty-state">
       <h2>{wrapDisplayCopy(workbenchPageCopy.emptyTitle)}</h2>
       {#if conductorLink.kind === "connected"}
-        <p>{wrapDisplayCopy(conductorChatCopy.emptyDescription)}</p>
+        <p>{wrapDisplayCopy(conductorConversationCopy.emptyDescription)}</p>
       {:else}
         <p>{wrapDisplayCopy(workbenchPageCopy.emptyDescription)}</p>
         <a
@@ -493,26 +672,31 @@
     </div>
   {:else}
     <ol class="conversation" aria-label={wrapDisplayCopy(workbenchPageCopy.transcriptLabel)}>
-      {#each transcript as message (message.id)}
+      {#each conversationTranscript as message (message.id)}
         <li class="conversation-line conversation-line-{message.speaker}">
-          <p class="conversation-message" class:conversation-message-pending={message.pending}>
+          <p class="conversation-message">
             <span class="conversation-speaker">{wrapDisplayCopy(speakerLabels[message.speaker])}</span>
             {message.text}
-            {#if message.runReference !== undefined}
-              {@const episodePath = runPath(message.runReference)}
-              <a
-                class="conversation-run-link"
-                href={episodePath}
-                onclick={(event) => {
-                  event.preventDefault();
-                  navigate(episodePath);
-                }}
-              >{wrapDisplayCopy(conductorChatCopy.openEpisode)}</a>
-            {/if}
           </p>
         </li>
       {/each}
     </ol>
+    <!-- One link for the whole conversation, because the whole conversation is
+         one run (#658). Per line it was the episode model speaking, where each
+         message had a run of its own; here it would repeat the same href once
+         per round, up to the loop's ceiling. -->
+    {#if conversationRunPath !== null}
+      <p class="conversation-run">
+        <a
+          class="conversation-run-link"
+          href={conversationRunPath}
+          onclick={(event) => {
+            event.preventDefault();
+            navigate(conversationRunPath);
+          }}
+        >{wrapDisplayCopy(conductorChatCopy.openEpisode)}</a>
+      </p>
+    {/if}
   {/if}
 
   <form class="composer" aria-label={wrapDisplayCopy(workbenchPageCopy.composerRegionLabel)} onsubmit={send}>
@@ -530,7 +714,10 @@
       <button
         class="primary"
         type="submit"
-        disabled={$connectionState === "reconnecting"}
+        disabled={$connectionState === "reconnecting" || conductorDeliveryBusy ||
+          (conductorRun !== null &&
+            conductorRun.state !== "WAITING_INPUT" &&
+            !runHasEnded(conductorRun.state))}
         {...{ [workbenchQuestionAttribute]: workbenchQuestions.saySomething.id }}
       >{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
@@ -541,11 +728,23 @@
            repeats it above (#700, App.svelte). -->
       <p class="composer-hint">{wrapDisplayCopy(restartNoticeCopy)}</p>
     {:else if conductorLink.kind === "connected"}
-      <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.composerHint)}</p>
+      <p class="composer-hint">
+        {wrapDisplayCopy(
+          conductorRun !== null && runHasEnded(conductorRun.state) && conductorRun.state !== "COMPLETED"
+            ? conductorConversationCopy.endedHint
+            : conductorConversationCopy.composerHint
+        )}
+      </p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
     {:else if conductorLink.kind === "unreadable"}
       <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.connectionUnknown)}</p>
+    {/if}
+    {#if conversationComplete}
+      <p class="composer-hint" role="status">{wrapDisplayCopy(conductorConversationCopy.complete)}</p>
+    {/if}
+    {#if conductorDeliveryFailure !== null}
+      <p class="composer-hint" role="status">{conductorDeliveryFailure}</p>
     {/if}
   </form>
 </section>
@@ -691,15 +890,12 @@
     white-space: pre-line;
   }
 
-  /* A line still waiting for its episode is visibly provisional, nothing more:
-     dimming is state, the settled text is the event. */
-  .conversation-message-pending {
-    color: var(--ink-dim);
-    font-style: italic;
+  .conversation-run {
+    max-width: var(--reading-width);
+    margin: var(--space-2) 0 0;
   }
 
   .conversation-run-link {
-    justify-self: start;
     font-size: var(--text-xs);
   }
 

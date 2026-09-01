@@ -2,12 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { runResultCopy } from "../../src/lib/runResultCopy";
 import { standingWords } from "../../src/lib/runState";
-import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 
 const api = "/atelier/api/v1";
@@ -22,29 +20,29 @@ const api = "/atelier/api/v1";
  *   test-results/result-666/head-{1280,390}-{light,dark}.png
  *   test-results/result-666/result-{1280,390}-{light,dark}.png
  *
- * The scenario is the exact one the issue was filed against: the harness's
- * fake conductor episode (`/__e2e/seed-conductor` in `tests/e2e/serve_cockpit.py`)
- * answers with `CONDUCTOR_REPORT_SCHEMA`'s own shape --
- * `{"answer": "...", "started_run_ids": []}` -- the same declared object the
- * bug report's screenshot showed printed as a raw JSON line. Its one node is
- * also the run's sink, so this journey is the duplicate-answer case; the
- * node panel's ordinary rendering of a non-sink node's own answer is proven
- * at the component level in `tests/app/readableResultDisplay.test.ts`.
+ * The vector is the exact one the issue was filed against: the harness's fake
+ * conductor executor (`/__e2e/seed-conductor` in `tests/e2e/serve_cockpit.py`)
+ * answers with `CONDUCTOR_REPORT_SCHEMA`'s own shape -- the same declared
+ * object the bug report's screenshot showed printed as a raw JSON line. It
+ * answers the one node of the run below, which is also that run's sink, so
+ * this journey is the duplicate-answer case; the node panel's ordinary
+ * rendering of a non-sink node's own answer is proven at the component level
+ * in `tests/app/readableResultDisplay.test.ts`.
  *
  * `/__e2e/seed-conductor` durably mutates the one shared harness server's
  * state for the rest of the run, so this used to need a `zz-` name sorting it
  * after `workbench-conductor.spec.ts`, whose own first act asserted the
  * *pre*-seed "no conductor" state (#742). That file now resets the server to
  * its own cold-boot baseline itself instead of depending on file order, so
- * this spec no longer needs to sort after it -- it seeds and confirms its
- * own conductor connection either way (below), regardless of what any other
- * spec already did to the shared server.
+ * this spec no longer needs to sort after it -- it resets and seeds its own
+ * conductor executor either way (below), regardless of what any other spec
+ * already did to the shared server.
  */
 const CONDUCTOR_FAKE_ANSWER =
   "Nothing started: the workbench probe only asked for an answer.";
 // The exact bytes `json.dumps` in `tests/e2e/serve_cockpit.py` wrote -- its
 // default separators, not a compact re-serialization this page invents.
-const CONDUCTOR_FAKE_REPORT_RAW = `{"answer": "${CONDUCTOR_FAKE_ANSWER}", "started_run_ids": []}`;
+const CONDUCTOR_FAKE_REPORT_RAW = `{"answer": "${CONDUCTOR_FAKE_ANSWER}", "started_run_ids": [], "carried_context": "The workbench probe asked only for an answer.", "carried_context_truncated": false}`;
 
 const frontendRoot = resolve(import.meta.dirname, "../..");
 const shotDir = resolve(frontendRoot, "test-results/result-666");
@@ -72,32 +70,77 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
-async function completedConductorRun(page: Page): Promise<string> {
+/**
+ * Opens the run page of a settled run whose one node answered with the
+ * conductor's own report bytes.
+ *
+ * The live conductor conversation cannot carry this journey: its loop re-enters
+ * `next_message` the moment `conduct` has answered, and a run's node rail is
+ * fenced to the round the run stands in
+ * (`atelier2.application.project_node_rail`), so a waiting conversation reads
+ * "next_message — Needs you, conduct — Queued" and offers no settled node to
+ * open. The bytes under test stay the production ones all the same: the run
+ * below binds the seeded conductor's own fake executor, which answers every
+ * node it runs with `CONDUCTOR_FAKE_REPORT`, to a one-node workflow that ends
+ * when that node does.
+ */
+async function settledConductorReportRun(page: Page): Promise<void> {
   // This suite shares one server across every spec file and across
   // `--repeat-each` (#742): a previous seed of the same conductor catalog
   // would conflict on the model registry. Reset to the cold-boot baseline,
-  // then seed, so this journey owns its own connected conductor.
-  const reset = await page.request.post("/__e2e/recompose?reset=true");
-  expect(reset.status()).toBe(202);
-  const expectedGeneration = await reset.text();
+  // then seed, so this journey owns its own conductor executor.
+  await resetToKnownStore(page);
+  const seeded = await page.request.post("/__e2e/seed-conductor");
+  expect(seeded.ok(), await seeded.text()).toBeTruthy();
+  const configurationHash = ((await seeded.json()) as { configuration_hash: string })
+    .configuration_hash;
+
+  const workflowYaml = [
+    "format_version: 3",
+    "name: One conductor report",
+    "nodes:",
+    "  - id: conduct",
+    "    type: agent",
+    "    role: conductor",
+    // The seeded conductor executor is the doors-capable one; a `headless`
+    // node could never bind it (`atelier2.contracts.capabilities_v3`).
+    "    mode: headless_with_tools",
+    "    instruction: Answer with the report this journey is filed against.",
+    ...declaredOutput(await anyJsonSchema(page)),
+    ""
+  ].join("\n");
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status(), await published.text()).toBe(201);
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 3,
+      run_id: "e2e/conductor-report",
+      workflow_revision_hash: (await published.json()).workflow_revision_hash,
+      agent_bindings: [
+        { role: "conductor", agent_configuration_revision_hash: configurationHash }
+      ],
+      // A version-3 start declares its orders, empty ones included: without the
+      // field the body is no start resource at all and dies in wire validation
+      // (`StartRunRequestResourceV3`, `api/wire/requests.py`). It comes back
+      // titled "invalid agent bindings" because that is how the handler reads
+      // a refused start body mentioning bindings (`api/problems.py`) -- the
+      // title is not a verdict on the bindings above.
+      orders: []
+    }
+  });
+  expect(started.status(), await started.text()).toBe(201);
+  const publicRunReference = (await started.json()).public_run_reference as string;
+
   await expect(async () => {
-    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
-  }).toPass({ timeout: 20_000 });
-  expect((await page.request.post("/__e2e/seed-conductor")).ok()).toBeTruthy();
-  await page.goto("/atelier/chat");
-  // The precondition this journey needs is a *connected* conductor, not
-  // merely a successful seed call: this suite's server is shared across
-  // spec files that run in no particular order (#742), so it proves the
-  // connection itself rather than assuming the seed above was the only
-  // thing that could have changed it.
-  await expect(page.getByText(conductorChatCopy.composerHint)).toBeVisible({ timeout: 15_000 });
-  await page.getByLabel(workbenchPageCopy.composerLabel).fill("Starte nichts, antworte nur kurz.");
-  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
-  const episodeLink = page.getByRole("link", { name: conductorChatCopy.openEpisode });
-  await expect(episodeLink).toBeVisible({ timeout: 60_000 });
-  await episodeLink.click();
-  await expect(page).toHaveURL(/\/atelier\/runs\/run1\./);
-  return page.url();
+    const read = await page.request.get(`${api}/runs/${publicRunReference}`);
+    expect(read.status()).toBe(200);
+    expect((await read.json()).state).toBe("COMPLETED");
+  }).toPass({ timeout: 30_000 });
+  await page.goto(`/atelier/runs/${publicRunReference}`);
 }
 
 async function resetToKnownStore(page: Page): Promise<void> {
@@ -249,21 +292,12 @@ async function startV3Line(
   return { public_run_reference: createdRun.public_run_reference as string };
 }
 
-// RETIRED 01.09.2026 (#658 P4): this journey drove `completedConductorRun`,
-// which proves the EPISODIC conductor connection -- "one order = one brief,
-// one message = one run" -- that P3 (#931) deliberately retires.
-// `episodeShapeOf` (conductorEpisode.ts) reads `graph.orders`, requiring
-// exactly one; the loop document P3 now publishes declares zero
-// `graph_inputs` by design, so the episode shape it looked for no longer
-// exists. The loop-aware conversation flow -- connection detection and a
-// wait-answer composer -- is #658 P4's own named slice; this journey returns
-// as one of P4's driver proofs once that lands.
-test.skip("the Result tab carries the decoded result; the run head is only the standing sentence", async ({
+test("the Result tab carries the decoded result; the run head is only the standing sentence", async ({
   page
 }) => {
   test.setTimeout(120_000);
 
-  await completedConductorRun(page);
+  await settledConductorReportRun(page);
   await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.done, {
     timeout: 30_000
   });

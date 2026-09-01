@@ -8,10 +8,6 @@ export type ChatMessage = {
   id: string;
   speaker: ChatSpeaker;
   text: string;
-  /** The conductor episode this line reports on, so the page can link its run. */
-  runReference?: string;
-  /** True while the episode still runs and this line only holds its place. */
-  pending?: boolean;
 };
 
 /**
@@ -38,53 +34,6 @@ export function sendChatMessage(
     { id: `you-${turn}`, speaker: "you", text },
     { id: `house-${turn}`, speaker: "house", text: workbenchPageCopy.conductorAbsent }
   ];
-}
-
-/**
- * One turn while a conductor IS connected: the operator's line, and a pending
- * house line that holds the reply's place until the episode ends. Returns the
- * pending line's id so the episode can settle exactly this line later, or
- * null for a blank message that takes no turn.
- */
-export function appendConductorTurn(
-  transcript: readonly ChatMessage[],
-  typed: string,
-  pendingText: string
-): { transcript: readonly ChatMessage[]; pendingId: string } | null {
-  const text = typed.trim();
-  if (text.length === 0) return null;
-  const turn = transcript.length + 1;
-  const pendingId = `house-${turn}`;
-  return {
-    transcript: [
-      ...transcript,
-      { id: `you-${turn}`, speaker: "you", text },
-      { id: pendingId, speaker: "house", text: pendingText, pending: true }
-    ],
-    pendingId
-  };
-}
-
-/** The pending line learns which run carries its episode, and keeps waiting. */
-export function withRunReference(
-  transcript: readonly ChatMessage[],
-  pendingId: string,
-  runReference: string
-): readonly ChatMessage[] {
-  return transcript.map((message) =>
-    message.id === pendingId ? { ...message, runReference } : message
-  );
-}
-
-/** The episode ended: the pending line becomes its final text and stops waiting. */
-export function resolveConductorLine(
-  transcript: readonly ChatMessage[],
-  pendingId: string,
-  text: string
-): readonly ChatMessage[] {
-  return transcript.map((message) =>
-    message.id === pendingId ? { ...message, text, pending: false } : message
-  );
 }
 
 /**
@@ -124,20 +73,4 @@ export function subscribeChatTranscript(
 export function sendChatTurn(typed: string): readonly ChatMessage[] {
   publish(sendChatMessage(moduleTranscript, typed));
   return moduleTranscript;
-}
-
-/** Opens one conductor turn and returns the pending line's id, null for blank. */
-export function takeConductorTurn(typed: string, pendingText: string): string | null {
-  const turn = appendConductorTurn(moduleTranscript, typed, pendingText);
-  if (turn === null) return null;
-  publish(turn.transcript);
-  return turn.pendingId;
-}
-
-export function markConductorRun(pendingId: string, runReference: string): void {
-  publish(withRunReference(moduleTranscript, pendingId, runReference));
-}
-
-export function settleConductorLine(pendingId: string, text: string): void {
-  publish(resolveConductorLine(moduleTranscript, pendingId, text));
 }

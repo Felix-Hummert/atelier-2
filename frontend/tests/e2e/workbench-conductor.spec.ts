@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
+import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 
 /**
@@ -133,15 +134,7 @@ async function placeConversationAboveComposer(page: Page): Promise<void> {
   });
 }
 
-// RETIRED 01.09.2026 (#658 P4): this journey proved the EPISODIC conductor
-// connection -- "one order = one brief, one message = one run" -- that P3
-// (#931) deliberately retires. `episodeShapeOf` (conductorEpisode.ts) reads
-// `graph.orders`, requiring exactly one; the loop document P3 now publishes
-// declares zero `graph_inputs` by design, so the episode shape it looked for
-// no longer exists. The loop-aware conversation flow -- connection detection
-// and a wait-answer composer -- is #658 P4's own named slice; this journey
-// returns as one of P4's driver proofs once that lands.
-test.skip("a message meets the honest refusal without a conductor, and becomes one episode with one", async ({ page }) => {
+test("a message meets the honest refusal without a conductor, then starts one conversation run", async ({ page }) => {
   test.setTimeout(120_000);
 
   // This suite shares one server across every spec file (#742): a conductor
@@ -170,26 +163,56 @@ test.skip("a message meets the honest refusal without a conductor, and becomes o
   // conductor document from its own owner and agent configuration.
   const seeded = await page.request.post("/__e2e/seed-conductor");
   expect(seeded.ok()).toBeTruthy();
+  const seededConductor = (await seeded.json()) as { workflow_revision_hash: string };
 
   // A reload resolves the connection fresh; the composer now says a
-  // conductor is connected, and the same surface carries a real episode.
+  // conductor is connected, and the same surface carries one loop run.
   await page.reload();
-  await expect(page.getByText(conductorChatCopy.composerHint)).toBeVisible();
+  await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible();
   await page
     .getByLabel(workbenchPageCopy.composerLabel)
     .fill("Starte nichts, antworte nur kurz.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
 
-  // The reply is the report of one real engine run of the published conductor
-  // document, returned through the run's own event stream.
+  // The first message starts exactly one loop run and becomes its first wait
+  // answer; the report returns through that run's full event stream.
   await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 60_000 });
-  const episodeLink = page.getByRole("link", { name: conductorChatCopy.openEpisode });
-  await expect(episodeLink).toBeVisible();
+  const conversationLink = page.getByRole("link", { name: conductorChatCopy.openEpisode });
+  await expect(conversationLink).toBeVisible();
+  await page.getByLabel(workbenchPageCopy.composerLabel).fill("Und noch eine Nachricht.");
+  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
+  // Two reply lines, counted by the text they carry. Not `{ exact: true }`:
+  // Playwright's exact text match compares a whole element's text, and a
+  // transcript line also carries its speaker label, so an exact match finds
+  // nothing at all rather than the reply (CI run 33506793797). The smallest
+  // element holding the reply is the line itself, which is what makes this a
+  // count of lines.
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(2, {
+    timeout: 60_000
+  });
+  // One run, one link: a second round adds a reply, never a second way to open
+  // the same conversation.
+  await expect(conversationLink).toHaveCount(1);
+
+  // A reload re-resolves the connection and re-opens the run's durable event
+  // stream, whose full history the server replays (#7): the conversation
+  // survives a reload rather than starting over.
+  await page.reload();
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(2, {
+    timeout: 60_000
+  });
+
+  const waitingConversations = await page.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
+  expect(waitingConversations.status()).toBe(200);
+  expect(
+    ((await waitingConversations.json()) as { items: Array<{ workflow_revision_hash: string }> }).items
+      .filter((run) => run.workflow_revision_hash === seededConductor.workflow_revision_hash)
+  ).toHaveLength(1);
   await photograph(page, "workbench-conductor-reply");
 
-  // The linked run page is the reply's manual counterpart: the episode is an
-  // ordinary run anyone can open (Keine-Sonderautoritaet, #7).
-  await episodeLink.click();
+  // The linked run page is the reply's manual counterpart: the conversation
+  // is an ordinary run anyone can open (Keine-Sonderautoritaet, #7).
+  await conversationLink.click();
   await expect(page).toHaveURL(/\/atelier\/runs\/run1\./);
 });
 
