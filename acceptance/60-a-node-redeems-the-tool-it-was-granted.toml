@@ -15,9 +15,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/60"
 # the atelier.
 #
 # WHAT THIS HEAD CLAIMS, EXACTLY: declared -- resolved -- redeemed -- attested by
-# its own durable receipt. It does NOT claim attestation in the sense of #62:
-# `RuntimeCapability`/`AttestedCapabilities` want a manifest that no build writes,
-# and that static reading is that item's.
+# its own durable receipt. It does NOT claim attestation in the sense of #62,
+# which wants a static reading of a manifest no build writes; that is that item's.
+# The typed capability vocabulary this line once pointed at was torn out unbuilt
+# with the composed preview (#450), so #62 begins from the manifest, not from it.
 #
 # WHAT THIS HEAD DOES NOT CLAIM AT ALL: isolation. The lease says honestly that it
 # is "a blank directory this attempt owns, not a sandbox", and that sentence is

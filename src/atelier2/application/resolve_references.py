@@ -1,11 +1,9 @@
 """Where one declared reference of a V3 document lands, or why it lands nowhere.
 
-Two callers need the same answer and disagree only about what to do with it: the
-run-configuration binding refuses the whole snapshot at the first reference that
-does not resolve, while the composed preview names every one of them and keeps
-drawing. Deciding it twice would let a preview and a binding disagree about what
-resolved, so the decision lives here and each caller acts on it.
-
+The verdict is per reference and carries no policy: what to do with one that lands
+nowhere is the asker's. `evaluate_executability` asks it for every reference a
+document pins and refuses the whole snapshot at the first that does not resolve,
+which is the shape a run configuration freezes.
 """
 
 from __future__ import annotations
