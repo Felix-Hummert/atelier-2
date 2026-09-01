@@ -16,6 +16,7 @@ from typing import Literal, assert_never, cast
 from atelier2.application.evaluate_executability import (
     DocumentNotExecutable,
     ExecutableDocument,
+    ReferenceSettlementCache,
     evaluate_executability,
 )
 from atelier2.application.refusals import (
@@ -25,7 +26,11 @@ from atelier2.application.refusals import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
-from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
+from atelier2.contracts.schemas_v3 import (
+    SchemaDocumentVerdict,
+    SchemaRefused,
+    read_schema_document,
+)
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
@@ -45,6 +50,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
     PublishedRevisionResolver,
+    PublishedRevisionResolverWithSession,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.workflow_revisions import (
@@ -165,10 +171,22 @@ def get_workflow_revision(
 
 
 def describe_workflow_revision(
-    projection: WorkflowRevisionProjection, resolver: PublishedRevisionResolver
+    projection: WorkflowRevisionProjection,
+    resolver: PublishedRevisionResolver,
+    settlements: ReferenceSettlementCache | None = None,
+    schema_verdicts: dict[PublishedRevisionHash, SchemaDocumentVerdict] | None = None,
 ) -> WorkflowRevisionRead | ReadUnavailable | DurableStateCorrupt:
-    """What this build says about one stored revision: the read's and the publication's answer alike."""
-    match evaluate_executability(projection.graph, resolver):
+    """What this build says about one stored revision: the read's and the publication's answer alike.
+
+    `settlements` and `schema_verdicts` let a page composing many revisions
+    (`list_described_workflow_revisions`) share what it already read and
+    validated about a reference across every revision on it; a single-revision
+    caller leaves them out and gets private caches that die with this call.
+    """
+    verdicts: dict[PublishedRevisionHash, SchemaDocumentVerdict] = (
+        {} if schema_verdicts is None else schema_verdicts
+    )
+    match evaluate_executability(projection.graph, resolver, settlements):
         case ExecutableDocument():
             not_executable_reason = None
         case DocumentNotExecutable(reason):
@@ -177,14 +195,16 @@ def describe_workflow_revision(
             return failed
         case _ as unreachable:
             assert_never(unreachable)
-    classifications = _wait_answer_classifications(projection.graph, resolver)
+    classifications = _wait_answer_classifications(projection.graph, resolver, verdicts)
     if isinstance(classifications, (ReadUnavailable, DurableStateCorrupt)):
         return classifications
     return WorkflowRevisionRead(projection, not_executable_reason, classifications)
 
 
 def _wait_answer_classifications(
-    graph: AnyWorkflowDocument, resolver: PublishedRevisionResolver
+    graph: AnyWorkflowDocument,
+    resolver: PublishedRevisionResolver,
+    schema_verdicts: dict[PublishedRevisionHash, SchemaDocumentVerdict],
 ) -> tuple[WaitAnswerClassification, ...] | ReadUnavailable | DurableStateCorrupt:
     if not isinstance(graph, WorkflowGraphV3):
         return ()
@@ -192,7 +212,7 @@ def _wait_answer_classifications(
     for node in graph.nodes:
         if not isinstance(node, WaitNodeV3):
             continue
-        classified = _classify_wait_answer(node, resolver)
+        classified = _classify_wait_answer(node, resolver, schema_verdicts)
         if isinstance(classified, (ReadUnavailable, DurableStateCorrupt)):
             return classified
         classifications.append(classified)
@@ -200,7 +220,9 @@ def _wait_answer_classifications(
 
 
 def _classify_wait_answer(
-    node: WaitNodeV3, resolver: PublishedRevisionResolver
+    node: WaitNodeV3,
+    resolver: PublishedRevisionResolver,
+    schema_verdicts: dict[PublishedRevisionHash, SchemaDocumentVerdict],
 ) -> WaitAnswerClassification | ReadUnavailable | DurableStateCorrupt:
     """One waiting node's answer schema, classified as far as a real read may.
 
@@ -215,7 +237,9 @@ def _classify_wait_answer(
     the honest little this reader can say, rather than refuse the whole read
     over a reference nothing has bound yet.
     """
-    schema = _resolved_schema_document(node.outputs[0].schema_reference, resolver)
+    schema = _resolved_schema_document(
+        node.outputs[0].schema_reference, resolver, schema_verdicts
+    )
     if isinstance(schema, (ReadUnavailable, DurableStateCorrupt)):
         return schema
     if isinstance(schema, dict):
@@ -232,7 +256,9 @@ def _classify_wait_answer(
 
 
 def _resolved_schema_document(
-    reference: VersionedReference, resolver: PublishedRevisionResolver
+    reference: VersionedReference,
+    resolver: PublishedRevisionResolver,
+    schema_verdicts: dict[PublishedRevisionHash, SchemaDocumentVerdict],
 ) -> object | None | ReadUnavailable | DurableStateCorrupt:
     """This reference's own accepted schema, or None where nothing here can read one.
 
@@ -240,6 +266,12 @@ def _resolved_schema_document(
     document and is returned as-is; only a `dict` carries `type` or `enum`, so
     the caller's own `isinstance(schema, dict)` is what actually distinguishes
     a classifiable schema from one this reader still declines to guess at.
+
+    `schema_verdicts` remembers a schema this reader already read and
+    validated by its revision hash: a published schema's bytes never change,
+    so a second wait node -- on this revision or a later one the same page
+    describes -- pinning the same hash gets that verdict without a second
+    parse and validation (#937 round 2).
     """
     try:
         revision_hash = PublishedRevisionHash(reference.revision)
@@ -258,7 +290,10 @@ def _resolved_schema_document(
             assert_never(unreachable)
     if resolved.revision.kind is not RevisionKind.SCHEMA:
         return None  # this hash names a revision of a different published kind
-    verdict = read_schema_document(resolved.revision.document)
+    verdict = schema_verdicts.get(revision_hash)
+    if verdict is None:
+        verdict = read_schema_document(resolved.revision.document)
+        schema_verdicts[revision_hash] = verdict
     if isinstance(verdict, SchemaRefused):
         return None  # published bytes are not a schema this product enforces
     return verdict.schema
@@ -302,27 +337,44 @@ def list_described_workflow_revisions(
     limit: int,
     budget: EnrichedPageBudget,
     queries: WorkflowRevisionQueries,
-    resolver: PublishedRevisionResolver,
+    resolver: PublishedRevisionResolverWithSession,
 ) -> ListDescribedWorkflowRevisionsResult:
     """One page of revisions that carries what each document says about itself.
 
     The budget is the composition's decision rather than the caller's, so no
     route can widen what one page is allowed to read from the store. Each item
     is judged executable by the same rule the detail read and the start apply,
-    so a listing never promises a start the service then refuses.
+    so a listing never promises a start the service then refuses. `resolver`
+    is required to open a session because this read composes many lookups
+    into one page: an adapter that cannot open one is a wiring defect this
+    signature refuses to hide behind a silent one-lookup-at-a-time fallback
+    (#937) -- every reference the page resolves runs through the one session
+    opened for the whole page, never a fresh lookup per reference. The same
+    reasoning applies one level up, in the two caches every item on the page
+    shares: a schema, tool grant, budget policy or adapter operation many of
+    the page's revisions pin identically is read, resolved and validated once
+    for the whole page rather than once per revision that pins it (#937
+    round 2).
     """
 
     match queries.list_described_workflow_revisions(after, limit, budget):
         case DescribedWorkflowRevisionPage(items, next_after):
-            described: list[DescribedWorkflowRevision] = []
-            for projection in items:
-                read = describe_workflow_revision(projection, resolver)
-                if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
-                    return read
-                described.append(
-                    DescribedWorkflowRevision(projection, read.not_executable_reason)
-                )
-            return WorkflowRevisionsDescribed(tuple(described), next_after)
+            settlements: ReferenceSettlementCache = {}
+            schema_verdicts: dict[PublishedRevisionHash, SchemaDocumentVerdict] = {}
+            with resolver.resolver_session() as page_resolver:
+                described: list[DescribedWorkflowRevision] = []
+                for projection in items:
+                    read = describe_workflow_revision(
+                        projection, page_resolver, settlements, schema_verdicts
+                    )
+                    if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
+                        return read
+                    described.append(
+                        DescribedWorkflowRevision(
+                            projection, read.not_executable_reason
+                        )
+                    )
+                return WorkflowRevisionsDescribed(tuple(described), next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
         case PortProjectionTooLarge():

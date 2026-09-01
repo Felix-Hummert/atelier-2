@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import cast
 
@@ -986,6 +988,12 @@ class MatrixRegistry:
             return PublishedRevisionFound(ANY_JSON_SCHEMA)
         return PublishedRevisionMissing()
 
+    @contextmanager
+    def resolver_session(self) -> Iterator[MatrixRegistry]:
+        """The matrix scenario resolves one document's own references, never
+        many pages -- one connection's worth of state is this object itself."""
+        yield self
+
 
 @dataclass
 class MatrixCatalog:
@@ -1169,6 +1177,7 @@ def _ports(case: RouteResultCase) -> ApiPorts:
         run_queries=queries,
         run_event_queries=queries,
         published_revision_registry=MatrixRegistry(case),
+        published_revision_resolver_sessions=MatrixRegistry(case),
         catalog_resolver=MatrixCatalog(case),
         workflow_document_parser=parse_executable_workflow_document,
         agent_definition_parser=parse_agent_definition,

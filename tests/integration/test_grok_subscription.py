@@ -393,6 +393,11 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         ("HOME", str(invocation_home)),
         ("GROK_HOME", str(invocation_home)),
         ("PATH", settings.search_path),
+        # SHELL and TERM are named on purpose too: measured on grok 1.0.5, a
+        # `run_terminal_cmd` that stays silent for ~25s cancels the session
+        # under a child environment without them (issue #642).
+        ("SHELL", "/bin/bash"),
+        ("TERM", "xterm-256color"),
     )
     assert command.standard_input == b""
     assert command.standard_output_frame_bytes == GROK_SUBSCRIPTION_FRAME_BYTES
@@ -412,6 +417,8 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert observed["environment"]["GROK_HOME"] == str(invocation_home)
     assert observed["environment"]["PATH"] == settings.search_path
     assert observed["environment"]["HOME"] == str(invocation_home)
+    assert observed["environment"]["SHELL"] == "/bin/bash"
+    assert observed["environment"]["TERM"] == "xterm-256color"
     assert "XAI_API_KEY" not in observed["environment"]
     assert (invocation_home / "sessions" / "headless" / "updates.jsonl").exists()
     executor.release_credential_channel(command)

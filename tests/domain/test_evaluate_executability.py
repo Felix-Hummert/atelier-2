@@ -11,6 +11,7 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.evaluate_executability import (
     DocumentNotExecutable,
     ExecutableDocument,
+    ReferenceSettlementCache,
     evaluate_executability,
     public_reason,
 )
@@ -110,6 +111,25 @@ class RegistryNobodyMayAsk:
         raise AssertionError(f"the evaluation asked the registry for {kind.value}")
 
 
+@dataclass
+class CountingRegistry:
+    """`Registry`, counting how many lookups actually reached it.
+
+    Proves a shared `ReferenceSettlementCache` (#937 round 2) does what it is
+    for: a second document pinning a reference an earlier one already settled
+    never asks the registry again.
+    """
+
+    inner: Registry
+    calls: int = 0
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        self.calls += 1
+        return self.inner.resolve(kind, revision_hash)
+
+
 def test_a_form_nothing_binds_is_refused_before_any_reference_is_asked() -> None:
     """V3_DOCUMENT declares a graph output nothing carries out of a run."""
     evaluated = evaluate_executability(
@@ -132,6 +152,81 @@ def test_every_reference_resolved_is_the_snapshot_a_start_freezes() -> None:
     assert sorted(
         entry.revision_hash.value for entry in evaluated.resolutions
     ) == sorted([ANY_JSON_SCHEMA.revision_hash.value, GRANT.revision_hash.value])
+
+
+def test_a_shared_settlement_cache_resolves_a_repeated_reference_once() -> None:
+    """Two documents pinning the same schema and grant, judged with one shared
+    cache, ask the registry for each exactly once (#937 round 2): the second
+    document's declared references settle from the cache the first document's
+    resolution already populated."""
+    registry = CountingRegistry(Registry((ANY_JSON_SCHEMA, GRANT)))
+    settlements: ReferenceSettlementCache = {}
+
+    first = evaluate_executability(
+        parse_workflow_document(one_agent(GRANT)), registry, settlements
+    )
+    second = evaluate_executability(
+        parse_workflow_document(one_agent(GRANT)), registry, settlements
+    )
+
+    assert isinstance(first, ExecutableDocument), first
+    assert isinstance(second, ExecutableDocument), second
+    assert registry.calls == 2  # the schema and the grant, never asked twice
+
+
+def other_agent(tool: PublishedRevision) -> bytes:
+    """A second document, pinning the same tool `one_agent` does from a different node id."""
+    return (
+        b"""format_version: 3
+name: Other agent
+nodes:
+  - id: other
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the other thing this chain is for.
+    tools:
+      - {ref: verify, revision: """
+        + tool.revision_hash.value.encode()
+        + b"}\n"
+        + declared_output()
+    )
+
+
+def test_a_shared_settlement_cache_still_names_each_documents_own_site() -> None:
+    """A cached settlement is replayed with the asking document's own site, not the first caller's."""
+    registry = Registry((ANY_JSON_SCHEMA, GRANT))
+    settlements: ReferenceSettlementCache = {}
+
+    first = evaluate_executability(
+        parse_workflow_document(one_agent(GRANT)), registry, settlements
+    )
+    second = evaluate_executability(
+        parse_workflow_document(other_agent(GRANT)), registry, settlements
+    )
+
+    assert isinstance(first, ExecutableDocument), first
+    assert isinstance(second, ExecutableDocument), second
+    assert {resolution.site.node for resolution in first.resolutions} == {"implement"}
+    assert {resolution.site.node for resolution in second.resolutions} == {"other"}
+
+
+def test_a_shared_settlement_cache_never_caches_an_unpublished_reference() -> None:
+    """A hash the registry has not seen yet may be published moments later; a
+    cached miss must not keep answering stale once it is."""
+    registry = CountingRegistry(Registry((ANY_JSON_SCHEMA,)))
+    settlements: ReferenceSettlementCache = {}
+
+    before = evaluate_executability(
+        parse_workflow_document(one_agent(GRANT)), registry, settlements
+    )
+    registry.inner = Registry((ANY_JSON_SCHEMA, GRANT))
+    after = evaluate_executability(
+        parse_workflow_document(one_agent(GRANT)), registry, settlements
+    )
+
+    assert isinstance(before, DocumentNotExecutable), before
+    assert isinstance(after, ExecutableDocument), after
 
 
 def test_push_grant_resolves_and_freezes_its_transitive_operation_pin() -> None:

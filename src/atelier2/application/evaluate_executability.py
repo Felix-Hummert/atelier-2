@@ -12,15 +12,22 @@ resolving a second time.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.application.resolve_references import (
+    ReferenceResolution,
+    SettledResolution,
     declared_through,
     resolve_declared_reference_with_revision,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.run_configuration_v3 import (
     DeclaredReference,
     ReferenceRefusal,
@@ -69,23 +76,52 @@ type Executability = (
     ExecutableDocument | DocumentNotExecutable | ReadUnavailable | DurableStateCorrupt
 )
 
+type ReferenceSettlementCache = dict[
+    tuple[RevisionKind, PublishedRevisionHash],
+    tuple[SettledResolution, PublishedRevision | None],
+]
+"""What this build already decided about one resolved reference's content.
+
+Keyed by `(kind, revision_hash)` rather than by the declaring site, because a
+published revision is content-addressed and immutable: the same hash always
+names the same bytes, so whether it resolves -- and, for a schema, tool
+grant, budget policy or adapter operation, whether its bytes are usable --
+never depends on which node or document pinned it (#937 round 2: profiling a
+described page found this exact read and validation as the dominant cost,
+run once per reference with nothing shared across the many revisions one
+page lists). A caller composing many documents into one page passes the same
+cache to every one of them so a schema several revisions share is read and
+validated once; a caller judging a single document leaves it out and gets a
+private cache that dies with the call.
+
+An unpublished-revision refusal is never stored here (`_cacheable`): that
+hash may still be published moments later, and a cached miss would then keep
+answering stale.
+"""
+
 
 def evaluate_executability(
-    graph: AnyWorkflowDocument, resolver: PublishedRevisionResolver
+    graph: AnyWorkflowDocument,
+    resolver: PublishedRevisionResolver,
+    settlements: ReferenceSettlementCache | None = None,
 ) -> Executability:
     """The two rules, in order: every authored form is bound, every reference resolves.
 
     A V1 or V2 document is executed whole and pins nothing, so it is executable
     without a lookup. A V3 document is refused at the first thing that stands in
     the way, because the author fixes one thing at a time and the start can
-    admit nothing before all of them are fixed.
+    admit nothing before all of them are fixed. `settlements` lets a caller
+    that judges many documents in one composed read share what each already
+    settled about a reference's content across all of them; a caller with
+    none of its own gets a cache scoped to this one call.
     """
     if not isinstance(graph, WorkflowGraphV3):
         return ExecutableDocument()
     waiting = what_a_v3_document_still_waits_for(graph)
     if waiting is not None:
         return DocumentNotExecutable(waiting)
-    resolved = resolve_document_references(graph, resolver)
+    cache: ReferenceSettlementCache = {} if settlements is None else settlements
+    resolved = resolve_document_references(graph, resolver, cache)
     if not isinstance(resolved, ExecutableDocument):
         return resolved
     refusal = _looped_platform_effect_grant_refusal(graph, resolver)
@@ -129,20 +165,22 @@ def _looped_platform_effect_grant_refusal(
 
 
 def resolve_document_references(
-    graph: WorkflowGraphV3, resolver: PublishedRevisionResolver
+    graph: WorkflowGraphV3,
+    resolver: PublishedRevisionResolver,
+    settlements: ReferenceSettlementCache | None = None,
 ) -> Executability:
     """The second rule alone: every reference the document pins resolves, or the first that does not.
 
     Callable on its own because a document's references are bound whether or not
     every form in it is one this runtime executes yet -- the run-configuration
     snapshot is the same snapshot for both -- while the evaluation above only
-    reaches here for a form it does execute.
+    reaches here for a form it does execute. `settlements` is `evaluate_executability`'s
+    own parameter, threaded through unchanged.
     """
+    cache: ReferenceSettlementCache = {} if settlements is None else settlements
     resolutions: list[ResolvedReference] = []
     for declared in declared_through(graph, SubworkflowBinding()):
-        resolution, revision = resolve_declared_reference_with_revision(
-            declared, resolver
-        )
+        resolution, revision = _settled_resolution(declared, resolver, cache)
         match resolution:
             case ResolvedReference():
                 resolutions.append(resolution)
@@ -161,10 +199,8 @@ def resolve_document_references(
                             RevisionKind.ADAPTER_OPERATION,
                             grant.operation,
                         )
-                        nested, _operation_revision = (
-                            resolve_declared_reference_with_revision(
-                                transitive, resolver
-                            )
+                        nested, _operation_revision = _settled_resolution(
+                            transitive, resolver, cache
                         )
                         match nested:
                             case ResolvedReference():
@@ -184,6 +220,56 @@ def resolve_document_references(
             case _ as unreachable:
                 assert_never(unreachable)
     return ExecutableDocument(tuple(resolutions))
+
+
+def _settled_resolution(
+    declared: DeclaredReference,
+    resolver: PublishedRevisionResolver,
+    cache: ReferenceSettlementCache,
+) -> tuple[ReferenceResolution, PublishedRevision | None]:
+    """`resolve_declared_reference_with_revision`, replayed from `cache` on a repeat.
+
+    The one decision this build makes about a reference's content is
+    `resolve_references.py`'s own job, made exactly once here by calling it.
+    That decision does not change for a repeat of the same
+    `(kind, revision_hash)`: a found revision's bytes never change, and every
+    refusal this caches is a fact about those bytes. Only `site` and
+    `reference` are stamped fresh from `declared`, because the same content
+    can be pinned from a different node or field each time.
+    """
+    try:
+        revision_hash = PublishedRevisionHash(declared.reference.revision)
+    except ValueError:
+        return resolve_declared_reference_with_revision(declared, resolver)
+    key = (declared.kind, revision_hash)
+    settled = cache.get(key)
+    if settled is not None:
+        outcome, revision = settled
+        replayed = dataclasses.replace(
+            outcome, site=declared.site, reference=declared.reference
+        )
+        return replayed, revision
+    resolution, revision = resolve_declared_reference_with_revision(declared, resolver)
+    if isinstance(resolution, ResolvedReference | ReferenceRefusal) and _cacheable(
+        resolution
+    ):
+        cache[key] = (resolution, revision)
+    return resolution, revision
+
+
+def _cacheable(settled: SettledResolution) -> bool:
+    """Whether this settled resolution names immutable content rather than a registry answer that can still change.
+
+    An unpublished-revision refusal names a hash the registry has not seen
+    yet -- that hash may be published moments later, so caching it would let
+    a later resolve keep replaying a stale miss. Every other settled outcome
+    is decided by bytes a publish never rewrites: a resolved reference, or a
+    refusal about the content the registry already returned.
+    """
+    return not (
+        isinstance(settled, ReferenceRefusal)
+        and settled.reason is ReferenceRefusalReason.UNPUBLISHED_REVISION
+    )
 
 
 def public_reason(refusal: ReferenceRefusal) -> str:
