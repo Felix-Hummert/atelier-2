@@ -12,6 +12,10 @@ graph_inputs:
     schema:
       ref: nonempty_string
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: accepted_sentences
+    schema:
+      ref: accepted_sentences
+      revision: "254e95031e53ebabef162899164296dd90bc53f5c77800dbe7553c305ddb5f3f"
 nodes:
   - id: plan
     type: agent
@@ -19,14 +23,23 @@ nodes:
     mode: headless
     instruction: >-
       Decompose the item body carried under "item_body" against the owner
-      documents carried under "owner_documents". You cannot read files, run
+      documents carried under "owner_documents" and the named accepted-sentences
+      form carried under "accepted_sentences". You cannot read files, run
       anything, or use tools in this headless call; these artifacts are your
       only evidence. Make slices independently buildable where possible, state
       their dependencies explicitly, and name contradictions that need an
       operator decision. Keep each slice to at most five files. Do not assign
       a path already covered by an in-flight exclusive claim; when the supplied
       evidence does not establish claim ownership, record the conflict as a
-      contradiction rather than assuming it is available.
+      contradiction rather than assuming it is available. Each slice must
+      carry a QueuePriorityRank-compatible priority object with one positive
+      integer "rank". Sort every handed sentence id into exactly one slice:
+      list it under "proves" when that slice proves it, or under "defers" with
+      one owner sentence that says who will prove it. Do not emit a slice
+      without a sentence assignment when sentences were handed. When the named
+      form contains no sentences, leave every slice's proves and defers empty
+      and set sentence_assignment to no_regulated_sentences_supplied; otherwise
+      set it to all_assigned.
     inputs:
       - name: item_body
         from:
@@ -34,8 +47,11 @@ nodes:
       - name: owner_documents
         from:
           graph_input: owner_documents
+      - name: accepted_sentences
+        from:
+          graph_input: accepted_sentences
     outputs:
       - name: result
         schema:
           ref: breakdown_result
-          revision: "6544084aa981e767b9aea12855fce481d911d1e2dbb49d1dd82c934fb2bf613d"
+          revision: "eb94d4d152de7e3df3105b66e50cda3df87630eab8a64ee7b9569a9a164c27ca"
