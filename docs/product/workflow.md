@@ -82,23 +82,11 @@ than a refusal. That profile is now applied to values as well as to schemas: an
 agent's answer is read against the schema its node declared, by that one owner,
 before the answer can become anything. Bytes that fall outside the profile are
 refused by name, so the whole snapshot fails rather than binding a type nobody can
-read, and the preview says so instead of drawing it.
+read.
 A root run's non-workflow references are frozen into one run-configuration revision
 with its role matrix, hash-framed as one immutable snapshot whose identity does not
-depend on assembly order. From those parts one composed preview is derived, so what a
-revision will do is readable before anything of it runs: every node under the kind
-the document wrote it in, an agent node with the role, provider, model, configuration
-revision and mode it is bound to, the dependency edges and the join a scheduler
-really applies, the capabilities each node demands including the grants its skills
-carry in transitively, the published revision every reference lands in or the named
-reason it lands nowhere — a withdrawn skill among them, named rather than ending the
-drawing — every published skill whose contents nobody read, whose carried grants the
-preview says are unknown instead of answering that it carries none, every order a
-root graph declares with its name and schema revision, and the executability verdict
-with the capability each still-waiting node needs — marked proposed or bound, so an
-author's intent is never read as a binding. That preview is a derivation and nothing
-else: no route, no rendering and no stored shape carries it. Behind that, nothing:
-the registries are ports a caller supplies. A durable catalog adapter now
+depend on assembly order. Behind that binding, nothing: the registries are ports a
+caller supplies. A durable catalog adapter now
 publishes exact revision bytes, founds a named lineage through a typed writer
 that derives the lineage id, and resolves an admitted name or lineage id to
 those bytes. A workflow already published through `POST /workflow-revisions`
