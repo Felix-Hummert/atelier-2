@@ -1467,15 +1467,6 @@ export const problemDefinitions = {
   "catalog-name-held": { status: 409, title: "Catalog name is held" },
   "catalog-revision-owned": { status: 409, title: "Catalog revision is owned" },
   "project-unknown": { status: 404, title: "Project unknown" },
-  "project-root-missing": { status: 404, title: "Project root missing" },
-  "project-root-revision-conflict": {
-    status: 409,
-    title: "Project root revision conflict",
-  },
-  "host-configuration-unreadable": {
-    status: 503,
-    title: "Host configuration channel unreadable",
-  },
   "model-registry-missing": { status: 404, title: "Model registry not found" },
   "model-registry-revision-conflict": {
     status: 409,
@@ -1986,18 +1977,6 @@ export const problemSchema = z.discriminatedUnion("type", [
     problemDefinitions["catalog-revision-owned"],
   ),
   problemVariant("project-unknown", problemDefinitions["project-unknown"]),
-  problemVariant(
-    "project-root-missing",
-    problemDefinitions["project-root-missing"],
-  ),
-  problemVariant(
-    "project-root-revision-conflict",
-    problemDefinitions["project-root-revision-conflict"],
-  ),
-  problemVariant(
-    "host-configuration-unreadable",
-    problemDefinitions["host-configuration-unreadable"],
-  ),
   problemVariant(
     "model-registry-missing",
     problemDefinitions["model-registry-missing"],

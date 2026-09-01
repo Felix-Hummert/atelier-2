@@ -48,10 +48,6 @@ from atelier2.application.project_connections import (
     ListProjectSourcesResult,
     RotateProjectSourceTokenResult,
 )
-from atelier2.application.project_root import (
-    GetProjectRootResult,
-    PublishProjectRootUseCaseResult,
-)
 from atelier2.application.publish_adapter_operation_revision import (
     PublishAdapterOperationRevisionResult,
 )
@@ -361,10 +357,6 @@ class ApiUseCases:
     retire_catalog_lineage: Callable[
         [CatalogLineageId, CatalogActor, CatalogActivatedAt],
         RetireCatalogLineageUseCaseResult,
-    ]
-    get_project_root_revision: Callable[[str], GetProjectRootResult]
-    publish_project_root_revision: Callable[
-        [str, int, str], PublishProjectRootUseCaseResult
     ]
     get_project_source_connection: Callable[
         [ProjectId], GetServedProjectSourceConnectionResult

@@ -443,21 +443,6 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Project unknown",
         "Use a project id this installation has configured.",
     ),
-    "project-root-missing": ProblemDefinition(
-        404,
-        "Project root missing",
-        "Publish a project-root revision for this project before reading it.",
-    ),
-    "project-root-revision-conflict": ProblemDefinition(
-        409,
-        "Project root revision conflict",
-        "Use a new revision_number or retry the exact original project-root revision.",
-    ),
-    "host-configuration-unreadable": ProblemDefinition(
-        503,
-        "Host configuration channel unreadable",
-        "Retry after the host configuration channel becomes available.",
-    ),
     "model-registry-missing": ProblemDefinition(
         404,
         "Model registry not found",

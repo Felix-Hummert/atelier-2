@@ -59,7 +59,6 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_MODEL_DEFAULTS,
-    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
@@ -417,19 +416,6 @@ class ProjectModelResolutionResource(ApiModel):
     resolutions: tuple[RoleModelResolutionResource, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
-
-
-class ProjectRootRevisionResource(ApiModel):
-    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
-    public_project_reference: str = Field(
-        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
-        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
-    )
-    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    root_path: str = Field(
-        min_length=1, max_length=MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
-    )
-    project_root_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
 class AgentReceiptResource(ApiModel):
