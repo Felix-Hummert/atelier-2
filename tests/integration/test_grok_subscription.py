@@ -37,6 +37,7 @@ from atelier2.adapters.grok_subscription import (
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY,
     WORKSPACE_ALLOW_RULES,
+    WORKSPACE_DENY_RULES,
     WORKSPACE_TOOLS,
     GrokContainmentUnattested,
     GrokExecutableUnsupported,
@@ -1766,9 +1767,17 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
         if argument == "--allow"
     ]
     assert allows == list(WORKSPACE_ALLOW_RULES)
-    assert argument_after(command.arguments, "--deny") == "MCPTool"
+    denies = [
+        command.arguments[index + 1]
+        for index, argument in enumerate(command.arguments)
+        if argument == "--deny"
+    ]
+    assert denies == list(WORKSPACE_DENY_RULES)
+    assert "--deny" not in tool_free_command.arguments
     assert "--always-approve" not in command.arguments
-    assert "bypassPermissions" not in command.arguments
+    assert argument_after(command.arguments, "--permission-mode") == "bypassPermissions"
+    assert "dontAsk" not in command.arguments
+    assert argument_after(tool_free_command.arguments, "--permission-mode") == "dontAsk"
     kept = tuple(
         flag
         for flag in tool_free_command.arguments
