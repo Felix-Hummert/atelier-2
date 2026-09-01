@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Never, cast
 
@@ -142,6 +141,7 @@ from tests.scenarios.api import (
     durable_queries,
     event_poll_backoff,
 )
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 _DOCUMENT = (
@@ -835,26 +835,22 @@ def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
     assert headless_only.opens == 0
 
 
-def _wait_for_state(
-    runtime: DbosRuntime, run_id: RunId, state: RunState
-) -> AnyBoundRun:
-    """Read the run back through the durable query until it stands where told."""
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        result = durable_queries(runtime.engine).get_run(run_id)
-        if isinstance(result, RunFound) and result.projection.run.state is state:
-            assert isinstance(result.projection.run, (RunV2, RunV3))
-            return result.projection.run
-        time.sleep(0.025)
-    raise AssertionError(f"run did not reach {state.value}")
+def _run_at_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> AnyBoundRun:
+    """Load the typed durable run after the shared state wait completes."""
+    wait_for_run_state(runtime.engine, run_id, state)
+    result = durable_queries(runtime.engine).get_run(run_id)
+    assert isinstance(result, RunFound)
+    assert result.projection.run.state is state
+    assert isinstance(result.projection.run, (RunV2, RunV3))
+    return result.projection.run
 
 
 def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> AnyBoundRun:
-    return _wait_for_state(runtime, run_id, RunState.COMPLETED)
+    return _run_at_state(runtime, run_id, RunState.COMPLETED)
 
 
 def _wait_failed(runtime: DbosRuntime, run_id: RunId) -> AnyBoundRun:
-    return _wait_for_state(runtime, run_id, RunState.FAILED)
+    return _run_at_state(runtime, run_id, RunState.FAILED)
 
 
 def test_registry_startability_is_one_declared_factory_and_capability_decision() -> (
@@ -1135,7 +1131,7 @@ nodes:
         )
         seeded.launch()
         assert (
-            _wait_for_state(seeded, run_id, RunState.WAITING_INPUT).current_node_id
+            _run_at_state(seeded, run_id, RunState.WAITING_INPUT).current_node_id
             == "ask"
         )
     finally:
@@ -1150,7 +1146,7 @@ nodes:
     try:
         restarted.launch()
         assert (
-            _wait_for_state(restarted, run_id, RunState.WAITING_INPUT).current_node_id
+            _run_at_state(restarted, run_id, RunState.WAITING_INPUT).current_node_id
             == "ask"
         )
 

@@ -20,7 +20,6 @@ from atelier2.adapters.dbos.names import RESOLVE_STEP_NAME
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     effect_intents,
-    runs,
 )
 from atelier2.adapters.dbos.workflow_ids import reconcile_workflow_id_for
 from atelier2.adapters.git_transport.effects import (
@@ -71,6 +70,7 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
 
 CRASHED = 86
@@ -253,22 +253,6 @@ def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
     )
 
 
-def _wait_for_state(runtime: DbosRuntime, expected: RunState) -> None:
-    deadline = time.monotonic() + 15
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
-                )
-            )
-        if observed == expected.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {expected.value!r}")
-
-
 def _seed_public_run(root: Path) -> None:
     runtime = _runtime(root, SubprocessGitCommandRunner())
     runtime.initialize_storage()
@@ -382,7 +366,7 @@ def _launch_child(command: str, root: Path) -> None:
             while time.monotonic() < deadline:
                 time.sleep(0.025)
             raise AssertionError("runtime did not crash after the accepted push")
-        _wait_for_state(runtime, expected)
+        wait_for_run_state(runtime.engine, RUN, expected)
     finally:
         runtime.close()
 

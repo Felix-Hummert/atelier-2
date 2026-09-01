@@ -111,6 +111,7 @@ from tests.scenarios.open_pr_agent import (
     open_pr_agent_executor_factory,
     publish_open_pr_agent_run,
 )
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
@@ -218,22 +219,6 @@ nodes:
     )
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, bindings
-
-
-def _wait_for_state(runtime: DbosRuntime, run: RunId, state: RunState) -> None:
-    deadline = time.monotonic() + 15
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == run.value)
-                )
-            )
-        if observed == state.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
 
 
 def _wait_for_receipt(runtime: DbosRuntime) -> None:
@@ -364,7 +349,7 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
     started_runtime, github, atelier_sqlite = runtime
 
     _start(started_runtime, RUN, granted=True)
-    _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, RUN, RunState.COMPLETED)
     _wait_for_receipt(started_runtime)
 
     recorded = github.recorded_pull_requests()
@@ -445,7 +430,7 @@ def test_forked_agent_open_pr_references_the_confirmed_effect_without_replay(
     workflow, bindings = publish_open_pr_agent_run(started_runtime, granted=True)
     create_open_pr_agent_run(started_runtime, RUN, workflow, bindings)
     started_runtime.launch()
-    _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, RUN, RunState.COMPLETED)
     _wait_for_receipt(started_runtime)
 
     starter = DbosDurableRunStarter(
@@ -459,7 +444,7 @@ def test_forked_agent_open_pr_references_the_confirmed_effect_without_replay(
     successor = successor_run_id_for(
         RunForkCommandId.for_request(RUN, "retry-agent-open-pr")
     )
-    _wait_for_state(started_runtime, successor, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, successor, RunState.COMPLETED)
 
     assert len(github.recorded_pull_requests()) == 1
     with started_runtime.engine.connect() as connection:
@@ -496,7 +481,7 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
     workflow, bindings = _publish_two_agent_open_pr_run(started_runtime)
     create_open_pr_agent_run(started_runtime, RUN, workflow, bindings)
     started_runtime.launch()
-    _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, RUN, RunState.COMPLETED)
 
     starter = DbosDurableRunStarter(
         started_runtime.engine,
@@ -505,7 +490,7 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
     )
     inherited = starter.fork_run(ForkRunRequest(RUN, "reuse-agent", "review"))
     assert isinstance(inherited, DurableRunForkCreated)
-    _wait_for_state(started_runtime, inherited.run.run_id, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, inherited.run.run_id, RunState.COMPLETED)
     assert inherited.fork.reused_nodes[0].source_run_id == RUN
     calls_before_exact = (github.readback_calls, github.execute_calls)
 
@@ -513,7 +498,7 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
         ForkRunRequest(inherited.run.run_id, "exact-inherited-agent", "implement")
     )
     assert isinstance(exact, DurableRunForkCreated)
-    _wait_for_state(started_runtime, exact.run.run_id, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, exact.run.run_id, RunState.COMPLETED)
     assert (
         github.readback_calls - calls_before_exact[0],
         github.execute_calls - calls_before_exact[1],
@@ -547,8 +532,10 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
         ForkRunRequest(inherited.run.run_id, "changed-inherited-agent", "implement")
     )
     assert isinstance(mismatched, DurableRunForkCreated)
-    _wait_for_state(
-        started_runtime, mismatched.run.run_id, RunState.WAITING_RECONCILIATION
+    wait_for_run_state(
+        started_runtime.engine,
+        mismatched.run.run_id,
+        RunState.WAITING_RECONCILIATION,
     )
     assert (
         github.readback_calls - calls_before_mismatch[0],
@@ -574,7 +561,7 @@ def test_an_agent_node_without_the_grant_opens_no_pull_request(
     started_runtime, github, _atelier_sqlite = runtime
 
     _start(started_runtime, UNGRANTED_RUN, granted=False)
-    _wait_for_state(started_runtime, UNGRANTED_RUN, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, UNGRANTED_RUN, RunState.COMPLETED)
 
     assert github.recorded_pull_requests() == ()
     with started_runtime.engine.connect() as connection:
@@ -594,7 +581,7 @@ def test_a_completed_agent_replay_refuses_a_mismatched_receipt_intent(
     started_runtime, _github, _atelier_sqlite = runtime
 
     _start(started_runtime, RUN, granted=True)
-    _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, RUN, RunState.COMPLETED)
     _wait_for_receipt(started_runtime)
     _replace_receipt_adapter_revision(started_runtime)
 
@@ -685,7 +672,7 @@ def test_a_persisted_round_two_agent_reconciliation_preserves_its_round(
             determination = OperatorAuthoritativeAbsence()
         runtime.launch()
         _submit_reconciliation(runtime, intent, determination)
-        _wait_for_state(runtime, RUN, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
         _wait_for_receipt(runtime)
 
         with runtime.engine.connect() as connection:
