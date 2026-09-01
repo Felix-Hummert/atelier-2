@@ -423,13 +423,15 @@ def test_a_doors_attempts_scrub_residue_falls_with_the_rest_of_its_lease(
     assert not lease.working_directory.exists()
 
 
-# The report every fake episode below answers with. Its two field names are
-# this scenario's, not a second owner's: what makes them right is that
+# The report every fake episode below answers with. Its field names are this
+# scenario's, not a second owner's: what makes them right is that
 # `CONDUCTOR_REPORT_SCHEMA` -- the published contract the run really pins --
 # admits the value, which every assertion here goes through.
 _EPISODE_REPORT = {
     "answer": "Started the tidy workflow; run-tidy-1 is running.",
     "started_run_ids": ["run-tidy-1"],
+    "carried_context": "Started run-tidy-1 from the tidy workflow request.",
+    "carried_context_truncated": False,
 }
 
 # The four result-text shapes one identical brief really came back in (#663,
