@@ -164,6 +164,12 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
+    # This job scans a range, so a cancelled run leaves its commits scanned by
+    # nothing: the next push starts its range at the cancelled run's head.
+    # Keyed on the commit and never cancelled, every landing is read once.
+    concurrency:
+      group: secret-scan-${{ github.sha }}
+      cancel-in-progress: false
     # ~25s üblich, gemessen 30.08. (12 grüne main-Runs; mean 23s, max 26s)
     timeout-minutes: 3
     steps:
@@ -182,8 +188,36 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum --check
           tar -xzf gitleaks.tar.gz gitleaks
 
-      - name: Scan the full history for secrets
-        run: ./gitleaks git --redact --no-banner --log-opts="--full-history --all --diff-filter=uxdb -m" .
+      # Reading every ref judged unmerged foreign work and held the trunk and
+      # every open pull request red (#968); the range is what this event
+      # actually brings. `-m` is load-bearing: a secret introduced only in a
+      # merge commit's conflict resolution is invisible without it.
+      - name: Scan the event's own commits for secrets
+        env:
+          SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if ! base_commit="$(git rev-parse --verify --quiet "${SECRET_SCAN_BASE_SHA}^{commit}")"; then
+            echo "::error::base revision '${SECRET_SCAN_BASE_SHA}' does not resolve to a commit; refusing to report a scan that covered nothing" >&2
+            exit 1
+          fi
+          ./gitleaks git --redact --no-banner \
+            --log-opts="${base_commit}..HEAD --diff-filter=uxdb -m" \
+            --report-format json --report-path gitleaks-report.json .
+
+      # The repository is public, so its artifacts are world-readable: the
+      # report stays redacted and names rule, file, commit, line and author
+      # without the value. Findings exit 1, so the upload cannot wait on
+      # success.
+      - name: Upload the secret-scan report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: secret-scan-report
+          path: gitleaks-report.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
 
   quality:
     name: "Python: architecture, lint, types, tests"
