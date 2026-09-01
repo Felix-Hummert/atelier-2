@@ -15,9 +15,9 @@ export const conductorChatCopy = {
    * The code that stood here — `OUTPUT_SCHEMA_REFUSED` for the live episode
    * that raised this — names the seam that refused. That is a fact for whoever
    * reads the run, never an answer to the person who just asked a question.
-   * One sentence says what happened, and the run link beside every conductor
-   * line is where the reason and the refused output stand, so this
-   * conversation keeps no second failure vocabulary of its own.
+   * One sentence says what happened, and the conversation's own run link is
+   * where the reason and the refused output stand, so this conversation keeps
+   * no second failure vocabulary of its own.
    */
   episodeFailed:
     "The conductor's run ended without an answer — the run shows where it stopped.",

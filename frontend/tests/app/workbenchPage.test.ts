@@ -412,7 +412,7 @@ describe("the workbench conductor conversation", () => {
     };
   }
 
-  it("carries a conductor's reply in a link back to its own run", async () => {
+  it("carries one link back to the conversation's own run, however many rounds it holds", async () => {
     const feed = new FakeRunEventFeed();
     const run = conductorRunFixture();
     openChat({
@@ -433,8 +433,25 @@ describe("the workbench conductor conversation", () => {
       )
     );
 
-    const episode = await screen.findByRole("link", { name: conductorChatCopy.openEpisode });
-    expect(episode.getAttribute("href")).toBe(`/atelier/runs/${run.public_run_reference}`);
+    const conversation = await screen.findByRole("link", {
+      name: conductorChatCopy.openEpisode
+    });
+    expect(conversation.getAttribute("href")).toBe(`/atelier/runs/${run.public_run_reference}`);
+
+    // A second round is a second reply in the same run, so it adds no second
+    // way to open that run: the link belongs to the conversation, not to a line.
+    feed.handlers?.event(
+      JSON.stringify(
+        await completedAnswerEvent(
+          run.public_run_reference,
+          run.workflow_revision_hash,
+          "Und noch etwas",
+          2
+        )
+      )
+    );
+    await screen.findByText("Und noch etwas");
+    expect(screen.getAllByRole("link", { name: conductorChatCopy.openEpisode })).toHaveLength(1);
   });
 
   it("keeps the first round's reply and adds the second, answering the wait each round has open", async () => {

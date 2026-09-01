@@ -542,6 +542,10 @@
   $: conversationTranscript = conductorLink.kind === "connected"
     ? conductorTranscript.messages
     : transcript;
+  $: conversationRunPath =
+    conductorLink.kind === "connected" && conductorRun !== null
+      ? runPath(conductorRun.public_run_reference)
+      : null;
   $: conversationComplete = conductorLink.kind === "connected" &&
     conductorRun?.state === "COMPLETED" &&
     conductorTranscript.messages.filter((message) => message.speaker === "house").length >=
@@ -673,21 +677,26 @@
           <p class="conversation-message">
             <span class="conversation-speaker">{wrapDisplayCopy(speakerLabels[message.speaker])}</span>
             {message.text}
-            {#if message.runReference !== undefined}
-              {@const conversationPath = runPath(message.runReference)}
-              <a
-                class="conversation-run-link"
-                href={conversationPath}
-                onclick={(event) => {
-                  event.preventDefault();
-                  navigate(conversationPath);
-                }}
-              >{wrapDisplayCopy(conductorChatCopy.openEpisode)}</a>
-            {/if}
           </p>
         </li>
       {/each}
     </ol>
+    <!-- One link for the whole conversation, because the whole conversation is
+         one run (#658). Per line it was the episode model speaking, where each
+         message had a run of its own; here it would repeat the same href once
+         per round, up to the loop's ceiling. -->
+    {#if conversationRunPath !== null}
+      <p class="conversation-run">
+        <a
+          class="conversation-run-link"
+          href={conversationRunPath}
+          onclick={(event) => {
+            event.preventDefault();
+            navigate(conversationRunPath);
+          }}
+        >{wrapDisplayCopy(conductorChatCopy.openEpisode)}</a>
+      </p>
+    {/if}
   {/if}
 
   <form class="composer" aria-label={wrapDisplayCopy(workbenchPageCopy.composerRegionLabel)} onsubmit={send}>
@@ -881,8 +890,12 @@
     white-space: pre-line;
   }
 
+  .conversation-run {
+    max-width: var(--reading-width);
+    margin: var(--space-2) 0 0;
+  }
+
   .conversation-run-link {
-    justify-self: start;
     font-size: var(--text-xs);
   }
 

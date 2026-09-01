@@ -8,8 +8,6 @@ export type ChatMessage = {
   id: string;
   speaker: ChatSpeaker;
   text: string;
-  /** The conductor episode this line reports on, so the page can link its run. */
-  runReference?: string;
 };
 
 /**

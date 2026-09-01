@@ -12,11 +12,14 @@ import { createRunId, startMutation, type MutationJournal } from "./mutationJour
 import { deliverWaitAnswer, prepareWaitAnswer, type WaitAnswerOutcome } from "./waitAnswerDelivery";
 import type { ConductorConnection } from "./conductorEpisode";
 
+/**
+ * One line of the conversation. It carries no run of its own: the whole
+ * conversation is one run (#658), and the page links to it once.
+ */
 export type ConductorMessage = {
   id: string;
   speaker: "you" | "house";
   text: string;
-  runReference?: string;
 };
 
 export type ConductorTranscript = {
@@ -91,16 +94,14 @@ function messageFromEvent(event: RunEvent): ConductorMessage | null {
     return {
       id: `conductor-${event.cursor}`,
       speaker: "house",
-      text: readableReport(event.output_base64),
-      runReference: event.public_run_reference
+      text: readableReport(event.output_base64)
     };
   }
   if (event.event === "AGENT_FAILED" && event.node_id === CONDUCTOR_AGENT_NODE_ID) {
     return {
       id: `conductor-${event.cursor}`,
       speaker: "house",
-      text: conductorChatCopy.episodeFailed,
-      runReference: event.public_run_reference
+      text: conductorChatCopy.episodeFailed
     };
   }
   return null;

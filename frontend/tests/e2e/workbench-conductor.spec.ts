@@ -183,13 +183,16 @@ test("a message meets the honest refusal without a conductor, then starts one co
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
   // Two reply lines, counted by the text they carry. Not `{ exact: true }`:
   // Playwright's exact text match compares a whole element's text, and a
-  // transcript line also carries its speaker label and the link to its run,
-  // so an exact match finds nothing at all rather than the reply (CI run
-  // 33506793797). The smallest element holding the reply is the line itself,
-  // which is what makes this a count of lines.
+  // transcript line also carries its speaker label, so an exact match finds
+  // nothing at all rather than the reply (CI run 33506793797). The smallest
+  // element holding the reply is the line itself, which is what makes this a
+  // count of lines.
   await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(2, {
     timeout: 60_000
   });
+  // One run, one link: a second round adds a reply, never a second way to open
+  // the same conversation.
+  await expect(conversationLink).toHaveCount(1);
 
   // A reload re-resolves the connection and re-opens the run's durable event
   // stream, whose full history the server replays (#7): the conversation

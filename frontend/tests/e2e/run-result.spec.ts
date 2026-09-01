@@ -122,7 +122,12 @@ async function settledConductorReportRun(page: Page): Promise<void> {
       workflow_revision_hash: (await published.json()).workflow_revision_hash,
       agent_bindings: [
         { role: "conductor", agent_configuration_revision_hash: configurationHash }
-      ]
+      ],
+      // A version-3 start declares its orders, empty ones included: without the
+      // field the body is not that start at all, and the one it does match
+      // carries no bindings, so the workshop refuses a document whose role
+      // nothing bound (`StartRunRequestResourceV3`, `api/wire/requests.py`).
+      orders: []
     }
   });
   expect(started.status(), await started.text()).toBe(201);
