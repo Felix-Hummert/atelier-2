@@ -437,6 +437,84 @@ describe("the workbench conductor conversation", () => {
     expect(episode.getAttribute("href")).toBe(`/atelier/runs/${run.public_run_reference}`);
   });
 
+  it("keeps the first round's reply and adds the second, answering the wait each round has open", async () => {
+    const feed = new FakeRunEventFeed();
+    const waitingFirstRound = conductorRunFixture();
+    const waitingSecondRound = conductorRunFixture({
+      state_version: 2,
+      current_node_execution_id: "a".repeat(64)
+    });
+    let standing = waitingFirstRound;
+    // The durable route answers a wait with 202 and moves the run on its own
+    // (verified against `tests/e2e/serve_cockpit.py`), and it fences the answer
+    // to the exact execution it was written for -- so this double refuses an
+    // answer aimed at a round the run has already left.
+    const answer: CockpitApi["answer"] = vi.fn(async (mutation) => {
+      if (mutation.expected_node_execution_id !== standing.current_node_execution_id) {
+        throw new Error("that wait is no longer open");
+      }
+      const accepted = standing;
+      standing = waitingSecondRound;
+      return { status: 202, value: accepted };
+    });
+    openChat({
+      ...conductorConnectionOverrides(),
+      listRuns: listRunsForConductor(waitingFirstRound),
+      getRun: vi.fn(async () => standing),
+      answer,
+      openRunEvents: feed.open
+    });
+    const { screen, waitFor } = testingLibrary;
+    /** Sending ends where the composer takes focus back, ready for the next message. */
+    async function sendAndSettle(words: string): Promise<void> {
+      const composer = screen.getByLabelText(workbenchPageCopy.composerLabel);
+      composer.blur();
+      await say(words);
+      await waitFor(() => expect(document.activeElement).toBe(composer));
+    }
+
+    await screen.findByRole("heading", { name: "Workbench" });
+    await screen.findByText(conductorConversationCopy.composerHint);
+    await waitFor(() => expect(feed.handlers).not.toBeNull());
+    feed.handlers?.opened();
+
+    await sendAndSettle("Erste Nachricht");
+    feed.handlers?.event(
+      JSON.stringify(
+        await completedAnswerEvent(
+          waitingFirstRound.public_run_reference,
+          waitingFirstRound.workflow_revision_hash,
+          "Erste Antwort",
+          1
+        )
+      )
+    );
+    await screen.findByText("Erste Antwort");
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        false
+      )
+    );
+    await sendAndSettle("Zweite Nachricht");
+    feed.handlers?.event(
+      JSON.stringify(
+        await completedAnswerEvent(
+          waitingFirstRound.public_run_reference,
+          waitingFirstRound.workflow_revision_hash,
+          "Zweite Antwort",
+          2
+        )
+      )
+    );
+
+    // The second round's reply is added to the transcript, not a replacement
+    // of the first: both rounds stand.
+    await screen.findByText("Zweite Antwort");
+    expect(screen.queryByText("Erste Antwort")).not.toBeNull();
+  });
+
   // Finding 1 (#959 review): a retry of the same open wait with edited text
   // can conflict with its own earlier, differently-worded attempt still in
   // the journal (mutationJournal.ts, "mutation identity already belongs to a
