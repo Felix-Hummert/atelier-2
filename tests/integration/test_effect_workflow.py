@@ -63,6 +63,7 @@ from atelier2.contracts.runs import (
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.effect_requests import open_pull_request_request_for_output
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import (
     complete_v3_agent_node,
     prepare_and_launch_graph_action,
@@ -79,6 +80,7 @@ from tests.scenarios.workflows import (
     V3_EFFECT_LINE_DOCUMENT,
 )
 
+RUN = RunId("run-1")
 TIMEOUT_SECONDS = 5.0
 PROVIDER_OUTPUT = b'"exact-request"'
 ACTION_REQUEST = open_pull_request_request_for_output(PROVIDER_OUTPUT)
@@ -149,13 +151,13 @@ def prepared(
     start_published_v3_run(
         runtime.engine,
         runtime.settings,
-        RunId("run-1"),
+        RUN,
         revision,
         runtime.agent_executor_registry,
     )
     complete_v3_agent_node(
         runtime,
-        RunId("run-1"),
+        RUN,
         V3_EFFECT_LINE_AGENT_NODE_ID,
         V3_EFFECT_LINE_AGENT_JOB,
         PROVIDER_OUTPUT,
@@ -163,7 +165,7 @@ def prepared(
     intent = prepare_and_launch_graph_action(
         runtime.engine,
         runtime.settings,
-        RunId("run-1"),
+        RUN,
         revision.revision_hash,
         runtime.effect_adapter_binding,
     )
@@ -191,17 +193,6 @@ def wait_for_workflow(runtime: DbosRuntime, workflow_id: str) -> str:
     return status
 
 
-def wait_for_run_state(runtime: DbosRuntime, expected: RunState) -> str:
-    deadline = time.monotonic() + TIMEOUT_SECONDS
-    state = ""
-    while state != expected.value and time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            state = str(connection.scalar(sa.select(runs.c.state)))
-        if state != expected.value:
-            time.sleep(0.025)
-    return state
-
-
 def prepare_with_factory(
     tmp_path: Path, factory: UnknownReadbackFactory
 ) -> tuple[DbosRuntime, EffectIntent, Path]:
@@ -221,13 +212,13 @@ def prepare_with_factory(
     start_published_v3_run(
         runtime.engine,
         runtime.settings,
-        RunId("run-1"),
+        RUN,
         revision,
         runtime.agent_executor_registry,
     )
     complete_v3_agent_node(
         runtime,
-        RunId("run-1"),
+        RUN,
         V3_EFFECT_LINE_AGENT_NODE_ID,
         V3_EFFECT_LINE_AGENT_JOB,
         PROVIDER_OUTPUT,
@@ -235,7 +226,7 @@ def prepare_with_factory(
     intent = prepare_and_launch_graph_action(
         runtime.engine,
         runtime.settings,
-        RunId("run-1"),
+        RUN,
         revision.revision_hash,
         factory.binding,
     )
@@ -369,7 +360,7 @@ def test_authoritative_absence_executes_once_and_atomically_confirms_the_run(
         wait_for_workflow(runtime, effect_workflow_id_for(intent.binding.logical_key))
         == "SUCCESS"
     )
-    assert wait_for_run_state(runtime, RunState.WAITING_INPUT) == "WAITING_INPUT"
+    wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
     with runtime.engine.connect() as connection:
         assert connection.execute(
             sa.select(
@@ -485,7 +476,7 @@ def test_unknown_waits_without_an_effect_then_an_operator_command_finishes(
             wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))
             == "SUCCESS"
         )
-        assert wait_for_run_state(runtime, RunState.WAITING_INPUT) == "WAITING_INPUT"
+        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
 
         expected_source = (
             ConfirmationSource.OPERATOR_AUTHORIZED_EXECUTION
