@@ -10,6 +10,11 @@ const VIEWPORTS = [
   { width: 390, height: 844 }
 ] as const;
 const COMPLETED_RUN_COUNT = 20;
+// Each POST /runs costs two control-query admissions (write + response-resource
+// read) against the server's MAXIMUM_CONTROL_QUERIES=8 budget. Starting runs in
+// small batches keeps concurrent admissions well under that budget instead of
+// racing the server's 1s admission wait on a loaded CI runner.
+const RUN_START_BATCH_SIZE = 3;
 
 type OverflowScroller = {
   kind: "stage" | "document";
@@ -64,6 +69,38 @@ async function publishCheckedRegistryEntry(
   expect([200, 201]).toContain(checked.status());
 }
 
+async function startRuns(
+  page: Page,
+  suffix: number,
+  revisionHash: string,
+  agentHash: string
+): Promise<string[]> {
+  const references: string[] = [];
+  for (let start = 0; start < COMPLETED_RUN_COUNT; start += RUN_START_BATCH_SIZE) {
+    const batchIndexes = Array.from(
+      { length: Math.min(RUN_START_BATCH_SIZE, COMPLETED_RUN_COUNT - start) },
+      (_, offset) => start + offset
+    );
+    const batchReferences = await Promise.all(
+      batchIndexes.map(async (index) => {
+        const started = await page.request.post(`${API}/runs`, {
+          data: {
+            workflow_format_version: 3,
+            run_id: `rail-sticky/${suffix}/${index}`,
+            workflow_revision_hash: revisionHash,
+            agent_bindings: [{ role: "builder", agent_configuration_revision_hash: agentHash }],
+            orders: []
+          }
+        });
+        expect(started.status()).toBe(201);
+        return (await started.json()).public_run_reference as string;
+      })
+    );
+    references.push(...batchReferences);
+  }
+  return references;
+}
+
 async function seedOverflowingHistory(page: Page, suffix: number): Promise<string> {
   const workflowName = `rail-sticky-history-${suffix}`;
   const schemaHash = await publishSchema(page);
@@ -108,21 +145,7 @@ async function seedOverflowingHistory(page: Page, suffix: number): Promise<strin
   expect([200, 201]).toContain(configuration.status());
   const agentHash = (await configuration.json()).agent_configuration_revision_hash as string;
   await publishCheckedRegistryEntry(page, "e2e-v3", `rail-sticky-model-${suffix}`, agentHash);
-  const references = await Promise.all(
-    Array.from({ length: COMPLETED_RUN_COUNT }, async (_, index) => {
-      const started = await page.request.post(`${API}/runs`, {
-        data: {
-          workflow_format_version: 3,
-          run_id: `rail-sticky/${suffix}/${index}`,
-          workflow_revision_hash: revisionHash,
-          agent_bindings: [{ role: "builder", agent_configuration_revision_hash: agentHash }],
-          orders: []
-        }
-      });
-      expect(started.status()).toBe(201);
-      return (await started.json()).public_run_reference as string;
-    })
-  );
+  const references = await startRuns(page, suffix, revisionHash, agentHash);
   await expect(async () => {
     const states = await Promise.all(
       references.map(async (reference) => {
