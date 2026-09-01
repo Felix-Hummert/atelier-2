@@ -76,8 +76,6 @@ from atelier2.ports.host_configuration import (
     ProjectModelDefaultsRevisionCreated,
     ProjectModelDefaultsRevisionExisting,
     ProjectModelDefaultsRevisionInvalid,
-    ProjectRootRevisionCreated,
-    ProjectRootRevisionExisting,
     ProjectSourceConnectionRevisionCollision,
     ProjectSourceConnectionRevisionConflict,
     ProjectSourceConnectionRevisionCreated,
@@ -87,7 +85,6 @@ from atelier2.ports.host_configuration import (
     ProjectSourceCredentialDirectoryUnreferenced,
     PublishModelRegistryResult,
     PublishProjectModelDefaultsResult,
-    PublishProjectRootResult,
     PublishProjectSourceConnectionResult,
 )
 from atelier2.ports.host_configuration import (
@@ -95,9 +92,6 @@ from atelier2.ports.host_configuration import (
 )
 from atelier2.ports.host_configuration import (
     ProjectModelDefaultsRevisionConflict as PortProjectModelDefaultsRevisionConflict,
-)
-from atelier2.ports.host_configuration import (
-    ProjectRootRevisionConflict as PortProjectRootRevisionConflict,
 )
 
 
@@ -178,7 +172,7 @@ def project_root_for(engine: Engine, project_id: ProjectId) -> Path:
 
 def _write_project_root_revision(
     connection: Connection, revision: ProjectRootRevision
-) -> ProjectRootRevisionCreated | ProjectRootRevisionExisting:
+) -> ProjectRootRevision:
     keyed = (
         connection.execute(
             sa.select(host_project_root_revisions).where(
@@ -193,7 +187,7 @@ def _write_project_root_revision(
     if keyed is not None:
         durable = project_root_revision_from_record(keyed)
         if durable == revision:
-            return ProjectRootRevisionExisting(durable)
+            return durable
         raise ProjectRootRevisionConflict(
             "project-root-revision-conflict: "
             f"{revision.project_id.value!r} revision "
@@ -212,7 +206,7 @@ def _write_project_root_revision(
     if hashed is not None:
         durable = project_root_revision_from_record(hashed)
         if durable == revision:
-            return ProjectRootRevisionExisting(durable)
+            return durable
         raise HostConfigurationUnreadable(
             f"{HOST_CONFIGURATION_UNREADABLE}: project-root revision "
             f"{revision.revision_hash.value} already names other fields"
@@ -225,7 +219,7 @@ def _write_project_root_revision(
             root_path=str(revision.root_path),
         )
     )
-    return ProjectRootRevisionCreated(revision)
+    return revision
 
 
 def publish_project_root_revision(
@@ -233,7 +227,7 @@ def publish_project_root_revision(
 ) -> ProjectRootRevision:
     try:
         with canonical_write_transaction(engine) as connection:
-            return _write_project_root_revision(connection, revision).revision
+            return _write_project_root_revision(connection, revision)
     except (
         ProjectRootBytesDisagree,
         ProjectRootRevisionConflict,
@@ -261,7 +255,7 @@ def append_project_root(
             )
             if latest is not None and latest.root_path == candidate.root_path:
                 return latest
-            return _write_project_root_revision(connection, candidate).revision
+            return _write_project_root_revision(connection, candidate)
     except (
         ProjectRootBytesDisagree,
         ProjectRootRevisionConflict,
@@ -921,23 +915,6 @@ class DbosHostConfigurationChannel:
         except ProjectRootBytesDisagree:
             return DurableStateCorrupt()
         except (ValueError, RuntimeError):
-            return DurableStateCorrupt()
-
-    def publish_project_root_revision(
-        self, revision: ProjectRootRevision
-    ) -> PublishProjectRootResult:
-        try:
-            with canonical_write_transaction(self._engine) as connection:
-                return _write_project_root_revision(connection, revision)
-        except ProjectRootRevisionConflict:
-            return PortProjectRootRevisionConflict()
-        except ProjectRootBytesDisagree:
-            return DurableStateCorrupt()
-        except HostConfigurationUnreadable as error:
-            return HostConfigurationReadUnavailable(str(error))
-        except (OperationalError, PoolTimeoutError):
-            return HostConfigurationReadUnavailable()
-        except (ValueError, TypeError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
 
     def latest_model_registry_revision(
