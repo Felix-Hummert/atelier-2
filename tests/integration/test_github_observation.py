@@ -39,6 +39,7 @@ from atelier2.contracts.work_items import (
     WorkItemKind,
 )
 from atelier2.ports.issue_observation import (
+    ObservedOpenTrackerItem,
     ObserveWorkItemRevisionResult,
     OpenTrackerItemsObserved,
     TrackerItemUnknown,
@@ -153,12 +154,18 @@ def source(tmp_path: Path, github: _FakeGitHubIssues) -> LiveGitHubIssueSource:
 def test_open_issues_become_gh_prefixed_tracker_references(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    github.issues = [{"number": 79}, {"number": 652}]
+    github.issues = [
+        {"number": 79, "title": "The first title"},
+        {"number": 652, "title": "The second title"},
+    ]
 
     observed = source.open_items()
 
     assert observed == OpenTrackerItemsObserved(
-        (TrackerItemReference("gh:79"), TrackerItemReference("gh:652"))
+        (
+            ObservedOpenTrackerItem(TrackerItemReference("gh:79"), "The first title"),
+            ObservedOpenTrackerItem(TrackerItemReference("gh:652"), "The second title"),
+        )
     )
 
 
@@ -166,22 +173,27 @@ def test_pull_requests_in_the_issue_listing_are_not_work_items(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
     github.issues = [
-        {"number": 1},
+        {"number": 1, "title": "First issue"},
         {"number": 2, "pull_request": {"url": "https://api.github.com/x"}},
-        {"number": 3},
+        {"number": 3, "title": "Third issue"},
     ]
 
     observed = source.open_items()
 
     assert observed == OpenTrackerItemsObserved(
-        (TrackerItemReference("gh:1"), TrackerItemReference("gh:3"))
+        (
+            ObservedOpenTrackerItem(TrackerItemReference("gh:1"), "First issue"),
+            ObservedOpenTrackerItem(TrackerItemReference("gh:3"), "Third issue"),
+        )
     )
 
 
 def test_observation_walks_every_page_of_a_large_listing(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    github.issues = [{"number": number} for number in range(1, 251)]
+    github.issues = [
+        {"number": number, "title": f"Issue {number}"} for number in range(1, 251)
+    ]
 
     observed = source.open_items()
 
@@ -200,6 +212,9 @@ def test_observation_walks_every_page_of_a_large_listing(
         [{"number": "79"}],
         [{"number": 0}],
         [{"number": True}],
+        [{"number": 79}],
+        [{"number": 79, "title": None}],
+        [{"number": 79, "title": 79}],
     ],
 )
 def test_a_payload_shape_this_source_refuses_is_a_typed_malformed_answer(

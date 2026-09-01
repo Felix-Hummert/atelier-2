@@ -149,7 +149,14 @@ def test_importing_turns_every_open_issue_into_exactly_one_listable_observed_row
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:
     api = connected_api(
-        runtime, tmp_path, _FakeGitHubIssueListing([{"number": 79}, {"number": 652}])
+        runtime,
+        tmp_path,
+        _FakeGitHubIssueListing(
+            [
+                {"number": 79, "title": "Fix the flaky importer test"},
+                {"number": 652, "title": "Add retry to the connection check"},
+            ]
+        ),
     )
 
     imported = api.post(PROJECT_SOURCE_IMPORT_PATH)
@@ -174,7 +181,14 @@ def test_importing_turns_every_open_issue_into_exactly_one_listable_observed_row
 
 def test_a_repeated_import_adds_nothing(runtime: DbosRuntime, tmp_path: Path) -> None:
     api = connected_api(
-        runtime, tmp_path, _FakeGitHubIssueListing([{"number": 79}, {"number": 652}])
+        runtime,
+        tmp_path,
+        _FakeGitHubIssueListing(
+            [
+                {"number": 79, "title": "Fix the flaky importer test"},
+                {"number": 652, "title": "Add retry to the connection check"},
+            ]
+        ),
     )
     assert api.post(PROJECT_SOURCE_IMPORT_PATH).status_code == 200
     first_list = api.get(QUEUE_ITEMS_PATH).json()
@@ -189,7 +203,13 @@ def test_a_repeated_import_adds_nothing(runtime: DbosRuntime, tmp_path: Path) ->
 def test_an_imported_item_is_proposed_then_confirmed(
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:
-    api = connected_api(runtime, tmp_path, _FakeGitHubIssueListing([{"number": 79}]))
+    api = connected_api(
+        runtime,
+        tmp_path,
+        _FakeGitHubIssueListing(
+            [{"number": 79, "title": "Fix the flaky importer test"}]
+        ),
+    )
     assert api.post(PROJECT_SOURCE_IMPORT_PATH).status_code == 200
     (observed,) = api.get(QUEUE_ITEMS_PATH).json()["items"]
     lineage_id = founded_workflow_lineage(api)

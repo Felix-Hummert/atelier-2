@@ -3,9 +3,11 @@
 The queue keys orchestration state by a reference into whichever tracker holds
 the item (REQ-QUEUE-14); this port is how those references enter. A source
 answers with the tracker's open items in the reference grammar its own adapter
-owns (`gh:<n>` for GitHub, ADR 0010) -- never titles, labels, or the item's own
-lifecycle, which stay the tracker's. What becomes durable from an answer is the
-caller's decision; this port only observes.
+owns (`gh:<n>` for GitHub, ADR 0010), plus each item's title as the tracker
+last served it. The title is an observation of a tracker-owned fact, not core
+truth (ADR 0016, 2026-09-01 amendment). Labels and the item's own lifecycle do
+not cross this boundary. What becomes durable from an answer is the caller's
+decision; this port only observes.
 
 Reading one named item is this port's second operation, and no more than that
 (ADR 0010 decision 1, 2026-08-26 amendment): a snapshot is the observed
@@ -30,10 +32,26 @@ from atelier2.contracts.work_items import ObservedWorkItemRevision
 
 
 @dataclass(frozen=True)
-class OpenTrackerItemsObserved:
-    """Every open item the tracker holds right now, as adapter-owned references."""
+class ObservedOpenTrackerItem:
+    """One open tracker item, with the title the tracker served for it."""
 
-    references: tuple[TrackerItemReference, ...]
+    reference: TrackerItemReference
+    title: str
+
+
+@dataclass(frozen=True)
+class OpenTrackerItemsObserved:
+    """Every open item the tracker holds right now, with its observed title."""
+
+    items: tuple[ObservedOpenTrackerItem, ...]
+
+    __match_args__ = ("references",)
+
+    @property
+    def references(self) -> tuple[TrackerItemReference, ...]:
+        """The open references this observation carries, in listing order."""
+
+        return tuple(item.reference for item in self.items)
 
 
 @dataclass(frozen=True)

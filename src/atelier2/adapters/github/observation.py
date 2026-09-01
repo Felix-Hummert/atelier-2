@@ -5,8 +5,10 @@ the project-source connection record names, and answer them in the reference
 grammar this package owns -- `gh:<n>`, the same spelling the queue's admission
 door already receives (ADR 0010: what a tracker reference means is the
 connected platform adapter's contract). Nothing else of the listing crosses
-this boundary; titles, labels, and an item's own lifecycle stay GitHub's
-(REQ-QUEUE-14).
+this boundary; titles cross as observations for the caller to decide whether to
+retain, while labels and an item's own lifecycle stay GitHub's (REQ-QUEUE-14).
+GitHub's state field remains deliberately unread; the importer derives
+closedness from the open-set difference (ADR 0016, 2026-09-01 amendment).
 
 Reading one named item is the port's second operation (ADR 0010 decision 1,
 2026-08-26 amendment): it answers the observed revision of ADR 0010 §5 -- the
@@ -51,6 +53,7 @@ from atelier2.contracts.work_items import (
     WorkItemKind,
 )
 from atelier2.ports.issue_observation import (
+    ObservedOpenTrackerItem,
     ObserveOpenTrackerItemsResult,
     ObserveWorkItemRevisionResult,
     OpenTrackerItemsObserved,
@@ -136,7 +139,7 @@ class LiveGitHubIssueSource:
         if isinstance(token, TrackerSourceUnavailable):
             return token
         client = self._client(token)
-        references: list[TrackerItemReference] = []
+        items: list[ObservedOpenTrackerItem] = []
         page = 1
         while True:
             try:
@@ -164,11 +167,11 @@ class LiveGitHubIssueSource:
             if isinstance(decoded, TrackerPayloadMalformed):
                 return decoded
             payload = decoded.value
-            malformed = self._collect_issue_references(payload, references)
+            malformed = self._collect_open_items(payload, items)
             if malformed is not None:
                 return malformed
             if len(payload) < _ISSUES_PAGE_SIZE:
-                return OpenTrackerItemsObserved(tuple(references))
+                return OpenTrackerItemsObserved(tuple(items))
             page += 1
 
     def snapshot(
@@ -284,8 +287,8 @@ class LiveGitHubIssueSource:
             http_cache=False,
         )
 
-    def _collect_issue_references(
-        self, payload: Any, references: list[TrackerItemReference]
+    def _collect_open_items(
+        self, payload: Any, items: list[ObservedOpenTrackerItem]
     ) -> TrackerPayloadMalformed | None:
         if not isinstance(payload, list):
             return TrackerPayloadMalformed(
@@ -305,5 +308,10 @@ class LiveGitHubIssueSource:
                 return TrackerPayloadMalformed(
                     "an open issue carried no positive integer number"
                 )
-            references.append(github_tracker_reference(number))
+            title = entry.get("title")
+            if not isinstance(title, str):
+                return TrackerPayloadMalformed("an open issue carried no text title")
+            items.append(
+                ObservedOpenTrackerItem(github_tracker_reference(number), title)
+            )
         return None
