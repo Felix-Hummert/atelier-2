@@ -17,7 +17,6 @@ see why. That run is the shape this file reproduces.
 from __future__ import annotations
 
 import base64
-import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -131,6 +130,7 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import (
     complete_v3_agent_node,
     prepare_and_launch_graph_action,
@@ -267,28 +267,10 @@ def publish_and_start(runtime: DbosRuntime) -> None:
     assert isinstance(created, DurableRunCreated), created
 
 
-def wait_for_run_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> None:
-    """Poll for a durable state rather than a clock, so waiting stays deterministic."""
-
-    deadline = time.monotonic() + 12
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
-                )
-            )
-        if observed == state.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
-
-
 def drive_the_whole_chain(runtime: DbosRuntime) -> None:
     """Launch and wait until both nodes have run, so both have something to read."""
     runtime.launch()
-    wait_for_run_state(runtime, RUN, RunState.COMPLETED)
+    wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
 
 
 def plant_the_value_a_build_without_the_guard_wrote(runtime: DbosRuntime) -> None:
@@ -516,7 +498,7 @@ def test_an_answered_wait_answers_its_job_its_value_and_when(
     """
     workflow = publish_and_start_wait_chain(runtime)
     runtime.launch()
-    wait_for_run_state(runtime, RUN, RunState.WAITING_INPUT)
+    wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
 
     answered = answer_wait_result(
         RUN,
@@ -528,7 +510,7 @@ def test_an_answered_wait_answers_its_job_its_value_and_when(
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
     assert isinstance(answered, AnswerAcceptedPending), answered
-    wait_for_run_state(runtime, RUN, RunState.COMPLETED)
+    wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
 
     found = durable_queries(runtime.engine).get_node_detail(RUN, "approve")
 
@@ -638,7 +620,7 @@ def test_every_answer_bearing_node_kind_reads_back_its_own_value(
         runtime.effect_adapter_binding,
     )
     runtime.launch()
-    wait_for_run_state(runtime, ANSWER_CHAIN_RUN, RunState.WAITING_INPUT)
+    wait_for_run_state(runtime.engine, ANSWER_CHAIN_RUN, RunState.WAITING_INPUT)
 
     answered = answer_wait_result(
         ANSWER_CHAIN_RUN,
@@ -652,7 +634,7 @@ def test_every_answer_bearing_node_kind_reads_back_its_own_value(
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
     assert isinstance(answered, AnswerAcceptedPending), answered
-    wait_for_run_state(runtime, ANSWER_CHAIN_RUN, RunState.COMPLETED)
+    wait_for_run_state(runtime.engine, ANSWER_CHAIN_RUN, RunState.COMPLETED)
 
     queries = durable_queries(runtime.engine)
     expected_answers = {
@@ -838,7 +820,7 @@ def test_a_schema_refused_answer_reads_back_its_exact_bytes_and_hash(
     runtime = own_schema_refused_runtime
     publish_and_start(runtime)
     runtime.launch()
-    wait_for_run_state(runtime, RUN, RunState.FAILED)
+    wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
 
     found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
 
@@ -980,7 +962,7 @@ def test_a_credential_shaped_refusal_is_redacted_from_the_store_through_the_api(
     try:
         publish_and_start(runtime)
         runtime.launch()
-        wait_for_run_state(runtime, RUN, RunState.FAILED)
+        wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
         found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
     finally:
         runtime.close()
@@ -1047,7 +1029,7 @@ def test_a_refusal_at_the_byte_cap_with_one_short_credential_still_validates_on_
     try:
         publish_and_start(runtime)
         runtime.launch()
-        wait_for_run_state(runtime, RUN, RunState.FAILED)
+        wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
         found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
     finally:
         runtime.close()
