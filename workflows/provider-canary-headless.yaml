@@ -1,5 +1,3 @@
-# TODO(#942 Scheibe 2): publish a canary-sized budget_policy revision and pin
-# it on this agent node before the local runner admits the workflow.
 format_version: 3
 name: provider-canary-headless
 description: >-
@@ -10,6 +8,9 @@ nodes:
     type: agent
     role: provider-canary
     mode: headless
+    budget:
+      ref: provider-canary
+      revision: "85420b9dd963acda01cefc01139c9aaad290826fdac3a7c0537d4e51764dcf6f"
     instruction: >-
       Answer with exactly the JSON string "canary-alive" and no other text.
     outputs:
