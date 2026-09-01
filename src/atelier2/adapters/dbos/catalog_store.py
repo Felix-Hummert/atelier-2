@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
@@ -493,20 +494,78 @@ def _admit_member(
     return CatalogMemberAdmitted(lineage, revision, revision_number, display_name)
 
 
+_RESOLVED_REVISION_CACHE_CAPACITY = 4_096
+"""Comfortably above the tens of revisions one catalog holds today.
+
+The cap bounds memory for a pathological catalog; it never bounds
+correctness. A found revision is content-addressed (`revision_hash` is
+derived from its bytes) and published revisions never change once they
+exist, so a found answer stays correct for the store's whole process
+lifetime -- there is no staleness to invalidate.
+"""
+
+
+class _ResolvedRevisionCache:
+    """Published revisions this store's resolve seam has already read once.
+
+    #937 (round 2): profiling a described page found the dominant cost was
+    not the connection-per-reference checkout round 1 fixed, but the
+    downstream schema read and validation every caller does with the bytes
+    this seam returns -- run once per resolved reference, uncached, even
+    when the same schema is referenced by many revisions on one page. This
+    store cannot cache that downstream work (it happens in the application
+    layer, on bytes this store has already handed back), but it owns the one
+    lookup every caller shares first: resolving `(kind, revision_hash)` to
+    the published bytes. Caching *that* here means the second, third, and
+    Nth caller asking for the same reference on a page -- or across pages,
+    for the process's lifetime -- gets the bytes without a query, which is
+    this store's honest share of the fix.
+
+    A missing answer is deliberately never cached: the hash it names may be
+    published moments after the miss, and a cached miss would then keep
+    answering stale long after that publish committed.
+    """
+
+    def __init__(self) -> None:
+        self._found: dict[
+            tuple[RevisionKind, PublishedRevisionHash], PublishedRevision
+        ] = {}
+        self._lock = threading.Lock()
+
+    def found(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> PublishedRevision | None:
+        with self._lock:
+            return self._found.get((kind, revision_hash))
+
+    def remember(self, revision: PublishedRevision) -> None:
+        with self._lock:
+            if len(self._found) < _RESOLVED_REVISION_CACHE_CAPACITY:
+                self._found[(revision.kind, revision.revision_hash)] = revision
+
+
 class _ConnectionBoundResolver:
     """`PublishedRevisionResolver` bound to one connection its caller already holds.
 
     Yielded by `DbosCatalogStore.resolver_session` for the length of one
     composed read; every `resolve` call here runs on that one connection
-    instead of checking out (and later returning) a fresh one per call.
+    instead of checking out (and later returning) a fresh one per call. A
+    reference this session (or an earlier one on the same store) already
+    found answers from `cache` without touching that connection at all.
     """
 
-    def __init__(self, connection: sa.Connection) -> None:
+    def __init__(
+        self, connection: sa.Connection, cache: _ResolvedRevisionCache
+    ) -> None:
         self._connection = connection
+        self._cache = cache
 
     def resolve(
         self, kind: RevisionKind, revision_hash: PublishedRevisionHash
     ) -> ResolvePublishedRevisionResult:
+        cached = self._cache.found(kind, revision_hash)
+        if cached is not None:
+            return PublishedRevisionFound(cached)
         try:
             revision = _select_published_revision(self._connection, kind, revision_hash)
         except (OperationalError, PoolTimeoutError):
@@ -515,6 +574,7 @@ class _ConnectionBoundResolver:
             return DurableStateCorrupt()
         if revision is None:
             return PublishedRevisionMissing()
+        self._cache.remember(revision)
         return PublishedRevisionFound(revision)
 
 
@@ -543,6 +603,7 @@ class DbosCatalogStore:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        self._resolved_revisions = _ResolvedRevisionCache()
 
     def store_intake(self, intake: CatalogIntake) -> StoreCatalogIntakeResult:
         try:
@@ -635,11 +696,15 @@ class DbosCatalogStore:
     def resolve(
         self, kind: RevisionKind, revision_hash: PublishedRevisionHash
     ) -> ResolvePublishedRevisionResult:
+        cached = self._resolved_revisions.found(kind, revision_hash)
+        if cached is not None:
+            return PublishedRevisionFound(cached)
         try:
             with self._engine.connect() as connection:
                 revision = _select_published_revision(connection, kind, revision_hash)
             if revision is None:
                 return PublishedRevisionMissing()
+            self._resolved_revisions.remember(revision)
             return PublishedRevisionFound(revision)
         except (OperationalError, PoolTimeoutError):
             return PublishedRevisionsUnavailable()
@@ -658,7 +723,10 @@ class DbosCatalogStore:
         lookup made through the resolver it yields runs on it, and it closes
         when the `with` block does. A connection this store cannot open right
         now answers the same refusal a single `resolve` call already gives for
-        that failure, rather than raising out of `__enter__`.
+        that failure, rather than raising out of `__enter__`. A reference
+        already found by an earlier call on this store -- in this session or a
+        prior one -- answers from `_resolved_revisions` without touching the
+        connection at all.
         """
         try:
             connection = self._engine.connect()
@@ -669,7 +737,7 @@ class DbosCatalogStore:
             yield _RefusingResolver(DurableStateCorrupt())
             return
         try:
-            yield _ConnectionBoundResolver(connection)
+            yield _ConnectionBoundResolver(connection, self._resolved_revisions)
         finally:
             connection.close()
 
