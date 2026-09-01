@@ -11,8 +11,14 @@ on:
     branches:
       - main
 
+# A pull request collapses onto its newest push, but every push to main gets a
+# group of its own, so no main run is ever cancelled — and none is evicted
+# while pending, which a shared group would do to the middle of three quick
+# landings. The secret gate scans a range, so a run that dies leaves its
+# commits read by nobody: the next push begins its range at the dead run's
+# head. The price, named: several main runs can be in flight at once.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -164,12 +170,6 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
-    # This job scans a range, so a cancelled run leaves its commits scanned by
-    # nothing: the next push starts its range at the cancelled run's head.
-    # Keyed on the commit and never cancelled, every landing is read once.
-    concurrency:
-      group: secret-scan-${{ github.sha }}
-      cancel-in-progress: false
     # ~25s üblich, gemessen 30.08. (12 grüne main-Runs; mean 23s, max 26s)
     timeout-minutes: 3
     steps:
@@ -192,30 +192,49 @@ jobs:
       # every open pull request red (#968); the range is what this event
       # actually brings. `-m` is load-bearing: a secret introduced only in a
       # merge commit's conflict resolution is invisible without it.
+      #
+      # The report is written outside the checkout on purpose. The checkout is
+      # the pull request's own tree, so a report path inside it could already
+      # be a symlink: gitleaks reads the tree's .gitleaks.toml and can exit
+      # before overwriting that path, and the upload follows symlinks — which
+      # would publish whatever the link points at to a world-readable artifact.
+      #
+      # A force-push to main can drop the `before` commit off every ref, so it
+      # is never fetched and the base does not resolve. The job then fails loud
+      # and scans nothing, deliberately: rewriting the trunk's history is for a
+      # human to look at, not for this gate to paper over with machinery.
       - name: Scan the event's own commits for secrets
         env:
           SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SECRET_SCAN_REPORT: ${{ runner.temp }}/gitleaks-report.json
         run: |
           set -euo pipefail
           if ! base_commit="$(git rev-parse --verify --quiet "${SECRET_SCAN_BASE_SHA}^{commit}")"; then
             echo "::error::base revision '${SECRET_SCAN_BASE_SHA}' does not resolve to a commit; refusing to report a scan that covered nothing" >&2
             exit 1
           fi
+          scan_status=0
           ./gitleaks git --redact --no-banner \
             --log-opts="${base_commit}..HEAD --diff-filter=uxdb -m" \
-            --report-format json --report-path gitleaks-report.json .
+            --report-format json --report-path "${SECRET_SCAN_REPORT}" . || scan_status=$?
+          if [ -L "${SECRET_SCAN_REPORT}" ] || [ ! -f "${SECRET_SCAN_REPORT}" ]; then
+            echo "::error::the scan left no regular report file at ${SECRET_SCAN_REPORT}; there is no evidence to publish" >&2
+            exit 1
+          fi
+          exit "${scan_status}"
 
       # The repository is public, so its artifacts are world-readable: the
       # report stays redacted and names rule, file, commit, line and author
       # without the value. Findings exit 1, so the upload cannot wait on
-      # success.
+      # success; a missing report is already the scan step's loud failure and
+      # does not need a second red here.
       - name: Upload the secret-scan report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: secret-scan-report
-          path: gitleaks-report.json
-          if-no-files-found: error
+          path: ${{ runner.temp }}/gitleaks-report.json
+          if-no-files-found: warn
           retention-days: 7
           overwrite: true
 
