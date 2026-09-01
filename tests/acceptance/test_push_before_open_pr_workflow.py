@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -89,6 +88,7 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
 
 WORKFLOW_PATH = Path("workflows/push-before-open-pr.yaml")
@@ -247,22 +247,6 @@ def _pinned_turn_bound() -> int:
     return turns
 
 
-def _wait_for_state(runtime: DbosRuntime, expected: RunState) -> None:
-    deadline = time.monotonic() + 10
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
-                )
-            )
-        if observed == expected.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {expected.value!r}")
-
-
 @pytest.mark.proves("an-authorised-candidate-is-pushed-before-its-pr-opens")
 def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
     tmp_path: Path,
@@ -348,7 +332,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         )
         assert response.status_code == 201, response.text
         runtime.launch()
-        _wait_for_state(runtime, RunState.WAITING_RECONCILIATION)
+        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_RECONCILIATION)
 
         with runtime.engine.connect() as connection:
             waiting_intents = connection.execute(
@@ -386,7 +370,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
                 OperatorAuthoritativeAbsence(),
             ),
         )
-        _wait_for_state(runtime, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
 
         with runtime.engine.connect() as connection:
             final_intents = tuple(
