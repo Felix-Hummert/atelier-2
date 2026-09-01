@@ -80,6 +80,36 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "one named owner for every CLI request; the run/resolve flag is still "
         "pending and stands as an open finding on #251",
     ),
+    "host/provider_canary.py::PROVIDER_CANARY_CONFIGURATION_PAGE_SIZE": SpelledValue(
+        1,
+        "stable slice invariant: OPERATIONS.md documents discovery as capped "
+        "at four pages of this size; the operator tunes which vectors run "
+        "through the deploy's agent configuration, never this client's own "
+        "listing stride (#950)",
+    ),
+    "host/provider_canary.py::PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: OPERATIONS.md's named discovery deadline, "
+        "the first term the documented whole-run ceiling sums (#950)",
+    ),
+    "host/provider_canary.py::PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: OPERATIONS.md's named per-call cap, itself "
+        "reduced to the remaining discovery/vector/process deadline at every "
+        "call site -- not a patience an operator dials (#950)",
+    ),
+    "host/provider_canary.py::PROVIDER_CANARY_POLL_INTERVAL_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: how often this client re-reads a run's own "
+        "terminal state while the documented terminal deadline runs out -- a "
+        "fact about the poll loop, never an operator's to choose (#950)",
+    ),
+    "host/provider_canary.py::PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: OPERATIONS.md's named per-vector terminal "
+        "deadline, the factor the documented whole-run ceiling multiplies by "
+        "vector count (#950)",
+    ),
     "adapters/dbos/runtime.py::_SQLITE_WAL_RETRY_SECONDS": SpelledValue(
         1, "owner with a seam: named once beside the lock timeout it retries under"
     ),
