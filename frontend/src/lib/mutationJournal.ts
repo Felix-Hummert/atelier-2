@@ -3,6 +3,7 @@ import {
   decodePublicRunReference
 } from "../api/client";
 import { sha256Hex } from "./exactBytes";
+import { MUTATION_JOURNAL_STORAGE_KEY } from "./storageKeys";
 
 /**
  * How far a journaled mutation got on the wire.
@@ -244,7 +245,6 @@ export type MutationEvidence =
       answer_hash: string;
     };
 
-const storageKey = "atelier2.mutation-journal.v1";
 const digestPattern = /^[0-9a-f]{64}$/;
 
 export class MutationJournal {
@@ -296,7 +296,7 @@ export class MutationJournal {
   }
 
   async entries(): Promise<JournalEntry[]> {
-    const stored = this.storage.getItem(storageKey);
+    const stored = this.storage.getItem(MUTATION_JOURNAL_STORAGE_KEY);
     if (stored === null) {
       return [];
     }
@@ -342,9 +342,9 @@ export class MutationJournal {
 
   private write(entries: JournalEntry[]): void {
     if (entries.length === 0) {
-      this.storage.removeItem(storageKey);
+      this.storage.removeItem(MUTATION_JOURNAL_STORAGE_KEY);
     } else {
-      this.storage.setItem(storageKey, JSON.stringify(entries));
+      this.storage.setItem(MUTATION_JOURNAL_STORAGE_KEY, JSON.stringify(entries));
     }
   }
 }
