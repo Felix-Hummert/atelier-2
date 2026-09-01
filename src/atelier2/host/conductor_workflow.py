@@ -295,10 +295,9 @@ def require_conductor_document(document: bytes) -> None:
             f"{_RECURSION_FENCE_SENTENCE!r}"
         )
     if node.mode != "headless_with_tools":
-        # The doors grant is a tool-bearing call; a `headless` node could never
-        # bind a doors-capable executor (`_refuse_incompatible_mode`,
-        # `atelier2.contracts.capabilities_v3`) -- the defect the first landed
-        # document shipped with.
+        # The doors grant is a tool-bearing call, so a `headless` node asks for a
+        # tool-free executor that could never redeem it -- the defect the first
+        # landed document shipped with.
         raise ConductorDocumentDefect(
             "the conductor node must run headless_with_tools: its doors grant "
             "is a tool-bearing call"

@@ -102,8 +102,8 @@ async function settledConductorReportRun(page: Page): Promise<void> {
     "  - id: conduct",
     "    type: agent",
     "    role: conductor",
-    // The seeded conductor executor is the doors-capable one; a `headless`
-    // node could never bind it (`atelier2.contracts.capabilities_v3`).
+    // The seeded conductor executor is the doors-capable one, and its doors are
+    // a tool-bearing call, so a `headless` node could never redeem it.
     "    mode: headless_with_tools",
     "    instruction: Answer with the report this journey is filed against.",
     ...declaredOutput(await anyJsonSchema(page)),

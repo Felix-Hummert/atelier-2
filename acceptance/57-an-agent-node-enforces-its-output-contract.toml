@@ -93,6 +93,28 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 # the evaluator. `test_no_accepted_schema_can_break_the_evaluator` holds it over
 # the three cases that could, because a published revision that passes the
 # profile and then blows the stack is not a refusal, it is an outage.
+#
+# A sentence was retired on 01.09.2026 (#450, operator ruling of 30.08.2026:
+# "die Insel wird abgerissen"):
+#
+#   "an-unusable-schema-is-drawn-as-unresolved-and-refuses-the-binding" -- it
+#   promised that one finding reaches two callers, the composed preview drawing
+#   it as unresolved while the run-configuration binding refuses the snapshot.
+#   One of those two callers never existed outside the tests:
+#   `application/compose_preview.py`, `contracts/composed_preview_v3.py` and
+#   `contracts/capabilities_v3.py` lived only through domain tests since #83 and
+#   were deleted rather than wired, so a sentence about how two callers agree has
+#   one caller left and is no longer the thing it named. Its former proof,
+#   `test_the_binding_refuses_the_snapshot_the_preview_keeps_drawing` in
+#   `tests/domain/test_schemas_v3.py`, is retired with it; that file's schema
+#   half is untouched. The surviving caller is the run-configuration binding, and
+#   it keeps the strength it had. The first sentence below already declares that
+#   such a document is refused before anything binds or starts, and the same file
+#   now proves both levels the retired test crossed: one declared reference in
+#   `test_a_schema_document_outside_the_profile_is_refused_by_name`, and the whole
+#   document in `test_a_document_pinning_an_unusable_schema_never_becomes_bindable`.
+#
+# This file therefore does not list every sentence of #57.
 
 [[sentence]]
 id = "a-schema-revision-outside-the-profile-is-refused-by-name"
@@ -101,10 +123,6 @@ text = "A document whose outputs[*].schema pins a published revision that is not
 [[sentence]]
 id = "no-schema-reference-ever-leaves-the-document"
 text = "A nonlocal $ref, an $id, an $anchor, an $dynamicAnchor and an $dynamicRef are each refused by name, and reading any schema document attempts exactly zero retrievals."
-
-[[sentence]]
-id = "an-unusable-schema-is-drawn-as-unresolved-and-refuses-the-binding"
-text = "One finding reaches both callers correctly: the composed preview names it as an unresolved reference and keeps drawing, while the run-configuration binding refuses the whole snapshot."
 
 # Head 2. The runtime half: what an agent answers is held to what its node
 # declared, and the shape that declaration must have is refused before anything

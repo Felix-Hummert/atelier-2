@@ -9,21 +9,12 @@ import pytest
 from referencing.exceptions import Unretrievable
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.compose_preview import compose_preview
 from atelier2.application.evaluate_executability import (
     DocumentNotExecutable,
     resolve_document_references,
 )
 from atelier2.application.resolve_references import resolve_declared_reference
 from atelier2.contracts import schemas_v3
-from atelier2.contracts.capabilities_v3 import (
-    AttestedCapabilities,
-    PublishedSkills,
-)
-from atelier2.contracts.composed_preview_v3 import (
-    ComposedPreview,
-    ConfigurationBinding,
-)
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -36,7 +27,6 @@ from atelier2.contracts.run_configuration_v3 import (
     ReferenceSite,
     ResolvedReference,
 )
-from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
     MAXIMUM_SCHEMA_CONTAINER_DEPTH,
     MAXIMUM_SCHEMA_DOCUMENT_BYTES,
@@ -49,7 +39,6 @@ from atelier2.contracts.schemas_v3 import (
     refuse_retrieval,
     schema_registry,
 )
-from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
@@ -226,17 +215,16 @@ def test_a_revision_of_another_kind_is_never_read_as_a_schema() -> None:
     assert isinstance(resolved, ResolvedReference)
 
 
-SETTLE = PublishedRevision(RevisionKind.DETERMINISTIC_OPERATION, b"settle the verdict")
-
-
-def one_node_document(schema: PublishedRevision) -> WorkflowGraphV3:
+def one_node_document_pinning(schema: PublishedRevision) -> WorkflowGraphV3:
     """The smallest document that declares one output and pins its schema."""
     document = f"""format_version: 3
 name: Settle one verdict
 nodes:
   - id: decide
-    type: deterministic
-    operation: {{ref: settle, revision: {SETTLE.revision_hash.value}}}
+    type: agent
+    role: judge
+    mode: headless
+    instruction: Settle the verdict this panel was asked for.
     outputs:
       - name: verdict
         schema: {{ref: verdict_schema, revision: {schema.revision_hash.value}}}
@@ -246,53 +234,24 @@ nodes:
     return graph
 
 
-@dataclass(frozen=True)
-class ManyRevisionRegistry:
-    revisions: tuple[PublishedRevision, ...]
+@pytest.mark.proves("a-schema-revision-outside-the-profile-is-refused-by-name")
+def test_a_document_pinning_an_unusable_schema_never_becomes_bindable() -> None:
+    """The whole document is refused, not merely the one reference read alone.
 
-    def publish_revision(self, revision: PublishedRevision) -> PublishRevisionResult:
-        raise AssertionError("resolution never publishes")
-
-    def resolve(
-        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
-    ) -> ResolvePublishedRevisionResult:
-        for revision in self.revisions:
-            if revision.kind is kind and revision.revision_hash == revision_hash:
-                return PublishedRevisionFound(revision)
-        return PublishedRevisionMissing()
-
-
-@pytest.mark.proves("an-unusable-schema-is-drawn-as-unresolved-and-refuses-the-binding")
-def test_the_binding_refuses_the_snapshot_the_preview_keeps_drawing() -> None:
-    """One finding, two callers, and neither invents its own answer."""
+    The tests above ask the resolver about a single declared reference. What a
+    start asks is whether the document binds at all, and that answer must name the
+    same fault -- otherwise a revision could be called bindable and then refused.
+    """
     prose = PublishedRevision(RevisionKind.SCHEMA, b"the verdict a panel returns")
-    document = one_node_document(prose)
-    registry = ManyRevisionRegistry((SETTLE, prose))
-    revision_hash = WorkflowRevisionHash.of(b"one settled verdict")
 
-    refused = resolve_document_references(document, registry)
+    refused = resolve_document_references(
+        one_node_document_pinning(prose), OneRevisionRegistry(prose)
+    )
 
     assert isinstance(refused, DocumentNotExecutable), refused
     assert refused.refusal is not None
     assert refused.refusal.reason is ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT
-
-    composed = compose_preview(
-        revision_hash,
-        document,
-        SubworkflowBinding(),
-        (),
-        PublishedSkills(),
-        AttestedCapabilities(),
-        registry,
-        ConfigurationBinding.BOUND,
-    )
-
-    assert isinstance(composed, ComposedPreview), composed
-    assert [
-        (entry.reason, entry.site.node, entry.site.field)
-        for entry in composed.graph.unresolved_references
-    ] == [(ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT, "decide", "outputs.schema")]
-    assert [node.id for node in composed.graph.nodes] == ["decide"]
+    assert refused.refusal.site == ReferenceSite("outputs.schema", "decide", "verdict")
 
 
 THE_THREE_THAT_EVALUATION_CANNOT_SURVIVE: tuple[
