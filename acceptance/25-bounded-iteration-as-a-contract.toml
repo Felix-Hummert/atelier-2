@@ -46,6 +46,22 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 #
 # #449 withdrew the former binding-head claims; no current sentence treats a
 # child-bound refusal as proof.
+#
+# A further sentence was retired on 01.09.2026 (#450, operator ruling of
+# 30.08.2026: "die Insel wird abgerissen"):
+#
+#   "the-preview-names-every-iteration-with-its-bound-and-its-green" -- it
+#   promised that a preview names every iteration node with its bound and its
+#   green condition before a start. The composed preview it spoke of reached no
+#   entry point of this build: `application/compose_preview.py`,
+#   `contracts/composed_preview_v3.py` and `contracts/capabilities_v3.py` lived
+#   only through domain tests since #83 and were deleted rather than wired, so
+#   the surface the sentence measured does not exist. Its former proof,
+#   `tests/domain/test_composed_preview_v3.py`, is retired with it. That the
+#   authored bound and green condition read back exactly as written, and that an
+#   unbound or contradicted one is refused by name, stays declared above. ADR
+#   0013's sentence that the preview names them before a start is thereby
+#   unclaimed, and belongs to whichever surface first draws a run before it runs.
 
 [[sentence]]
 id = "a-bounded-iteration-is-declarable-and-reads-back-as-authored"
@@ -62,10 +78,6 @@ text = "A green condition that reads a result under a different schema revision 
 [[sentence]]
 id = "a-round-handover-unbound-in-the-document-is-refused-by-name"
 text = "A round handover without a seed for the first round, declared twice, or seeded from something the document does not order before this node and declare, is refused by name."
-
-[[sentence]]
-id = "the-preview-names-every-iteration-with-its-bound-and-its-green"
-text = "Before any start, the preview names every iteration node with its maximum number of rounds and the condition that would end it early."
 
 [[sentence]]
 id = "iteration-is-refused-on-a-node-kind-that-cannot-carry-it"

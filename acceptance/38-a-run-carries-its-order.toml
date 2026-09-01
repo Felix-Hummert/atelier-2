@@ -34,14 +34,28 @@ story = "https://github.com/FlexOr2/atelier-2/issues/38"
 # authored `value` -- a constant inside the document is the very thing an order
 # replaces. Those sources need the ready set and the record family; they are
 # refused today rather than admitted and dropped.
+#
+# A sentence was retired on 01.09.2026 (#450, operator ruling of 30.08.2026:
+# "die Insel wird abgerissen"):
+#
+#   "the-preview-names-every-declared-graph-input-with-its-schema" -- it promised
+#   that a preview names every declared graph input with its schema revision
+#   before a start. The composed preview it spoke of reached no entry point of
+#   this build: `application/compose_preview.py`,
+#   `contracts/composed_preview_v3.py` and `contracts/capabilities_v3.py` lived
+#   only through domain tests since #83 and were deleted rather than wired, so
+#   the surface the sentence measured does not exist. Its former proof,
+#   `tests/domain/test_composed_preview_v3.py`, is retired with it. What survives
+#   is declared above: an order the graph never declared, or declares and no node
+#   reads, is refused by name before publication or start. Should a catalog
+#   detail surface ever want to show an order before the start, it declares that
+#   sentence against the living start owners rather than reviving this one.
+#
+# This file therefore does not list every sentence of #38.
 
 [[sentence]]
 id = "an-unreadable-or-unread-graph-input-is-refused-by-name"
 text = "A document whose node reads a graph input the graph never declared, and a document whose declared graph input no node reads, are both refused by name before anything can be published or started."
-
-[[sentence]]
-id = "the-preview-names-every-declared-graph-input-with-its-schema"
-text = "Before any start, the preview names every declared graph input with its name and schema revision, at the graph that declared it."
 
 [[sentence]]
 id = "a-run-carries-its-order-as-material-not-as-a-new-revision"
