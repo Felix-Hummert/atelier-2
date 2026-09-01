@@ -31,7 +31,11 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
 from atelier2.host import main
 from atelier2.host.provider_canary import (
+    PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES,
+    PROVIDER_CANARY_MAXIMUM_VECTORS,
+    ProviderCanaryDiscoveryFailed,
     ProviderCanaryHttpRefused,
+    ProviderCanaryProcessTimedOut,
     ProviderCanaryServerUnavailable,
     ProviderCanarySettings,
     execute_provider_canaries,
@@ -69,16 +73,45 @@ class FakeHttp:
     server_down: bool = False
     configuration_answer: bytes | None = None
     configuration_unavailable: bool = False
+    catalog_unavailable: bool = False
+    health_unavailable: bool = False
+    health_refusal: str | None = None
+    health_answer: bytes | None = None
+    health_source_commit: str = SOURCE_COMMIT
+    configuration_pages: tuple[bytes, ...] | None = None
     calls: list[tuple[str, str, bytes | None]] = field(default_factory=list)
     workflow_hashes: list[str] = field(default_factory=list)
     run_reads: int = 0
+    configuration_page_reads: int = 0
+    catalog_hashes: dict[str, str] = field(init=False)
 
-    def get(self, path: str) -> bytes:
+    def __post_init__(self) -> None:
+        self.catalog_hashes = {
+            name: Sha256Hash.of(
+                (self.workflow_directory / f"{name}.yaml").read_bytes()
+            ).value
+            for name in (
+                "provider-canary-headless",
+                "provider-canary-workspace-tools",
+                "provider-canary-atelier-doors",
+            )
+        }
+
+    def get(self, path: str, *, timeout_seconds: float) -> bytes:
+        assert timeout_seconds > 0
         self.calls.append(("GET", path, None))
         if path == "/health":
+            if self.health_unavailable:
+                raise ProviderCanaryServerUnavailable("health timed out")
+            if self.health_refusal is not None:
+                raise ProviderCanaryHttpRefused(self.health_refusal, "health refused")
+            if self.health_answer is not None:
+                return self.health_answer
             return (
                 HealthResource(
-                    status="serving", source_commit=SOURCE_COMMIT, source_tree="d" * 40
+                    status="serving",
+                    source_commit=self.health_source_commit,
+                    source_tree="d" * 40,
                 )
                 .model_dump_json()
                 .encode()
@@ -88,12 +121,16 @@ class FakeHttp:
                 raise ProviderCanaryServerUnavailable("configuration listing timed out")
             if self.configuration_answer is not None:
                 return self.configuration_answer
+            if self.configuration_pages is not None:
+                page = self.configuration_pages[self.configuration_page_reads]
+                self.configuration_page_reads += 1
+                return page
             return encoded(items=self.configurations, next_after_revision_hash=None)
         if path.startswith("/workflow-revisions/by-name/"):
+            if self.catalog_unavailable:
+                raise ProviderCanaryServerUnavailable("workflow catalog timed out")
             name = path.rsplit("/", 1)[-1]
-            workflow_hash = Sha256Hash.of(
-                (self.workflow_directory / f"{name}.yaml").read_bytes()
-            ).value
+            workflow_hash = self.catalog_hashes[name]
             self.workflow_hashes.append(workflow_hash)
             return (
                 CatalogNameResolutionResource(
@@ -118,8 +155,14 @@ class FakeHttp:
         )
 
     def post(
-        self, path: str, body: bytes, *, media_type: str = "application/json"
+        self,
+        path: str,
+        body: bytes,
+        *,
+        timeout_seconds: float,
+        media_type: str = "application/json",
     ) -> bytes:
+        assert timeout_seconds > 0
         del media_type
         self.calls.append(("POST", path, body))
         if path == "/runs":
@@ -320,6 +363,16 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
         "/workflow-revisions/by-name/provider-canary-headless",
         "/workflow-revisions/by-name/provider-canary-workspace-tools",
     ]
+    first_start_index = next(
+        index
+        for index, (method, path, _body) in enumerate(http.calls)
+        if method == "POST" and path == "/runs"
+    )
+    assert all(
+        index < first_start_index
+        for index, (method, path, _body) in enumerate(http.calls)
+        if method == "GET" and path.startswith("/workflow-revisions/by-name/")
+    )
     assert report.failed == 0
     receipts = read_receipts(state_directory)
     assert len(receipts) == 2
@@ -417,11 +470,12 @@ def test_an_unreadable_local_workflow_replaces_the_live_success_receipt(
 ) -> None:
     state_directory = tmp_path / "state"
     write_live_success(state_directory)
+    http = FakeHttp((configuration(),), workflow_directory)
     (workflow_directory / "provider-canary-headless.yaml").unlink()
 
     report = execute_provider_canaries(
         settings(workflow_directory, state_directory),
-        http=FakeHttp((configuration(),), workflow_directory),
+        http=http,
         clock=FakeClock(),
     )
 
@@ -437,34 +491,47 @@ def test_an_unreadable_local_workflow_replaces_the_live_success_receipt(
         ("unavailable", "server-unavailable"),
         ("unreadable", "server-answer-unreadable"),
         ("empty", "no-startable-provider-vectors"),
+        ("catalog", "server-unavailable"),
+        ("health-unavailable", "server-unavailable"),
+        ("health-refused", "health-refused"),
+        ("health-unreadable", "server-answer-unreadable"),
+        ("health-provenance", "server-answer-unreadable"),
     ),
 )
-def test_discovery_failure_replaces_every_live_success_with_a_fail_receipt(
+def test_discovery_failure_preserves_every_live_success_byte_for_byte(
     tmp_path: Path,
     workflow_directory: Path,
     failure_mode: str,
     expected_problem: str,
 ) -> None:
     state_directory = tmp_path / "state"
-    write_live_success(state_directory)
+    destination = write_live_success(state_directory)
+    previous = destination.read_bytes()
     http = FakeHttp((configuration(),), workflow_directory)
     if failure_mode == "unavailable":
         http.configuration_unavailable = True
     elif failure_mode == "unreadable":
         http.configuration_answer = b"not-json"
+    elif failure_mode == "catalog":
+        http.catalog_unavailable = True
+    elif failure_mode == "health-unavailable":
+        http.health_unavailable = True
+    elif failure_mode == "health-refused":
+        http.health_refusal = "health-refused"
+    elif failure_mode == "health-unreadable":
+        http.health_answer = b"not-json"
+    elif failure_mode == "health-provenance":
+        http.health_source_commit = "not-a-commit"
     else:
         http.configurations = ()
 
-    report = execute_provider_canaries(
-        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
-    )
+    with pytest.raises(ProviderCanaryDiscoveryFailed, match=expected_problem):
+        execute_provider_canaries(
+            settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+        )
 
-    assert report.attempted == 0
-    assert report.failed == 1
-    (receipt,) = read_receipts(state_directory)
-    assert receipt.result is ProviderProbeResult.FAILED
-    assert receipt.problem_code == ProviderProbeProblemCode(expected_problem)
-    assert receipt.observed_at == RecordedAt("2026-09-01T08:00:00Z")
+    assert destination.read_bytes() == previous
+    assert not any(method == "POST" for method, _path, _body in http.calls)
 
 
 def test_empty_discovery_without_previous_receipts_is_a_loud_cli_failure(
@@ -500,15 +567,15 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
     workflow_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    timeouts: list[float] = []
+    timeouts: list[tuple[str, float]] = []
     workflow_name = "provider-canary-headless"
     workflow_hash = Sha256Hash.of(
         (workflow_directory / f"{workflow_name}.yaml").read_bytes()
     ).value
 
     def hung_start(request: Request, *, timeout: float) -> io.BytesIO:
-        timeouts.append(timeout)
         full_url = request.full_url
+        timeouts.append((full_url, timeout))
         method = request.method
         if full_url.endswith("/health"):
             answer = HealthResource(
@@ -545,12 +612,110 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
 
     assert timeouts
     assert all(
-        timeout <= canary_settings.terminal_timeout_seconds for timeout in timeouts
+        timeout <= canary_settings.terminal_timeout_seconds
+        for url, timeout in timeouts
+        if url.endswith("/runs")
     )
+    assert all(timeout <= 30 for _url, timeout in timeouts)
     assert report.failed == 1
     (receipt,) = read_receipts(state_directory)
     assert receipt.result is ProviderProbeResult.FAILED
     assert receipt.problem_code == ProviderProbeProblemCode("server-unavailable")
+
+
+@pytest.mark.parametrize("limit_kind", ("pages", "vectors"))
+def test_discovery_limits_are_loud_and_receipt_neutral(
+    tmp_path: Path, workflow_directory: Path, limit_kind: str
+) -> None:
+    state_directory = tmp_path / "state"
+    destination = write_live_success(state_directory)
+    previous = destination.read_bytes()
+    http = FakeHttp((), workflow_directory)
+    if limit_kind == "pages":
+        http.configuration_pages = tuple(
+            encoded(items=(), next_after_revision_hash=f"{page_number + 1:064x}")
+            for page_number in range(PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES)
+        )
+    else:
+        first_page = tuple(
+            configuration(configuration_hash=f"{number:064x}")
+            for number in range(PROVIDER_CANARY_MAXIMUM_VECTORS)
+        )
+        http.configuration_pages = (
+            encoded(items=first_page, next_after_revision_hash="e" * 64),
+            encoded(
+                items=(configuration(configuration_hash="f" * 64),),
+                next_after_revision_hash=None,
+            ),
+        )
+
+    with pytest.raises(ProviderCanaryDiscoveryFailed):
+        execute_provider_canaries(
+            settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+        )
+
+    assert destination.read_bytes() == previous
+    if limit_kind == "pages":
+        assert http.configuration_page_reads == (
+            PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES
+        )
+
+
+def test_overall_deadline_bounds_cumulative_work_and_never_enters_later_vector(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    clock = FakeClock()
+    delegate = FakeHttp(
+        (
+            configuration(),
+            configuration(configuration_hash="f" * 64),
+        ),
+        workflow_directory,
+    )
+
+    class ConsumingHttp:
+        def get(self, path: str, *, timeout_seconds: float) -> bytes:
+            clock.elapsed += min(1.0, timeout_seconds)
+            return delegate.get(path, timeout_seconds=timeout_seconds)
+
+        def post(
+            self,
+            path: str,
+            body: bytes,
+            *,
+            timeout_seconds: float,
+            media_type: str = "application/json",
+        ) -> bytes:
+            clock.elapsed += min(1.0, timeout_seconds)
+            return delegate.post(
+                path,
+                body,
+                timeout_seconds=timeout_seconds,
+                media_type=media_type,
+            )
+
+    http = ConsumingHttp()
+    state_directory = tmp_path / "state"
+    canary_settings = ProviderCanarySettings(
+        service_url="http://127.0.0.1:8422",
+        workflow_directory=workflow_directory,
+        state_directory=state_directory,
+        terminal_timeout_seconds=5,
+        poll_interval_seconds=1,
+        process_timeout_seconds=5,
+    )
+
+    with pytest.raises(ProviderCanaryProcessTimedOut):
+        execute_provider_canaries(canary_settings, http=http, clock=clock)
+
+    starts = [path for method, path, _body in delegate.calls if method == "POST"]
+    assert starts == ["/runs"]
+    assert clock.elapsed <= canary_settings.process_timeout_seconds
+    (first_receipt,) = read_receipts(state_directory)
+    assert first_receipt.vector == ProviderProbeVectorId(
+        f"headless-{CONFIGURATION_HASH}"
+    )
+    assert first_receipt.problem_code == ProviderProbeProblemCode("process-timeout")
 
 
 def test_atomic_receipt_replacement_never_exposes_a_partly_written_success(

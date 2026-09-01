@@ -651,21 +651,26 @@ checkout as its working directory, and `%h/.local/bin/uv run --locked` is the
 same pinned interpreter and lock path that `serve-live.sh` uses. It asks that
 running instance for its currently startable agent configurations, runs the
 matching headless, workspace-tools, or atelier-doors workflow once with each
-exact configuration hash, refuses an admitted workflow whose hash differs from
-the deploy checkout, and waits at most 300 seconds per run. Every HTTP call has
-a 30-second timeout, reduced to the terminal wait when the operator configures a
-shorter one. The durable run owns provider output. The canary atomically
+exact configuration hash, and refuses an admitted workflow whose hash differs
+from the deploy checkout. Discovery is capped at four configuration pages, 50
+known startable vectors, and 300 seconds. All distinct admitted workflow names
+resolve before any vector starts. Each run then has a 300-second terminal
+deadline, while the complete process has a 15,300-second deadline enforced by
+both the runner and its systemd unit. Every HTTP call has a 30-second cap reduced
+to the remaining discovery, vector, and process deadline. The durable run owns
+provider output. The canary atomically
 replaces only the secret-free
 `provider-probe-receipt/v1` at
 `${XDG_STATE_HOME:-$HOME/.local/state}/atelier2/provider-probes/live/<vector-id>.json`.
 Receipts remain valid for 26 hours, so the nightly schedule has two hours of
-overlap. A receipt always says what the youngest probe attempt found: a failed
-attempt replaces a still-valid success before the next readiness read. A
-service refusal, unavailable server, unreadable configuration list, empty
-startable list, or unreadable local canary workflow replaces each affected
-previously known live receipt with failure and makes the oneshot fail; with no
-prior vector, the same pre-start failure is still a loud nonzero unit result
-rather than a zero-vector success.
+overlap. A receipt always says what the youngest probe attempt found: after a
+vector enters its own execution, a failed attempt replaces that vector's
+still-valid success before the next readiness read. Health, configuration
+pagination, an empty list, or global workflow-name resolution belong to
+discovery instead: their failure leaves every vector receipt byte-identical and
+makes the oneshot fail loudly through its exit status and journal. A locally
+unreadable workflow, hash mismatch, start refusal, timeout, or terminal failure
+after vector entry replaces only that vector's receipt.
 
 `POST /runs` uses the public `StartRunRequestResourceV2` form from the shared
 run-command owner: workflow revision, one exact agent binding, and no orders.

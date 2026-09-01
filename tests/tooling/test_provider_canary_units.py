@@ -4,6 +4,8 @@ import configparser
 import shlex
 from pathlib import Path
 
+from atelier2.host.provider_canary import PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = PROJECT_ROOT / "scripts"
 
@@ -28,6 +30,10 @@ def test_provider_canary_service_invokes_the_real_cli_subcommand() -> None:
         "provider-canary",
     ]
     assert service["Service"]["Type"] == "oneshot"
+    assert service["Service"]["TimeoutStartSec"] == "15300"
+    assert float(service["Service"]["TimeoutStartSec"]) == (
+        PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS
+    )
 
 
 def test_provider_canary_timer_is_persistent_and_targets_the_oneshot() -> None:

@@ -77,6 +77,7 @@ from atelier2.host.provider_canary import (
     ProviderCanaryAnswerUnreadable,
     ProviderCanaryDiscoveryFailed,
     ProviderCanaryHttpRefused,
+    ProviderCanaryProcessTimedOut,
     ProviderCanaryServerUnavailable,
     ProviderCanarySettings,
     default_provider_canary_state_directory,
@@ -218,13 +219,14 @@ tool's own answer, field pointers included.
 PROVIDER_CANARY_DESCRIPTION = """\
 Run each configured live provider vector once through the served Atelier API.
 
-The command reads the instance's startable agent-configuration list, resolves
-the matching admitted provider-canary workflow, starts one fresh run with that
-exact configuration hash, and waits for a terminal state. Each outcome atomically
-replaces one provider-probe-receipt/v1 beneath the XDG state directory, including
-a failure replacing a still-live success. Discovery failure replaces every known
-live receipt with failure; an empty list with no prior vector still exits nonzero.
-Provider output stays with the durable run and never enters the receipt.
+The command first reads a bounded startable agent-configuration list and resolves
+every matching admitted provider-canary workflow. Any failure in that discovery
+phase exits nonzero and leaves all vector receipts byte-identical. It then starts
+one fresh run per vector with the exact configuration hash and waits for a
+terminal state. Once a vector enters execution, its outcome atomically replaces
+that vector's provider-probe-receipt/v1 beneath the XDG state directory, including
+a failure replacing a still-live success. The process and every vector have hard
+deadlines. Provider output stays with the durable run and never enters the receipt.
 """
 
 BINDING_SEPARATOR = "="
@@ -434,6 +436,7 @@ def _provider_canary(
         ProviderCanaryAnswerUnreadable,
         ProviderCanaryDiscoveryFailed,
         ProviderCanaryHttpRefused,
+        ProviderCanaryProcessTimedOut,
         ProviderCanaryServerUnavailable,
     ) as refusal:
         print(f"provider canary refused: {refusal}", file=sys.stderr)

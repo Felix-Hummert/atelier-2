@@ -6,6 +6,7 @@ After=atelier2-serve.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=15300
 # Installation substitutes the same deploy checkout that serve-live.sh enters;
 # its pinned uv executable is the same %h/.local/bin/uv used by that launcher.
 WorkingDirectory=/absolute/path/to/atelier-2
