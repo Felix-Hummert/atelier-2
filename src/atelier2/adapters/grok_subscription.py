@@ -119,6 +119,14 @@ _TOOLS_FLAG = "--tools="
 _TOOLS_OPTION = "--tools"
 _PERMISSION_MODE_FLAG = "--permission-mode"
 _DONT_ASK = "dontAsk"
+# Measured 01.09.2026 (#642, Debug-Runde 4): grok 1.0.5 asks to confirm a
+# fixed Dangerous-command list (rm, chmod, chown, chgrp, chattr, pkill, kill,
+# killall, git push) that headless can never answer, and cancels the whole
+# session mid-plan instead of refusing the one command. `bypassPermissions`
+# is the only measured cure; it does not widen `--tools` or weaken `--deny
+# MCPTool`. Operator ruling 01.09.2026: used by the workspace-tool vector
+# only, where it runs inside the disposable per-attempt workspace.
+_BYPASS_PERMISSIONS = "bypassPermissions"
 _ALLOW_FLAG = "--allow"
 _DENY_FLAG = "--deny"
 # Measured against grok 1.0.4 `--help`: each of these names an ambient surface
@@ -636,6 +644,8 @@ def _headless_arguments(
         _SINGLE_PROMPT_FLAG,
         prompt,
         _TOOLS_FLAG,
+        # No tool is granted here, so no Dangerous-list confirmation can ever
+        # arise: `dontAsk` has nothing to ask about, and stays.
         _PERMISSION_MODE_FLAG,
         _DONT_ASK,
         _NO_MEMORY_FLAG,
@@ -936,15 +946,81 @@ WORKSPACE_TOOLS = (
 )
 _WORKSPACE_TOOL_LIST = ",".join(WORKSPACE_TOOLS)
 # Permission classes, not tool IDs. `--allow` is repeatable; `--allowedTools`
-# is the same flag. `--always-approve` and `--permission-mode
-# bypassPermissions` exist and parse; both would run every tool. `dontAsk`
-# plus these five classes is the grant: only those rules plus built-in
-# read-only, no silent all-tools.
+# is the same flag. These five classes plus `--tools` above are the whole
+# grant: only those rules plus built-in read-only, no silent all-tools.
+#
+# The mode below them is `bypassPermissions`, not `dontAsk`. `dontAsk` was
+# headless fiction from the start -- nobody is present to answer a prompt --
+# and measurement (#642, 01.09.2026) found the cost of pretending otherwise:
+# grok 1.0.5 still confirms a fixed Dangerous-command list (rm, chmod, chown,
+# chgrp, chattr, pkill, kill, killall, git push) against a headless caller
+# that can never reply, and cancels the *whole session* mid-plan rather than
+# refusing the one command. Specific `--allow` globs for those exact classes
+# (`Bash(rm *)`, `Bash(git push *)`) are documented by xAI as the escape but
+# measured ineffective: the session still cancels. `bypassPermissions` is the
+# only vector that healed it end to end, including a real commit and push.
+# `bypassPermissions` is a general always-approve, not a Dangerous-list
+# exemption (independent codex review, 01.09.2026): it also lifts grok's
+# protected-edit confirmation floors on `.git/hooks`, `~/.ssh`, shell startup
+# files, `/etc`, grok/Claude/Cursor configuration -- floors that under
+# `dontAsk` held by accident, because the unanswerable prompt cancelled the
+# session. `WORKSPACE_DENY_RULES` below restores those floors as hard denies:
+# denies are evaluated before the catch-all allow bypass appends, so the nine
+# Dangerous commands run as intended while the protected-edit surfaces stay
+# refused.
 WORKSPACE_ALLOW_RULES = ("Read", "Edit", "Write", "Grep", "Bash")
-# Docs: MCP meta-tools stay visible unless denied. `--deny MCPTool` parses.
-# Combined with private HOME and the inert compat config, that is the MCP
-# containment; the executor does not claim OS isolation.
+# Docs: MCP meta-tools stay visible unless denied. `--deny MCPTool` parses
+# and stays effective under `bypassPermissions`. Combined with private HOME
+# and the inert compat config, that is the MCP containment; the executor
+# does not claim OS isolation.
 _MCP_TOOL_DENY_RULE = "MCPTool"
+# The protected-edit surfaces grok's own classifier confirms before an edit
+# (its `strings` name `.git/hooks`, `.ssh`, shell startup files, `/etc`, grok
+# config, grok sandbox config, Claude-compatible settings, Cursor hooks) --
+# the floors `bypassPermissions` would otherwise silently approve. Pattern
+# semantics are the CLI's own rule reference: `**` crosses `/` and an
+# unrooted leading `**/` matches at any depth, which covers both an absolute
+# tool path and the literal `~/`-prefixed spelling the permission check sees
+# before tool-side expansion; a leading `~/` in a *pattern* would be literal
+# glob text and match nothing. Measured 01.09.2026 against grok 1.0.5 /
+# grok-4.6 under `--permission-mode bypassPermissions`: `search_replace` and
+# a shell retry against `~/.bashrc`, `scratch/.git/hooks/pre-commit`, a new
+# `.git/hooks/pre-push` and a new `~/.ssh/config` were each refused with
+# `Denied by permission policy: deny rule on edit matching ...` and left the
+# files byte-identical, while a plain write in the working directory
+# succeeded. The `Edit` denies carried every refusal (they also govern paths
+# shell commands touch); the `Write` denies state the same floor for the
+# write rule class the CLI recognizes beside it.
+_PROTECTED_EDIT_PATH_PATTERNS = (
+    "**/.git/hooks/**",
+    "**/.ssh/**",
+    "**/.bashrc",
+    "**/.bash_profile",
+    "**/.bash_login",
+    "**/.bash_logout",
+    "**/.profile",
+    "**/.zshrc",
+    "**/.zprofile",
+    "**/.zshenv",
+    "**/.zlogin",
+    "**/.zlogout",
+    "**/.cshrc",
+    "**/.tcshrc",
+    "**/.kshrc",
+    "**/.config/fish/**",
+    "/etc/**",
+    "**/.grok/**",
+    "**/.claude/**",
+    "**/.cursor/**",
+)
+WORKSPACE_DENY_RULES = (
+    _MCP_TOOL_DENY_RULE,
+    *(
+        f"{rule_class}({pattern})"
+        for rule_class in ("Edit", "Write")
+        for pattern in _PROTECTED_EDIT_PATH_PATTERNS
+    ),
+)
 
 # What the CLI says when it could not read an argument, measured on grok
 # 1.0.4 against a flag no release can know. A Clap refusal without an
@@ -972,6 +1048,9 @@ def _workspace_tool_arguments(
     allow: list[str] = []
     for rule in WORKSPACE_ALLOW_RULES:
         allow.extend((_ALLOW_FLAG, rule))
+    deny: list[str] = []
+    for rule in WORKSPACE_DENY_RULES:
+        deny.extend((_DENY_FLAG, rule))
     return (
         str(executable),
         _OUTPUT_FORMAT_FLAG,
@@ -984,10 +1063,9 @@ def _workspace_tool_arguments(
         _TOOLS_OPTION,
         _WORKSPACE_TOOL_LIST,
         *allow,
-        _DENY_FLAG,
-        _MCP_TOOL_DENY_RULE,
+        *deny,
         _PERMISSION_MODE_FLAG,
-        _DONT_ASK,
+        _BYPASS_PERMISSIONS,
         _NO_MEMORY_FLAG,
         _NO_SUBAGENTS_FLAG,
         _NO_WEB_SEARCH_FLAG,
@@ -1123,10 +1201,16 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
 
     WHAT IT GRANTS. Grok splits the two switches Claude combines: `--tools`
     names the built-in IDs the model may see, and `--allow` names the five
-    permission classes it may run without asking, under `--permission-mode
-    dontAsk`. `--deny MCPTool` keeps MCP meta-tools from remaining visible.
-    Both halves are measured, not chosen: parse does not check tool IDs, so
-    this executor does not pretend it validates them.
+    permission classes it may run, under `--permission-mode bypassPermissions`
+    (Operator ruling 01.09.2026, #642 -- see `WORKSPACE_ALLOW_RULES` for the
+    measurement: `dontAsk` cancelled the whole session on grok's own
+    Dangerous-command confirmation, and documented `--allow` globs for those
+    commands did not heal it). `--deny` carries `WORKSPACE_DENY_RULES`:
+    `MCPTool` keeps MCP meta-tools from remaining visible, and the
+    protected-edit path denies restore the confirmation floors bypass would
+    otherwise silently approve (see `_PROTECTED_EDIT_PATH_PATTERNS` for that
+    measurement). All are measured, not chosen: parse does not check tool
+    IDs, so this executor does not pretend it validates them.
 
     WHAT IT KEEPS. Every other flag and the whole private HOME of the
     tool-free call, unchanged: inline `-p`, `--output-format json`, the
@@ -1138,10 +1222,12 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
     the serving user, and the named tools reach every path that user reaches
     -- including the credential directory this invocation hands it. The
     attempt's workspace is where the process is *started*, not a boundary it
-    is held inside. `--always-approve`, `--yolo` and `bypassPermissions` exist
-    and are not used. `--sandbox` exists and is not claimed. A tool this
-    vector did not name cannot be used; where a named tool may reach is the
-    CLI's own business and no promise of this module's.
+    is held inside. `bypassPermissions` does not widen `--tools`: a tool this
+    vector did not name still cannot be used, and `--deny MCPTool` stays
+    effective per xAI's docs. `--always-approve` and `--yolo` exist and are
+    not used -- `--permission-mode bypassPermissions` is the measured one.
+    `--sandbox` exists and is not claimed; where a named tool may reach is
+    the CLI's own business and no promise of this module's.
 
     WHAT IS NOT MEASURED, said here rather than discovered later. The
     tool-free executor rests on a measured envelope against a real
