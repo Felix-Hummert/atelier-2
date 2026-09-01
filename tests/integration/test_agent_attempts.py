@@ -166,7 +166,7 @@ def attempt_runtime(
         ),
         (
             RecordingAgentExecutorFactoryV2(
-                "anthropic", "claude-cli/v1", "controlled-process", b"unused"
+                "anthropic", "claude-cli/v1", "controlled-process", b'"unused"'
             ),
         ),
     )

@@ -335,7 +335,7 @@ def test_runner_evidence_commits_product_truth_once(tmp_path: Path) -> None:
         envelope = RunnerTerminalEvidenceEnvelope(
             binding,
             invocation,
-            RunnerProviderResult(AgentExecutionResult(b"answer")),
+            RunnerProviderResult(AgentExecutionResult(b'"answer"')),
         )
 
         first = store.commit_runner_terminal_evidence(execution, envelope)
@@ -375,7 +375,7 @@ def test_exact_evidence_retry_converges_after_legitimate_downstream_progress(
         envelope = RunnerTerminalEvidenceEnvelope(
             binding,
             invocation,
-            RunnerProviderResult(AgentExecutionResult(b"answer in hand")),
+            RunnerProviderResult(AgentExecutionResult(b'"answer in hand"')),
         )
         committed = store.commit_runner_terminal_evidence(execution, envelope)
         assert isinstance(committed, RunnerTerminalEvidenceCommitted)
@@ -397,7 +397,7 @@ def test_exact_evidence_retry_converges_after_legitimate_downstream_progress(
                 RunnerTerminalEvidenceEnvelope(
                     binding,
                     invocation,
-                    RunnerProviderResult(AgentExecutionResult(b"different answer")),
+                    RunnerProviderResult(AgentExecutionResult(b'"different answer"')),
                 ),
             )
         changed_generation = RunnerGenerationBinding(
@@ -418,7 +418,7 @@ def test_exact_evidence_retry_converges_after_legitimate_downstream_progress(
                 RunnerTerminalEvidenceEnvelope(
                     changed_generation,
                     invocation,
-                    RunnerProviderResult(AgentExecutionResult(b"answer in hand")),
+                    RunnerProviderResult(AgentExecutionResult(b'"answer in hand"')),
                 ),
             )
         with pytest.raises(RunnerBindingConflict):
@@ -427,7 +427,7 @@ def test_exact_evidence_retry_converges_after_legitimate_downstream_progress(
                 RunnerTerminalEvidenceEnvelope(
                     changed_manifest,
                     invocation,
-                    RunnerProviderResult(AgentExecutionResult(b"answer in hand")),
+                    RunnerProviderResult(AgentExecutionResult(b'"answer in hand"')),
                 ),
             )
         assert _runner_product_snapshot(runtime) == snapshot
@@ -441,7 +441,10 @@ def test_exact_evidence_retry_converges_after_legitimate_downstream_progress(
         (
             RunnerProviderFailure(ProcessExitSignature(17, b"provider died")),
             AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
-            "process-exited-unsuccessfully",
+            (
+                "process-exited-unsuccessfully: exited with code 17; "
+                "standard error: provider died"
+            ),
         ),
         (
             RunnerOutputLimitExceeded(
@@ -698,7 +701,7 @@ def test_runner_completion_wins_cancel_transaction_order(tmp_path: Path) -> None
             RunnerTerminalEvidenceEnvelope(
                 binding,
                 invocation,
-                RunnerProviderResult(AgentExecutionResult(b"finished in hand")),
+                RunnerProviderResult(AgentExecutionResult(b'"finished in hand"')),
             ),
         )
 
@@ -708,7 +711,7 @@ def test_runner_completion_wins_cancel_transaction_order(tmp_path: Path) -> None
         with runtime.engine.connect() as connection:
             assert (
                 connection.scalar(sa.select(agent_receipts_v2.c.output_bytes))
-                == b"finished in hand"
+                == b'"finished in hand"'
             )
             assert tuple(
                 connection.execute(
@@ -718,7 +721,7 @@ def test_runner_completion_wins_cancel_transaction_order(tmp_path: Path) -> None
                 )
             ) == (
                 ("AGENT_CANCEL_REQUESTED", b"operator-cancel"),
-                ("AGENT_COMPLETED", b"finished in hand"),
+                ("AGENT_COMPLETED", b'"finished in hand"'),
             )
 
         # Success already won the race and cleared the cancellation columns
@@ -1101,7 +1104,7 @@ def test_same_evidence_race_commits_one_product_result(tmp_path: Path) -> None:
         envelope = RunnerTerminalEvidenceEnvelope(
             binding,
             invocation,
-            RunnerProviderResult(AgentExecutionResult(b"one durable answer")),
+            RunnerProviderResult(AgentExecutionResult(b'"one durable answer"')),
         )
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = tuple(

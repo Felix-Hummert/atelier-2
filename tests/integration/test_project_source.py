@@ -12,6 +12,7 @@ never a run that quietly works on nothing.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -226,7 +227,8 @@ def test_a_directory_swapped_under_its_lease_is_never_unpacked_into(
 
 
 REPORT_THE_TREE = (
-    "import os; print(sorted(os.listdir()), open('src/tool.py').read(), end='')"
+    "import json, os; "
+    "print(json.dumps([sorted(os.listdir()), open('src/tool.py').read()]), end='')"
 )
 
 
@@ -285,7 +287,7 @@ def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
 
         assert isinstance(outcome, AgentAttemptSucceeded)
         assert executor.reported == [
-            f"{['pyproject.toml', 'src']} print('committed')\n".encode()
+            json.dumps([["pyproject.toml", "src"], "print('committed')\n"]).encode()
         ]
     finally:
         runtime.close()
