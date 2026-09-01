@@ -1,17 +1,26 @@
-"""`DbosCatalogStore.resolver_session` answers many lookups on one connection.
+"""`DbosCatalogStore`'s resolve seam answers many lookups on one connection, once each.
 
-Issue #937: `resolve` alone checks out (and later returns) a fresh connection
-per call -- paid once per pinned reference a listed page resolves, not once
-for the whole page. (An earlier draft of this fix believed each of those
-calls also took a write lock under this store's `IMMEDIATE` isolation; a
-correction on landing found a plain `SELECT` opens no transaction at all
+Issue #937 round 1: `resolve` alone checks out (and later returns) a fresh
+connection per call -- paid once per pinned reference a listed page resolves,
+not once for the whole page. (An earlier draft of this fix believed each of
+those calls also took a write lock under this store's `IMMEDIATE` isolation;
+a correction on landing found a plain `SELECT` opens no transaction at all
 under this stack's DBAPI isolation setting, so what `resolver_session` really
 removes is repeated pool checkouts, not write-lock serialization against the
-WAL.) These tests pin the fix as the connection count a real engine actually
+WAL.) These tests pin that fix as the connection count a real engine actually
 sees, not as milliseconds: `resolver_session` must answer every lookup made
-through the resolver it yields on the one connection it checked out, and
-`resolve` on its own must keep checking out one connection per call, exactly
-as before this session existed.
+through the resolver it yields on the one connection it checked out.
+
+Issue #937 round 2: fixing the checkout did not move the measured wall time,
+because the dominant cost sits downstream of a found answer, in the
+jsonschema validation and YAML parsing every caller runs on the bytes this
+seam hands back -- run once per resolved reference, uncached, even when many
+revisions on one page pin the same schema. This store cannot cache that
+downstream work, but it owns the one lookup every caller shares first:
+resolving `(kind, revision_hash)` to the published bytes. `resolve` now
+answers a repeat of the same found reference -- inside one session, or
+across separate `resolve` calls -- without a second query, so a caller who
+resolves the same reference twice queries the store once.
 """
 
 from __future__ import annotations
@@ -83,6 +92,23 @@ class _ConnectionCheckouts:
         self.count += 1
 
 
+class _QueryExecutions:
+    """How many statements a real engine's cursor has actually executed.
+
+    Where `_ConnectionCheckouts` counts pool checkouts, this counts the SQL a
+    checked-out connection runs -- the unit the resolve-seam cache (#937
+    round 2) is supposed to spend once per resolved reference rather than
+    once per `resolve` call.
+    """
+
+    def __init__(self, engine: Engine) -> None:
+        self.count = 0
+        event.listens_for(engine, "before_cursor_execute")(self._record)
+
+    def _record(self, *_args: object) -> None:
+        self.count += 1
+
+
 def _published_schema(document: bytes) -> PublishedRevision:
     return PublishedRevision(RevisionKind.SCHEMA, document)
 
@@ -122,17 +148,67 @@ def test_a_resolver_session_answers_every_lookup_on_one_connection(
     assert checkouts.count == 1
 
 
-def test_resolve_alone_still_opens_one_connection_per_call(engine: Engine) -> None:
-    """Outside a session, `resolve` keeps its original per-lookup connection cost."""
+def test_resolve_answers_a_repeated_lookup_without_a_second_connection(
+    engine: Engine,
+) -> None:
+    """A found reference `resolve` already read answers again without a query (#937 round 2)."""
     store = DbosCatalogStore(engine)
     schema = _published_schema(b'{"type": "boolean"}')
     assert isinstance(store.publish_revision(schema), PublishedRevisionCreated)
     checkouts = _ConnectionCheckouts(engine)
 
-    store.resolve(RevisionKind.SCHEMA, schema.revision_hash)
-    store.resolve(RevisionKind.SCHEMA, schema.revision_hash)
+    first = store.resolve(RevisionKind.SCHEMA, schema.revision_hash)
+    second = store.resolve(RevisionKind.SCHEMA, schema.revision_hash)
+
+    assert first == PublishedRevisionFound(schema)
+    assert second == PublishedRevisionFound(schema)
+    assert checkouts.count == 1
+
+
+def test_resolve_still_opens_one_connection_per_distinct_reference(
+    engine: Engine,
+) -> None:
+    """The cache answers a repeat of the same reference, never a different one."""
+    store = DbosCatalogStore(engine)
+    boolean_schema = _published_schema(b'{"type": "boolean"}')
+    string_schema = _published_schema(b'{"type": "string"}')
+    for revision in (boolean_schema, string_schema):
+        assert isinstance(store.publish_revision(revision), PublishedRevisionCreated)
+    checkouts = _ConnectionCheckouts(engine)
+
+    store.resolve(RevisionKind.SCHEMA, boolean_schema.revision_hash)
+    store.resolve(RevisionKind.SCHEMA, string_schema.revision_hash)
 
     assert checkouts.count == 2
+
+
+def test_resolve_does_not_cache_a_miss_a_later_publish_fills(engine: Engine) -> None:
+    """An unpublished hash may be published moments later; a cached miss must not answer stale."""
+    store = DbosCatalogStore(engine)
+    schema = _published_schema(b'{"type": "boolean"}')
+
+    before = store.resolve(RevisionKind.SCHEMA, schema.revision_hash)
+    assert isinstance(store.publish_revision(schema), PublishedRevisionCreated)
+    after = store.resolve(RevisionKind.SCHEMA, schema.revision_hash)
+
+    assert before == PublishedRevisionMissing()
+    assert after == PublishedRevisionFound(schema)
+
+
+def test_a_resolver_session_resolves_the_same_reference_once(engine: Engine) -> None:
+    """Two wait nodes on the page pinning the same schema query the store once (#937 round 2)."""
+    store = DbosCatalogStore(engine)
+    schema = _published_schema(b'{"type": "boolean"}')
+    assert isinstance(store.publish_revision(schema), PublishedRevisionCreated)
+    executions = _QueryExecutions(engine)
+
+    with store.resolver_session() as resolver:
+        first = resolver.resolve(RevisionKind.SCHEMA, schema.revision_hash)
+        second = resolver.resolve(RevisionKind.SCHEMA, schema.revision_hash)
+
+    assert first == PublishedRevisionFound(schema)
+    assert second == PublishedRevisionFound(schema)
+    assert executions.count == 1
 
 
 def test_a_resolver_session_the_store_cannot_query_answers_unavailable(
