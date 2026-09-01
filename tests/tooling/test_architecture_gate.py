@@ -614,9 +614,11 @@ def test_a_read_that_reaches_a_port_inside_an_allowlisted_module_fails(
     assert "prepare_events" in result.stderr
 
 
-LEAKING_OUTCOME_IMPORT = (
-    "from atelier2.application.compose_preview import LeakedOutcome"
-)
+# The outcome fixtures need any application module that already imports
+# `dataclass`; naming that one canvas keeps their four references together.
+OUTCOME_CANVAS_MODULE = "atelier2.application.evaluate_executability"
+OUTCOME_CANVAS_PATH = "src/atelier2/application/evaluate_executability.py"
+LEAKING_OUTCOME_IMPORT = f"from {OUTCOME_CANVAS_MODULE} import LeakedOutcome"
 
 
 def add_outcome_carrying_a_port(project: Path) -> None:
@@ -628,7 +630,7 @@ def add_outcome_carrying_a_port(project: Path) -> None:
     """
     append_to(
         project,
-        "src/atelier2/application/compose_preview.py",
+        OUTCOME_CANVAS_PATH,
         "\nfrom atelier2.ports.run_queries import RunQueries\n\n"
         "@dataclass(frozen=True)\n"
         "class LeakedOutcome:\n"
@@ -705,7 +707,7 @@ def add_outcome_hiding_a_port_behind_an_unreadable_annotation(project: Path) -> 
     """An outcome that really carries a port, behind an annotation nothing resolves."""
     append_to(
         project,
-        "src/atelier2/application/compose_preview.py",
+        OUTCOME_CANVAS_PATH,
         "\nfrom typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
         "    from atelier2.ports.run_queries import RunQueries\n\n"
@@ -737,7 +739,7 @@ def test_an_outcome_this_check_cannot_read_fails_rather_than_being_reported(
     replace_use_case_field(
         project,
         "leaked: Callable[[], HiddenOutcome] = _unbound",
-        "from atelier2.application.compose_preview import HiddenOutcome",
+        f"from {OUTCOME_CANVAS_MODULE} import HiddenOutcome",
     )
 
     result = run_gate(project)
