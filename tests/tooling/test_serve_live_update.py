@@ -52,6 +52,17 @@ if command == "git":
     elif git_arguments == ["pull", "--ff-only", "--quiet", "origin", "main"]:
         state["head"] = state["target_commit"]
         save()
+    elif git_arguments == ["fetch", "--quiet", "origin", "main"]:
+        pass
+    elif git_arguments[:2] == ["merge-base", "--is-ancestor"] and git_arguments[3:] == ["FETCH_HEAD"]:
+        if git_arguments[2] != state["target_commit"]:
+            raise SystemExit(1)
+    elif git_arguments[:3] == ["merge", "--ff-only", "--quiet"]:
+        requested = git_arguments[3]
+        if requested != state["target_commit"]:
+            raise SystemExit(f"unexpected fast-forward target: {requested}")
+        state["head"] = requested
+        save()
     elif git_arguments == ["ls-files", "--error-unmatch", "--", "package.json"]:
         if not state["package_tracked"]:
             raise SystemExit(1)
@@ -204,9 +215,12 @@ class UpdateHarness:
         state.update(settings)
         self.state_path.write_text(json.dumps(state), encoding="utf-8")
 
-    def run(self) -> subprocess.CompletedProcess[str]:
+    def run(self, target_commit: str | None = None) -> subprocess.CompletedProcess[str]:
+        command = ["bash", str(self.repository / "scripts" / SERVE_LIVE_UPDATE.name)]
+        if target_commit is not None:
+            command.append(target_commit)
         return subprocess.run(
-            ["bash", str(self.repository / "scripts" / SERVE_LIVE_UPDATE.name)],
+            command,
             cwd=self.repository,
             env=self.environment,
             capture_output=True,
@@ -319,6 +333,41 @@ def test_clean_main_updates_in_the_declared_order_and_backs_up_the_store(
         assert (backup / filename).stat().st_size == (
             harness.store / filename
         ).stat().st_size
+
+
+def test_with_a_target_argument_it_fast_forwards_exactly_to_that_commit(
+    tmp_path: Path,
+) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    target_commit = str(harness.state()["target_commit"])
+
+    completed = harness.run(target_commit=target_commit)
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.state()["head"] == target_commit
+    assert (
+        harness.deployed_commit_marker.read_text(encoding="utf-8")
+        == f"{target_commit}\n"
+    )
+    git_arguments = [call[3:] for call in harness.invocations() if call[0] == "git"]
+    assert ["fetch", "--quiet", "origin", "main"] in git_arguments
+    assert ["merge-base", "--is-ancestor", target_commit, "FETCH_HEAD"] in git_arguments
+    assert ["merge", "--ff-only", "--quiet", target_commit] in git_arguments
+    assert not any(arguments[:1] == ["pull"] for arguments in git_arguments)
+
+
+def test_refuses_a_target_not_reachable_from_origin_main(tmp_path: Path) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    unreachable_commit = "9" * 40
+
+    completed = harness.run(target_commit=unreachable_commit)
+
+    assert completed.returncode != 0
+    assert "is not reachable from origin/main" in completed.stderr
+    assert harness.state()["head"] == "1" * 40
+    assert not any(
+        call[0] in {"uv", "npm", "systemctl"} for call in harness.invocations()
+    )
 
 
 def test_failed_migration_rolls_back_to_served_commit_not_checkout_head(

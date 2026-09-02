@@ -15,6 +15,8 @@ fail() {
   exit 1
 }
 
+requested_target_commit="${1:-}"
+
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 frontend="${repository}/frontend"
 root_package="${repository}/package.json"
@@ -166,9 +168,20 @@ else
   fail "live serve health and the last deployed commit marker provide no rollback target; refusing the update"
 fi
 
-log "fast-forwarding main"
-git -C "${repository}" pull --ff-only --quiet "${deploy_remote}" "${deploy_branch}" \
-  || fail "main could not fast-forward from checkout HEAD"
+if [[ -n "${requested_target_commit}" ]]; then
+  log "fetching ${deploy_remote}/${deploy_branch}"
+  git -C "${repository}" fetch --quiet "${deploy_remote}" "${deploy_branch}" \
+    || fail "could not fetch ${deploy_remote}/${deploy_branch}"
+  git -C "${repository}" merge-base --is-ancestor "${requested_target_commit}" FETCH_HEAD \
+    || fail "${requested_target_commit} is not reachable from ${deploy_remote}/${deploy_branch}"
+  log "fast-forwarding main to ${requested_target_commit}"
+  git -C "${repository}" merge --ff-only --quiet "${requested_target_commit}" \
+    || fail "main could not fast-forward to ${requested_target_commit}"
+else
+  log "fast-forwarding main"
+  git -C "${repository}" pull --ff-only --quiet "${deploy_remote}" "${deploy_branch}" \
+    || fail "main could not fast-forward from checkout HEAD"
+fi
 target_commit="$(git -C "${repository}" rev-parse HEAD)" \
   || fail "the fast-forwarded deploy commit is unreadable"
 

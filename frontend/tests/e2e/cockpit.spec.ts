@@ -2025,7 +2025,9 @@ test("the Workbench pins a run that is waiting for a person, by its catalog name
   await page.goto("/atelier");
   // This backend is shared across every earlier test in this file, so other
   // runs may already wait here: this run is named in its sender line, not counted.
-  const pin = page.locator("section.pinned-decision-compact").filter({ hasText: question });
+  const pin = page.locator(
+    `section.pinned-decision-compact[aria-labelledby="pinned-decision-title-${reference}"]`
+  );
   await expect(pin).toBeVisible();
   await expect(pin.locator(".from")).toContainText(`ask · ${workflowName}`);
   await expect(pin.getByText(question, { exact: true })).toBeVisible();
