@@ -57,7 +57,7 @@ from atelier2.adapters.dbos.effect_store import (
 )
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_transitions import lift_started_run
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
@@ -71,7 +71,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.reconcile_effect import (
     ReconciliationAcceptedPending,
     ReconciliationExistingRejected,
@@ -80,9 +79,7 @@ from atelier2.application.reconcile_effect import (
 )
 from atelier2.contracts.effects import (
     EFFECT_INTENT_VERSION_ABANDONED,
-    AdapterRevision,
     ConfirmationSource,
-    EffectDestination,
     EffectId,
     EffectIntent,
     EffectIntentState,
@@ -109,6 +106,10 @@ from atelier2.ports.run_events import AttentionEvent, AttentionEventPage
 from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.api import durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.runs import (
     complete_v3_agent_node,
     prepare_and_launch_graph_action,
@@ -135,16 +136,10 @@ ACTION_NODE_ID = V3_EFFECT_LINE_ACTION_NODE_ID
 @pytest.fixture
 def prepared(tmp_path: Path) -> Iterator[tuple[DbosRuntime, EffectIntent]]:
     runtime = recording_exact_runtime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "executor-A",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "executor-A", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         PROVIDER_OUTPUT,
     )
     runtime.initialize_storage()

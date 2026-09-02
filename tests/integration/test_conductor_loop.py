@@ -32,9 +32,8 @@ from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import runs
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.references import encode_public_run_reference
 from atelier2.application.compose_node_job import RESULT_HEADING
@@ -47,7 +46,6 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -72,6 +70,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import api_limits, durable_ports, event_poll_backoff
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 
 RUN = RunId("conductor/conversation")
 
@@ -112,16 +114,10 @@ def provider() -> RecordingAgentExecutorFactoryV2:
 
 def runtime_over(root: Path, recording: RecordingAgentExecutorFactoryV2) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(
-            root / "atelier.sqlite",
-            "conductor-loop-test",
-            agent_scratch_root=agent_scratch_root(root),
+        canonical_runtime_settings(
+            root, "conductor-loop-test", agent_scratch_root(root)
         ),
-        LoopbackEffectAdapterFactory(
-            root / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(root),
         (recording,),
     )
 

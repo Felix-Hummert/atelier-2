@@ -27,7 +27,7 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     context_packages_v3,
     node_execution_requests_v3,
@@ -37,7 +37,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -50,7 +49,6 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput
@@ -84,6 +82,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
 DIFF_REVIEW_DOCUMENT = (WORKFLOWS_DIRECTORY / "diff-review.yaml").read_bytes()
@@ -157,16 +159,8 @@ def runtime_over(
     scratch_root: Path,
 ) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(
-            root / "atelier.sqlite",
-            "diff-review-test",
-            agent_scratch_root=scratch_root,
-        ),
-        LoopbackEffectAdapterFactory(
-            root / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_runtime_settings(root, "diff-review-test", scratch_root),
+        canonical_loopback_effects(root),
         (provider,),
     )
 

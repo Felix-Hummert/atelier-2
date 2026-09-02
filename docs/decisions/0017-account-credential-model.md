@@ -2,7 +2,9 @@
 
 - Status: PROPOSED 2026-08-24 — draft awaiting operator approval. This record
   decides a model; only the slices §10 names as built exist. Everything else is
-  proposed, and nothing here claims otherwise.
+  proposed, and nothing here claims otherwise. Context's description of the
+  Claude adapter amended 2026-09-02 (issue #993): the prior directory-sharing
+  design it named is superseded by per-invocation isolation.
 - Date: 2026-08-24
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
   (the secret rule: no credential value in a workflow, prompt, event, receipt,
@@ -52,6 +54,22 @@ credential-channel canary (`tests/domain/test_credential_channel.py`)
 structurally refuses any API field or durable column named for a credential
 channel. ADR 0009 §6 fixed the wire rule: a runner receives a typed non-secret
 `AuthReference`, never a value and never a Serve-local path.
+
+**2026-09-02 amendment (Issue #993): the Claude adapter no longer hands the
+operator's own directory to the child process.** Issue #993 diagnosed the
+paragraph above as this executor's production defect: `CLAUDE_CONFIG_DIR`
+pointed every invocation at the operator's own live directory, which other
+processes read and wrote concurrently, and the pinned CLI has a known lock
+race on that directory's files (Anthropic GH #3117) — read as a live
+production incident, not a theoretical risk. The declared credential
+directory is now read as a SOURCE only, at composition and once per
+invocation; the directory a launched process is actually handed is a private,
+disposable copy minted for that one call, holding `.credentials.json` plus a
+written onboarding stub, and removed on every lifecycle path — a normal
+release, a refusal never decoded, an exception, or executor shutdown. The
+paragraph above is left standing as the record of what this adapter did in
+August and why; this amendment states what it does instead, not a second
+telling of the same fact.
 
 That bootstrap is clean, and it does not scale, and this record says so
 plainly: **it presumes one human with shell access to the host.** A multi-user
