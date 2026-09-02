@@ -22,6 +22,12 @@ from atelier2.contracts.agent_attempts import (
     CancelAgentAttemptRequest,
     ProcessExitSignature,
     WatchdogGenerationId,
+    process_exit_verdict,
+)
+from atelier2.contracts.agent_transcripts import (
+    AttemptTranscript,
+    ProviderTerminalRefusal,
+    Usage,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -31,6 +37,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 
 
 def _attempt(state: AgentAttemptState = AgentAttemptState.PREPARED) -> AgentAttempt:
@@ -306,3 +313,80 @@ def test_an_exit_signature_refuses_an_untyped_return_code_or_standard_error() ->
         ProcessExitSignature("1", b"")  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         ProcessExitSignature(1, "said")  # type: ignore[arg-type]
+
+
+def test_a_provider_refusal_the_transcript_named_replaces_the_exit_signature() -> None:
+    """The receipt keeps what the provider said, not the shell's silence.
+
+    The exit code and standard error explain nothing about a call the provider
+    itself read and refused before it did anything (#1029) -- the process
+    behaved exactly as designed.
+    """
+
+    exit_signature = ProcessExitSignature(1, b"")
+    transcript = AttemptTranscript.of(
+        [
+            Usage(0, 0),
+            ProviderTerminalRefusal(
+                "rate_limit_error", "429", "Not logged in · Please run /login"
+            ),
+        ]
+    )
+
+    assert process_exit_verdict(exit_signature, transcript) == (
+        "provider-reported: rate_limit_error: Not logged in · Please run /login"
+    )
+
+
+def test_an_exit_without_a_named_provider_refusal_keeps_the_exit_signature() -> None:
+    """Every other ending -- a crash, a timeout -- still speaks for itself."""
+
+    exit_signature = ProcessExitSignature(1, b"")
+
+    assert process_exit_verdict(exit_signature, None) == exit_signature.named()
+    assert (
+        process_exit_verdict(exit_signature, AttemptTranscript.of([Usage(0, 0)]))
+        == exit_signature.named()
+    )
+
+
+def test_a_refusal_missing_its_own_text_still_composes_a_provider_reason() -> None:
+    """A refusal need not explain itself for the receipt to name the provider.
+
+    A `result` line can declare `is_error: true` with no `result` text at all
+    (#1029 review); the composed reason still leads with "provider-reported"
+    rather than falling back to the exit signature's silence.
+    """
+
+    exit_signature = ProcessExitSignature(1, b"")
+    transcript = AttemptTranscript.of([ProviderTerminalRefusal("api_error", "", "")])
+
+    assert (
+        process_exit_verdict(exit_signature, transcript)
+        == "provider-reported: api_error: "
+    )
+
+
+def test_an_operator_home_path_in_the_composed_reason_is_scrubbed() -> None:
+    """The receipt's own reason string is as safe as the transcript step it reads.
+
+    `process_exit_verdict` only ever reads an already-kept `AttemptTranscript`,
+    so a path the transcript's own redactor already replaced never has a
+    second chance to appear in the composed sentence (#1029 review).
+    """
+
+    exit_signature = ProcessExitSignature(1, b"")
+    transcript = AttemptTranscript.of(
+        [
+            ProviderTerminalRefusal(
+                "api_error",
+                "",
+                "reading /home/felix-hummert/git/atelier-2/AGENTS.md failed",
+            )
+        ]
+    )
+
+    reason = process_exit_verdict(exit_signature, transcript)
+
+    assert "felix-hummert" not in reason
+    assert reason == f"provider-reported: api_error: reading {REDACTION_MARKER} failed"

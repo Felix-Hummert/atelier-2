@@ -12,6 +12,7 @@ import pytest
 from atelier2.api.wire.resources import (
     CatalogNameResolutionResource,
     HealthResource,
+    NodeDetailResource,
     NodeRailResource,
     RunCancellabilityResource,
     RunResourceV3,
@@ -79,6 +80,7 @@ class FakeHttp:
     health_answer: bytes | None = None
     health_source_commit: str = SOURCE_COMMIT
     configuration_pages: tuple[bytes, ...] | None = None
+    node_detail_transcript_events: tuple[dict[str, object], ...] | None = None
     calls: list[tuple[str, str, bytes | None]] = field(default_factory=list)
     workflow_hashes: list[str] = field(default_factory=list)
     run_reads: int = 0
@@ -141,6 +143,11 @@ class FakeHttp:
                 )
                 .model_dump_json()
                 .encode()
+            )
+        if "/nodes/" in path:
+            return node_detail_resource(
+                node_id=path.rsplit("/", 1)[-1],
+                transcript_events=self.node_detail_transcript_events,
             )
         self.run_reads += 1
         state = (
@@ -219,6 +226,33 @@ def run_resource(run_id: str, workflow_hash: str, state: str) -> RunResourceV3:
             "terminal_hash": TERMINAL_HASH if terminal else None,
             "latest_event_cursor": None,
         }
+    )
+
+
+def node_detail_resource(
+    *, node_id: str, transcript_events: tuple[dict[str, object], ...] | None
+) -> bytes:
+    return (
+        NodeDetailResource.model_validate(
+            {
+                "run_id": "5" * 64,
+                "public_run_reference": PUBLIC_RUN_REFERENCE,
+                "node_id": node_id,
+                "state": NodeState.FAILED.value,
+                "job_base64": None,
+                "job_hash": None,
+                "answer": None,
+                "provenance": None,
+                "refusal": "process-exited-unsuccessfully",
+                "started_at": None,
+                "ended_at": None,
+                "transcript": (
+                    None if transcript_events is None else {"events": transcript_events}
+                ),
+            }
+        )
+        .model_dump_json()
+        .encode()
     )
 
 
@@ -539,6 +573,58 @@ def test_a_failed_run_replaces_the_live_success_receipt(
     (receipt,) = read_receipts(state_directory)
     assert receipt.result is ProviderProbeResult.FAILED
     assert receipt.problem_code == ProviderProbeProblemCode("server-unavailable")
+
+
+def test_a_failed_run_without_a_named_refusal_keeps_the_plain_problem_code(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    http = FakeHttp((configuration(),), workflow_directory, terminal_state="FAILED")
+    state_directory = tmp_path / "state"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.failed == 1
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.result is ProviderProbeResult.FAILED
+    assert receipt.problem_code == ProviderProbeProblemCode("run-failed")
+
+
+def test_a_failed_run_whose_transcript_names_a_provider_refusal_gets_its_own_code(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """A rate-limited provider is not a broken vector, and the receipt says so.
+
+    The run's own terminal state carries no more than `FAILED`; telling the two
+    apart needs the failed node's own transcript (#1029).
+    """
+
+    http = FakeHttp(
+        (configuration(),),
+        workflow_directory,
+        terminal_state="FAILED",
+        node_detail_transcript_events=(
+            {
+                "event": "provider-terminal-refusal",
+                "terminal_reason": "rate_limit_error",
+                "api_error_status": "429",
+                "text": "Not logged in · Please run /login",
+                "redacted": False,
+                "moment": {"origin": "v1-before-moments"},
+            },
+        ),
+    )
+    state_directory = tmp_path / "state"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.failed == 1
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.result is ProviderProbeResult.FAILED
+    assert receipt.problem_code == ProviderProbeProblemCode("provider-refused")
 
 
 def test_an_unreadable_local_workflow_replaces_the_live_success_receipt(

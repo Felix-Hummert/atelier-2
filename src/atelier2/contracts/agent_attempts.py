@@ -4,7 +4,10 @@ import struct
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from atelier2.contracts.agent_transcripts import AttemptTranscript
+from atelier2.contracts.agent_transcripts import (
+    AttemptTranscript,
+    ProviderTerminalRefusal,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -217,6 +220,39 @@ class ProcessExitSignature:
             f"last {MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES} of "
             f"{len(self.standard_error)} standard error bytes: {tail}"
         )
+
+
+def process_exit_verdict(
+    exit_signature: ProcessExitSignature, transcript: AttemptTranscript | None
+) -> str:
+    """The one sentence a receipt keeps about a failed process, honestly sourced.
+
+    An exit code and an empty standard error explain nothing about a call the
+    provider itself read and refused before it did anything (`#1029`, `#942`):
+    the process behaved exactly as designed, and the shell around it is not
+    where that refusal was said. Where the transcript carries the provider's
+    own named refusal, the receipt keeps that instead of the exit signature's
+    silence; every other ending -- a crash, a timeout, a supervision failure --
+    still gets the exit signature's own words, unchanged. Any provider's
+    transcript may carry the refusal step, not only Claude's: the vocabulary is
+    neutral even though one adapter is the only writer of it today.
+    """
+
+    refusal = _terminal_refusal(transcript)
+    if refusal is None:
+        return exit_signature.named()
+    return f"provider-reported: {refusal.terminal_reason}: {refusal.text}"
+
+
+def _terminal_refusal(
+    transcript: AttemptTranscript | None,
+) -> ProviderTerminalRefusal | None:
+    if transcript is None:
+        return None
+    for event in transcript.events:
+        if isinstance(event, ProviderTerminalRefusal):
+            return event
+    return None
 
 
 class AgentAttemptReplacement(StrEnum):
