@@ -495,11 +495,27 @@ def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
     )
 
 
+def _restore_v48_definition_source_predecessor(
+    connection: sqlite3.Connection,
+) -> None:
+    """Take back the three tables V49 added, leaving every other table alone.
+
+    V49 is additive, so a predecessor of it differs from today only by not
+    carrying these; dropping them is the whole restoration.
+    """
+
+    for trigger in schema_module._DEFINITION_SOURCE_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    for table in reversed(schema_module._DEFINITION_SOURCE_TABLES):
+        connection.execute(f"DROP TABLE IF EXISTS {table.name}")
+
+
 def _restore_v45_answer_attribution_predecessors(
     connection: sqlite3.Connection,
 ) -> None:
     """Restore the exact event and answer tables published through V45."""
 
+    _restore_v48_definition_source_predecessor(connection)
     for trigger in ("catalog_intakes_no_update", "catalog_intakes_no_delete"):
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     connection.execute("DROP TABLE IF EXISTS catalog_intakes")
