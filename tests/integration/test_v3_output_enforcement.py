@@ -50,7 +50,7 @@ from atelier2.adapters.dbos.artifact_store import read_stored_artifact
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempt_receipts_v3,
     agent_attempts,
@@ -75,7 +75,6 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.projection.events import bounded_event_summary
 from atelier2.api.references import encode_public_run_reference
@@ -107,7 +106,6 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.artifacts import Artifact, ArtifactHash
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
@@ -163,6 +161,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client, durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 
 PLAN_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
@@ -230,16 +232,10 @@ def reviewed_planning_document(schema: PublishedRevision) -> bytes:
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     """A runtime with no provider that can answer: this file drives the store."""
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "v3-output-contract-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "v3-output-contract-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()
