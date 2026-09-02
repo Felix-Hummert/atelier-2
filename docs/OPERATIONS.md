@@ -833,6 +833,46 @@ This script does not alter a running Serve, download during `serve`, or resolve
 the executable path from admission. Those remain later slices of the toolchain
 item.
 
+## Connect a git definition source and see where it stands
+
+Two offline commands against a store that already exists. Neither publishes
+anything, and `serve` performs neither at startup: a newer version of a
+workflow enters the catalog because the operator asked for it.
+
+```bash
+atelier2 definition-source connect --database /path/to/atelier.sqlite \
+    --location /srv/definitions.git --ref refs/heads/main \
+    --select 'workflows/*.yaml=workflow' --actor felix
+```
+
+`connect` records the repository, the ref, and the selections, and prints the
+source id every later command names. A selection is `PATTERN=KIND`; the kind is
+configured, never guessed from the repository's layout
+([ADR 0018](decisions/0018-plugin-intake-and-neutral-roles.md)). The one
+wildcard is `*`, matching inside a single path segment. Connecting the same
+repository at the same ref again is the same source, not a second one.
+
+```bash
+atelier2 definition-source scan --database /path/to/atelier.sqlite \
+    --source-id <id>
+```
+
+`scan` resolves the ref to one commit, reads every selected file of it, and
+prints that commit followed by one line per path: `source_ahead` when the
+catalog does not hold these bytes, `in_sync` when it does, and `source_absent`
+for a path the catalog holds that the source stopped carrying. It writes
+nothing at all, so a scan never changes what a run would use.
+
+Both refuse before writing anything, in one closed vocabulary:
+`definition_source_unreachable`, `_ref_unresolved`, `_layout_unrecognized`,
+`_selection_ambiguous`, `_path_escapes_repository`, `_no_selected_files`,
+`_symlink_selected`, `_gitlink_selected`. A selected file the publication door
+would refuse is reported in that door's own words, and stops the scan.
+
+Taking content in is a separate operation and is not built yet. Private
+repositories, project-scoped registration, disconnecting a source, and the
+catalog's own Connect and Pull buttons are named absences, not oversights.
+
 ## Raise an older store
 
 Runtime startup still refuses every predecessor (`MigrationRequired`) and
