@@ -64,6 +64,7 @@ from atelier2.contracts.host_configuration import (
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
     MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
+    MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
@@ -225,6 +226,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "QueueItemResource.tracker_item_reference": (
         MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
     ),
+    "QueueItemResource.title": MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     "QueueProjectPolicyResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "QueueProjectPolicyResource.automation_label": (
         MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS

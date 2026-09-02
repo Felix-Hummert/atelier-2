@@ -1017,7 +1017,9 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
         launch_binding: null,
         blockers: [],
         tracker_enrichment: "ENRICHMENT_UNAVAILABLE",
-        title: null
+        title: "Preview door",
+        title_observed_at: "2026-09-01T14:00:00Z",
+        retired_at: null
       }],
       next_after: null
     })
@@ -1033,7 +1035,7 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
   await picker.click();
   const listbox = sheet.getByRole("listbox", { name: workItemFor("work_item") });
   await expect(sheet.getByText(observedSourceHeading("atelier", workflowStartCopy.github))).toBeVisible();
-  await expect(listbox.getByRole("option", { name: "#450", exact: true })).toBeVisible();
+  await expect(listbox.getByRole("option", { name: "#450 Preview door", exact: true })).toBeVisible();
   await expect(listbox.getByRole("option")).toHaveCount(1);
   await expect(page).not.toHaveURL(/\/atelier\/settings$/);
 });
