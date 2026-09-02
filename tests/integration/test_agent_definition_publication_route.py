@@ -18,13 +18,11 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agent_definitions import DeclaredTools
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.ports.durable_runs import DurableStateCorrupt
 from atelier2.ports.published_revisions import (
@@ -38,6 +36,10 @@ from tests.scenarios.api import (
     api_ports,
     durable_api_client,
     event_poll_backoff,
+)
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
 )
 
 DEFINITION_PATH = f"{API_PREFIX}/agent-definition-revisions"
@@ -55,16 +57,10 @@ THE_DEFINITION = (
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "agent-definition-door-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "agent-definition-door-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
     )
     started.initialize_storage()
     try:
