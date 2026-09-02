@@ -313,7 +313,7 @@ test("captures every surface at both widths", async ({ page }) => {
   await shoot(page, "run-node-evidence");
 
   await page.goto(`/atelier/runs/${reference}`);
-  await page.getByLabel("Your answer").fill("merge it");
+  await page.getByLabel(runPageCopy.answerLabel).fill("merge it");
   await page.getByRole("button", { name: runPageCopy.answerSubmit }).click();
   await expect(async () => {
     const read = await page.request.get(`/atelier/api/v1/runs/${reference}`);
