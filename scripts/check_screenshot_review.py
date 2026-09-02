@@ -35,9 +35,11 @@ ENTRY_FIELDS = frozenset(
 # Each group below is derived, not guessed:
 #   pages       -- the one Svelte component App.svelte mounts per core
 #                  surface (`frontend/src/lib/route.ts`, `App.svelte`).
-#   shell       -- WorkshopShell (the rail, in every surface) and
-#                  ConnectionNotice (shown on every surface but Workbench);
-#                  both wrap every core surface's rendered pixels.
+#   shell       -- WorkshopShell (the rail, in every surface), ConnectionNotice
+#                  (shown on every surface but Workbench), and App.svelte,
+#                  which composes shell plus page and decides ConnectionNotice's
+#                  placement (`{#if route.page !== "workbench"}`) -- all three
+#                  wrap or govern every core surface's rendered pixels.
 #   components  -- every `.svelte` file the five pages import, transitively,
 #                  following only `.svelte`-to-`.svelte` imports (the same
 #                  render-tree walk `frontend/tests/support/workshopSources.ts`
@@ -64,6 +66,7 @@ _PAGES = (
     Path("frontend/src/pages/RunCockpitPage.svelte"),
 )
 _SHELL = (
+    Path("frontend/src/App.svelte"),
     Path("frontend/src/components/WorkshopShell.svelte"),
     Path("frontend/src/components/ConnectionNotice.svelte"),
 )
