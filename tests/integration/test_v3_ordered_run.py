@@ -37,7 +37,7 @@ from sqlalchemy.exc import OperationalError
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     context_packages_v3,
     node_execution_requests_v3,
@@ -49,7 +49,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
@@ -69,7 +68,6 @@ from atelier2.contracts.artifacts import (
     Artifact,
     ArtifactHash,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
@@ -140,6 +138,10 @@ from tests.scenarios.api import (
     durable_ports,
     event_poll_backoff,
 )
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
@@ -202,16 +204,10 @@ def runtime(
     tmp_path: Path, cook: RecordingAgentExecutorFactoryV2
 ) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "v3-order-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "v3-order-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (cook,),
     )
     started.initialize_storage()
