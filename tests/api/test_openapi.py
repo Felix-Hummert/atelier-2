@@ -859,12 +859,21 @@ def test_openapi_list_item_names_the_closed_startability_pair() -> None:
             properties.update(part.get("properties", {}))
     assert "startable" in properties
     assert properties["startable"]["type"] == "boolean"
+    assert "structurally_startable" in properties
+    assert properties["structurally_startable"]["type"] == "boolean"
     assert properties["not_startable_reason"]["anyOf"] == [
-        {"type": "string", "const": "agent-executor-binding-unavailable"},
+        {
+            "type": "string",
+            "enum": [
+                "agent-executor-binding-unavailable",
+                "provider-probe-receipt-missing",
+            ],
+        },
         {"type": "null"},
     ]
     publication = schema["components"]["schemas"]["AgentConfigurationRevisionResource"]
     assert "startable" not in publication.get("properties", {})
+    assert "structurally_startable" not in publication.get("properties", {})
 
 
 def test_openapi_names_provider_check_and_workflow_pin_as_closed_facts() -> None:

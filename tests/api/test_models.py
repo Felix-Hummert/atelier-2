@@ -67,22 +67,51 @@ def test_listed_agent_configuration_requires_an_honest_startability_pair() -> No
     }
 
     assert AgentConfigurationRevisionListItemResource.model_validate(
-        {**item, "startable": True, "not_startable_reason": None}
+        {
+            **item,
+            "startable": True,
+            "structurally_startable": True,
+            "not_startable_reason": None,
+        }
     ).startable
     assert not AgentConfigurationRevisionListItemResource.model_validate(
         {
             **item,
             "startable": False,
+            "structurally_startable": False,
             "not_startable_reason": "agent-executor-binding-unavailable",
         }
     ).startable
-    for startable, reason in (
-        (True, "agent-executor-binding-unavailable"),
-        (False, None),
+    assert not AgentConfigurationRevisionListItemResource.model_validate(
+        {
+            **item,
+            "startable": False,
+            "structurally_startable": True,
+            "not_startable_reason": "provider-probe-receipt-missing",
+        }
+    ).startable
+    for startable, structurally_startable, reason in (
+        # startable without its own structural answer is dishonest even if
+        # the reason field is otherwise well-formed.
+        (True, False, None),
+        # startable claims a reason anyway.
+        (True, True, "agent-executor-binding-unavailable"),
+        # unstartable with no reason at all.
+        (False, False, None),
+        # structurally ready but naming the executor reason, not the
+        # receipt one -- the exact confusion the split exists to prevent.
+        (False, True, "agent-executor-binding-unavailable"),
+        # structurally unavailable but naming the receipt reason instead.
+        (False, False, "provider-probe-receipt-missing"),
     ):
         with pytest.raises(ValidationError):
             AgentConfigurationRevisionListItemResource.model_validate(
-                {**item, "startable": startable, "not_startable_reason": reason}
+                {
+                    **item,
+                    "startable": startable,
+                    "structurally_startable": structurally_startable,
+                    "not_startable_reason": reason,
+                }
             )
 
 

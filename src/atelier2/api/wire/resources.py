@@ -241,14 +241,41 @@ class AgentConfigurationRevisionResource(ApiModel):
 
 
 class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResource):
-    """A listed configuration plus the host's current startability decision."""
+    """A listed configuration plus the host's two independent startability answers.
+
+    `startable` is the receipt-gated answer: the cockpit's own Start button
+    gates on it (`WorkflowStartSheet.svelte`), and it is the same answer a
+    real start door acts on. `structurally_startable` asks only whether a
+    factory is registered, available, and declares the capability, with no
+    live evidence asked at all -- the live provider canary's own discovery
+    reads that one, because it exists to produce the evidence `startable` is
+    missing and could never find a vector to probe through a question that
+    already requires the evidence. `startable` cannot hold without
+    `structurally_startable`.
+    """
 
     startable: bool
-    not_startable_reason: Literal["agent-executor-binding-unavailable"] | None
+    structurally_startable: bool
+    not_startable_reason: (
+        Literal["agent-executor-binding-unavailable", "provider-probe-receipt-missing"]
+        | None
+    )
 
     @model_validator(mode="after")
     def validates_startability_pair(self) -> AgentConfigurationRevisionListItemResource:
-        if self.startable != (self.not_startable_reason is None):
+        if self.startable and not self.structurally_startable:
+            raise ValueError(
+                "agent configuration startability cannot hold without its own "
+                "structural startability"
+            )
+        expected_reason = (
+            None
+            if self.startable
+            else "agent-executor-binding-unavailable"
+            if not self.structurally_startable
+            else "provider-probe-receipt-missing"
+        )
+        if self.not_startable_reason != expected_reason:
             raise ValueError("agent configuration startability and reason disagree")
         return self
 

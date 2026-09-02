@@ -1,10 +1,12 @@
 """Run the configured live provider vectors and leave bounded proof behind.
 
 The served agent-configuration list is the deployment's answer about which
-exact provider/executor/configuration vectors are startable now. This client
-reads that list, resolves the matching admitted workflow, starts one fresh run
-with the listed configuration hash, and polls the public run resource to a
-terminal state. It owns no provider process and opens no store.
+exact provider/executor/configuration vectors are structurally startable now
+-- a factory registered, available, and declaring the capability, with no
+live evidence asked at all. This client reads that list, resolves the
+matching admitted workflow, starts one fresh run with the listed
+configuration hash, and polls the public run resource to a terminal state. It
+owns no provider process and opens no store.
 
 Discovery is receipt-neutral: health, the bounded configuration list, and all
 distinct admitted workflow names must resolve before any vector becomes an
@@ -110,8 +112,9 @@ _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
 _run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
 
 # These executor keys choose the matching probe workflow only. The served
-# startable configuration list remains the sole owner of which vectors run,
-# using the same executor constants that the Serve composition registers.
+# structurally-startable configuration list remains the sole owner of which
+# vectors run, using the same executor constants that the Serve composition
+# registers.
 _WORKFLOW_BY_EXECUTOR = {
     (
         CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
@@ -503,10 +506,17 @@ def _configured_vectors(
             ),
             "agent-configuration page",
         )
+        # `structurally_startable`, not `startable`: discovery must find a
+        # vector whose only problem is the receipt this very run would write.
+        # Selecting on `startable` here would be the same surface-vs-start-door
+        # divergence this gate exists to close, running the other way -- the
+        # listing saying "not startable" while the one run that could produce
+        # the missing evidence is refused from ever finding it.
         vectors.extend(
             vector
             for item in page.items
-            if item.startable and (vector := _canary_vector(item)) is not None
+            if item.structurally_startable
+            and (vector := _canary_vector(item)) is not None
         )
         if len(vectors) > PROVIDER_CANARY_MAXIMUM_VECTORS:
             raise ProviderCanaryDiscoveryFailed(
