@@ -92,7 +92,11 @@ from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeResult,
     ProviderProbeVectorId,
 )
-from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
+from atelier2.contracts.queue_projection import (
+    QueueItemTrackerObservation,
+    TrackerItemReference,
+    WorkItemReference,
+)
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -147,7 +151,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from atelier2.ports.queue_projection import QueueItemsObserved
+from atelier2.ports.queue_projection import QueueItemsReconciled
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
@@ -213,6 +217,7 @@ E2E_OBSERVED_WORK_ITEM_BODY = "e2e observed work item gh:450 — Grüße 東京"
 _E2E_TRACKER_ITEM_TITLE = "e2e observed work item gh:450"
 _E2E_TRACKER_ITEM = TrackerItemReference("gh:450")
 _E2E_WORK_ITEM = WorkItemReference(ProjectId("e2e-workshop"), _E2E_TRACKER_ITEM)
+_E2E_QUEUE_SEED_READ = RecordedAt("2026-08-26T09:15:00Z")
 _E2E_OBSERVED_REVISION = ObservedWorkItemRevision(
     _E2E_TRACKER_ITEM,
     WorkItemKind.ISSUE,
@@ -1479,8 +1484,19 @@ def main() -> None:
             served_project_id=served_project_id,
             lifespan=lifespan,
         )
-        observed = seeded.queue_projection.observe((_E2E_WORK_ITEM,))
-        if not isinstance(observed, QueueItemsObserved):
+        observed = seeded.queue_projection.reconcile_open_items(
+            _E2E_WORK_ITEM.project,
+            (
+                (
+                    _E2E_WORK_ITEM,
+                    QueueItemTrackerObservation(
+                        _E2E_TRACKER_ITEM_TITLE, _E2E_QUEUE_SEED_READ
+                    ),
+                ),
+            ),
+            _E2E_QUEUE_SEED_READ,
+        )
+        if not isinstance(observed, QueueItemsReconciled):
             raise TypeError(
                 f"e2e work-item fixture did not land on the queue: {observed!r}"
             )

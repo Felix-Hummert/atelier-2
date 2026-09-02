@@ -27,7 +27,10 @@ from atelier2.application.refusals import (
     WriteUnavailable,
 )
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.queue_projection import WorkItemReference
+from atelier2.contracts.queue_projection import (
+    QueueItemTrackerObservation,
+    WorkItemReference,
+)
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.issue_observation import (
@@ -36,7 +39,7 @@ from atelier2.ports.issue_observation import (
     TrackerPayloadMalformed,
     TrackerSourceUnavailable,
 )
-from atelier2.ports.queue_projection import QueueItemsObserved, QueueObserver
+from atelier2.ports.queue_projection import QueueItemsReconciled, QueueProjection
 
 
 @dataclass(frozen=True)
@@ -60,31 +63,42 @@ type ImportProjectSourceIssuesOutcome = (
 def import_project_source_issues(
     project: ProjectId | None,
     source: TrackerItemSource | None,
-    queue: QueueObserver,
+    queue: QueueProjection,
 ) -> ImportProjectSourceIssuesOutcome:
-    """Observe the tracker's open items into the queue, idempotently.
+    """Reconcile the queue with the tracker's open items, idempotently.
 
     Idempotency needs no cursor: every reference derives the same durable
-    `QueueItemId`, and the store's observe write ignores rows that already
-    exist -- so a repeated import adds nothing and never touches an admission.
+    `QueueItemId`, so a repeated import rewrites nothing but the dated title
+    observation and never touches an admission. What the tracker no longer
+    lists leaves the open set in the same durable step -- the import derives
+    that retirement rather than asking the tracker for a lifecycle (ADR 0016,
+    2026-09-01 amendment).
     """
 
     if project is None or source is None:
         return ProjectSourceNotConnected()
     match source.open_items():
-        case OpenTrackerItemsObserved(references):
-            observed = tuple(
-                WorkItemReference(project, reference) for reference in references
-            )
+        case OpenTrackerItemsObserved() as listing:
+            observed_at = listing.observed_at
+            items: list[tuple[WorkItemReference, QueueItemTrackerObservation]] = []
+            for item in listing.items:
+                try:
+                    observation = QueueItemTrackerObservation(item.title, observed_at)
+                except ValueError as refusal:
+                    return SourcePayloadMalformed(
+                        f"tracker item {item.reference.value} "
+                        f"carries an unusable title: {refusal}"
+                    )
+                items.append((WorkItemReference(project, item.reference), observation))
         case TrackerSourceUnavailable(detail):
             return ReadUnavailable(detail)
         case TrackerPayloadMalformed(detail):
             return SourcePayloadMalformed(detail)
         case _ as unreachable:
             assert_never(unreachable)
-    match queue.observe(observed):
-        case QueueItemsObserved(total, newly_observed):
-            return ProjectSourceIssuesImported(total, newly_observed)
+    match queue.reconcile_open_items(project, tuple(items), observed_at):
+        case QueueItemsReconciled(observed, newly_observed, _):
+            return ProjectSourceIssuesImported(len(observed), len(newly_observed))
         case DurableWriteUnavailable():
             return WriteUnavailable()
         case PortDurableStateCorrupt():

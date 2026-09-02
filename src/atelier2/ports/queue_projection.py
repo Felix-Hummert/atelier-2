@@ -5,17 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
     ConfirmQueueProposal,
     PlanQueueItem,
     QueueAdmissionOutcome,
     QueueItemId,
     QueueItemSnapshot,
+    QueueItemTrackerObservation,
     QueueLaunchBinding,
     QueueProjectPolicyRevision,
     QueueProposalOutcome,
     WorkItemReference,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 type ConfirmQueueProposalResult = (
@@ -83,21 +86,22 @@ class QueueReadUnavailable:
 
 
 @dataclass(frozen=True)
-class QueueItemsObserved:
-    """How one observation batch landed: what was new, against what was handed in.
+class QueueItemsReconciled:
+    """How one reconciliation of a project's open set landed, item by item.
 
     Identity does the deduplication (`QueueItemId` derives from project and
-    tracker reference), so a repeated observation is counted, never rewritten:
-    `newly_observed` is the rows this write created, and the difference to
-    `observed` already existed -- observed earlier, or already admitted.
+    tracker reference), so a repeated observation is named, never rewritten:
+    `observed` is every item the run handed in, `newly_observed` the rows it
+    created, and `retired` the rows it derived out of the open set.
     """
 
-    observed: int
-    newly_observed: int
+    observed: tuple[QueueItemId, ...]
+    newly_observed: tuple[QueueItemId, ...]
+    retired: tuple[QueueItemId, ...]
 
 
-type ObserveQueueItemsResult = (
-    QueueItemsObserved | DurableWriteUnavailable | DurableStateCorrupt
+type ReconcileQueueItemsResult = (
+    QueueItemsReconciled | DurableWriteUnavailable | DurableStateCorrupt
 )
 
 
@@ -110,12 +114,6 @@ class QueueItemsPage:
 
 
 type ListQueueItemsResult = QueueItemsPage | QueueReadUnavailable | DurableStateCorrupt
-
-
-class QueueObserver(Protocol):
-    def observe(
-        self, references: tuple[WorkItemReference, ...]
-    ) -> ObserveQueueItemsResult: ...
 
 
 class QueuePlanner(Protocol):
@@ -145,7 +143,6 @@ class QueueItemsReader(Protocol):
 
 
 class QueueProjection(
-    QueueObserver,
     QueuePlanner,
     QueueAdmissionConfirmer,
     QueuePolicyWriter,
@@ -154,3 +151,26 @@ class QueueProjection(
     Protocol,
 ):
     """The complete durable home of the Phase-D queue lifecycle."""
+
+    def reconcile_open_items(
+        self,
+        project: ProjectId,
+        items: tuple[tuple[WorkItemReference, QueueItemTrackerObservation], ...],
+        observed_at: RecordedAt,
+    ) -> ReconcileQueueItemsResult:
+        """Make the project's rows agree with one reading of its open set.
+
+        One durable step, because the three writes it holds are one fact:
+        every handed-in item exists and carries this run's dated title
+        observation, an item observed again loses its retirement, and every
+        other row of *this* project left the open set and is retired at the
+        run's own `observed_at` (ADR 0016, 2026-09-01 amendment: closedness is
+        derived by set difference at import, never observed). An empty open
+        set therefore retires the whole project, which is what an empty
+        tracker answer means. Another project's rows are untouched.
+
+        Every item must name `project` and carry `observed_at`; a caller that
+        breaks either states a fact the run cannot have observed, so the
+        implementation raises `ValueError` rather than answering an outcome.
+        """
+        ...
