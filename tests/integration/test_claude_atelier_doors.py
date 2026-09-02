@@ -196,13 +196,18 @@ def test_the_doors_vector_admits_exactly_the_granted_doors(tmp_path: Path) -> No
         "command": settings.door_command[0],
         "args": list(settings.door_command[1:]),
     }
-    assert command.environment == (
-        ("CLAUDE_CONFIG_DIR", str(settings.deployment.credential_directory)),
-        ("PATH", settings.deployment.search_path),
-        ("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1"),
-        ("CLAUDE_CODE_MAX_RETRIES", "0"),
-        ("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1"),
-    )
+    environment = dict(command.environment)
+    state_directory = Path(environment.pop("CLAUDE_CONFIG_DIR"))
+    # The private, disposable directory this call alone was handed -- never
+    # the operator's own directory (issue #993).
+    assert state_directory != settings.deployment.credential_directory
+    assert state_directory.is_dir()
+    assert environment == {
+        "PATH": settings.deployment.search_path,
+        "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
+        "CLAUDE_CODE_MAX_RETRIES": "0",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+    }
     assert command.standard_output_frame_bytes == CLAUDE_SUBSCRIPTION_FRAME_BYTES
     assert all(argument for argument in command.arguments)
 
@@ -215,6 +220,10 @@ def test_the_doors_vector_admits_exactly_the_granted_doors(tmp_path: Path) -> No
     assert observed["arguments"][1:] == list(command.arguments[1:])
     assert observed["job"] == "start the build"
     assert "HOME" not in observed["environment"]
+    assert observed["environment"]["CLAUDE_CONFIG_DIR"] == str(state_directory)
+
+    executor.release_credential_channel(command)
+    assert not state_directory.exists()
 
 
 def test_a_schema_bearing_doors_call_adds_only_structured_output(
@@ -273,6 +282,39 @@ def test_the_factory_offers_its_own_identity_beside_both_siblings(
         {AgentExecutionCapability.HEADLESS_WITH_TOOLS}
     )
     assert factory.open().close() is None
+
+
+def test_the_doors_executors_private_config_directory_outlives_neither_a_completion_nor_a_close(
+    tmp_path: Path,
+) -> None:
+    """A third implementation of the same private-directory lifecycle, proved
+    independently: this executor's `prepare_process`/`release_credential_channel`/
+    `close` are their own code, not inherited from either sibling."""
+
+    settings = doors_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
+    request = doors_request()
+    workspace = provider_workspace(tmp_path)
+
+    command = executor.prepare_process(request)
+    state_directory = Path(dict(command.environment)["CLAUDE_CONFIG_DIR"])
+    assert state_directory != settings.deployment.credential_directory
+    assert state_directory.exists()
+
+    executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+    executor.release_credential_channel(command)
+
+    assert not state_directory.exists()
+
+    second = executor.prepare_process(request)
+    abandoned_directory = Path(dict(second.environment)["CLAUDE_CONFIG_DIR"])
+    assert abandoned_directory.exists()
+
+    executor.close()
+
+    assert not abandoned_directory.exists()
 
 
 def test_settings_refuse_an_empty_door_grant(tmp_path: Path) -> None:
@@ -402,6 +444,7 @@ def test_a_doors_attempts_scrub_residue_falls_with_the_rest_of_its_lease(
     executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
     request = doors_request()
     command = executor.prepare_process(request)
+    state_directory = Path(dict(command.environment)["CLAUDE_CONFIG_DIR"])
 
     workspaces = agent_workspace_owner(tmp_path)
     try:
@@ -419,8 +462,10 @@ def test_a_doors_attempts_scrub_residue_falls_with_the_rest_of_its_lease(
         workspaces.release(attempt_id)
     finally:
         workspaces.close()
+        executor.close()
 
     assert not lease.working_directory.exists()
+    assert not state_directory.exists()
 
 
 # The report every fake episode below answers with. Its field names are this
@@ -495,6 +540,7 @@ def episode_output(settings: ClaudeAtelierDoorsSettings, workspace: Path) -> byt
     outcome = executor.decode_process_completion(
         leased(request, command, workspace), launched(command, workspace)
     )
+    executor.release_credential_channel(command)
     assert isinstance(outcome, AgentExecutionResult), outcome
     return outcome.output_bytes
 
