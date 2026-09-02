@@ -18,6 +18,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
   return {
     workflow_format_version: 3,
     run_id: "v3/two-agents",
+    workflow_name: "Two agents in a line",
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
     agent_binding_set_hash: "b".repeat(64),

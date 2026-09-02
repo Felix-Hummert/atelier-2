@@ -1191,6 +1191,29 @@ def _node_answer(
     return NodeAnswer(bytes(record.payload), Sha256Hash(str(record.payload_hash)))
 
 
+def _run_terminal_result(
+    connection: Connection, run: AnyRun
+) -> tuple[NodeAnswer | None, NodeAnswer | None]:
+    """The terminal node's own answer and refusal, for `RunProjection` (#1045).
+
+    Only an ended run has a node to call terminal: `Run.validate_head` ties
+    `terminal_hash` to exactly that, so a caller asks this only where that
+    already holds. The execution id is the same deterministic identity
+    `current_node_execution_id` names on the wire -- `current_node_id` at
+    `current_round_ordinal` -- and the reads are exactly `_node_answer` and
+    `_node_receipt_refusal_output`, the two functions `get_node_detail` calls
+    for the single-node route, so a listed row and a node detail read can
+    never disagree about what a node wrote or why it was refused.
+    """
+    execution_id = NodeExecutionId.for_node(
+        run.run_id, run.revision_hash, run.current_node_id, run.current_round_ordinal
+    )
+    return (
+        _node_answer(connection, execution_id),
+        _node_receipt_refusal_output(connection, execution_id),
+    )
+
+
 def _node_provenance(
     connection: Connection, execution_id: NodeExecutionId
 ) -> NodeProvenance | None:
@@ -2069,6 +2092,12 @@ class DbosQueries:
                         if not never_launched_cleanup_on_failed_run(run, attempt)
                     )
             instant = instants.get(run.run_id.value)
+            terminal_answer: NodeAnswer | None = None
+            terminal_refusal_output: NodeAnswer | None = None
+            if isinstance(run, RunV3) and run.terminal_hash is not None:
+                terminal_answer, terminal_refusal_output = _run_terminal_result(
+                    connection, run
+                )
             projections.append(
                 RunProjection(
                     run,
@@ -2083,6 +2112,8 @@ class DbosQueries:
                         successors_by_origin.get(run.run_id.value, ())
                     ),
                     reused_nodes=tuple(reused_by_successor.get(run.run_id.value, ())),
+                    answer=terminal_answer,
+                    refusal_output=terminal_refusal_output,
                 )
             )
         return tuple(projections)

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from typing import Literal, assert_never, cast
 
 from atelier2.api.projection.workflows import UnservedWorkflowFormat
 from atelier2.api.references import (
+    MAXIMUM_RUN_TERMINAL_ANSWER_BYTES,
     encode_canonical_base64,
     encode_event_cursor,
     encode_public_run_reference,
@@ -30,6 +32,7 @@ from atelier2.api.wire.resources import (
     RunNotCancellableReasonName,
     RunOrderResource,
     RunResourceV3,
+    RunTerminalAnswerResource,
     ToolCalledEventResource,
     ToolReturnedEventResource,
     TranscriptBeforeMomentsOrigin,
@@ -61,12 +64,14 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_projections import (
+    NodeAnswer,
     NodeDetail,
     PublicAgentAttemptState,
     RunCancellationRefusal,
     RunProjection,
 )
 from atelier2.contracts.runs import RunState
+from atelier2.contracts.work_items import WORK_ITEM_ORDER_SCHEMA_REVISION
 from atelier2.contracts.workflows_v3 import AgentNodeV3
 
 _LIVE_ATTEMPT_STATES = frozenset(
@@ -117,6 +122,61 @@ def run_order_resource(order: RunInput) -> RunOrderResource:
         name=order.name,
         bytes=len(order.value),
         schema_revision_hash=order.schema_revision.value,
+    )
+
+
+def run_work_item_reference(orders: Sequence[RunInput]) -> str | None:
+    """The tracker reference one of this run's own orders names, or none (#1045).
+
+    An order counts only when it pins `WORK_ITEM_ORDER_SCHEMA_REVISION` --
+    the exact pin a start already refuses to admit any other schema under
+    (`contracts.work_items`), so trusting it here reads the fact the store
+    already enforced rather than re-guessing a shape from a node's composed
+    job text. The first such order wins; a workflow that starts more than one
+    names the same run purpose either way.
+    """
+    for order in orders:
+        if order.schema_revision != WORK_ITEM_ORDER_SCHEMA_REVISION:
+            continue
+        try:
+            document = json.loads(order.value.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        reference = document.get("reference")
+        if isinstance(reference, str) and reference:
+            return reference
+    return None
+
+
+def run_terminal_answer_resource(
+    answer: NodeAnswer | None,
+) -> RunTerminalAnswerResource | None:
+    """The terminal node's accepted answer, bounded for a listed run row (#1045).
+
+    `None` both where the run named none and where the value is larger than
+    `MAXIMUM_RUN_TERMINAL_ANSWER_BYTES` allows on a list row -- an oversized
+    value is absent here, never truncated mid-byte; the run's own node detail
+    route still reads it in full.
+    """
+    if answer is None or len(answer.value) > MAXIMUM_RUN_TERMINAL_ANSWER_BYTES:
+        return None
+    return RunTerminalAnswerResource(
+        value_base64=encode_canonical_base64(answer.value),
+        value_hash=answer.value_hash.value,
+    )
+
+
+def run_terminal_refusal_output_resource(
+    refusal_output: NodeAnswer | None,
+) -> NodeRefusalOutputResource | None:
+    """The terminal node's already-redacted schema refusal (#1045, #664)."""
+    if refusal_output is None:
+        return None
+    return NodeRefusalOutputResource(
+        value_base64=encode_canonical_base64(refusal_output.value),
+        value_hash=refusal_output.value_hash.value,
     )
 
 
@@ -197,6 +257,7 @@ def run_resource(projection: RunProjection) -> RunResourceV3:
         run_id=run.run_id.value,
         public_run_reference=encode_public_run_reference(run.run_id),
         workflow_revision_hash=run.revision_hash.value,
+        workflow_name=projection.graph.name,
         agent_binding_set_hash=run.binding_set_hash.value,
         run_configuration_revision_hash=run.run_configuration_revision_hash.value,
         agent_bindings=tuple(
@@ -216,6 +277,7 @@ def run_resource(projection: RunProjection) -> RunResourceV3:
             for binding in run.agent_bindings
         ),
         orders=tuple(run_order_resource(order) for order in projection.orders),
+        work_item_reference=run_work_item_reference(projection.orders),
         fork_origin=(
             None
             if projection.fork_origin is None
@@ -238,6 +300,8 @@ def run_resource(projection: RunProjection) -> RunResourceV3:
             )
             for successor in projection.fork_successors
         ),
+        answer=run_terminal_answer_resource(projection.answer),
+        refusal_output=run_terminal_refusal_output_resource(projection.refusal_output),
         state_version=run.state_version,
         state=cast(
             Literal[

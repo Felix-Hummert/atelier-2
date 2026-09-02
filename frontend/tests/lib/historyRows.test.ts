@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { RunV3 } from "../../src/api/client";
+import { historyOutcome } from "../../src/lib/historyOutcome";
 import {
   HISTORY_PERIOD_DAYS,
   hasTimestamplessRows,
-  historyResultNodeId,
   historyWhenLabel,
   historyWorkItemLabel,
   presentHistoryRow,
@@ -24,10 +24,14 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     run_id: "v3/run",
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
+    workflow_name: "Two agents in a line",
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
     orders: [],
+    work_item_reference: null,
+    answer: null,
+    refusal_output: null,
     state_version: 1,
     state: "COMPLETED",
     current_node_id: "final",
@@ -40,6 +44,14 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     ...changes,
     current_node_execution_id: changes.current_node_execution_id ?? revisionHash
   };
+}
+
+function answerOf(raw: string): NonNullable<RunV3["answer"]> {
+  return { value_base64: btoa(raw), value_hash: "f".repeat(64) };
+}
+
+function refusalOutputOf(raw: string): NonNullable<RunV3["refusal_output"]> {
+  return { value_base64: btoa(raw), value_hash: "a".repeat(64) };
 }
 
 describe("projecting History's finished-run rows", () => {
@@ -68,23 +80,18 @@ describe("projecting History's finished-run rows", () => {
     expect(rows.map((row) => row.run.run_id)).toEqual(["newer", "older"]);
   });
 
-  it("names a run's workflow from the resolved catalog, falling back to its run id honestly", () => {
-    const named = v3Run({ run_id: "named-run" });
-    const rows = projectHistoryRows(
-      [named],
-      new Map([[revisionHash, "Two agents in a line"]])
-    );
+  it("names a run's workflow straight from the run itself (#1045), no second read", () => {
+    const named = v3Run({ run_id: "named-run", workflow_name: "Two agents in a line" });
+    const [row] = projectHistoryRows([named], null);
 
-    expect(rows[0]?.workflowName).toBe("Two agents in a line");
-
-    const unresolved = projectHistoryRows([named], new Map());
-    expect(unresolved[0]?.workflowName).toBe("named-run");
+    expect(row?.workflowName).toBe("Two agents in a line");
   });
 
-  it("never treats joined order names as purpose; a V3 run with orders still names only the resolved workflow or run-id fallback", () => {
+  it("never treats joined order names as purpose; a V3 run with orders still names only its own workflow", () => {
     const [named] = projectHistoryRows(
       [
         v3Run({
+          workflow_name: "code-review",
           orders: [
             { name: "context", bytes: 12, schema_revision_hash: "d".repeat(64) },
             { name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) },
@@ -92,42 +99,21 @@ describe("projecting History's finished-run rows", () => {
           ]
         })
       ],
-      new Map([[revisionHash, "code-review"]])
+      null
     );
     expect(named?.workflowName).toBe("code-review");
-
-    const [unresolved] = projectHistoryRows(
-      [
-        v3Run({
-          run_id: "named-run",
-          orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]
-        })
-      ],
-      new Map()
-    );
-    expect(unresolved?.workflowName).toBe("named-run");
   });
 
   it.each([
-    [
-      "nonempty extras.workItem",
-      {
-        workItem: { reference: "gh:510", title: null, href: null },
-        resultSentence: null as string | null
-      },
-      { reference: "gh:510", title: null, href: null }
-    ],
-    ["empty extras.workItem reference", { workItem: { reference: "", title: null, href: null }, resultSentence: null }, null],
-    ["no extras", undefined, null]
-  ] as const)("workItem is %s", (_name, extras, expected) => {
-    const row =
-      extras === undefined
-        ? presentHistoryRow(v3Run(), null)
-        : presentHistoryRow(v3Run(), null, extras);
+    ["a real work item reference", "gh:510", { reference: "gh:510", title: null, href: null }],
+    ["an empty work item reference", "", null],
+    ["no work item reference", null, null]
+  ] as const)("workItem is %s", (_name, workItemReference, expected) => {
+    const row = presentHistoryRow(v3Run({ work_item_reference: workItemReference }), null);
     expect(row.workItem).toEqual(expected);
   });
 
-  it("labels a work item as the adapter grammar, plus title only when extras supplied one", () => {
+  it("labels a work item as the adapter grammar, plus title only when enrichment supplied one", () => {
     expect(historyWorkItemLabel({ reference: "gh:567", title: null, href: null })).toBe("#567");
     expect(
       historyWorkItemLabel({
@@ -146,34 +132,45 @@ describe("projecting History's finished-run rows", () => {
     expect(row.workItem).toBeNull();
   });
 
-  it("reads a completed result with a null sentence until extras supply one", () => {
-    const [completed] = projectHistoryRows([v3Run()], null);
+  it("reads a completed result with a null sentence when the run carries no answer", () => {
+    const [completed] = projectHistoryRows([v3Run({ answer: null })], null);
     expect(completed?.result).toEqual({ kind: "completed", sentence: null });
-    expect(historyResultNodeId(v3Run())).toBe("final");
   });
 
-  it("reads a failed result with its node id, and keeps extras.sentence in full", () => {
+  it("derives a completed result's sentence from the run's own answer, via the one outcome owner", () => {
+    const raw = '{"answer":"PR merged"}';
+    const [row] = projectHistoryRows(
+      [v3Run({ workflow_name: "Two agents in a line", answer: answerOf(raw) })],
+      null
+    );
+    expect(row?.result).toEqual({
+      kind: "completed",
+      sentence: historyOutcome("Two agents in a line", raw)
+    });
+  });
+
+  it("reads a failed result with its node id, deriving the sentence from refusal_output", () => {
+    const raw = '{"answer":"could not merge"}';
     const failed = v3Run({
       state: "FAILED",
+      workflow_name: "Two agents in a line",
       node_rail: [
         { node_id: "build", state: "succeeded", attempt: null },
         { node_id: "review", state: "failed", attempt: null }
-      ]
+      ],
+      refusal_output: refusalOutputOf(raw)
     });
-    const long = "x".repeat(5_000);
-    const withSentence = presentHistoryRow(failed, null, {
-      workItem: null,
-      resultSentence: long
-    });
-    expect(withSentence.result).toEqual({ kind: "failed", nodeId: "review", sentence: long });
-    expect(withSentence.result.kind === "failed" && withSentence.result.sentence?.length).toBe(5_000);
 
-    const withoutSentence = presentHistoryRow(failed, null, {
-      workItem: null,
-      resultSentence: null
+    const row = presentHistoryRow(failed, null);
+
+    expect(row.result).toEqual({
+      kind: "failed",
+      nodeId: "review",
+      sentence: historyOutcome("Two agents in a line", raw)
     });
-    expect(withoutSentence.result).toEqual({ kind: "failed", nodeId: "review", sentence: null });
-    expect(historyResultNodeId(failed)).toBe("review");
+
+    const withoutRefusalOutput = presentHistoryRow({ ...failed, refusal_output: null }, null);
+    expect(withoutRefusalOutput.result).toEqual({ kind: "failed", nodeId: "review", sentence: null });
   });
 
   it("reads the current node as the failed one when no rail entry says failed", () => {
@@ -184,7 +181,6 @@ describe("projecting History's finished-run rows", () => {
       expect(row.result.nodeId).toBe(failedRun().current_node_id);
       expect(row.result.sentence).toBeNull();
     }
-    expect(historyResultNodeId(failedRun())).toBe(failedRun().current_node_id);
   });
 
   it("gives a duration span only for a real pair of stamps, never guessed for a partial row", () => {

@@ -71,6 +71,7 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
     run_id: "v3/two-agents",
     public_run_reference: publicReference,
     workflow_revision_hash: digest,
+    workflow_name: "Two agents in a line",
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: configurationHash,
     agent_bindings: [],
