@@ -264,16 +264,20 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                             "agent configuration references a missing auth profile"
                         )
                     auth = auth_profile_from_record(auth_record)
+                    executor_key = AgentExecutorKey(
+                        auth.provider_id, configuration.executor_revision
+                    )
                     items.append(
                         AgentConfigurationRevisionListItem(
                             configuration,
                             auth,
                             self._registry.is_startable(
-                                AgentExecutorKey(
-                                    auth.provider_id,
-                                    configuration.executor_revision,
-                                ),
+                                executor_key,
                                 configuration.requested_capability,
+                                configuration.revision_hash,
+                            ),
+                            self._registry.is_structurally_startable(
+                                executor_key, configuration.requested_capability
                             ),
                         )
                     )

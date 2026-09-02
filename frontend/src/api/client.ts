@@ -457,13 +457,29 @@ const agentConfigurationRevisionListItemSchema =
   agentConfigurationRevisionSchema
     .extend({
       startable: z.boolean(),
+      structurally_startable: z.boolean(),
       not_startable_reason: z
-        .literal("agent-executor-binding-unavailable")
+        .enum([
+          "agent-executor-binding-unavailable",
+          "provider-probe-receipt-missing",
+        ])
         .nullable(),
     })
     .strict()
     .superRefine((item, context) => {
-      if (item.startable !== (item.not_startable_reason === null)) {
+      if (item.startable && !item.structurally_startable) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "agent configuration startability cannot hold without its own structural startability",
+        });
+      }
+      const expectedReason = item.startable
+        ? null
+        : item.structurally_startable
+          ? "provider-probe-receipt-missing"
+          : "agent-executor-binding-unavailable";
+      if (item.not_startable_reason !== expectedReason) {
         context.addIssue({
           code: "custom",
           message: "agent configuration startability and reason disagree",

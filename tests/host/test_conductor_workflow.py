@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,14 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeReceipt,
+    ProviderProbeResult,
+    ProviderProbeVectorId,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
     InstanceAccepted,
     InstanceRefused,
@@ -46,6 +54,7 @@ from atelier2.contracts.schemas_v3 import (
     read_schema_document,
 )
 from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA
+from atelier2.contracts.when import recorded_instant
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WaitNodeV3, WorkflowGraphV3
 from atelier2.host.conductor_workflow import (
     CONDUCTOR_AGENT_NODE_ID,
@@ -101,9 +110,13 @@ def _doors_armed_settings(
         effect_adapter_revision="loopback-v1",
         effect_destination="local",
         application_version="composition-test",
-        source_commit="commit",
+        source_commit="c" * 40,
         source_tree="tree",
         frontend_dist=frontend,
+        # Isolated per test, never the operator's real XDG state directory:
+        # a stray real receipt must never make an unrelated test's gate
+        # answer depend on what happens to sit on the machine running it.
+        provider_probe_receipt_directory=tmp_path / "provider-probes",
         agent_scratch_root=agent_scratch_root(tmp_path),
         claude_subscription=_claude_deployment(tmp_path),
         claude_atelier_doors=claude_atelier_doors,
@@ -552,7 +565,8 @@ def test_the_published_conductor_configuration_is_startable_where_doors_are_arme
     a composition without it.
     """
 
-    _app, runtime = compose_application(_doors_armed_settings(tmp_path))
+    settings = _doors_armed_settings(tmp_path)
+    _app, runtime = compose_application(settings)
     runtime.initialize_storage()
     try:
         catalog = DbosAgentConfigurationCatalog(
@@ -570,6 +584,24 @@ def test_the_published_conductor_configuration_is_startable_where_doors_are_arme
             AgentConfigurationRevisionFormatVersion.V2,
         )
         catalog.publish_agent_configuration_revision(configuration)
+
+        assert settings.provider_probe_receipt_directory is not None
+        settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        receipt = ProviderProbeReceipt(
+            ProviderProbeVectorId("atelier-doors-claude-opus-4-6"),
+            configuration.revision_hash,
+            WorkflowRevisionHash("b" * 64),
+            settings.source_commit,
+            recorded_instant(now - timedelta(minutes=1)),
+            recorded_instant(now + timedelta(hours=1)),
+            ProviderProbeResult.SUCCEEDED,
+            RunId("provider-canary/atelier-doors-fixture"),
+            terminal_hash=Sha256Hash("d" * 64),
+        )
+        (
+            settings.provider_probe_receipt_directory / "claude-opus-4-6.json"
+        ).write_bytes(receipt.canonical_bytes())
 
         page = catalog.list_agent_configuration_revisions(None, 10)
 

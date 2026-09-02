@@ -228,7 +228,16 @@ def configuration(
     executor: str = "claude-subscription/v1",
     capability: str = "headless",
     configuration_hash: str = CONFIGURATION_HASH,
+    startable: bool = True,
+    structurally_startable: bool = True,
 ) -> dict[str, object]:
+    not_startable_reason = (
+        None
+        if startable
+        else "agent-executor-binding-unavailable"
+        if not structurally_startable
+        else "provider-probe-receipt-missing"
+    )
     return {
         "model": "provider-model",
         "auth_profile_revision_hash": "e" * 64,
@@ -237,8 +246,9 @@ def configuration(
         "auth_mode": "subscription",
         "requested_capability": capability,
         "agent_configuration_revision_hash": configuration_hash,
-        "startable": True,
-        "not_startable_reason": None,
+        "startable": startable,
+        "structurally_startable": structurally_startable,
+        "not_startable_reason": not_startable_reason,
     }
 
 
@@ -384,6 +394,72 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     assert {receipt.valid_until.value for receipt in receipts} == {
         "2026-09-02T10:00:00Z"
     }
+
+
+def test_discovery_selects_a_structurally_startable_vector_whose_receipt_is_foreign(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """The self-healing property #942 claimed and this slice makes real.
+
+    A redeploy invalidates every receipt by `source_commit`: the listing
+    answers `startable: false` for every vector, exactly as it would the
+    morning after. Discovery reads `structurally_startable` instead, so it
+    still finds the full vector set, still starts each one through the
+    exemption, and still writes it a fresh receipt -- restoring ordinary
+    startability without a human touching anything.
+    """
+
+    http = FakeHttp(
+        (
+            configuration(startable=False, structurally_startable=True),
+            configuration(
+                provider="xai",
+                executor="grok-subscription-tools/v1",
+                capability="headless_with_tools",
+                configuration_hash="f" * 64,
+                startable=False,
+                structurally_startable=True,
+            ),
+        ),
+        workflow_directory,
+    )
+    state_directory = tmp_path / "state"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    start_bodies = [
+        body for _method, path, body in http.calls if path == "/runs" and body
+    ]
+    assert len(start_bodies) == 2
+    assert report.attempted == 2
+    assert report.failed == 0
+    receipts = read_receipts(state_directory)
+    assert len(receipts) == 2
+    assert {receipt.result for receipt in receipts} == {ProviderProbeResult.SUCCEEDED}
+
+
+def test_discovery_finds_nothing_for_a_vector_whose_executor_is_unavailable(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """The other half of the same answer: `structurally_startable: false`
+    still refuses discovery -- no run, canary included, could ever produce
+    evidence for an executor that was never registered or was marked
+    unavailable."""
+
+    http = FakeHttp(
+        (configuration(startable=False, structurally_startable=False),),
+        workflow_directory,
+    )
+    state_directory = tmp_path / "state"
+
+    with pytest.raises(ProviderCanaryDiscoveryFailed, match="no-startable"):
+        execute_provider_canaries(
+            settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+        )
+
+    assert read_receipts(state_directory) == ()
 
 
 def test_each_trigger_starts_a_new_run_even_on_the_same_day(

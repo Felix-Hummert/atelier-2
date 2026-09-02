@@ -335,6 +335,7 @@ describe("the workbench conductor conversation", () => {
             executor_revision: "immediate/v1",
             requested_capability: "headless" as const,
             startable: true,
+            structurally_startable: true,
             not_startable_reason: null
           }
         ],

@@ -180,6 +180,11 @@ def _served_settings(
         frontend_dist=frontend_dist,
         project_id=harness.ProjectId("e2e-workshop"),
         project_root=SCRIPT_PATH.resolve().parents[2],
+        # Isolated per test, never the operator's real XDG state directory.
+        # No test in this file starts a fresh run (only reconciles an
+        # already-seeded baseline one, which never reaches the receipt gate),
+        # so no matching receipt is minted here -- only the isolation.
+        provider_probe_receipt_directory=tmp_path / "provider-probes",
     )
 
 

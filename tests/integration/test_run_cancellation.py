@@ -26,11 +26,10 @@ from atelier2.adapters.dbos.run_transitions import (
     load_run,
     run_from_record_with_bindings,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import node_receipts_v3, run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.wire.resources import RunResourceV3
 from atelier2.application.cancel_run import (
@@ -56,7 +55,6 @@ from atelier2.contracts.agents import (
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
@@ -104,6 +102,10 @@ from tests.scenarios.agents import (
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.run_waiting import wait_for_workflow_completion
 from tests.scenarios.workflows import LOOPED_LINE_MAXIMUM_ROUNDS
 
@@ -124,16 +126,10 @@ def _v3_prepared(
     armed attempt, so this shape serves every #439 P3 store head below.
     """
     root_runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            root / "atelier.sqlite",
-            "run-cancel-v3-test",
-            agent_scratch_root=agent_scratch_root(root),
+        canonical_runtime_settings(
+            root, "run-cancel-v3-test", agent_scratch_root(root)
         ),
-        LoopbackEffectAdapterFactory(
-            root / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(root),
         (failing_agent_executor_factory("exact", []),),
     )
     root_runtime.initialize_storage()

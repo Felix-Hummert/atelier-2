@@ -356,13 +356,19 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         "--max-turns",
         "1",
     )
-    assert command.environment == (
-        ("CLAUDE_CONFIG_DIR", str(settings.credential_directory)),
-        ("PATH", settings.search_path),
-        ("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1"),
-        ("CLAUDE_CODE_MAX_RETRIES", "0"),
-        ("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1"),
-    )
+    environment = dict(command.environment)
+    state_directory = Path(environment.pop("CLAUDE_CONFIG_DIR"))
+    # The private, disposable directory this call alone was handed -- never
+    # the operator's own directory (issue #993: every prior call pointed
+    # `CLAUDE_CONFIG_DIR` at the operator's live, concurrently-written one).
+    assert state_directory != settings.credential_directory
+    assert state_directory.is_dir()
+    assert environment == {
+        "PATH": settings.search_path,
+        "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
+        "CLAUDE_CODE_MAX_RETRIES": "0",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+    }
     workspace = provider_workspace(tmp_path)
     invocation = leased(request, command, workspace)
     result = executor.decode_process_completion(
@@ -373,11 +379,141 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert observed["arguments"][0] == str(settings.executable)
     assert observed["arguments"][1:] == list(command.arguments[1:])
     assert observed["working_directory"] == str(workspace)
-    assert observed["environment"]["CLAUDE_CONFIG_DIR"] == str(
-        settings.credential_directory
-    )
+    assert observed["environment"]["CLAUDE_CONFIG_DIR"] == str(state_directory)
     assert "HOME" not in observed["environment"]
     assert observed["job"] == "draw the owl"
+
+    executor.release_credential_channel(command)
+    assert not state_directory.exists()
+
+
+CREDENTIAL_COPY_READING_CLAUDE = (
+    "import json, os, sys\n"
+    "config_dir = os.environ['CLAUDE_CONFIG_DIR']\n"
+    "with open(os.path.join(config_dir, '.credentials.json'), "
+    "encoding='utf-8') as f:\n"
+    "    credentials = f.read()\n"
+    "with open(os.path.join(config_dir, '.claude.json'), encoding='utf-8') as f:\n"
+    "    onboarding_stub = f.read()\n"
+    "sys.stdin.buffer.read()\n"
+    "json.dump(\n"
+    "    {\n"
+    "        'type': 'result',\n"
+    "        'is_error': False,\n"
+    "        'result': json.dumps(\n"
+    "            {'credentials': credentials, 'onboarding_stub': onboarding_stub}\n"
+    "        ),\n"
+    "    },\n"
+    "    sys.stdout,\n"
+    ")\n"
+)
+"""A fake CLI standing where the real one reads its config directory.
+
+It reads exactly what the real CLI's own isolated-home construction was
+established to need (see `_ONBOARDING_STUB_BYTES` in the adapter): a copy of
+`.credentials.json` and a fresh onboarding stub. What it reports back is this
+fixture's synthetic placeholder value, never a real credential -- the
+assertion below never carries real bytes either.
+"""
+
+
+def test_the_private_config_directory_carries_the_credential_while_the_run_is_live(
+    tmp_path: Path,
+) -> None:
+    """What the run needs is really there, read from inside the live call.
+
+    Established by reading the pinned 2.1.221 executable itself, never by a
+    live invocation: the CLI reads only `.credentials.json` off
+    `CLAUDE_CONFIG_DIR` for its OAuth session, and its own isolated-home
+    helper pairs a private copy of exactly that file with a fresh
+    `.claude.json` stating onboarding already complete.
+    """
+
+    settings = claude_subscription_deployment(tmp_path, CREDENTIAL_COPY_READING_CLAUDE)
+    source_credential = (
+        settings.credential_directory / CREDENTIAL_RECORD_ENTRY
+    ).read_text(encoding="utf-8")
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    observed = json.loads(result.output_bytes)
+    assert observed["credentials"] == source_credential
+    onboarding_stub = json.loads(observed["onboarding_stub"])
+    assert onboarding_stub["hasCompletedOnboarding"] is True
+
+    executor.release_credential_channel(command)
+
+
+def test_the_private_config_directory_outlives_neither_a_completion_nor_a_close(
+    tmp_path: Path,
+) -> None:
+    settings = claude_subscription_deployment(tmp_path, INTROSPECTING_CLAUDE)
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    workspace = provider_workspace(tmp_path)
+    request = subscription_request()
+
+    command = executor.prepare_process(request)
+    state_directory = Path(dict(command.environment)["CLAUDE_CONFIG_DIR"])
+    assert state_directory.exists()
+
+    executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+    executor.release_credential_channel(command)
+
+    assert not state_directory.exists()
+
+    second = executor.prepare_process(request)
+    abandoned_directory = Path(dict(second.environment)["CLAUDE_CONFIG_DIR"])
+    assert abandoned_directory.exists()
+
+    executor.close()
+
+    assert not abandoned_directory.exists()
+
+
+def test_the_private_config_directory_dies_while_the_leased_workspace_stands(
+    tmp_path: Path,
+) -> None:
+    """Two owners, two disciplines, and the credential's is the shorter one.
+
+    The private config directory holding a copy of `.credentials.json` falls
+    on every path -- after a decoded answer and after one never decoded at
+    all, the way a timeout, a cancellation or a killed process leaves it --
+    while the workspace the call ran in is untouched.
+    """
+
+    settings = claude_subscription_deployment(tmp_path, INTROSPECTING_CLAUDE)
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    workspace = provider_workspace(tmp_path)
+
+    for outcome in (
+        AgentProcessCompletion(0, success_envelope("pong").encode(), b""),
+        None,
+    ):
+        request = subscription_request()
+        command = executor.prepare_process(request)
+        state_directory = Path(dict(command.environment)["CLAUDE_CONFIG_DIR"])
+        (workspace / "provider-left-this").write_text("kept", encoding="utf-8")
+        assert state_directory.is_dir()
+        assert (state_directory / CREDENTIAL_RECORD_ENTRY).exists()
+
+        if outcome is not None:
+            executor.decode_process_completion(
+                leased(request, command, workspace), outcome
+            )
+        executor.release_credential_channel(command)
+
+        assert not state_directory.exists()
+        assert (workspace / "provider-left-this").read_text() == "kept"
+    executor.close()
 
 
 @pytest.mark.parametrize(
@@ -1772,6 +1908,13 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
     )
     assert receipt.output_bytes == result.output_bytes
 
+    # This call's own private copy of the credential -- not the directory
+    # scanned above, which this call never opened as its config directory --
+    # is taken back rather than left on disk holding a real session.
+    state_directory = Path(dict(command.environment)["CLAUDE_CONFIG_DIR"])
+    executor.release_credential_channel(command)
+    assert not state_directory.exists()
+
 
 # --- The workspace-tool executor: the second operation of the same deployment ---
 
@@ -1916,7 +2059,15 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
     assert int(argument_after(command.arguments, "--max-turns")) > int(
         argument_after(tool_free_command.arguments, "--max-turns")
     )
-    assert command.environment == tool_free_command.environment
+    environment = dict(command.environment)
+    tool_free_environment = dict(tool_free_command.environment)
+    state_directory = Path(environment.pop("CLAUDE_CONFIG_DIR"))
+    tool_free_state_directory = Path(tool_free_environment.pop("CLAUDE_CONFIG_DIR"))
+    # Every other variable is the same object; each call still gets its own
+    # private config directory, never a shared one.
+    assert environment == tool_free_environment
+    assert state_directory != tool_free_state_directory
+    assert state_directory != settings.credential_directory
     assert all(argument for argument in command.arguments)
 
     workspace = provider_workspace(tmp_path)
@@ -1930,6 +2081,34 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
     assert observed["working_directory"] == str(workspace)
     assert observed["job"] == "draw the owl"
     assert "HOME" not in observed["environment"]
+
+    executor.release_credential_channel(command)
+    assert not state_directory.exists()
+    tool_free.release_credential_channel(tool_free_command)
+    assert not tool_free_state_directory.exists()
+
+
+def test_a_workspace_tool_executors_private_config_directory_falls_on_close(
+    tmp_path: Path,
+) -> None:
+    """The tool-bearing sibling tears down its own private directory too.
+
+    Its `prepare_process`/`release_credential_channel`/`close` are a separate
+    implementation from the tool-free executor's, not a shared one, so this
+    proves the same guarantee independently rather than assuming it carried
+    over.
+    """
+
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    executor = ClaudeWorkspaceToolExecutorFactory(settings).open()
+
+    command = executor.prepare_process(subscription_request())
+    state_directory = Path(dict(command.environment)["CLAUDE_CONFIG_DIR"])
+    assert state_directory.exists()
+
+    executor.close()
+
+    assert not state_directory.exists()
 
 
 def test_a_schema_bearing_workspace_tool_call_adds_only_structured_output(

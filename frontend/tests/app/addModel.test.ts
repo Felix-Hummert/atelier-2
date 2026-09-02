@@ -48,6 +48,7 @@ function configuration(
     auth_mode: "subscription",
     agent_configuration_revision_hash: PIN_HASH,
     startable: true,
+    structurally_startable: true,
     not_startable_reason: null,
     ...overrides
   };

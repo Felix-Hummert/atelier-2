@@ -34,6 +34,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemProposed,
     QueueItemSnapshot,
     QueueItemState,
+    QueueItemTrackerObservation,
     QueueLaunchBinding,
     QueuePriorityRank,
     QueueProjectionRevision,
@@ -50,6 +51,7 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.queue_projection import (
     ConfirmQueueProposalResult,
@@ -193,6 +195,18 @@ def _snapshot_from_record(
         proposal,
         launch_binding,
     )
+    observed_title = record["observed_title"]
+    title_observed_at = record["title_observed_at"]
+    if (observed_title is None) != (title_observed_at is None):
+        raise ValueError("a queue item observation must pair its title and marker")
+    observation = (
+        None
+        if observed_title is None
+        else QueueItemTrackerObservation(
+            str(observed_title), RecordedAt(str(title_observed_at))
+        )
+    )
+    retired_at = record["retired_at"]
     return QueueItemSnapshot(
         item_reference,
         state,
@@ -201,6 +215,8 @@ def _snapshot_from_record(
         proposal,
         launch_binding,
         blockers,
+        observation,
+        None if retired_at is None else RecordedAt(str(retired_at)),
     )
 
 
@@ -312,6 +328,60 @@ class DbosQueueProjectionStore:
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
+
+    def record_tracker_observation(
+        self, item_id: QueueItemId, observation: QueueItemTrackerObservation
+    ) -> DurableWriteUnavailable | DurableStateCorrupt | None:
+        """Persist the tracker's last-served title and when it was read.
+
+        The write touches only the two observation columns ADR 0016's
+        2026-09-01 amendment adds; it never moves `state`, `state_version`, or
+        any admission field, so it runs independently of the proposal and
+        admission CAS and can repeat any number of times.
+        """
+
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                updated = connection.execute(
+                    queue_items.update()
+                    .where(queue_items.c.item_id == item_id.value)
+                    .values(
+                        observed_title=observation.title,
+                        title_observed_at=observation.observed_at.value,
+                    )
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("no queue item exists at that id to observe")
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+        return None
+
+    def record_retirement(
+        self, item_id: QueueItemId, retired_at: RecordedAt
+    ) -> DurableWriteUnavailable | DurableStateCorrupt | None:
+        """Persist when import derived this item retired by set difference.
+
+        Closedness is never observed (ADR 0016 line 120); this records only
+        the derived consequence import already computed. It never moves
+        `state`, `state_version`, or any admission field.
+        """
+
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                updated = connection.execute(
+                    queue_items.update()
+                    .where(queue_items.c.item_id == item_id.value)
+                    .values(retired_at=retired_at.value)
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("no queue item exists at that id to retire")
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+        return None
 
     def plan(self, command: PlanQueueItem) -> PlanQueueItemResult:
         reference = command.item_reference
@@ -526,6 +596,8 @@ class DbosQueueProjectionStore:
                             snapshot.proposal,
                             snapshot.launch_binding,
                             tuple(dict.fromkeys(blockers)),
+                            snapshot.observation,
+                            snapshot.retired_at,
                         )
                     )
                 connection.execute(

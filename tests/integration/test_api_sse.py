@@ -37,13 +37,9 @@ from atelier2.adapters.dbos.run_transitions import (
     commit_reconciliation_required,
     commit_waiting_input,
 )
-from atelier2.adapters.dbos.runtime import (
-    DbosRuntime,
-    DbosRuntimeSettings,
-)
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import effect_intents, run_events
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.references import encode_public_run_reference
 from atelier2.api.stream import (
@@ -53,9 +49,7 @@ from atelier2.api.stream import (
 )
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.effects import (
-    AdapterRevision,
     ConfirmationSource,
-    EffectDestination,
     EffectId,
     EffectIntentState,
     EffectIntentStateVersion,
@@ -94,6 +88,10 @@ from tests.scenarios.api import (
     durable_queries,
     event_poll_backoff,
     stream_page_reader,
+)
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
 )
 from tests.scenarios.runs import (
     complete_v3_agent_node,
@@ -169,16 +167,10 @@ def _agent_runtime(
     """A runtime holding the executor a V3 line's agent nodes are bound to."""
 
     runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            application_version,
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, application_version, agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (factory,),
     )
     runtime.initialize_storage()

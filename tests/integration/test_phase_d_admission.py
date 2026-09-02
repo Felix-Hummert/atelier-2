@@ -79,6 +79,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemProposed,
     QueueItemSnapshot,
     QueueItemState,
+    QueueItemTrackerObservation,
     QueueLaunchBinding,
     QueuePriorityRank,
     QueueProjectionRevision,
@@ -99,6 +100,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     DurableStateCorrupt,
@@ -262,6 +264,72 @@ def store(tmp_path: Path) -> Iterator[tuple[DbosQueueProjectionStore, Engine]]:
         yield DbosQueueProjectionStore(engine), engine
     finally:
         engine.dispose()
+
+
+def test_a_fresh_item_carries_no_observation_or_retirement(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, _engine = store
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
+    queue.observe((reference,))
+
+    page = queue.list_items(None, 50)
+
+    assert isinstance(page, QueueItemsPage)
+    (snapshot,) = page.items
+    assert snapshot.observation is None
+    assert snapshot.retired_at is None
+
+
+def test_the_store_records_and_returns_a_title_observation_and_a_retirement(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, _engine = store
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
+    queue.observe((reference,))
+    observation = QueueItemTrackerObservation(
+        "Give the queue its last-observed title", RecordedAt("2026-09-01T12:00:00Z")
+    )
+
+    written = queue.record_tracker_observation(reference.item_id, observation)
+    retired_at = RecordedAt("2026-09-02T09:00:00Z")
+    retirement_written = queue.record_retirement(reference.item_id, retired_at)
+    page = queue.list_items(None, 50)
+
+    assert written is None
+    assert retirement_written is None
+    assert isinstance(page, QueueItemsPage)
+    (snapshot,) = page.items
+    assert snapshot.observation == observation
+    assert snapshot.retired_at == retired_at
+    assert snapshot.state is QueueItemState.OBSERVED
+
+
+def test_validated_snapshot_carries_the_observation_and_retirement_through() -> None:
+    """advance_queue's revalidation cannot silently drop a snapshot field.
+
+    Regression for a real finding: a fixed positional reconstruction dropped
+    `observation` and `retired_at` to None on every item it revalidated.
+    """
+
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
+    observation = QueueItemTrackerObservation(
+        "Give the queue its last-observed title", RecordedAt("2026-09-01T12:00:00Z")
+    )
+    retired_at = RecordedAt("2026-09-02T09:00:00Z")
+    item = QueueItemSnapshot(
+        reference,
+        QueueItemState.OBSERVED,
+        QueueProjectionRevision(0),
+        None,
+        observation=observation,
+        retired_at=retired_at,
+    )
+
+    validated = advance_queue_module._validated_snapshot(item)
+
+    assert validated.observation == observation
+    assert validated.retired_at == retired_at
 
 
 def test_proposal_and_manual_confirmation_are_separate_typed_transitions(
@@ -978,7 +1046,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 47
+    assert report.target_version == SCHEMA_VERSION == 48
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:

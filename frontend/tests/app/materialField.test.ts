@@ -152,6 +152,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
         executor_revision: "immediate/v1",
         requested_capability: "headless" as const,
         startable: true,
+        structurally_startable: true,
         not_startable_reason: null
       }],
       next_after_revision_hash: null
@@ -497,6 +498,7 @@ function configuration(
     executor_revision: "immediate/v1",
     requested_capability: "headless",
     startable,
+    structurally_startable: startable,
     not_startable_reason: startable ? null : "agent-executor-binding-unavailable"
   };
 }

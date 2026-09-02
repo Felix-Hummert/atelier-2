@@ -269,6 +269,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
           executor_revision: "immediate/v1",
           requested_capability: "headless",
           startable: true,
+          structurally_startable: true,
           not_startable_reason: null
         }],
         next_after_revision_hash: null
@@ -536,6 +537,7 @@ test("Start sheet presents a current role configuration without retaining a draf
           executor_revision: "immediate/v1",
           requested_capability: "headless",
           startable: true,
+          structurally_startable: true,
           not_startable_reason: null
         }],
         next_after_revision_hash: null
@@ -868,6 +870,7 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
           executor_revision: "immediate/v1",
           requested_capability: "headless",
           startable: true,
+          structurally_startable: true,
           not_startable_reason: null
         }],
         next_after_revision_hash: null
@@ -959,8 +962,8 @@ test("Catalog start sheet names current startability for checked configurations"
   const unavailableHash = "1".repeat(64);
   const availableHash = "2".repeat(64);
   await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [
-    { agent_configuration_revision_hash: unavailableHash, auth_profile_revision_hash: "3".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "unavailable", executor_revision: "immediate/v1", requested_capability: "headless", startable: false, not_startable_reason: "agent-executor-binding-unavailable" },
-    { agent_configuration_revision_hash: availableHash, auth_profile_revision_hash: "4".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "available", executor_revision: "immediate/v1", requested_capability: "headless", startable: true, not_startable_reason: null }
+    { agent_configuration_revision_hash: unavailableHash, auth_profile_revision_hash: "3".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "unavailable", executor_revision: "immediate/v1", requested_capability: "headless", startable: false, structurally_startable: false, not_startable_reason: "agent-executor-binding-unavailable" },
+    { agent_configuration_revision_hash: availableHash, auth_profile_revision_hash: "4".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "available", executor_revision: "immediate/v1", requested_capability: "headless", startable: true, structurally_startable: true, not_startable_reason: null }
   ], next_after_revision_hash: null }) }));
   await routeStartSheetModelContract(page, [
     {

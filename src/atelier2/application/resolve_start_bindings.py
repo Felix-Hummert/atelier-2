@@ -21,6 +21,7 @@ from atelier2.contracts.host_configuration import (
     ProviderModelCheck,
     UncastRole,
 )
+from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     DeclaredRole,
@@ -561,6 +562,7 @@ def cast_unbound_roles(
 
 def resolve_start_bindings(
     graph: WorkflowGraphV3,
+    workflow_hash: WorkflowRevisionHash,
     agent_bindings: AgentBindingSet,
     reads: AgentConfigurationBindingReads,
     registry: AgentExecutorRegistry,
@@ -581,6 +583,20 @@ def resolve_start_bindings(
     every binding has resolved are a V3 graph's `distinct_from` constraints
     checked, last, because they compare resolutions nothing before this point
     has produced.
+
+    `workflow_hash` is the published identity of `graph` itself -- a
+    `WorkflowRevisionHash` hashes source document bytes, so it cannot be
+    recovered from the parsed graph and must travel from the caller that
+    resolved it (`starter.py`'s `request.revision_hash`). It feeds exactly one
+    decision here: a binding an armed registry would otherwise refuse for
+    missing or stale receipt evidence still resolves when this exact start is
+    itself a reprobe of a currently admitted `provider-canary-*` workflow
+    (`AgentExecutorRegistry.reprobe_exempt`) -- the run that would produce the
+    missing evidence cannot be the run the missing evidence blocks. The
+    exemption reaches only the receipt gate: it is asked only once
+    `is_structurally_startable` already holds, so an executor the operator
+    never registered, or marked unavailable, refuses every start including a
+    canary's own -- the exemption waives evidence, never structure.
     """
     role_refusal = agent_role_completeness_refusal(graph, agent_bindings)
     if role_refusal is not None:
@@ -603,7 +619,21 @@ def resolve_start_bindings(
             executor_key
         ):
             return DurableAgentExecutorCapabilityUnavailable()
-        if not registry.is_startable(executor_key, configuration.requested_capability):
+        # The one exemption bypasses the receipt gate alone: it may only
+        # rescue a start that `is_structurally_startable` already admits. An
+        # executor never registered or marked unavailable refuses here
+        # regardless of the exemption -- no run, canary included, could ever
+        # produce evidence for a factory that does not exist.
+        if not registry.is_startable(
+            executor_key,
+            configuration.requested_capability,
+            configuration.revision_hash,
+        ) and (
+            not registry.is_structurally_startable(
+                executor_key, configuration.requested_capability
+            )
+            or not registry.reprobe_exempt(workflow_hash)
+        ):
             return DurableAgentExecutorBindingUnavailable()
         resolved.append(ResolvedAgentBinding(binding.role, configuration, auth))
 

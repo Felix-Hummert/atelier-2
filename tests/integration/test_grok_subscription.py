@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterable, Iterator, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -77,8 +78,14 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
 from atelier2.contracts.orders import InlineOrderValue
+from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeReceipt,
+    ProviderProbeResult,
+    ProviderProbeVectorId,
+)
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
@@ -89,6 +96,7 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
+from atelier2.contracts.when import recorded_instant
 from atelier2.host import _grok_subscription_settings
 from atelier2.host.serving import HostSettings, compose_application
 from atelier2.ports.agent_attempts import AgentAttemptFailed, AgentAttemptSucceeded
@@ -1297,16 +1305,21 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         "effect_adapter_revision": "loopback-v1",
         "effect_destination": "grok-host-proof",
         "application_version": "grok-host-proof",
-        "source_commit": "proof",
+        "source_commit": "c" * 40,
         "source_tree": "proof",
         "frontend_dist": frontend,
+        # Isolated per test, never the operator's real XDG state directory:
+        # a stray real receipt must never make an unrelated test's gate
+        # answer depend on what happens to sit on the machine running it.
+        "provider_probe_receipt_directory": tmp_path / "provider-probes",
         "agent_scratch_root": scratch_root_outside_a_worktree,
         "grok_subscription": declared.settings,
     }
     with pytest.raises(ValueError, match="loopback"):
         HostSettings(**common, host="0.0.0.0")
 
-    _app, runtime = compose_application(HostSettings(**common))
+    settings = HostSettings(**common)
+    _app, runtime = compose_application(settings)
     runtime.initialize_storage()
     try:
         assert runtime.agent_executor_registry.keys == frozenset(
@@ -1368,6 +1381,23 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
             )
         )
         assert isinstance(refused, DurableAgentExecutorCapabilityUnavailable)
+        assert settings.provider_probe_receipt_directory is not None
+        settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        headless_receipt = ProviderProbeReceipt(
+            ProviderProbeVectorId("headless-grok-4"),
+            headless.revision_hash,
+            WorkflowRevisionHash("b" * 64),
+            settings.source_commit,
+            recorded_instant(now - timedelta(minutes=1)),
+            recorded_instant(now + timedelta(hours=1)),
+            ProviderProbeResult.SUCCEEDED,
+            RunId("provider-canary/grok-4-fixture"),
+            terminal_hash=Sha256Hash("d" * 64),
+        )
+        (settings.provider_probe_receipt_directory / "grok-4.json").write_bytes(
+            headless_receipt.canonical_bytes()
+        )
         started = starter.start_published(
             StartPublishedRunRequestV2(
                 RunId("grok/headless"),

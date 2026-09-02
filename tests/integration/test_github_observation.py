@@ -151,7 +151,7 @@ def source(tmp_path: Path, github: _FakeGitHubIssues) -> LiveGitHubIssueSource:
     )
 
 
-def test_open_issues_become_gh_prefixed_tracker_references(
+def test_open_issues_become_gh_prefixed_tracker_references_dated_by_the_read(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
     github.issues = [
@@ -165,8 +165,23 @@ def test_open_issues_become_gh_prefixed_tracker_references(
         (
             ObservedOpenTrackerItem(TrackerItemReference("gh:79"), "The first title"),
             ObservedOpenTrackerItem(TrackerItemReference("gh:652"), "The second title"),
-        )
+        ),
+        READ_AT,
     )
+
+
+def test_the_observation_time_is_the_sources_own_clock_not_a_fixed_default(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.issues = [{"number": 1, "title": "Only issue"}]
+    later = RecordedAt("2026-09-01T12:00:00Z")
+    later_source = replace(source, clock=lambda: later)
+
+    observed = later_source.open_items()
+
+    assert isinstance(observed, OpenTrackerItemsObserved)
+    assert observed.observed_at == later
+    assert observed.observed_at != READ_AT
 
 
 def test_pull_requests_in_the_issue_listing_are_not_work_items(
@@ -184,11 +199,12 @@ def test_pull_requests_in_the_issue_listing_are_not_work_items(
         (
             ObservedOpenTrackerItem(TrackerItemReference("gh:1"), "First issue"),
             ObservedOpenTrackerItem(TrackerItemReference("gh:3"), "Third issue"),
-        )
+        ),
+        READ_AT,
     )
 
 
-def test_observation_walks_every_page_of_a_large_listing(
+def test_observation_walks_every_page_of_a_large_listing_under_one_read_time(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
     github.issues = [
@@ -201,6 +217,7 @@ def test_observation_walks_every_page_of_a_large_listing(
     assert len(observed.references) == 250
     assert observed.references[0] == TrackerItemReference("gh:1")
     assert observed.references[-1] == TrackerItemReference("gh:250")
+    assert observed.observed_at == READ_AT
 
 
 @pytest.mark.parametrize(

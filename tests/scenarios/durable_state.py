@@ -16,9 +16,19 @@ it per child. Nothing here needs it, so nothing here imports it.
 
 The agent scratch root is a required argument rather than something these
 helpers derive, because creating it writes to the filesystem and that belongs
-at the call site. `application_version` is required for the same reason a
-shared default would be wrong: scenarios reference their own version literal
-elsewhere in their own file.
+at the call site. `application_version` has no honest shared default either:
+DBOS scopes workflow recovery to the exact version that enqueued a workflow
+(`atelier2.adapters.dbos.uncontinuable_runs`, `_workflow_is_dead` in
+`atelier2.adapters.dbos.effect_store`),
+so a scenario that reopens its own durable root more than once -- a restart, a
+self-spawning crash-harness child -- must pass back the identical literal each
+time or DBOS finds nothing live to recover under the new one
+(`tests/crash/test_durable_run_restart.py`, where a run crashed under
+`"executor-A"` and resumed under `"executor-B"` leaves the bootstrap workflow
+stuck PENDING). Whether and what to repeat is each scenario's own restart
+shape to decide, not something this owner could pick for it
+(`tests/crash/test_durable_run_restart.py`,
+`test_executor_version_is_explicit_test_configuration`).
 """
 
 from __future__ import annotations
