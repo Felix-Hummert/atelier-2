@@ -45,6 +45,8 @@ if command == "git":
         print(state["branch"])
     elif git_arguments == ["status", "--porcelain", "-uall"]:
         print(state["dirty"], end="")
+    elif git_arguments == ["rev-parse", "--absolute-git-dir"]:
+        print(state["git_admin_directory"])
     elif git_arguments == ["rev-parse", "HEAD"]:
         print(state["head"])
     elif git_arguments == ["pull", "--ff-only", "--quiet", "origin", "main"]:
@@ -144,6 +146,11 @@ class UpdateHarness:
         scripts.mkdir(parents=True)
         frontend.mkdir()
         shutil.copy2(SERVE_LIVE_UPDATE, scripts / SERVE_LIVE_UPDATE.name)
+        git_admin_directory = repository / ".git"
+        git_admin_directory.mkdir()
+        (git_admin_directory / "serve-live.deployed").write_text(
+            f"{'1' * 40}\n", encoding="utf-8"
+        )
 
         data_home = tmp_path / "data home"
         store = data_home / "atelier2" / "live-store"
@@ -159,6 +166,7 @@ class UpdateHarness:
                     "dirty": "",
                     "head": "1" * 40,
                     "target_commit": "2" * 40,
+                    "git_admin_directory": str(git_admin_directory),
                     "package_tracked": False,
                     "package_excluded": True,
                     "serve_started": True,
@@ -222,6 +230,10 @@ class UpdateHarness:
         assert len(backups) == 1
         return backups[0]
 
+    @property
+    def deployed_commit_marker(self) -> Path:
+        return Path(str(self.state()["git_admin_directory"])) / "serve-live.deployed"
+
 
 def assert_in_order(output: str, messages: tuple[str, ...]) -> None:
     positions = [output.index(message) for message in messages]
@@ -255,7 +267,20 @@ def test_clean_main_updates_in_the_declared_order_and_backs_up_the_store(
     assert harness.invocations() == [
         ["git", "-C", str(harness.repository), "rev-parse", "--abbrev-ref", "HEAD"],
         ["git", "-C", str(harness.repository), "status", "--porcelain", "-uall"],
-        ["git", "-C", str(harness.repository), "rev-parse", "HEAD"],
+        [
+            "git",
+            "-C",
+            str(harness.repository),
+            "rev-parse",
+            "--absolute-git-dir",
+        ],
+        [
+            "curl",
+            "-fsS",
+            "--max-time",
+            "5",
+            "http://127.0.0.1:8422/atelier/api/v1/health",
+        ],
         [
             "git",
             "-C",
@@ -296,17 +321,22 @@ def test_clean_main_updates_in_the_declared_order_and_backs_up_the_store(
         ).stat().st_size
 
 
-def test_failed_migration_restores_the_previous_build_and_starts_the_serve(
+def test_failed_migration_rolls_back_to_served_commit_not_checkout_head(
     tmp_path: Path,
 ) -> None:
     harness = UpdateHarness.create(tmp_path)
-    previous_commit = str(harness.state()["head"])
-    harness.configure(fail_migrate=True)
+    checkout_commit = "b" * 40
+    served_commit = "a" * 40
+    harness.configure(
+        fail_migrate=True,
+        head=checkout_commit,
+        health_commit=served_commit,
+    )
 
     completed = harness.run()
 
     assert completed.returncode != 0
-    assert harness.state()["head"] == previous_commit
+    assert harness.state()["head"] == served_commit
     assert harness.state()["serve_started"] is True
     assert harness.state()["sync_count"] == 2
     assert harness.state()["npm_build_count"] == 2
@@ -315,7 +345,7 @@ def test_failed_migration_restores_the_previous_build_and_starts_the_serve(
         for invocation in harness.invocations()
         if invocation[0] in {"git", "uv", "npm", "systemctl"}
     ][-5:] == [
-        ["git", "-C", str(harness.repository), "reset", "--hard", previous_commit],
+        ["git", "-C", str(harness.repository), "reset", "--hard", served_commit],
         ["uv", "sync", "--locked"],
         ["npm", "ci"],
         ["npm", "run", "build"],
@@ -325,6 +355,65 @@ def test_failed_migration_restores_the_previous_build_and_starts_the_serve(
         "restored the previous commit and restarted the live serve" in completed.stderr
     )
     assert "live serve is DOWN" not in completed.stderr
+
+
+def test_unreachable_serve_uses_deployed_marker_as_rollback_point(
+    tmp_path: Path,
+) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    marker_commit = "c" * 40
+    harness.deployed_commit_marker.write_text(f"{marker_commit}\n", encoding="utf-8")
+    harness.configure(fail_migrate=True, health_refusals=1, health_commit=marker_commit)
+
+    completed = harness.run()
+
+    assert completed.returncode != 0
+    assert harness.state()["head"] == marker_commit
+    assert ["git", "-C", str(harness.repository), "reset", "--hard", marker_commit] in (
+        harness.invocations()
+    )
+
+
+def test_unreachable_serve_without_deployed_marker_refuses_before_writes(
+    tmp_path: Path,
+) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    harness.deployed_commit_marker.unlink()
+    harness.configure(health_refusals=1)
+
+    completed = harness.run()
+
+    assert completed.returncode != 0
+    assert "provide no rollback target; refusing the update" in completed.stderr
+    assert harness.state()["head"] == "1" * 40
+    assert not (harness.store / "backups").exists()
+    assert harness.invocations() == [
+        ["git", "-C", str(harness.repository), "rev-parse", "--abbrev-ref", "HEAD"],
+        ["git", "-C", str(harness.repository), "status", "--porcelain", "-uall"],
+        [
+            "git",
+            "-C",
+            str(harness.repository),
+            "rev-parse",
+            "--absolute-git-dir",
+        ],
+        [
+            "curl",
+            "-fsS",
+            "--max-time",
+            "5",
+            "http://127.0.0.1:8422/atelier/api/v1/health",
+        ],
+    ]
+
+
+def test_successful_update_records_deployed_commit_marker(tmp_path: Path) -> None:
+    harness = UpdateHarness.create(tmp_path)
+
+    completed = harness.run()
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.deployed_commit_marker.read_text(encoding="utf-8") == f"{'2' * 40}\n"
 
 
 def test_failed_migration_and_failed_rollback_report_that_the_serve_is_down(
@@ -520,7 +609,7 @@ def test_health_that_never_becomes_available_fails_after_the_deadline(
     assert "health is unavailable after start" in completed.stderr
     assert "now serves" not in completed.stdout
     curl_calls = [call for call in harness.invocations() if call[0] == "curl"]
-    assert len(curl_calls) == 30
+    assert len(curl_calls) == 31
 
 
 def test_symlinked_root_package_is_refused(tmp_path: Path) -> None:
