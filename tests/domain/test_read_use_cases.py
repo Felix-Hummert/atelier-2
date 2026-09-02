@@ -36,10 +36,8 @@ from atelier2.application.read_agent_definition_revisions import (
 from atelier2.application.read_runs import (
     RunNotFound,
     RunRead,
-    RunReceiptsRead,
     RunsListed,
     get_run,
-    list_run_receipts,
     list_runs,
 )
 from atelier2.application.read_workflow_revisions import (
@@ -84,7 +82,6 @@ from atelier2.ports.run_events import (
 from atelier2.ports.run_queries import (
     RunFound,
     RunQueryMissing,
-    RunReceiptsFound,
 )
 from atelier2.ports.workflow_revisions import (
     QueryDurableStateCorrupt,
@@ -161,9 +158,6 @@ class ScriptedQueries:
     def get_node_detail(self, run_id: Any, node_id: str) -> Any:
         return self._record(run_id, node_id)
 
-    def list_run_receipts(self, run_id: Any) -> Any:
-        return self._record(run_id)
-
     def prepare_run_event_stream(self, run_id: Any, after_sequence: int) -> Any:
         return self._record(run_id, after_sequence)
 
@@ -226,15 +220,6 @@ READS: list[
         lambda queries: list_runs(None, 50, queries),
         [
             (RunPage((RUN_PROJECTION,), RUN_ID), RunsListed((RUN_PROJECTION,), RUN_ID)),
-            *PORT_REFUSALS,
-        ],
-    ),
-    (
-        "list-run-receipts",
-        lambda queries: list_run_receipts(RUN_ID, queries),
-        [
-            (RunReceiptsFound(()), RunReceiptsRead(())),
-            (RunQueryMissing(), RunNotFound()),
             *PORT_REFUSALS,
         ],
     ),

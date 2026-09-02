@@ -935,6 +935,6 @@ def test_a_v3_agent_then_action_opens_one_pull_request_through_the_github_adapte
     assert streamed[-1]["event"] == "ACTION_COMPLETED"
     assert streamed[-1]["workflow_format_version"] == 3
     assert "receipt" in streamed[-1]
-    receipt = api.get(f"{API_PREFIX}/runs/{public_ref}/receipt")
-    assert receipt.status_code == 200, receipt.text
-    assert CANARY_TOKEN not in receipt.text
+    node = api.get(f"{API_PREFIX}/runs/{public_ref}/nodes/implement")
+    assert node.status_code == 200, node.text
+    assert CANARY_TOKEN not in node.text

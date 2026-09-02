@@ -85,7 +85,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
 )
 from atelier2.ports.run_events import RunEventPage, StreamReady
-from atelier2.ports.run_queries import NodeDetailFound, RunFound, RunReceiptsFound
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -352,6 +352,32 @@ def executions_of(workflow: WorkflowRevision) -> dict[str, tuple[str, int]]:
     }
 
 
+def receipted_rounds(runtime: DbosRuntime) -> set[tuple[str, int]]:
+    """Which node and round this run has written an agent receipt for."""
+    with runtime.engine.connect() as connection:
+        return {
+            (str(record["node_id"]), int(record["round_ordinal"]))
+            for record in connection.execute(
+                sa.select(
+                    agent_receipts_v2.c.node_id, agent_receipts_v2.c.round_ordinal
+                ).where(agent_receipts_v2.c.run_id == RUN.value)
+            ).mappings()
+        }
+
+
+def receipted_executions(runtime: DbosRuntime) -> set[str]:
+    """Which node executions this run has written an agent receipt for."""
+    with runtime.engine.connect() as connection:
+        return {
+            str(record["node_execution_id"])
+            for record in connection.execute(
+                sa.select(agent_receipts_v2.c.node_execution_id).where(
+                    agent_receipts_v2.c.run_id == RUN.value
+                )
+            ).mappings()
+        }
+
+
 @pytest.mark.proves("round-sensitive-run-views-preserve-current-execution-truth")
 def test_a_live_second_round_and_its_healthy_peer_remain_readable(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
@@ -373,7 +399,6 @@ def test_a_live_second_round_and_its_healthy_peer_remain_readable(
         found = queries.get_run(RUN)
         listed = queries.list_runs(None, 10)
         detailed = queries.get_node_detail(RUN, "implement")
-        receipts = queries.list_run_receipts(RUN)
         prepared = queries.prepare_run_event_stream(RUN, 0)
         events = queries.read_run_event_page(RUN, 0, 10)
 
@@ -392,8 +417,7 @@ def test_a_live_second_round_and_its_healthy_peer_remain_readable(
         assert detailed.detail.provenance is None
         assert detailed.detail.started_at is not None
         assert detailed.detail.ended_at is None
-        assert isinstance(receipts, RunReceiptsFound), receipts
-        assert {(item.node_id, item.round_ordinal) for item in receipts.items} == {
+        assert receipted_rounds(started_runtime) == {
             (node_id, 1) for node_id in LOOPED_LINE_NODE_IDS
         }
         assert prepared == StreamReady(2, False, 0)
@@ -427,7 +451,6 @@ def test_a_completed_three_round_loop_has_one_public_query_truth(
     found = queries.get_run(RUN)
     listed = queries.list_runs(None, 10)
     detailed = queries.get_node_detail(RUN, "review")
-    receipts = queries.list_run_receipts(RUN)
     prepared = queries.prepare_run_event_stream(RUN, 0)
     events = queries.read_run_event_page(RUN, 0, 10)
 
@@ -453,10 +476,7 @@ def test_a_completed_three_round_loop_has_one_public_query_truth(
     assert detailed.detail.started_at is not None
     assert detailed.detail.ended_at is not None
     assert detailed.detail.started_at.value <= detailed.detail.ended_at.value
-    assert isinstance(receipts, RunReceiptsFound), receipts
-    assert {item.node_execution_id.value for item in receipts.items} == set(
-        executions_of(workflow)
-    )
+    assert receipted_executions(started_runtime) == set(executions_of(workflow))
     assert prepared == StreamReady(6, True, 0)
     assert isinstance(events, RunEventPage), events
     assert [item.event.event_sequence for item in events.events] == list(range(1, 7))
@@ -492,7 +512,6 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
     found = queries.get_run(RUN)
     listed = queries.list_runs(None, 10)
     detailed = queries.get_node_detail(RUN, "implement")
-    receipts = queries.list_run_receipts(RUN)
     prepared = queries.prepare_run_event_stream(RUN, 0)
     events = queries.read_run_event_page(RUN, 0, 10)
 
@@ -511,8 +530,7 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
     assert "output-schema-refused" in detailed.detail.refusal
     assert detailed.detail.started_at is not None
     assert detailed.detail.ended_at is not None
-    assert isinstance(receipts, RunReceiptsFound), receipts
-    assert {(item.node_id, item.round_ordinal) for item in receipts.items} == {
+    assert receipted_rounds(started_runtime) == {
         (node_id, 1) for node_id in LOOPED_LINE_NODE_IDS
     }
     assert prepared == StreamReady(4, True, 0)

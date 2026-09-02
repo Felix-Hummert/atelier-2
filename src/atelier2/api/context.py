@@ -88,7 +88,6 @@ from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import (
     GetNodeDetailUseCaseResult,
     GetRunResult,
-    ListRunReceiptsUseCaseResult,
     ListRunsResult,
 )
 from atelier2.application.read_workflow_revisions import (
@@ -239,7 +238,6 @@ class ApiUseCases:
     ]
     get_run: Callable[[RunId], GetRunResult]
     get_node_detail: Callable[[RunId, str], GetNodeDetailUseCaseResult]
-    list_run_receipts: Callable[[RunId], ListRunReceiptsUseCaseResult]
     list_runs: Callable[[RunId | None, int, RunState | None], ListRunsResult]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
