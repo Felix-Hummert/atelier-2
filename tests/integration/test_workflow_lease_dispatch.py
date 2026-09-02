@@ -54,7 +54,12 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow_ids import runner_lease_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import (
+    cancellation_workflow_id_for,
+    node_workflow_id_for,
+    replacement_workflow_id_for,
+    runner_lease_workflow_id_for,
+)
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerExecutorFactory,
@@ -127,7 +132,10 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     publish_checked_model_registry,
 )
-from tests.scenarios.run_waiting import wait_for_run_state
+from tests.scenarios.run_waiting import (
+    wait_for_run_state,
+    wait_for_workflow_completion,
+)
 from tests.scenarios.runners import (
     RunnerSessionAdvancerLike,
     drive_free_runner_session_to_released,
@@ -690,26 +698,27 @@ def _count_workflows(runtime: DbosRuntime, name: str, *, enqueued: bool) -> int:
         )
 
 
-def wait_for_waiting_lease_attempts(runtime: DbosRuntime, count: int) -> None:
-    """Wait until `count` Runner-lease attempts are waiting their turn durably.
+def one_lease_attempt_waits_after(
+    runtime: DbosRuntime, handover_workflow_id: str, awaited: str
+) -> None:
+    """Await one handover to the lease queue, then read who is waiting there.
 
-    A waiting attempt is an `ENQUEUED` row on the lease queue -- the proof the
-    single lease slot, not a chance of DBOS running the node workflows one at a
-    time, is what serializes the drives, and the proof it serializes them without
-    holding a worker each.
+    A workflow that hands an Attempt to the slot -- a node workflow, or a
+    replacement's -- ends the moment it has enqueued that Attempt, so its
+    completion is the event after which the queue row is certain. What follows is
+    an assertion rather than a second wait: a waiting attempt is an `ENQUEUED` row
+    on the lease queue -- the proof the single lease slot, not a chance of DBOS
+    running the node workflows one at a time, is what serializes the drives, and
+    the proof it serializes them without holding a worker each.
     """
 
-    deadline = time.monotonic() + _WAIT_SECONDS
-    waiting = 0
-    while time.monotonic() < deadline:
-        waiting = _count_workflows(runtime, RUNNER_LEASE_WORKFLOW_NAME, enqueued=True)
-        if waiting >= count:
-            return
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError(
-        f"only {waiting} runner-lease attempt(s) waited on the lease queue, "
-        f"expected {count}"
-    )
+    wait_for_workflow_completion(handover_workflow_id, awaited)
+    waiting = _count_workflows(runtime, RUNNER_LEASE_WORKFLOW_NAME, enqueued=True)
+    if waiting < 1:
+        raise AssertionError(
+            f"{waiting} runner-lease attempt(s) waited on the lease queue after "
+            f"{awaited}, expected at least one"
+        )
 
 
 def await_a_drive(tracking: _DriveTracking) -> tuple[RunId, AgentAttemptId]:
@@ -925,7 +934,7 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
         # has to create one instead of asking the test to invent it.
         occupying, first_attempt = await_a_drive(tracking)
         assert occupying == run_a
-        _publish_and_start(
+        revision_b = _publish_and_start(
             runtime,
             run_b,
             "runner",
@@ -937,7 +946,13 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
         # both drives run at once, so nothing ever waits and this fails --
         # `peak <= 1` alone would pass vacuously if DBOS happened to run the two
         # node workflows serially.
-        wait_for_waiting_lease_attempts(runtime, 1)
+        one_lease_attempt_waits_after(
+            runtime,
+            node_workflow_id_for(
+                NodeExecutionId.for_node(run_b, revision_b, _AGENT_NODE)
+            ),
+            "the second run's node workflow handing its attempt to the slot",
+        )
         admission_order = slot_admission_order(runtime)
         tracking.released.set()
         wait_for_run_state(runtime.engine, run_a, RunState.COMPLETED)
@@ -968,23 +983,19 @@ def _the_replacement_of(
     with whatever it happened to compute.
     """
 
-    deadline = time.monotonic() + _WAIT_SECONDS
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            found = connection.scalar(
-                sa.select(agent_attempts.c.attempt_id).where(
-                    agent_attempts.c.node_execution_id
-                    == sa.select(agent_attempts.c.node_execution_id)
-                    .where(agent_attempts.c.attempt_id == attempt_id.value)
-                    .scalar_subquery(),
-                    agent_attempts.c.attempt_ordinal
-                    == REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
-                )
+    with runtime.engine.connect() as connection:
+        found = connection.scalar(
+            sa.select(agent_attempts.c.attempt_id).where(
+                agent_attempts.c.node_execution_id
+                == sa.select(agent_attempts.c.node_execution_id)
+                .where(agent_attempts.c.attempt_id == attempt_id.value)
+                .scalar_subquery(),
+                agent_attempts.c.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
             )
-        if found is not None:
-            return AgentAttemptId(str(found))
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError("the cancellation never minted its replacement attempt")
+        )
+    if found is None:
+        raise AssertionError("the cancellation never minted its replacement attempt")
+    return AgentAttemptId(str(found))
 
 
 def test_a_replacement_attempt_waits_its_turn_in_the_same_slot(
@@ -1026,29 +1037,38 @@ def test_a_replacement_attempt_waits_its_turn_in_the_same_slot(
         store = DbosAgentAttemptStore(
             runtime.engine, runtime.settings.application_version
         )
-        accepted = store.request_cancellation(
-            CancelAgentAttemptRequest(
-                run_id,
-                first_attempt,
-                "operator-cancel:replace",
-                store.load(first_attempt).state_version,
-                AgentAttemptReplacement.ONE,
-            )
+        cancellation = CancelAgentAttemptRequest(
+            run_id,
+            first_attempt,
+            "operator-cancel:replace",
+            store.load(first_attempt).state_version,
+            AgentAttemptReplacement.ONE,
         )
+        accepted = store.request_cancellation(cancellation)
         assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
 
+        # The cancellation mints the replacement as it attests its cleanup, so
+        # its ending is the event after which the store has one to name.
+        wait_for_workflow_completion(
+            cancellation_workflow_id_for(cancellation),
+            "the cancellation minting its replacement attempt",
+        )
+        replacement = _the_replacement_of(runtime, first_attempt)
         # The replacement reaches the slot's queue while the Attempt it replaces
         # still holds the slot: one waiting, one in flight.
-        wait_for_waiting_lease_attempts(runtime, 1)
+        one_lease_attempt_waits_after(
+            runtime,
+            replacement_workflow_id_for(replacement),
+            "the replacement workflow handing its attempt to the slot",
+        )
         admission_order = slot_admission_order(runtime)
-        replacement = _the_replacement_of(runtime, first_attempt)
         assert admission_order == [
             slot_workflow_id_of(first_attempt, runtime),
             slot_workflow_id_of(replacement, runtime),
         ]
 
         tracking.released.set()
-        wait_for_state(runtime, run_id, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, run_id, RunState.COMPLETED)
         wait_for_drives(tracking, 2)
         assert tracking.peak <= 1
         assert tracking.completed_attempt_ids[-1] == replacement.value
