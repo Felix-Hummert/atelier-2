@@ -129,6 +129,9 @@ def codex_subscription_deployment(
     executable = _write_executable(tmp_path / "codex", source)
     credentials = tmp_path / "codex-home"
     credentials.mkdir()
+    authentication = credentials / "auth.json"
+    authentication.write_bytes(b"{}")
+    authentication.chmod(0o600)
     return CodexSubscriptionSettings(
         executable, credentials, os.environ.get("PATH", "/usr/bin"), sandbox
     )
@@ -233,13 +236,17 @@ def test_a_headless_run_carries_the_bound_model_and_sandbox_with_the_job_off_arg
         "last-message",
         "-",
     )
+    job_home = dict(command.environment)["CODEX_HOME"]
+    # HOME is containment, not convenience: a child without it resolves the
+    # invoking account's own profile and loads that profile's trust. Both
+    # name one private, disposable directory prepared for this call alone --
+    # never the operator's own credential directory.
     assert command.environment == (
-        # HOME is containment, not convenience: a child without it resolves the
-        # invoking account's own profile and loads that profile's trust.
-        ("HOME", str(settings.credential_directory)),
-        ("CODEX_HOME", str(settings.credential_directory)),
+        ("HOME", job_home),
+        ("CODEX_HOME", job_home),
         ("PATH", settings.search_path),
     )
+    assert job_home != str(settings.credential_directory)
     # `codex exec` takes its prompt on stdin, so the job never reaches the
     # argument vector, where any account on the host could read it.
     assert command.standard_input == b"draw the owl"
@@ -255,9 +262,89 @@ def test_a_headless_run_carries_the_bound_model_and_sandbox_with_the_job_off_arg
     assert observed["arguments"][0] == str(settings.executable)
     assert observed["stdin"] == "draw the owl"
     assert observed["working_directory"] == str(workspace)
-    assert observed["environment"]["CODEX_HOME"] == str(settings.credential_directory)
-    assert observed["environment"]["HOME"] == str(settings.credential_directory)
+    assert observed["environment"]["CODEX_HOME"] == job_home
+    assert observed["environment"]["HOME"] == job_home
     assert "OPENAI_API_KEY" not in observed["environment"]
+
+    executor.release_credential_channel(command)
+    assert not Path(job_home).exists()
+
+
+def test_the_private_credential_home_carries_the_source_auth_bytes_while_live(
+    tmp_path: Path,
+) -> None:
+    """The copy this call needs exists while the call is live, nothing more.
+
+    `config.toml` is deliberately absent from the copy: this executor's own
+    containment attestation (`attest_codex_containment`) requires a served
+    profile to resolve no user `config.toml`, so a copy of one would be
+    exactly the pollution the attestation exists to catch.
+    """
+
+    settings = codex_subscription_deployment(tmp_path)
+    executor = CodexSubscriptionExecutorFactory(settings).open()
+
+    command = executor.prepare_process(subscription_request())
+    job_home = Path(dict(command.environment)["CODEX_HOME"])
+    copied_auth = job_home / "auth.json"
+
+    assert (
+        copied_auth.read_bytes()
+        == (settings.credential_directory / "auth.json").read_bytes()
+    )
+    assert stat.S_IMODE(copied_auth.stat().st_mode) == 0o400
+    assert not (job_home / "config.toml").exists()
+
+    executor.release_credential_channel(command)
+
+
+def test_the_private_credential_home_outlives_neither_a_completion_nor_a_close(
+    tmp_path: Path,
+) -> None:
+    settings = codex_subscription_deployment(tmp_path)
+    executor = CodexSubscriptionExecutorFactory(settings).open()
+    workspace = leased_workspace(tmp_path)
+
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    job_home = Path(dict(command.environment)["CODEX_HOME"])
+    assert job_home.exists()
+    assert job_home != settings.credential_directory
+
+    executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+    executor.release_credential_channel(command)
+
+    assert not job_home.exists()
+
+    second_request = subscription_request()
+    second_command = executor.prepare_process(second_request)
+    abandoned_home = Path(dict(second_command.environment)["CODEX_HOME"])
+    assert abandoned_home.exists()
+
+    executor.close()
+
+    assert not abandoned_home.exists()
+
+
+def test_the_private_credential_home_is_removed_after_a_failing_run(
+    tmp_path: Path,
+) -> None:
+    settings = codex_subscription_deployment(tmp_path)
+    executor = CodexSubscriptionExecutorFactory(settings).open()
+    workspace = leased_workspace(tmp_path)
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    job_home = Path(dict(command.environment)["CODEX_HOME"])
+
+    executor.decode_process_completion(
+        leased(request, command, workspace),
+        launched(command, workspace, FAKE_EXIT="1"),
+    )
+    executor.release_credential_channel(command)
+
+    assert not job_home.exists()
 
 
 def test_a_declared_schema_reaches_codex_as_exact_private_file_bytes(
@@ -277,10 +364,13 @@ def test_a_declared_schema_reaches_codex_as_exact_private_file_bytes(
     assert command.arguments[command.arguments.index("--output-schema") + 1] == str(
         command.output_schema_path
     )
+    job_home = Path(dict(command.environment)["CODEX_HOME"])
+    assert job_home.exists()
 
     executor.release_credential_channel(command)
 
     assert not command.output_schema_path.exists()
+    assert not job_home.exists()
 
 
 def test_executor_close_removes_an_unreleased_output_schema_file(
@@ -296,10 +386,13 @@ def test_executor_close_removes_an_unreleased_output_schema_file(
     assert isinstance(command, CodexSubscriptionProcessCommand)
     assert command.output_schema_path is not None
     assert command.output_schema_path.exists()
+    job_home = Path(dict(command.environment)["CODEX_HOME"])
+    assert job_home.exists()
 
     executor.close()
 
     assert not command.output_schema_path.exists()
+    assert not job_home.exists()
 
 
 def test_a_non_subscription_profile_is_refused_before_any_invocation(
@@ -393,6 +486,8 @@ def test_a_broken_provider_answer_is_a_typed_refusal_not_an_invented_result(
         AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
     )
 
+    executor.close()
+
 
 def test_the_answer_is_the_exact_bytes_the_provider_wrote(tmp_path: Path) -> None:
     settings = codex_subscription_deployment(tmp_path)
@@ -407,6 +502,8 @@ def test_the_answer_is_the_exact_bytes_the_provider_wrote(tmp_path: Path) -> Non
     )
 
     assert result == AgentExecutionResult(b"  pong  \n")
+
+    executor.close()
 
 
 def test_the_answer_lands_in_the_directory_the_process_was_started_in(
@@ -436,6 +533,8 @@ def test_the_answer_lands_in_the_directory_the_process_was_started_in(
     assert (workspace / "last-message").read_bytes() == b"pong"
     assert not (settings.credential_directory / "last-message").exists()
     assert not (tmp_path / "last-message").exists()
+
+    executor.close()
 
 
 def test_the_executor_writes_nothing_outside_the_leased_directory(
@@ -500,6 +599,8 @@ def test_two_overlapping_attempts_each_decode_their_own_answer(
     assert executor.decode_process_completion(second, answered) == AgentExecutionResult(
         b"ANSWER-FOR-ATTEMPT-TWO"
     )
+
+    executor.close()
 
 
 def test_a_contained_profile_attests(tmp_path: Path) -> None:

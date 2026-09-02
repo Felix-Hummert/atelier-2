@@ -8,6 +8,21 @@ it. The child environment is only `HOME`, `CODEX_HOME` and `PATH`, and `HOME`
 is containment rather than convenience: without it the CLI resolves the
 invoking account's own profile.
 
+Every invocation gets one private disposable `HOME`/`CODEX_HOME` instead of
+the operator's own (`_open_job_directory`). The seam copies only `auth.json`
+into it, with an exclusive no-follow open, then removes the whole home on
+every lifecycle path -- success, refusal, an exception, or executor shutdown
+alike. codex-0.147.0's own strings name that file as the CLI's credential
+fallback store ("Paste or type your API key below. It will be stored locally
+in auth.json"), and it is the only file the operator's live `CODEX_HOME` keeps
+at private (0600) permissions; `config.toml` is deliberately never copied,
+because this executor's own containment attestation requires it absent from a
+served profile. codex-0.147.0 also issues single-use OAuth refresh tokens and
+rewrites its own credential state through an atomic replace ("failed to
+atomically replace secrets file at ..."), so two invocations sharing one
+`CODEX_HOME` would race a token refresh against each other exactly as #993
+found for Claude.
+
 The agent's answer is taken from `--output-last-message`, the file the CLI
 documents as carrying the last message. Standard output is framed but not
 parsed: this executor was not permitted a billed `codex exec` call, so the
@@ -38,6 +53,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -141,6 +158,19 @@ _OUTPUT_SCHEMA_FILE_PREFIX = "atelier2-codex-output-schema-"
 _HOME_VARIABLE = "HOME"
 _CREDENTIAL_DIRECTORY_VARIABLE = "CODEX_HOME"
 _SEARCH_PATH_VARIABLE = "PATH"
+
+_JOB_DIRECTORY_PREFIX = "atelier2-codex-job-"
+_JOB_DIRECTORY_MODE = 0o700
+_AUTHENTICATION_FILE_NAME = "auth.json"
+# The copied credential is handed out read-only: nothing this executor asks
+# the CLI to do needs it to rewrite the copy in place, and the CLI's own
+# credential rewrites go through a temp-file-plus-rename replace (see the
+# module docstring), which needs write access to the directory, not to this
+# file. The whole directory is disposed of at the end of the one call it was
+# minted for regardless.
+_AUTHENTICATION_FILE_MODE = 0o400
+_PRIVATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+_MAXIMUM_AUTHENTICATION_FILE_BYTES = 1_048_576
 
 _UNUSABLE_PROVIDER_ANSWER = AgentExecutionFailure(
     AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
@@ -267,13 +297,22 @@ class CodexSubscriptionSettings:
 
 
 def _child_environment(
-    settings: CodexSubscriptionSettings,
+    settings: CodexSubscriptionSettings, state_directory: Path
 ) -> tuple[tuple[str, str], ...]:
-    """The complete environment a launched Codex inherits, and nothing else."""
+    """The complete environment a launched Codex inherits, and nothing else.
+
+    `HOME` and `CODEX_HOME` name `state_directory`, never
+    `settings.credential_directory` directly for a launched job -- see
+    `_open_job_directory` below, which prepares one private, disposable
+    `state_directory` per invocation. The composition-time containment probe
+    below is the one caller that deliberately names
+    `settings.credential_directory` itself, because it is attesting that
+    exact configured directory rather than a job's private copy.
+    """
 
     return (
-        (_HOME_VARIABLE, str(settings.credential_directory)),
-        (_CREDENTIAL_DIRECTORY_VARIABLE, str(settings.credential_directory)),
+        (_HOME_VARIABLE, str(state_directory)),
+        (_CREDENTIAL_DIRECTORY_VARIABLE, str(state_directory)),
         (_SEARCH_PATH_VARIABLE, settings.search_path),
     )
 
@@ -285,17 +324,22 @@ def _probe(
     output_bytes: int,
     environment_overrides: dict[str, str],
 ) -> tuple[int, bytes]:
-    """Run one non-billed CLI subcommand with the environment a job would get."""
+    """Run one non-billed CLI subcommand against the configured credential home.
 
-    # A probe attests the profile a job would get -- its home, its config layer
-    # and its MCP servers -- never a directory, so it runs in one of its own
-    # rather than in an attempt's lease, which does not exist yet at composition.
+    A probe attests `settings.credential_directory` itself -- the configured
+    profile, not the private per-job copy a real invocation now gets
+    (`_open_job_directory`) -- because it is composition-time containment of
+    the configuration, not of one call. It runs in a probe root of its own
+    rather than in an attempt's lease, which does not exist yet at composition.
+    """
+
     with tempfile.TemporaryDirectory(prefix=_PROBE_DIRECTORY_PREFIX) as probe_root:
         try:
             process = subprocess.Popen(
                 (str(settings.executable), *arguments),
                 cwd=probe_root,
-                env=dict(_child_environment(settings)) | environment_overrides,
+                env=dict(_child_environment(settings, settings.credential_directory))
+                | environment_overrides,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -412,6 +456,98 @@ def attest_codex_containment(
         )
 
 
+def _write_private_file(path: Path, payload: bytes, mode: int) -> None:
+    """Create one file only this call may have named, and nothing else can follow.
+
+    `O_EXCL` refuses a name that already exists and `O_NOFOLLOW` refuses a
+    symlink -- both matter here because the directory this writes into is
+    freshly minted per invocation and every entry in it is this seam's own.
+    """
+
+    descriptor = os.open(path, _PRIVATE_FILE_FLAGS, mode)
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written < 1:
+                raise OSError("private Codex config file write made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+
+
+def _authentication_bytes(settings: CodexSubscriptionSettings) -> bytes:
+    """Read the operator's own `auth.json`, and nothing else it holds.
+
+    Established from the pinned codex-0.147.0 executable's own strings by
+    static inspection (`strings`, never a billed invocation): its CLI auth
+    storage falls back to exactly this file when no OS keyring is used
+    ("Paste or type your API key below. It will be stored locally in
+    auth.json"), and it is the only regular file the operator's own live
+    `CODEX_HOME` keeps at private (0600) permissions alongside `config.toml` --
+    which this executor's own containment attestation (`attest_codex_containment`
+    above) requires to be absent from a served profile, and is therefore never
+    copied here.
+    """
+
+    path = settings.credential_directory / _AUTHENTICATION_FILE_NAME
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise ValueError(
+                f"the Codex {_AUTHENTICATION_FILE_NAME} must be a regular file"
+            )
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                return b"".join(chunks)
+            size += len(chunk)
+            if size > _MAXIMUM_AUTHENTICATION_FILE_BYTES:
+                raise ValueError(
+                    f"the Codex {_AUTHENTICATION_FILE_NAME} exceeds its private "
+                    "copy bound"
+                )
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+
+def _open_job_directory(settings: CodexSubscriptionSettings) -> Path:
+    """Prepare one private, disposable Codex home.
+
+    Every invocation this module prepares gets one of these instead of the
+    operator's own `CODEX_HOME`: a private copy of `auth.json` on a path the
+    operator's own live directory never sees a launched process open. Cleanup
+    on every path -- success, refusal, timeout, cancellation, exception and a
+    killed process alike -- is the caller's contract, carried out through the
+    executor's own `_job_directories` bookkeeping (mirroring
+    `_ClaudeJobDirectories` in `claude_subscription`); this function's own
+    contract is narrower: leave nothing behind when *it* fails to finish
+    preparing the directory.
+    """
+
+    directory = Path(tempfile.mkdtemp(prefix=_JOB_DIRECTORY_PREFIX))
+    os.chmod(directory, _JOB_DIRECTORY_MODE)
+    prepared = False
+    try:
+        _write_private_file(
+            directory / _AUTHENTICATION_FILE_NAME,
+            _authentication_bytes(settings),
+            _AUTHENTICATION_FILE_MODE,
+        )
+        prepared = True
+        return directory
+    finally:
+        if not prepared:
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass
+
+
 def _answer_file_of(invocation: AgentProcessInvocation) -> Path:
     """Name the answer file inside the directory this attempt leased.
 
@@ -459,6 +595,9 @@ class CodexSubscriptionProcessCommand(AgentProcessCommand):
 @dataclass(frozen=True)
 class CodexSubscriptionExecutor:
     settings: CodexSubscriptionSettings
+    _job_directories: set[Path] = field(
+        default_factory=set, init=False, compare=False, repr=False
+    )
     _output_schema_paths: set[Path] = field(
         default_factory=set, init=False, compare=False, repr=False
     )
@@ -476,6 +615,7 @@ class CodexSubscriptionExecutor:
                 "the Codex subscription executor serves subscription profiles only"
             )
         settings = self.settings
+        state_directory = _open_job_directory(settings)
         output_schema_path = (
             None
             if request.declared_output_schema_bytes is None
@@ -506,7 +646,7 @@ class CodexSubscriptionExecutor:
                     ),
                     _PROMPT_FROM_STANDARD_INPUT,
                 ),
-                _child_environment(settings),
+                _child_environment(settings, state_directory),
                 request.job_bytes,
                 standard_output_frame_bytes=CODEX_SUBSCRIPTION_FRAME_BYTES,
                 output_schema_path=output_schema_path,
@@ -514,16 +654,22 @@ class CodexSubscriptionExecutor:
             with self._lifecycle_lock:
                 if self._closed.is_set():
                     raise RuntimeError("the Codex executor is closed")
+                self._job_directories.add(state_directory)
                 if output_schema_path is not None:
                     self._output_schema_paths.add(output_schema_path)
                 registered = True
             return command
         finally:
-            if output_schema_path is not None and not registered:
+            if not registered:
                 try:
-                    output_schema_path.unlink()
+                    shutil.rmtree(state_directory)
                 except FileNotFoundError:
                     pass
+                if output_schema_path is not None:
+                    try:
+                        output_schema_path.unlink()
+                    except FileNotFoundError:
+                        pass
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -543,35 +689,61 @@ class CodexSubscriptionExecutor:
         return AgentExecutionResult(answer)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Take back the private schema file this invocation handed Codex.
+        """Take back the private home and schema file this invocation was handed.
 
-        `CODEX_HOME` names the operator's own credential directory rather than a
-        copy made for one invocation. The answer remains in the attempt's leased
-        directory, while an output schema file must be removed as soon as Codex
-        can no longer read it.
+        `CODEX_HOME` now names a private directory holding a copy of the
+        operator's own `auth.json`, prepared for this call alone
+        (`_open_job_directory`), so it is taken back on every path -- success,
+        refusal, an exception, or a killed process -- exactly as an output
+        schema file already was. The answer remains in the attempt's leased
+        workspace directory and is not this method's concern.
         """
 
-        if not isinstance(command, CodexSubscriptionProcessCommand):
-            return
-        path = command.output_schema_path
-        if path is None:
-            return
+        environment = dict(command.environment)
+        home = environment.get(_HOME_VARIABLE)
+        codex_home = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
+        if home is None or home != codex_home:
+            raise ValueError("Codex invocation state binding is missing")
+        state_directory = Path(home)
+        output_schema_path = (
+            command.output_schema_path
+            if isinstance(command, CodexSubscriptionProcessCommand)
+            else None
+        )
         with self._lifecycle_lock:
-            if path not in self._output_schema_paths:
-                return
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            self._output_schema_paths.remove(path)
+            if state_directory in self._job_directories:
+                try:
+                    shutil.rmtree(state_directory)
+                except FileNotFoundError:
+                    pass
+                self._job_directories.remove(state_directory)
+            if (
+                output_schema_path is not None
+                and output_schema_path in self._output_schema_paths
+            ):
+                try:
+                    output_schema_path.unlink()
+                except FileNotFoundError:
+                    pass
+                self._output_schema_paths.remove(output_schema_path)
 
     def close(self) -> None:
-        """Take back any schema file whose invocation never reached release."""
+        """Take back every job home and schema file that never reached release."""
 
         with self._lifecycle_lock:
             self._closed.set()
+            directories = tuple(self._job_directories)
             paths = tuple(self._output_schema_paths)
-            errors: list[OSError] = []
+            errors: list[Exception] = []
+            for directory in directories:
+                try:
+                    shutil.rmtree(directory)
+                except FileNotFoundError:
+                    self._job_directories.remove(directory)
+                except OSError as error:
+                    errors.append(error)
+                else:
+                    self._job_directories.remove(directory)
             for path in paths:
                 try:
                     path.unlink()
@@ -584,7 +756,7 @@ class CodexSubscriptionExecutor:
         if len(errors) == 1:
             raise errors[0]
         if errors:
-            raise ExceptionGroup("Codex output schema cleanup failed", errors)
+            raise ExceptionGroup("Codex invocation cleanup failed", errors)
 
 
 @dataclass(frozen=True)
