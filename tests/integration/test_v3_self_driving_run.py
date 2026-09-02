@@ -31,7 +31,7 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import _agent_receipt_v2_from_record
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
@@ -46,7 +46,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import AgentAttemptId, AgentAttemptState
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -62,7 +61,6 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
@@ -97,6 +95,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 TWO_NODE_DOCUMENT = (
@@ -133,16 +135,10 @@ def runtime(
         "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
     )
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "v3-driver-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "v3-driver-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (recording,),
     )
     started.initialize_storage()
