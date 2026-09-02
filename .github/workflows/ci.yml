@@ -124,6 +124,7 @@ jobs:
           trap 'cleanup 130' INT
           trap 'cleanup 143' TERM
           npm_path="$(command -v npm)"
+          npx_path="$(command -v npx)"
           run_e2e() {
             script="$1"
             suffix="$2"
@@ -148,6 +149,36 @@ jobs:
               --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
               "${npm_path}" run "${script}"
           }
+          # The mockup-comparison screenshots (REQ-UIQ-11, #994): its own
+          # fresh webServer boot, run first so its own (much smaller)
+          # Playwright JSON report is overwritten by the two full runs below
+          # rather than the other way around -- the acceptance trace reads
+          # that report and must keep seeing every claim the full suite
+          # proves.
+          run_shots() {
+            unit="atelier2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-frontend-shots"
+            sudo systemd-run --quiet --wait --collect --pipe \
+              --unit="${unit}" \
+              --uid="$(id -u)" \
+              --gid="$(id -g)" \
+              --property=Type=exec \
+              --property=Delegate=yes \
+              --property=DelegateSubgroup=workload \
+              --property=KillMode=control-group \
+              --property=TimeoutStopSec=15s \
+              --working-directory="${GITHUB_WORKSPACE}/frontend" \
+              --setenv=HOME="${HOME}" \
+              --setenv=PATH="${PATH}" \
+              --setenv=CI="${CI:-true}" \
+              --setenv=GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}" \
+              --setenv=GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+              --setenv=UV_PYTHON="${UV_PYTHON}" \
+              --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
+              --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
+              --setenv=ATELIER2_SHOT_DIR="${GITHUB_WORKSPACE}/frontend/screenshot-review-shots" \
+              "${npx_path}" playwright test tests/e2e/vision-shots.spec.ts
+          }
+          run_shots
           # The shared-server suite proves its own order-independence (#742)
           # by running the identical spec set twice, in its default and its
           # reversed order -- each its own fresh webServer boot.
@@ -162,6 +193,20 @@ jobs:
           path: |
             reports/frontend.vitest.json
             reports/frontend.playwright.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+      # The mockup-comparison evidence REQ-UIQ-11 asks a human to look at
+      # (#994): every core surface at 1280/390, light/dark. This is what the
+      # screenshot review gate's refusal message tells the operator to look
+      # at before approving a scope digest.
+      - name: Upload the screenshot review evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screenshot-review-shots
+          path: frontend/screenshot-review-shots
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -276,6 +321,14 @@ jobs:
 
       - name: Check product-status partition
         run: uv run --locked python scripts/check_product_status.py
+
+      # REQ-UIQ-11's freshness gate (#994): refuses without a ledger entry
+      # whose scope digest matches HEAD. The ledger ships empty, so this is
+      # expected to refuse until the operator approves the screenshot
+      # artifact the frontend job uploads and a matching entry lands in
+      # docs/requirements/0003-ziel-ui-screenshot-reviews.toml.
+      - name: Check screenshot review freshness
+        run: uv run --locked python scripts/check_screenshot_review.py
 
       - name: Check source
         run: uv run --locked ruff check .

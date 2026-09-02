@@ -7,8 +7,10 @@ import { runPageCopy } from "../../src/lib/runPageCopy";
  * The mockup-comparison screenshots of every surface, at both widths and in
  * both themes.
  *
- * Not a gate: an evidence run the operator asked for (REQ-UIQ-09's ritual).
- * It is skipped unless ATELIER2_SHOT_DIR names where the images go.
+ * Not a gate itself: the evidence run `scripts/check_screenshot_review.py`
+ * (REQ-UIQ-11) needs the operator to look at. Wired into CI's frontend job,
+ * which sets ATELIER2_SHOT_DIR and uploads the result as a build artifact;
+ * locally it is skipped unless that variable names where the images go.
  */
 const shotDir = process.env.ATELIER2_SHOT_DIR ?? "";
 
