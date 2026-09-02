@@ -12,16 +12,14 @@ import yaml
 from fastapi.testclient import TestClient
 from httpx import Response
 
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import runs, workflow_revisions
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import (
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     encode_canonical_base64,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from tests.scenarios.agents import (
@@ -34,6 +32,10 @@ from tests.scenarios.api import (
     durable_ports,
     event_poll_backoff,
     published_workflow_grammar,
+)
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
 )
 from tests.scenarios.runs import publish_v3_agent_bindings
 from tests.scenarios.workflows import (
@@ -57,16 +59,10 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     ever runs.
     """
     configured = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "v3-publication-tests",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "v3-publication-tests", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (failing_agent_executor_factory("exact", []),),
     )
     configured.initialize_storage()
