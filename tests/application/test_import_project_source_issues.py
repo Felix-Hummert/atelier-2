@@ -20,6 +20,7 @@ from atelier2.application.refusals import (
 )
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.issue_observation import (
@@ -33,6 +34,7 @@ from atelier2.ports.queue_projection import ObserveQueueItemsResult, QueueItemsO
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 
 PROJECT = ProjectId("studio")
+OBSERVED_AT = RecordedAt("2026-09-01T09:00:00Z")
 
 
 @dataclass
@@ -59,6 +61,9 @@ class _QueueRecording:
 def test_open_tracker_items_become_one_observation_batch_for_the_served_project() -> (
     None
 ):
+    # Titles and the observation's own read time are carried on the source's
+    # answer, but this use case still writes only the open set's references
+    # -- keeping them is a later slice's write, not this one's.
     source = FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
             (
@@ -68,7 +73,8 @@ def test_open_tracker_items_become_one_observation_batch_for_the_served_project(
                 ObservedOpenTrackerItem(
                     TrackerItemReference("gh:652"), "Second listed item"
                 ),
-            )
+            ),
+            OBSERVED_AT,
         )
     )
     queue = _QueueRecording(QueueItemsObserved(observed=2, newly_observed=1))
@@ -87,7 +93,12 @@ def test_open_tracker_items_become_one_observation_batch_for_the_served_project(
 @pytest.mark.parametrize(
     ("project", "source"),
     [
-        (None, FakeTrackerItemSource(open_items_answer=OpenTrackerItemsObserved(()))),
+        (
+            None,
+            FakeTrackerItemSource(
+                open_items_answer=OpenTrackerItemsObserved((), OBSERVED_AT)
+            ),
+        ),
         (PROJECT, None),
     ],
 )
@@ -140,7 +151,8 @@ def test_a_store_failure_is_translated_into_this_layers_word(
 ) -> None:
     source = FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
-            (ObservedOpenTrackerItem(TrackerItemReference("gh:1"), "Listed item"),)
+            (ObservedOpenTrackerItem(TrackerItemReference("gh:1"), "Listed item"),),
+            OBSERVED_AT,
         )
     )
 

@@ -4,9 +4,12 @@ The queue keys orchestration state by a reference into whichever tracker holds
 the item (REQ-QUEUE-14); this port is how those references enter. A source
 answers with the tracker's open items in the reference grammar its own adapter
 owns (`gh:<n>` for GitHub, ADR 0010), plus each item's title as the tracker
-last served it. The title is an observation of a tracker-owned fact, not core
-truth (ADR 0016, 2026-09-01 amendment). Labels and the item's own lifecycle do
-not cross this boundary. What becomes durable from an answer is the caller's
+last served it and the one instant that whole listing was read at. The title
+is an observation of a tracker-owned fact, not core truth, and carries its own
+age rather than an implied "now" (ADR 0016, 2026-09-01 amendment). Labels and
+the item's own lifecycle do not cross this boundary; closedness is instead
+whatever a caller derives by differencing successive open sets, never a flag
+this port answers. What becomes durable from an answer is the caller's
 decision; this port only observes.
 
 Reading one named item is this port's second operation, and no more than that
@@ -24,10 +27,11 @@ letting an unvalidated provider answer reach the queue's durable write.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from atelier2.contracts.queue_projection import TrackerItemReference
+from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.contracts.work_items import ObservedWorkItemRevision
 
 
@@ -41,9 +45,19 @@ class ObservedOpenTrackerItem:
 
 @dataclass(frozen=True)
 class OpenTrackerItemsObserved:
-    """Every open item the tracker holds right now, with its observed title."""
+    """Every item open right now, with its title, as of one read of the tracker.
+
+    `observed_at` is the one instant this whole listing was read at -- a title
+    kept from it is a caller's memory of what the tracker said then, not a
+    current fact, and a later reader needs that marker to tell a fresh title
+    from a stale one (ADR 0016, 2026-09-01 amendment). It defaults to the
+    reading clock so callers outside this observation's own contract, which do
+    not exercise freshness, need not name an instant they do not use; the live
+    adapter always supplies its own read time explicitly.
+    """
 
     items: tuple[ObservedOpenTrackerItem, ...]
+    observed_at: RecordedAt = field(default_factory=recorded_instant)
 
     __match_args__ = ("references",)
 

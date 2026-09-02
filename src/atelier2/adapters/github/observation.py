@@ -6,9 +6,11 @@ grammar this package owns -- `gh:<n>`, the same spelling the queue's admission
 door already receives (ADR 0010: what a tracker reference means is the
 connected platform adapter's contract). Nothing else of the listing crosses
 this boundary; titles cross as observations for the caller to decide whether to
-retain, while labels and an item's own lifecycle stay GitHub's (REQ-QUEUE-14).
-GitHub's state field remains deliberately unread; the importer derives
-closedness from the open-set difference (ADR 0016, 2026-09-01 amendment).
+retain, each dated by the one instant this source finished reading the whole
+open listing, while labels and an item's own lifecycle stay GitHub's
+(REQ-QUEUE-14). GitHub's state field remains deliberately unread; the importer
+derives closedness from the open-set difference (ADR 0016, 2026-09-01
+amendment).
 
 Reading one named item is the port's second operation (ADR 0010 decision 1,
 2026-08-26 amendment): it answers the observed revision of ADR 0010 §5 -- the
@@ -171,7 +173,11 @@ class LiveGitHubIssueSource:
             if malformed is not None:
                 return malformed
             if len(payload) < _ISSUES_PAGE_SIZE:
-                return OpenTrackerItemsObserved(tuple(items))
+                # One instant for the whole walk, taken once it is known to
+                # have completed: every title in this answer was read as part
+                # of the one listing this instant marks, not one clock read
+                # per page or per item.
+                return OpenTrackerItemsObserved(tuple(items), self.clock())
             page += 1
 
     def snapshot(
