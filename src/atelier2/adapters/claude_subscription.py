@@ -20,6 +20,7 @@ from atelier2.contracts.agent_transcripts import (
     MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
     ToolCalled,
     ToolReturned,
     TranscriptEvent,
@@ -235,6 +236,8 @@ _ENVELOPE_TYPE_FIELD = "type"
 _RESULT_ENVELOPE_TYPE = "result"
 _ERROR_FLAG_FIELD = "is_error"
 _RESULT_FIELD = "result"
+_TERMINAL_REASON_FIELD = "terminal_reason"
+_API_ERROR_STATUS_FIELD = "api_error_status"
 _STRUCTURED_OUTPUT_FIELD = "structured_output"
 
 # The stream line shapes this executor reads as steps. Everything else on the
@@ -867,6 +870,32 @@ def _usage_step(entry: dict[str, object]) -> Usage | None:
     return Usage(read or 0, written or 0, cached or 0, created or 0)
 
 
+def _terminal_refusal_step(entry: dict[str, object]) -> ProviderTerminalRefusal | None:
+    """The provider's own in-band refusal, where this terminal line named one.
+
+    A `result` line can declare `is_error: true` for a call the CLI never got
+    to run at all -- the API read and refused it before the first inference,
+    which is a fact about the provider, not about this process's own exit
+    (`#1029`). Only an explicit `true` counts: a line that never mentions the
+    flag, or spells it as anything other than the JSON boolean, is read as the
+    success path this vocabulary already knew. Once that flag is true, the step
+    is always kept: a refusal missing its own reason or text is still a refusal,
+    and reading it as unrecognised output would drop the one fact this line
+    exists to carry -- that the provider, not this process, ended the call.
+    """
+
+    if entry.get(_ERROR_FLAG_FIELD) is not True:
+        return None
+    text = entry.get(_RESULT_FIELD)
+    terminal_reason = entry.get(_TERMINAL_REASON_FIELD)
+    api_error_status = entry.get(_API_ERROR_STATUS_FIELD)
+    return ProviderTerminalRefusal(
+        terminal_reason if isinstance(terminal_reason, str) else "",
+        api_error_status if isinstance(api_error_status, str) else "",
+        text if isinstance(text, str) else "",
+    )
+
+
 def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent:
     """One content block as the step it is, or as the output it stays.
 
@@ -932,8 +961,9 @@ def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent,
             _block_step(block, tool_names) for block in _content_blocks(entry)
         )
     elif shape == _RESULT_ENVELOPE_TYPE:
+        refused = _terminal_refusal_step(entry)
         spent = _usage_step(entry)
-        steps = () if spent is None else (spent,)
+        steps = tuple(step for step in (refused, spent) if step is not None)
     return steps if steps else (UnrecognisedProviderOutput(line),)
 
 

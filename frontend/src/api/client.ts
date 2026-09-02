@@ -961,6 +961,17 @@ export const usageEventSchema = z
   })
   .strict();
 
+export const providerTerminalRefusalEventSchema = z
+  .object({
+    event: z.literal("provider-terminal-refusal"),
+    terminal_reason: transcriptStepTextSchema,
+    api_error_status: transcriptStepTextSchema,
+    text: transcriptStepTextSchema,
+    redacted: z.boolean(),
+    moment: transcriptEventMomentSchema,
+  })
+  .strict();
+
 export const unrecognisedProviderOutputEventSchema = z
   .object({
     event: z.literal("unrecognised-provider-output"),
@@ -987,6 +998,7 @@ export const attemptTranscriptSchema = z
           toolReturnedEventSchema,
           assistantTurnEventSchema,
           usageEventSchema,
+          providerTerminalRefusalEventSchema,
           unrecognisedProviderOutputEventSchema,
           transcriptTruncatedEventSchema,
         ]),

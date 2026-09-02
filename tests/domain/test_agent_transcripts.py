@@ -14,6 +14,7 @@ from atelier2.contracts.agent_transcripts import (
     TRANSCRIPT_STEP_CUT_MARKER,
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
     ToolCalled,
     ToolReturned,
     TranscriptEvent,
@@ -132,6 +133,36 @@ def test_a_credential_a_tool_printed_is_replaced_and_the_step_says_so() -> None:
             "event": TranscriptEventKind.TOOL_RETURNED.value,
             "name": "Bash",
             "result": f"ANTHROPIC_API_KEY={REDACTION_MARKER}\n",
+            "redacted": True,
+        }
+    ]
+
+
+def test_an_operator_home_path_in_a_provider_refusal_is_replaced_too() -> None:
+    """An operator's own filesystem path is scrubbed like a credential shape.
+
+    A provider refusal is otherwise kept verbatim (#1029); a path naming who
+    ran the call and how their machine is laid out must not survive into an
+    artifact nobody can delete.
+    """
+
+    transcript = AttemptTranscript.of(
+        [
+            ProviderTerminalRefusal(
+                "api_error",
+                "",
+                "reading /home/felix-hummert/git/atelier-2/AGENTS.md failed",
+            )
+        ]
+    )
+
+    assert "felix-hummert" not in transcript.document.decode("utf-8")
+    assert kept_events(transcript) == [
+        {
+            "event": "provider-terminal-refusal",
+            "terminal_reason": "api_error",
+            "api_error_status": "",
+            "text": f"reading {REDACTION_MARKER} failed",
             "redacted": True,
         }
     ]
@@ -271,6 +302,19 @@ def test_a_transcript_that_fits_loses_nothing_and_keeps_its_order() -> None:
             id="usage",
         ),
         pytest.param(
+            ProviderTerminalRefusal(
+                "rate_limit_error", "429", "Not logged in · Please run /login"
+            ),
+            {
+                "event": "provider-terminal-refusal",
+                "terminal_reason": "rate_limit_error",
+                "api_error_status": "429",
+                "text": "Not logged in · Please run /login",
+                "redacted": False,
+            },
+            id="provider terminal refusal",
+        ),
+        pytest.param(
             UnrecognisedProviderOutput("Error: connection reset"),
             {
                 "event": "unrecognised-provider-output",
@@ -359,6 +403,19 @@ def test_a_truncation_marker_stands_for_a_real_loss() -> None:
                 "cache_creation_input_tokens": 128,
             },
             id="usage",
+        ),
+        pytest.param(
+            ProviderTerminalRefusal(
+                "rate_limit_error", "429", "Not logged in · Please run /login"
+            ),
+            {
+                "event": "provider-terminal-refusal",
+                "terminal_reason": "rate_limit_error",
+                "api_error_status": "429",
+                "text": "Not logged in · Please run /login",
+                "redacted": False,
+            },
+            id="provider terminal refusal",
         ),
         pytest.param(
             UnrecognisedProviderOutput("Error: connection reset"),
