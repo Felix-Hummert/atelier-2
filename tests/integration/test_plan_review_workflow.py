@@ -14,13 +14,12 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -34,7 +33,6 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.artifacts import Artifact
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
@@ -68,6 +66,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
 PLAN_REVIEW_DOCUMENT = (WORKFLOWS_DIRECTORY / "plan-review.yaml").read_bytes()
@@ -146,14 +148,8 @@ def runtime_over(
     root: Path, provider: RecordingAgentExecutorFactoryV2, scratch_root: Path
 ) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(
-            root / "atelier.sqlite", "plan-review-test", agent_scratch_root=scratch_root
-        ),
-        LoopbackEffectAdapterFactory(
-            root / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_runtime_settings(root, "plan-review-test", scratch_root),
+        canonical_loopback_effects(root),
         (provider,),
     )
 
