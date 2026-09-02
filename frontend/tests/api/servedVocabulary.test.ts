@@ -10,6 +10,7 @@ import {
   RUN_NOT_CANCELLABLE_REASONS,
   RUN_STATES_V3,
   problemDefinitions,
+  agentConfigurationRevisionListItemObjectSchema,
   agentConfigurationRevisionPageSchema,
   agentDefinitionRevisionListItemSchema,
   agentDefinitionRevisionPageSchema,
@@ -456,6 +457,14 @@ describe("the served vocabulary", () => {
 
     expect(Object.keys(agentConfigurationRevisionPageSchema.shape).sort()).toEqual(
       Object.keys(served?.properties ?? {}).sort()
+    );
+    expect(
+      Object.keys(agentConfigurationRevisionListItemObjectSchema.shape).sort()
+    ).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.AgentConfigurationRevisionListItemResource
+          ?.properties ?? {}
+      ).sort()
     );
   });
 
