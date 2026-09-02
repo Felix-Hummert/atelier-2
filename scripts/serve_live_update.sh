@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly deploy_remote="origin"
+readonly deploy_branch="main"
+readonly serve_unit="atelier2-serve.service"
+readonly health_url="http://127.0.0.1:8422/atelier/api/v1/health"
+
+log() {
+  echo "serve live update: $1"
+}
+
+fail() {
+  echo "serve live update: $1" >&2
+  exit 1
+}
+
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+frontend="${repository}/frontend"
+root_package="${repository}/package.json"
+
+if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+  data_home="${XDG_DATA_HOME}"
+elif [[ -n "${HOME:-}" ]]; then
+  data_home="${HOME}/.local/share"
+else
+  fail "HOME and XDG_DATA_HOME are both unset; the live store cannot be located"
+fi
+live_store="${data_home}/atelier2/live-store"
+database="${live_store}/atelier.sqlite"
+
+build_checkout() {
+  log "syncing the locked Python environment"
+  (cd "${repository}" && uv sync --locked) || return 1
+
+  log "building the frontend"
+  (cd "${frontend}" && npm ci && npm run build) || return 1
+  [[ -s "${frontend}/dist/index.html" ]] || {
+    echo "serve live update: frontend/dist/index.html is missing or empty after the build" >&2
+    return 1
+  }
+}
+
+prepare_root_package() {
+  log "checking the root package.json stub"
+  [[ -e "${root_package}" ]] || return 0
+
+  if git -C "${repository}" ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
+    echo "serve live update: root package.json is tracked; refusing to remove it" >&2
+    return 1
+  fi
+  if [[ -s "${root_package}" ]]; then
+    echo "serve live update: untracked root package.json is not empty; refusing to remove it" >&2
+    return 1
+  fi
+  if ! git -C "${repository}" check-ignore --quiet -- package.json; then
+    echo "serve live update: zero-byte root package.json is not excluded; refusing to remove it" >&2
+    return 1
+  fi
+
+  log "removing excluded zero-byte root package.json stub"
+  rm -- "${root_package}"
+}
+
+backup_file() {
+  local source="$1" destination="$2" source_size destination_size
+  cp -- "${source}" "${destination}" || return 1
+  [[ -f "${destination}" ]] || return 1
+  source_size="$(stat -c %s -- "${source}")" || return 1
+  destination_size="$(stat -c %s -- "${destination}")" || return 1
+  [[ "${source_size}" == "${destination_size}" ]] || {
+    echo "serve live update: backup size mismatch for ${source}" >&2
+    return 1
+  }
+}
+
+backup_live_store() {
+  local backup_directory filename source
+  backup_directory="${live_store}/backups/pre-redeploy-$(date -u +%Y%m%dT%H%M%SZ)"
+
+  [[ -f "${database}" ]] || {
+    echo "serve live update: live database is missing: ${database}" >&2
+    return 1
+  }
+  [[ -f "${live_store}/external.sqlite" ]] || {
+    echo "serve live update: live effect store is missing: ${live_store}/external.sqlite" >&2
+    return 1
+  }
+  mkdir -p -- "${live_store}/backups" || return 1
+  mkdir -- "${backup_directory}" || return 1
+
+  for filename in atelier.sqlite atelier.sqlite-wal atelier.sqlite-shm external.sqlite; do
+    source="${live_store}/${filename}"
+    [[ -e "${source}" ]] || continue
+    backup_file "${source}" "${backup_directory}/${filename}" || return 1
+  done
+}
+
+rollback_previous_serve() {
+  log "migration failed; restoring ${previous_commit}"
+  git -C "${repository}" reset --hard "${previous_commit}" || return 1
+  build_checkout || return 1
+  log "starting the previous atelier2-serve.service"
+  systemctl --user start "${serve_unit}" || return 1
+}
+
+served_status=""
+served_commit=""
+read_served_health() {
+  local body
+  body="$(curl -fsS --max-time 5 "${health_url}")" || return 1
+  served_status="$(grep -oE '"status"[[:space:]]*:[[:space:]]*"[a-z_]+"' <<<"${body}" \
+    | head -n 1 | sed -E 's/^.*"([a-z_]+)"$/\1/')" || true
+  served_commit="$(grep -oE '"source_commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' <<<"${body}" \
+    | head -n 1 | sed -E 's/^.*"([0-9a-f]{40})"$/\1/')" || true
+  [[ -n "${served_status}" && -n "${served_commit}" ]]
+}
+
+log "checking the deploy checkout"
+current_branch="$(git -C "${repository}" rev-parse --abbrev-ref HEAD)" \
+  || fail "the deploy checkout branch is unreadable"
+[[ "${current_branch}" == "${deploy_branch}" ]] \
+  || fail "the deploy checkout is on ${current_branch@Q}, not ${deploy_branch}"
+worktree_status="$(git -C "${repository}" status --porcelain -uall)" \
+  || fail "the deploy checkout status is unreadable"
+[[ -z "${worktree_status}" ]] \
+  || fail "the deploy checkout is not clean; refusing to touch operator work"
+previous_commit="$(git -C "${repository}" rev-parse HEAD)" \
+  || fail "the previous deploy commit is unreadable"
+
+log "fast-forwarding main"
+git -C "${repository}" pull --ff-only --quiet "${deploy_remote}" "${deploy_branch}" \
+  || fail "main could not fast-forward from ${previous_commit}"
+target_commit="$(git -C "${repository}" rev-parse HEAD)" \
+  || fail "the fast-forwarded deploy commit is unreadable"
+
+prepare_root_package || fail "the root package.json safety check refused the update"
+build_checkout || fail "the new checkout could not be built; the live serve was not stopped"
+
+log "stopping atelier2-serve.service"
+systemctl --user stop "${serve_unit}" \
+  || fail "atelier2-serve.service could not be stopped"
+
+log "backing up the live store"
+if ! backup_live_store; then
+  if systemctl --user start "${serve_unit}"; then
+    fail "live store backup failed; restarted the live serve"
+  fi
+  fail "live serve is DOWN, operator action needed"
+fi
+
+log "migrating the live store"
+if ! (cd "${repository}" && uv run --locked atelier2 migrate --database "${database}"); then
+  if rollback_previous_serve; then
+    fail "migration failed; restored the previous commit and restarted the live serve"
+  fi
+  fail "live serve is DOWN, operator action needed"
+fi
+
+log "starting atelier2-serve.service"
+systemctl --user start "${serve_unit}" \
+  || fail "live serve is DOWN, operator action needed"
+
+log "checking live serve health"
+read_served_health \
+  || fail "live serve health is unavailable after start; the update is unverified"
+[[ "${served_status}" == "serving" ]] \
+  || fail "live serve health reports ${served_status@Q}, not serving"
+[[ "${served_commit}" == "${target_commit}" ]] \
+  || fail "live serve commit ${served_commit@Q} does not match the deployed commit ${target_commit}"
+
+log "now serves ${target_commit}"
