@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -63,7 +62,10 @@ from atelier2.contracts.runs import (
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.effect_requests import open_pull_request_request_for_output
-from tests.scenarios.run_waiting import wait_for_run_state
+from tests.scenarios.run_waiting import (
+    wait_for_run_state,
+    wait_for_workflow_completion,
+)
 from tests.scenarios.runs import (
     complete_v3_agent_node,
     prepare_and_launch_graph_action,
@@ -81,7 +83,6 @@ from tests.scenarios.workflows import (
 )
 
 RUN = RunId("run-1")
-TIMEOUT_SECONDS = 5.0
 PROVIDER_OUTPUT = b'"exact-request"'
 ACTION_REQUEST = open_pull_request_request_for_output(PROVIDER_OUTPUT)
 
@@ -173,24 +174,6 @@ def prepared(
         yield runtime, intent, external
     finally:
         runtime.close()
-
-
-def wait_for_workflow(runtime: DbosRuntime, workflow_id: str) -> str:
-    deadline = time.monotonic() + TIMEOUT_SECONDS
-    status = "PENDING"
-    while status != "SUCCESS" and time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            status = str(
-                connection.scalar(
-                    sa.text(
-                        "SELECT status FROM workflow_status WHERE workflow_uuid=:id"
-                    ),
-                    {"id": workflow_id},
-                )
-            )
-        if status != "SUCCESS":
-            time.sleep(0.025)
-    return status
 
 
 def prepare_with_factory(
@@ -356,9 +339,9 @@ def test_authoritative_absence_executes_once_and_atomically_confirms_the_run(
 
     runtime.launch()
 
-    assert (
-        wait_for_workflow(runtime, effect_workflow_id_for(intent.binding.logical_key))
-        == "SUCCESS"
+    wait_for_workflow_completion(
+        effect_workflow_id_for(intent.binding.logical_key),
+        "the effect workflow after authoritative absence",
     )
     wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
     with runtime.engine.connect() as connection:
@@ -399,9 +382,9 @@ def test_existing_effect_is_confirmed_by_adapter_readback_without_reexecution(
 
     runtime.launch()
 
-    assert (
-        wait_for_workflow(runtime, effect_workflow_id_for(intent.binding.logical_key))
-        == "SUCCESS"
+    wait_for_workflow_completion(
+        effect_workflow_id_for(intent.binding.logical_key),
+        "the effect workflow after adapter readback",
     )
     with runtime.engine.connect() as connection:
         assert (
@@ -433,11 +416,9 @@ def test_unknown_waits_without_an_effect_then_an_operator_command_finishes(
     runtime, intent, _external = prepare_with_factory(tmp_path, factory)
     try:
         runtime.launch()
-        assert (
-            wait_for_workflow(
-                runtime, effect_workflow_id_for(intent.binding.logical_key)
-            )
-            == "SUCCESS"
+        wait_for_workflow_completion(
+            effect_workflow_id_for(intent.binding.logical_key),
+            "the effect workflow before operator reconciliation",
         )
         with runtime.engine.connect() as connection:
             assert connection.execute(
@@ -472,9 +453,9 @@ def test_unknown_waits_without_an_effect_then_an_operator_command_finishes(
         )
         submitted = reconcile_command(intent, determination)
         submit_reconcile_command(runtime.engine, runtime.settings, submitted)
-        assert (
-            wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))
-            == "SUCCESS"
+        wait_for_workflow_completion(
+            reconcile_workflow_id_for(submitted.command_id),
+            "the operator reconciliation workflow",
         )
         wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
 
@@ -535,11 +516,9 @@ def test_authorized_absence_keeps_operator_provenance_after_later_readback(
     runtime, intent, _external = prepare_with_factory(tmp_path, factory)
     try:
         runtime.launch()
-        assert (
-            wait_for_workflow(
-                runtime, effect_workflow_id_for(intent.binding.logical_key)
-            )
-            == "SUCCESS"
+        wait_for_workflow_completion(
+            effect_workflow_id_for(intent.binding.logical_key),
+            "the effect workflow before authoritative reconciliation",
         )
         assert factory.opened is not None
         if later_outcome == "found":
@@ -548,9 +527,9 @@ def test_authorized_absence_keeps_operator_provenance_after_later_readback(
         submitted = reconcile_command(intent, OperatorAuthoritativeAbsence())
         submit_reconcile_command(runtime.engine, runtime.settings, submitted)
 
-        assert (
-            wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))
-            == "SUCCESS"
+        wait_for_workflow_completion(
+            reconcile_workflow_id_for(submitted.command_id),
+            "the authoritative reconciliation workflow",
         )
         with runtime.engine.connect() as connection:
             assert (
@@ -579,19 +558,17 @@ def test_authorized_execution_unknown_reopens_the_reconciliation_door(
     runtime, intent, _external = prepare_with_factory(tmp_path, factory)
     try:
         runtime.launch()
-        assert (
-            wait_for_workflow(
-                runtime, effect_workflow_id_for(intent.binding.logical_key)
-            )
-            == "SUCCESS"
+        wait_for_workflow_completion(
+            effect_workflow_id_for(intent.binding.logical_key),
+            "the effect workflow before reopening reconciliation",
         )
         factory.execute_unknown = True
         submitted = reconcile_command(intent, OperatorAuthoritativeAbsence())
         submit_reconcile_command(runtime.engine, runtime.settings, submitted)
 
-        assert (
-            wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))
-            == "SUCCESS"
+        wait_for_workflow_completion(
+            reconcile_workflow_id_for(submitted.command_id),
+            "the reconciliation workflow that reopens reconciliation",
         )
         with runtime.engine.connect() as connection:
             assert connection.execute(
