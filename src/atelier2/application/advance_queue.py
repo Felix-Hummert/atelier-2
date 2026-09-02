@@ -29,6 +29,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemSnapshot,
     QueueItemState,
     QueueLaunchBinding,
+    queue_start_order_key,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_bindings import AnyRun
@@ -116,14 +117,7 @@ def advance_queue(
         if page.next_after is None:
             break
         after = page.next_after
-    ordered = sorted(
-        admitted_items,
-        key=lambda item: (
-            item.proposal is None,
-            item.proposal.priority.rank if item.proposal is not None else 0,
-            item.item_reference.item_id.value,
-        ),
-    )
+    ordered = sorted(admitted_items, key=queue_start_order_key)
     return tuple(_advance_one(item, queue, catalog, starter) for item in ordered)
 
 
