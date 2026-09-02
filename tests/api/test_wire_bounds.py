@@ -116,15 +116,6 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentConfigurationRevisionListItemResource.provider_id": (
         MAXIMUM_PROVIDER_ID_CHARACTERS
     ),
-    "AgentReceiptResource.executor_operational_identity": (
-        MAXIMUM_AGENT_FIELD_CHARACTERS
-    ),
-    "AgentReceiptResource.executor_revision": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "AgentReceiptResource.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "AgentReceiptResource.node_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "AgentReceiptResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "AgentReceiptResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
-    "AgentReceiptResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentInterruptedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "RecognizedAgentDefinitionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,

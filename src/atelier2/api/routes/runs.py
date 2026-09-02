@@ -28,7 +28,6 @@ from atelier2.api.problems import (
 )
 from atelier2.api.projection.runs import (
     node_detail_resource,
-    run_receipt_resource,
     run_resource,
 )
 from atelier2.api.references import encode_public_run_reference, parse_revision_hash
@@ -50,7 +49,6 @@ from atelier2.api.wire.resources import (
     InvalidFieldResource,
     NodeDetailResource,
     OperatorFoundDeterminationResource,
-    RunReceiptResource,
     RunResourceV3,
     UncastRoleResource,
     VersionedRunPageResource,
@@ -103,7 +101,6 @@ from atelier2.application.read_runs import (
     NodeDetailRead,
     NodeNotFound,
     RunNotFound,
-    RunReceiptsRead,
     RunsListed,
 )
 from atelier2.application.read_work_item_snapshot import WorkItemNotInTracker
@@ -465,38 +462,6 @@ async def get_node_detail_route(
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
             raise ApiProblem("durable-projection-unrepresentable")
-        case DurableStateCorrupt():
-            raise ApiProblem("durable-state-corrupt")
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-@router.get(
-    API_PREFIX + "/runs/{public_ref}/receipt",
-    response_model=RunReceiptResource,
-)
-async def get_run_receipt_route(
-    public_ref: str, context: ApiContext = api_context_dependency
-) -> RunReceiptResource:
-    """The agent receipts this run has written.
-
-    One address for the receipts that hang in the terminal-hash chain. A run
-    that has not completed an agent yet answers with an empty list. A missing
-    run is named, not dressed as empty.
-    """
-
-    run_id = decode_public_reference(public_ref, context.limits)
-    result = await run_control_query(
-        context.control_runner,
-        lambda: context.use_cases.list_run_receipts(run_id),
-    )
-    match result:
-        case RunReceiptsRead(items):
-            return run_receipt_resource(items)
-        case RunNotFound():
-            raise ApiProblem("run-not-found")
-        case ReadUnavailable(detail):
-            raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

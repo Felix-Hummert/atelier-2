@@ -111,7 +111,6 @@ from atelier2.ports.run_queries import (
     NodeDetailFound,
     NodeQueryMissing,
     RunQueryMissing,
-    RunReceiptsFound,
 )
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.integration.test_v3_output_enforcement import NODE as REFUSAL_NODE
@@ -358,15 +357,13 @@ def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
     assert detail.provenance.request_hash == handed.request_hash.value
     assert detail.provenance.request_hash != detail.job_hash
 
-    receipts = durable_queries(runtime.engine).list_run_receipts(RUN)
-    assert isinstance(receipts, RunReceiptsFound), receipts
-    assert {item.node_id for item in receipts.items} == {"implement", "review"}
-    implement = next(item for item in receipts.items if item.node_id == "implement")
-    assert implement.receipt_hash.value == detail.provenance.receipt_hash
-    assert implement.request_hash.value == detail.provenance.request_hash
-    assert implement.output_bytes == ANSWER
-    assert implement.auth_profile_revision_hash.value
-    assert implement.binding_set_hash.value
+    # Every agent node of the chain wrote a receipt, not just the one asked about
+    # above: a run that receipts its first agent and forgets the next would still
+    # answer this read correctly for `implement`.
+    reviewed = durable_queries(runtime.engine).get_node_detail(RUN, "review")
+    assert isinstance(reviewed, NodeDetailFound), reviewed
+    assert reviewed.detail.provenance is not None
+    assert reviewed.detail.provenance.receipt_hash != detail.provenance.receipt_hash
 
 
 WAIT_ANSWER = b'"looks correct, ship it"'
@@ -697,7 +694,9 @@ def test_a_node_the_run_does_not_declare_is_refused_by_name(
         NodeQueryMissing,
     )
     assert isinstance(
-        durable_queries(runtime.engine).list_run_receipts(RunId("not-a-run")),
+        durable_queries(runtime.engine).get_node_detail(
+            RunId("not-a-run"), "implement"
+        ),
         RunQueryMissing,
     )
 
@@ -724,9 +723,11 @@ def test_a_node_whose_predecessor_has_not_written_carries_no_refusal(
     assert detail.job is None
     assert detail.answer is None
     assert detail.provenance is None
-    receipts = durable_queries(runtime.engine).list_run_receipts(RUN)
-    assert isinstance(receipts, RunReceiptsFound), receipts
-    assert receipts.items == ()
+    # Nothing has receipted anywhere in this run yet, so the waiting node's empty
+    # provenance is the run's state and not one node's accident.
+    started = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+    assert isinstance(started, NodeDetailFound), started
+    assert started.detail.provenance is None
 
 
 @pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")

@@ -103,7 +103,6 @@ def rendered_document(document: dict[str, Any]) -> str:
 
 
 NODE_DETAIL_PATH = API_PREFIX + "/runs/{public_ref}/nodes/{node_id}"
-RECEIPT_PATH = API_PREFIX + "/runs/{public_ref}/receipt"
 
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
@@ -141,7 +140,6 @@ EXPECTED_PATHS = {
     API_PREFIX + "/runs/{public_ref}",
     RUN_FORK_PATH,
     NODE_DETAIL_PATH,
-    RECEIPT_PATH,
     API_PREFIX + "/runs/{public_ref}/answers",
     API_PREFIX + "/runs/{public_ref}/reconciliations",
     CANCELLATION_PATH,
@@ -280,7 +278,6 @@ EXPECTED_ROUTE_SEQUENCE = (
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
     ("POST", RUN_FORK_PATH, "fork_run_route"),
     ("GET", NODE_DETAIL_PATH, "get_node_detail_route"),
-    ("GET", RECEIPT_PATH, "get_run_receipt_route"),
     ("POST", CANCELLATION_PATH, "cancel_agent_attempt_route"),
     ("POST", API_PREFIX + "/runs/{public_ref}/answers", "answer_run_route"),
     (
@@ -347,7 +344,6 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
     (RUN_FORK_PATH, "post"): {"200", "201"},
-    (RECEIPT_PATH, "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}/answers", "post"): {"200", "202"},
     (API_PREFIX + "/runs/{public_ref}/reconciliations", "post"): {"200", "202"},
     (CANCELLATION_PATH, "post"): {"200", "202"},

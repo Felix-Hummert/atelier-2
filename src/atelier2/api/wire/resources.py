@@ -432,45 +432,6 @@ class ProjectRootRevisionResource(ApiModel):
     project_root_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
-class AgentReceiptResource(ApiModel):
-    """One agent receipt, every binding dimension its hash folds, and no secret."""
-
-    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    run_id: str = Field(min_length=1)
-    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    node_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    binding_set_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    provider_id: str = Field(min_length=1, max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
-    auth_mode: Literal["subscription", "api_key"]
-    model: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    executor_revision: str = Field(
-        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
-    )
-    executor_operational_identity: str = Field(
-        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
-    )
-    output_base64: str
-    output_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    receipt_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class RunReceiptResource(ApiModel):
-    """The agent receipts a run has written.
-
-    A run writes one receipt per completed agent node. A started run with no
-    completion yet is an empty list. A missing run is a named refusal, not this
-    resource.
-    """
-
-    items: tuple[AgentReceiptResource, ...]
-
-
 class WorkflowNodePreviewResourceV3(ApiModel):
     """One node of a published V3 revision, as an excerpt, never as the node.
 

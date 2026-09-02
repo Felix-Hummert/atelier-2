@@ -16,7 +16,6 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
-from atelier2.contracts.agents import AgentReceiptV2
 from atelier2.contracts.run_projections import (
     NodeDetail,
     RunPage,
@@ -29,7 +28,6 @@ from atelier2.ports.run_queries import (
     RunFound,
     RunQueries,
     RunQueryMissing,
-    RunReceiptsFound,
 )
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge as PortProjectionTooLarge,
@@ -86,16 +84,6 @@ type GetNodeDetailUseCaseResult = (
 )
 
 
-@dataclass(frozen=True)
-class RunReceiptsRead:
-    items: tuple[AgentReceiptV2, ...]
-
-
-type ListRunReceiptsUseCaseResult = (
-    RunReceiptsRead | RunNotFound | ReadUnavailable | DurableStateCorrupt
-)
-
-
 def get_run(
     run_id: RunId,
     queries: RunQueries,
@@ -132,24 +120,6 @@ def get_node_detail(
             return ReadUnavailable(detail)
         case PortProjectionTooLarge():
             return ProjectionTooLarge()
-        case QueryDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def list_run_receipts(
-    run_id: RunId,
-    queries: RunQueries,
-) -> ListRunReceiptsUseCaseResult:
-    """The agent receipts this run has written, or why they cannot be read."""
-    match queries.list_run_receipts(run_id):
-        case RunReceiptsFound(items):
-            return RunReceiptsRead(items)
-        case RunQueryMissing():
-            return RunNotFound()
-        case PortReadUnavailable(detail):
-            return ReadUnavailable(detail)
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:
