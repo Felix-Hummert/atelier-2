@@ -1077,10 +1077,9 @@ def _decoded_claude_answer(
         structured_output = envelope[_STRUCTURED_OUTPUT_FIELD]
         declared_schema = json.loads(command.declared_output_schema_bytes)
         if not _is_object_schema(declared_schema):
-            if (
-                not isinstance(structured_output, dict)
-                or _STRUCTURED_OUTPUT_WRAPPER_KEY not in structured_output
-            ):
+            if not isinstance(structured_output, dict) or structured_output.keys() != {
+                _STRUCTURED_OUTPUT_WRAPPER_KEY
+            }:
                 return _unusable_provider_answer(transcript)
             structured_output = structured_output[_STRUCTURED_OUTPUT_WRAPPER_KEY]
         output_bytes = json.dumps(
