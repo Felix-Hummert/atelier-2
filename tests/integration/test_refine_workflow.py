@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -21,6 +20,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -71,6 +71,10 @@ from tests.scenarios.api import durable_queries
 from tests.scenarios.durable_state import (
     canonical_loopback_effects,
     canonical_runtime_settings,
+)
+from tests.scenarios.run_waiting import (
+    wait_for_run_state,
+    wait_for_workflow_completion,
 )
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
@@ -226,21 +230,6 @@ def artifact_order(runtime: DbosRuntime, name: str, content: bytes) -> AuthoredO
     return AuthoredOrder(name, ArtifactOrderValue(published.artifact.artifact_hash))
 
 
-def wait_for_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> None:
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            if (
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
-                )
-                == state.value
-            ):
-                return
-        time.sleep(0.025)
-    raise AssertionError(f"refine run did not reach {state.value}")
-
-
 def start_refine(
     runtime: DbosRuntime,
     workflow: WorkflowRevision,
@@ -263,22 +252,49 @@ def start_refine(
     assert isinstance(created, DurableRunCreated), created
 
 
-def wait_for_round(runtime: DbosRuntime, run_id: RunId, round_ordinal: int) -> None:
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
+def wait_for_condition_after_workflow_completion(
+    workflow_id: str,
+    awaited: str,
+    condition: Callable[[], bool],
+) -> None:
+    wait_for_workflow_completion(workflow_id, awaited)
+    if not condition():
+        raise AssertionError(f"workflow completed without satisfying {awaited}")
+
+
+def wait_for_round(
+    runtime: DbosRuntime,
+    workflow: WorkflowRevision,
+    run_id: RunId,
+    round_ordinal: int,
+) -> None:
+    def is_waiting_in_round() -> bool:
         with runtime.engine.connect() as connection:
             observed = connection.execute(
                 sa.select(runs.c.state, runs.c.current_round_ordinal).where(
                     runs.c.run_id == run_id.value
                 )
             ).one()
-        if (str(observed.state), int(observed.current_round_ordinal)) == (
+        return (str(observed.state), int(observed.current_round_ordinal)) == (
             RunState.WAITING_INPUT.value,
             round_ordinal,
-        ):
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"refine run did not wait in round {round_ordinal}")
+        )
+
+    wait_for_condition_after_workflow_completion(
+        node_workflow_id_for(
+            NodeExecutionId.for_node(
+                run_id,
+                workflow.revision_hash,
+                "rule_expectation",
+                round_ordinal,
+            )
+        ),
+        (
+            f"refine run {run_id.value!r} to have state "
+            f"{RunState.WAITING_INPUT.value!r} in round {round_ordinal}"
+        ),
+        is_waiting_in_round,
+    )
 
 
 def rule_expectation(
@@ -316,7 +332,7 @@ def test_a_refine_round_returns_schema_valid_expectation_proposal(
     start_refine(runtime, workflow, bindings, run_id)
 
     runtime.launch()
-    wait_for_round(runtime, run_id, 1)
+    wait_for_round(runtime, workflow, run_id, 1)
 
     assert provider.opened is not None
     handed = provider.opened.requests[0].job_bytes
@@ -339,7 +355,7 @@ def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
     start_refine(runtime, workflow, bindings, run_id)
 
     runtime.launch()
-    wait_for_round(runtime, run_id, 1)
+    wait_for_round(runtime, workflow, run_id, 1)
     first_question = durable_queries(runtime.engine).get_node_detail(
         run_id, "rule_expectation"
     )
@@ -350,7 +366,7 @@ def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
         rule_expectation(runtime, workflow, run_id, 1, RULE_YES), AnswerAcceptedPending
     )
 
-    wait_for_round(runtime, run_id, 2)
+    wait_for_round(runtime, workflow, run_id, 2)
     assert provider.opened is not None
     first_round_decision = next(
         request.job_bytes
@@ -375,7 +391,7 @@ def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
         rule_expectation(runtime, workflow, run_id, 2, RULE_SHOW_ME),
         AnswerAcceptedPending,
     )
-    wait_for_round(runtime, run_id, 3)
+    wait_for_round(runtime, workflow, run_id, 3)
     second_round_decision = next(
         request.job_bytes
         for request in provider.opened.requests
@@ -398,7 +414,7 @@ def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
     assert isinstance(
         rule_expectation(runtime, workflow, run_id, 3, RULE_NO), AnswerAcceptedPending
     )
-    wait_for_state(runtime, run_id, RunState.COMPLETED)
+    wait_for_run_state(runtime.engine, run_id, RunState.COMPLETED)
 
     with runtime.engine.connect() as connection:
         run = (
@@ -428,7 +444,7 @@ def test_a_schema_invalid_refine_answer_fails_admission(
     start_refine(runtime, workflow, bindings, run_id)
 
     runtime.launch()
-    wait_for_state(runtime, run_id, RunState.FAILED)
+    wait_for_run_state(runtime.engine, run_id, RunState.FAILED)
 
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "refine")
     assert isinstance(detail, NodeDetailFound), detail
