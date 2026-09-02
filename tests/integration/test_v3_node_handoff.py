@@ -38,13 +38,12 @@ from atelier2.adapters.dbos.run_store import (
     load_run_inputs,
     run_from_record_with_bindings,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import (
     InvalidWorkflowDocument,
     parse_executable_workflow_document,
@@ -71,7 +70,6 @@ from atelier2.contracts.agents import (
     ProviderId,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
@@ -110,6 +108,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 
 TEXT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
 PROVIDER_OUTPUT = b'"the exact sentence this node produced"'
@@ -261,16 +263,8 @@ def provider() -> RecordingAgentExecutorFactoryV2:
 def runtime_over(root: Path, provider: RecordingAgentExecutorFactoryV2) -> DbosRuntime:
     """A runtime over the durable state in this directory, as a restart builds one."""
     return DbosRuntime(
-        DbosRuntimeSettings(
-            root / "atelier.sqlite",
-            "v3-chain-test",
-            agent_scratch_root=agent_scratch_root(root),
-        ),
-        LoopbackEffectAdapterFactory(
-            root / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_runtime_settings(root, "v3-chain-test", agent_scratch_root(root)),
+        canonical_loopback_effects(root),
         (provider,),
     )
 
