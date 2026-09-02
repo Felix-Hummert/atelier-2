@@ -905,6 +905,7 @@ PublicAttemptStateName = Literal[
     PublicAgentAttemptState.CANCELLED,
     PublicAgentAttemptState.INTERRUPTED,
     PublicAgentAttemptState.FAILED,
+    PublicAgentAttemptState.SUCCEEDED,
 ]
 
 # Same closed-union form: the served document keeps the five tokens inline
@@ -937,10 +938,10 @@ NodeStateName = Literal[
 class NodeRailAttemptResource(ApiModel):
     """The agent attempt one node tells a reader about.
 
-    A succeeded attempt carries no state: the public vocabulary has no word for
-    success, because the same transition that records it moves the run past the
-    attempt. The node's own `succeeded` is what says the work is done — which is
-    why no reader has to invent a word for it any more.
+    A succeeded attempt carries a state only where the run stands still on that
+    node's effect, owed the operator's reconciliation: everywhere else the same
+    transition that records the success moves the run past the attempt, and the
+    node's own `succeeded` is what says the work is done.
     """
 
     ordinal: Literal[1, 2]
