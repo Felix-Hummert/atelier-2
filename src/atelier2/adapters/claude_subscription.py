@@ -878,20 +878,21 @@ def _terminal_refusal_step(entry: dict[str, object]) -> ProviderTerminalRefusal 
     which is a fact about the provider, not about this process's own exit
     (`#1029`). Only an explicit `true` counts: a line that never mentions the
     flag, or spells it as anything other than the JSON boolean, is read as the
-    success path this vocabulary already knew.
+    success path this vocabulary already knew. Once that flag is true, the step
+    is always kept: a refusal missing its own reason or text is still a refusal,
+    and reading it as unrecognised output would drop the one fact this line
+    exists to carry -- that the provider, not this process, ended the call.
     """
 
     if entry.get(_ERROR_FLAG_FIELD) is not True:
         return None
     text = entry.get(_RESULT_FIELD)
-    if not isinstance(text, str):
-        return None
     terminal_reason = entry.get(_TERMINAL_REASON_FIELD)
     api_error_status = entry.get(_API_ERROR_STATUS_FIELD)
     return ProviderTerminalRefusal(
         terminal_reason if isinstance(terminal_reason, str) else "",
         api_error_status if isinstance(api_error_status, str) else "",
-        text,
+        text if isinstance(text, str) else "",
     )
 
 

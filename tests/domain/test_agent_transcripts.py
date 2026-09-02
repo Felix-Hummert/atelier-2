@@ -138,6 +138,36 @@ def test_a_credential_a_tool_printed_is_replaced_and_the_step_says_so() -> None:
     ]
 
 
+def test_an_operator_home_path_in_a_provider_refusal_is_replaced_too() -> None:
+    """An operator's own filesystem path is scrubbed like a credential shape.
+
+    A provider refusal is otherwise kept verbatim (#1029); a path naming who
+    ran the call and how their machine is laid out must not survive into an
+    artifact nobody can delete.
+    """
+
+    transcript = AttemptTranscript.of(
+        [
+            ProviderTerminalRefusal(
+                "api_error",
+                "",
+                "reading /home/felix-hummert/git/atelier-2/AGENTS.md failed",
+            )
+        ]
+    )
+
+    assert "felix-hummert" not in transcript.document.decode("utf-8")
+    assert kept_events(transcript) == [
+        {
+            "event": "provider-terminal-refusal",
+            "terminal_reason": "api_error",
+            "api_error_status": "",
+            "text": f"reading {REDACTION_MARKER} failed",
+            "redacted": True,
+        }
+    ]
+
+
 def test_a_credential_inside_a_step_too_wide_to_keep_is_still_replaced() -> None:
     canary = planted_credential("AKIA", "7QF3NOTAREALKEY0")
     result = f"{canary} " + widest_step("x")

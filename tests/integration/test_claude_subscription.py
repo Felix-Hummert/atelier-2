@@ -2528,6 +2528,38 @@ def test_a_call_the_provider_refused_before_inference_names_its_own_reason(
     )
 
 
+def test_a_provider_refusal_missing_its_own_result_text_is_still_kept(
+    tmp_path: Path,
+) -> None:
+    """A refusal is not conditional on the provider also explaining itself.
+
+    `is_error: true` alone names the refusal; a missing or non-string `result`
+    field must not make this line fall back to raw, unread JSON, or the
+    refusal would be dropped exactly where the provider said the least (#1029
+    review finding).
+    """
+
+    result_line = json.dumps(
+        {"type": "result", "is_error": True, "terminal_reason": "api_error"}
+    )
+    settings = claude_subscription_deployment(
+        tmp_path, emitting_claude(result_line, return_code=1)
+    )
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+    invocation = leased(request, command, workspace)
+
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
+
+    assert result == unusable(
+        AttemptTranscript.of([ProviderTerminalRefusal("api_error", "", "")])
+    )
+
+
 def test_a_result_answering_a_call_this_stream_never_showed_keeps_its_own_name(
     tmp_path: Path,
 ) -> None:
