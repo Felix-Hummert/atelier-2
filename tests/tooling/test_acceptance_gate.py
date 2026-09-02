@@ -46,6 +46,8 @@ UNPROVEN_REFUSAL = "with no test that ran and passed in this pipeline"
 UNCOLLECTED_PYTHON_CLAIM = Path("scripts/proof_helper.py")
 UNCOLLECTED_TYPESCRIPT_CLAIM = Path("frontend/tools/proof.ts")
 SECOND_STORY_SENTENCE = "a-sentence-a-second-story-declares"
+BROWSER_SENTENCE_DECLARATION = ACCEPTANCE / "1022-a-browser-only-sentence.toml"
+BROWSER_SENTENCE = "a-sentence-only-a-browser-may-prove"
 PULL_REQUEST_BODY = Path("pull-request-body.md")
 LANDING_FIELD_LINE = (
     "- Literal acceptance sentence(s), by their identifier in `acceptance/`, "
@@ -195,12 +197,65 @@ def load_acceptance_script() -> ModuleType:
     return module
 
 
-def a_pytest_run_proving_every_sentence(
+def browser_stand_ins(
     project: Path, *, without: str | None = None
+) -> tuple[ReportedTest, ...]:
+    """A stand-in Playwright claim for every browser-only sentence but one.
+
+    Every declared sentence with no Python claim in the copied project (the
+    real ``frontend/`` sources never travel into the fixture) needs some
+    passing proof or the gate calls it unproven, and a sentence bound to
+    ``proof = "browser"`` accepts only a Playwright one. A caller that owns
+    one such sentence itself names it in ``without`` and supplies its own
+    evidence instead.
+    """
+
+    script = load_acceptance_script()
+    return tuple(
+        ReportedTest(f"proves({sentence.identifier}): a stand-in browser proof")
+        for sentence in script.read_declared_sentences(project)
+        if sentence.proof is script.ProofKind.BROWSER and sentence.identifier != without
+    )
+
+
+def playwright_report_with_stand_ins(
+    project: Path,
+    reported: Iterable[ReportedTest],
+    located_in: Path = Path("frontend/tests/e2e/proof.spec.ts"),
+    *,
+    root_dir: Path = Path("/workspace/frontend/tests/e2e"),
+    spec_file: str | None = None,
+    without: str | None = None,
 ) -> str:
+    """A caller's own Playwright evidence, plus the stand-ins a full override drops.
+
+    Overriding the Playwright report file replaces the fixture's default
+    content outright, so every browser-only sentence loses its stand-in proof
+    unless this composes it back in.
+    """
+
+    return playwright_report(
+        (*reported, *browser_stand_ins(project, without=without)),
+        located_in,
+        root_dir=root_dir,
+        spec_file=spec_file,
+    )
+
+
+def default_reports_proving_every_sentence(
+    project: Path, *, without: str | None = None
+) -> dict[str, str]:
+    """Build the quality and Playwright reports a fixture needs to stand as green.
+
+    Every declared sentence with no Python claim in the copied project needs
+    some passing proof or the gate calls it unproven; a sentence bound to
+    ``proof = "browser"`` gets its stand-in from the Playwright report, and
+    every other sentence keeps the JUnit stand-in this fixture always used.
+    """
+
     script = load_acceptance_script()
     claims = script.read_source_claims(project)
-    claims_by_sentence = {
+    python_claims_by_sentence = {
         sentence.identifier: tuple(
             claim
             for claim in claims
@@ -209,26 +264,33 @@ def a_pytest_run_proving_every_sentence(
         )
         for sentence in script.read_declared_sentences(project)
     }
-    reported: list[ReportedTest] = []
-    for sentence_identifier, sentence_claims in claims_by_sentence.items():
-        if sentence_identifier == without:
+    junit_proofs: list[ReportedTest] = []
+    for sentence in script.read_declared_sentences(project):
+        if sentence.identifier == without or sentence.proof is script.ProofKind.BROWSER:
             continue
-        reported.extend(
-            ReportedTest(
-                claim.claiming_test,
-                sentence_identifier,
-                located_in=claim.located_in,
-            )
-            for claim in sentence_claims
-        )
-        if not sentence_claims:
-            reported.append(
+        sentence_claims = python_claims_by_sentence[sentence.identifier]
+        if sentence_claims:
+            junit_proofs.extend(
                 ReportedTest(
-                    f"test_proves_{sentence_identifier.replace('-', '_')}",
-                    sentence_identifier,
+                    claim.claiming_test,
+                    sentence.identifier,
+                    located_in=claim.located_in,
+                )
+                for claim in sentence_claims
+            )
+        else:
+            junit_proofs.append(
+                ReportedTest(
+                    f"test_proves_{sentence.identifier.replace('-', '_')}",
+                    sentence.identifier,
                 )
             )
-    return junit_report(reported)
+    return {
+        QUALITY_REPORT: junit_report(junit_proofs),
+        PLAYWRIGHT_REPORT: playwright_report(
+            browser_stand_ins(project, without=without)
+        ),
+    }
 
 
 def copied_project(
@@ -248,10 +310,9 @@ def copied_project(
     for relative, declaration in (also_declaring or {}).items():
         (project / relative).write_text(declaration, encoding="utf-8")
     written = {
-        QUALITY_REPORT: a_pytest_run_proving_every_sentence(project, without=unproven),
+        **default_reports_proving_every_sentence(project, without=unproven),
         CRASH_REPORT: junit_report(()),
         FRONTEND_REPORT: vitest_report(()),
-        PLAYWRIGHT_REPORT: playwright_report(()),
         **(reports or {}),
     }
     (project / REPORTS_DIRECTORY).mkdir(parents=True)
@@ -674,7 +735,13 @@ def test_a_browser_claim_needs_its_passing_playwright_result(tmp_path: Path) -> 
     title = f"proves({REPORT_ONLY_SENTENCE}): the browser flow"
     write_claim(project, claim, f'test("{title}", async () => {{}});\n')
     (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text(
-        playwright_report((ReportedTest(title),), located_in=claim), encoding="utf-8"
+        playwright_report_with_stand_ins(
+            project,
+            (ReportedTest(title),),
+            located_in=claim,
+            without=REPORT_ONLY_SENTENCE,
+        ),
+        encoding="utf-8",
     )
 
     result = run_gate(project)
@@ -752,6 +819,141 @@ def test_a_unit_claim_cannot_borrow_a_passing_playwright_row(tmp_path: Path) -> 
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert f"{claim}:{title} claims" in result.stderr
+
+
+def a_browser_sentence_declaration(*, proof: str | None) -> str:
+    proof_line = f'proof = "{proof}"\n' if proof is not None else ""
+    return (
+        "schema_version = 1\n"
+        'story = "https://github.com/FlexOr2/atelier-2/issues/1022"\n\n'
+        "[[sentence]]\n"
+        f'id = "{BROWSER_SENTENCE}"\n'
+        'text = "A sentence about a rendered surface is proven only by a real '
+        'browser run."\n'
+        f"{proof_line}"
+    )
+
+
+def a_vitest_claim_report(sentence: str) -> tuple[str, str, str]:
+    title = f"proves({sentence}): a jsdom run claims it too"
+    return FRONTEND_REPORT, vitest_report((ReportedTest(title),)), title
+
+
+def a_junit_claim_report(sentence: str) -> tuple[str, str, str]:
+    claiming_test = "test_claims_it_from_a_junit_run"
+    return (
+        CRASH_REPORT,
+        junit_report((ReportedTest(claiming_test, sentence),)),
+        claiming_test,
+    )
+
+
+NON_PLAYWRIGHT_CLAIM_BUILDERS = (a_vitest_claim_report, a_junit_claim_report)
+
+
+def a_browser_sentence_project(
+    tmp_path: Path,
+    reports: Mapping[str, str] | None = None,
+    *,
+    proof: str | None = "browser",
+    playwright_claims: Iterable[ReportedTest] = (),
+) -> Path:
+    project = copied_project(
+        tmp_path,
+        reports,
+        also_declaring={
+            BROWSER_SENTENCE_DECLARATION: a_browser_sentence_declaration(proof=proof)
+        },
+        unproven=BROWSER_SENTENCE,
+    )
+    if playwright_claims:
+        # Composed after the fixture exists: the fixture's own stand-in proofs for
+        # every other browser-only sentence (today, sentence 435) have to survive
+        # beside this test's own Playwright evidence, not be replaced by it.
+        (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text(
+            playwright_report_with_stand_ins(
+                project, playwright_claims, without=BROWSER_SENTENCE
+            ),
+            encoding="utf-8",
+        )
+    return project
+
+
+@pytest.mark.parametrize(
+    "build_claim", NON_PLAYWRIGHT_CLAIM_BUILDERS, ids=["vitest", "junit"]
+)
+def test_a_browser_sentence_fails_when_a_non_playwright_report_claims_it(
+    tmp_path: Path, build_claim: Callable[[str], tuple[str, str, str]]
+) -> None:
+    report_file, report, claiming_test = build_claim(BROWSER_SENTENCE)
+    project = a_browser_sentence_project(tmp_path, {report_file: report})
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert BROWSER_SENTENCE in result.stderr
+    assert report_file in result.stderr
+    assert claiming_test in result.stderr
+
+
+@pytest.mark.parametrize(
+    "build_claim", NON_PLAYWRIGHT_CLAIM_BUILDERS, ids=["vitest", "junit"]
+)
+def test_a_browser_sentence_fails_even_beside_a_valid_playwright_proof(
+    tmp_path: Path, build_claim: Callable[[str], tuple[str, str, str]]
+) -> None:
+    report_file, report, claiming_test = build_claim(BROWSER_SENTENCE)
+    playwright_title = f"proves({BROWSER_SENTENCE}): the browser flow"
+    project = a_browser_sentence_project(
+        tmp_path,
+        {report_file: report},
+        playwright_claims=(ReportedTest(playwright_title),),
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert BROWSER_SENTENCE in result.stderr
+    assert report_file in result.stderr
+    assert claiming_test in result.stderr
+
+
+def test_a_browser_sentence_passes_when_only_the_playwright_report_claims_it(
+    tmp_path: Path,
+) -> None:
+    playwright_title = f"proves({BROWSER_SENTENCE}): the browser flow"
+    project = a_browser_sentence_project(
+        tmp_path, playwright_claims=(ReportedTest(playwright_title),)
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_sentence_without_a_proof_key_still_accepts_any_report(
+    tmp_path: Path,
+) -> None:
+    report_file, report, _claiming_test = a_vitest_claim_report(BROWSER_SENTENCE)
+    project = a_browser_sentence_project(tmp_path, {report_file: report}, proof=None)
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_an_unknown_proof_value_is_refused(tmp_path: Path) -> None:
+    project = a_browser_sentence_project(tmp_path)
+    rewrite(
+        project, BROWSER_SENTENCE_DECLARATION, 'proof = "browser"', 'proof = "gesture"'
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Acceptance gate refused:" in result.stderr
+    assert BROWSER_SENTENCE in result.stderr
+    assert "gesture" in result.stderr
 
 
 @pytest.mark.parametrize(

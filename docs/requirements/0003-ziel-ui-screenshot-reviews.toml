@@ -1,0 +1,19 @@
+schema_version = 1
+
+# REQ-UIQ-11's freshness ledger (issue #994): each [[approval]] entry pins one
+# operator-approved screenshot review to the exact scope_sha256 that was
+# current when the operator looked, computed by
+# scripts/check_screenshot_review.py. The digest covers only the source files
+# that render REQ-UI-25's five core surfaces plus their mockup owner -- never
+# PNG bytes, which are not reproducible across machines.
+#
+# This ledger ships empty. The first entry is a real operator approval on a
+# real pull request; scripts/check_screenshot_review.py names the exact
+# comment format to post when it refuses, and it refuses on every commit
+# until that entry exists.
+
+[[approval]]
+requirement = "REQ-UIQ-11"
+scope_sha256 = "3e01040d978220cf07de4ffe26dd2b8af6ad3db505b1f58687be822fb1c08748"
+approval_comment_id = 5510782403
+approval_sha256 = "79f0e0e84f42fb690d1a8ecf09ca6edd01291de545e269b507682aad20ee3a95"
