@@ -16,11 +16,15 @@ from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
 
 MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS = 1_024
 MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS = 4_096
 MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS = 256
 MAXIMUM_QUEUE_ACTIVE_RUNS = 1_000
+# GitHub's own issue and pull-request title bound; every tracker source this
+# codebase reads titles from is GitHub today (ADR 0010).
+MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS = 256
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,34 @@ class TrackerItemReference:
 
 class QueueItemId(Sha256Hash):
     """The store-stable identity derived from one item's project and reference."""
+
+
+@dataclass(frozen=True)
+class QueueItemTrackerObservation:
+    """The tracker title as it was last observed, and the one instant it was read.
+
+    A dated memory of a tracker-owned fact, never core truth (ADR 0016,
+    2026-09-01 amendment): a reader must not take `title` as what the item is
+    called now, only as what the tracker said at `observed_at`. `observed_at`
+    reuses the port's own reading clock (`OpenTrackerItemsObserved.observed_at`)
+    rather than measuring a second time.
+    """
+
+    title: str
+    observed_at: RecordedAt
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.title, str):
+            raise TypeError("a tracker title observation must carry text")
+        if not 1 <= len(self.title) <= MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS:
+            raise ValueError(
+                "a tracker title observation must contain 1 to "
+                f"{MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS} characters"
+            )
+        if not isinstance(self.observed_at, RecordedAt):
+            raise TypeError(
+                "a tracker title observation must carry its instant through RecordedAt"
+            )
 
 
 @dataclass(frozen=True)
@@ -417,8 +449,18 @@ class QueueItemSnapshot:
     proposal: QueueProposal | None = None
     launch_binding: QueueLaunchBinding | None = None
     blockers: tuple[QueueBlockerKind, ...] = ()
+    observation: QueueItemTrackerObservation | None = None
+    retired_at: RecordedAt | None = None
 
     def __post_init__(self) -> None:
+        if self.observation is not None and not isinstance(
+            self.observation, QueueItemTrackerObservation
+        ):
+            raise TypeError(
+                "a queue item snapshot carries its observation through the contract"
+            )
+        if self.retired_at is not None and not isinstance(self.retired_at, RecordedAt):
+            raise TypeError("a queue item snapshot carries retired_at as RecordedAt")
         if (
             self.state is QueueItemState.OBSERVED
             and self.revision != QUEUE_PROJECTION_REVISION_OBSERVED

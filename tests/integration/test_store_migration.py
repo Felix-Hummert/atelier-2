@@ -36,7 +36,10 @@ from atelier2.adapters.dbos.host_configuration import (
     project_source_connection_revision_from_record,
 )
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
-from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
+from atelier2.adapters.dbos.published_schema_shapes import (
+    PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION,
+    PUBLISHED_TABLE_SHAPES,
+)
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
     _agent_receipt_v2_from_record,
@@ -466,9 +469,9 @@ def _restore_v43_queue_predecessor(connection: sqlite3.Connection) -> None:
     schema_module._rebuild_product_table(
         connection,
         schema_module.queue_items,
-        "queue_items_v44",
+        "queue_items_v47",
         ("queue_items_identity_no_update", "queue_items_no_delete"),
-        44,
+        47,
         43,
     )
     for table in reversed(schema_module._PHASE_D_QUEUE_TABLES):
@@ -500,6 +503,29 @@ def _restore_v45_answer_attribution_predecessors(
     for trigger in ("catalog_intakes_no_update", "catalog_intakes_no_delete"):
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     connection.execute("DROP TABLE IF EXISTS catalog_intakes")
+
+    # V48 gives queue_items its title-observation and retirement columns; no
+    # hop before it moved this table since V44, so every restore below V48
+    # needs it back at the byte-identical V44/V47 shape it published.
+    schema_module._rebuild_product_table(
+        connection,
+        schema_module.queue_items,
+        "queue_items_v48",
+        (
+            "queue_items_identity_no_update",
+            "queue_items_no_delete",
+            "queue_items_no_nonobserved_insert",
+            "queue_items_state_transition",
+        ),
+        48,
+        47,
+        trigger_source={
+            **schema_module._PRODUCT_TRIGGERS,
+            "queue_items_state_transition": (
+                PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION
+            ),
+        },
+    )
 
     schema_module._rebuild_product_table(
         connection,
@@ -1087,9 +1113,14 @@ def _create_populated_v44_source_store(database: Path) -> None:
         _require_product_shape(connection, 44)
 
 
-def _queue_schema_and_rows(
-    connection: sqlite3.Connection,
-) -> tuple[tuple[tuple[object, ...], ...], tuple[tuple[str, tuple[object, ...]], ...]]:
+_QueueSchemaObject = tuple[object, ...]
+_QueueTableRows = tuple[tuple[object, ...], ...]
+_QueueSnapshot = tuple[
+    tuple[_QueueSchemaObject, ...], tuple[tuple[str, _QueueTableRows], ...]
+]
+
+
+def _queue_schema_and_rows(connection: sqlite3.Connection) -> _QueueSnapshot:
     objects = tuple(
         connection.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master "
@@ -1105,14 +1136,30 @@ def _queue_schema_and_rows(
     return objects, rows
 
 
+def _queue_table_names(snapshot: _QueueSnapshot) -> frozenset[str]:
+    objects, _rows = snapshot
+    return frozenset(str(record[1]) for record in objects if record[0] == "table")
+
+
 @pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
 def test_v45_preserves_legacy_source_history_without_touching_queue_objects(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The V44->V45 source hop invents no queue decision.
+
+    `main(["migrate", ...])` raises the store all the way to today's schema,
+    not just to V45, so a later hop's own legitimate change to queue_items
+    (V48's title-observation and retirement columns) is expected to appear in
+    the after snapshot. What this test proves is narrower and still holds:
+    no queue table was added or removed, and the one stored decision keeps
+    every value it already had, with the new columns unwritten.
+    """
+
     database = tmp_path / "atelier.sqlite"
     _create_populated_v44_source_store(database)
     with sqlite3.connect(database) as connection:
         queue_before = _queue_schema_and_rows(connection)
+        queue_table_names_before = _queue_table_names(queue_before)
 
     assert main(["migrate", "--database", str(database)]) == 0
 
@@ -1152,7 +1199,26 @@ def test_v45_preserves_legacy_source_history_without_touching_queue_objects(
             and not set(str(row[0])).difference("0123456789abcdef")
             for row in rows
         )
-        assert _queue_schema_and_rows(connection) == queue_before
+        queue_after = _queue_schema_and_rows(connection)
+        assert _queue_table_names(queue_after) == queue_table_names_before
+        before_rows = dict(queue_before[1])
+        after_rows = dict(queue_after[1])
+        for table_name, before_table_rows in before_rows.items():
+            after_table_rows = after_rows[table_name]
+            if table_name == "queue_items":
+                # V44 through V47 published nine columns; V48 appends the
+                # three observation/retirement columns this hop adds.
+                predecessor_column_count = 9
+                assert (
+                    tuple(row[:predecessor_column_count] for row in after_table_rows)
+                    == before_table_rows
+                )
+                assert all(
+                    row[predecessor_column_count:] == (None, None, None)
+                    for row in after_table_rows
+                )
+            else:
+                assert after_table_rows == before_table_rows
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             connection.execute(
                 "UPDATE host_project_source_connection_revisions "
@@ -4120,7 +4186,7 @@ def test_v46_failure_after_version_cas_restores_the_exact_v45_store(
     assert _logical_dump(database_path) == before
 
 
-def test_v46_store_migrates_to_v47_with_immutable_catalog_intakes(
+def test_v46_store_migrates_to_the_current_schema_with_immutable_catalog_intakes(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -4140,7 +4206,7 @@ def test_v46_store_migrates_to_v47_with_immutable_catalog_intakes(
 
     report = migrate_store(database_path)
 
-    assert (report.source_version, report.target_version) == (46, 47)
+    assert (report.source_version, report.target_version) == (46, SCHEMA_VERSION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT document FROM workflow_revisions"
@@ -4154,7 +4220,7 @@ def test_v46_store_migrates_to_v47_with_immutable_catalog_intakes(
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' AND name='catalog_intakes_no_delete'"
         ).fetchone()
-        _require_product_shape(connection, 47)
+        _require_product_shape(connection, SCHEMA_VERSION)
 
 
 def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(

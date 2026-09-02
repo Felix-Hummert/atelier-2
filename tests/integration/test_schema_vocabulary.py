@@ -71,6 +71,7 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
     MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
+    MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     QueueAutomationDisposition,
     QueueDecisionAuthority,
@@ -668,6 +669,9 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "queue_items.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "queue_items.tracker_item_reference": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     "queue_items.admission_rationale": MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    "queue_items.observed_title": MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
+    "queue_items.title_observed_at": 20,
+    "queue_items.retired_at": 20,
     "queue_project_policy_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "queue_project_policy_revisions.automation_label": (
         MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS

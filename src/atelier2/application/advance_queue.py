@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
@@ -252,16 +252,15 @@ def _resolve_head(
 
 
 def _validated_snapshot(item: QueueItemSnapshot) -> QueueItemSnapshot:
+    """Re-run the snapshot's own validation without silently dropping a field.
+
+    `dataclasses.replace` reads every field `QueueItemSnapshot` declares --
+    including one a later change adds -- rather than a fixed positional list
+    that would carry on quietly forgetting it.
+    """
+
     try:
-        return QueueItemSnapshot(
-            item.item_reference,
-            item.state,
-            item.revision,
-            item.admission,
-            item.proposal,
-            item.launch_binding,
-            item.blockers,
-        )
+        return replace(item)
     except (AttributeError, TypeError, ValueError) as error:
         raise QueueAdvanceCorrupt(
             "the queue projection returned an inconsistent item"
