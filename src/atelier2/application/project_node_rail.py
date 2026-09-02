@@ -37,6 +37,8 @@ from atelier2.contracts.run_projections import (
     PublicAgentAttemptState,
     ReusedNodeProjection,
     RunProjection,
+    WaitingReconciliationProjection,
+    execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
 )
 from atelier2.contracts.runs import RunState
@@ -102,9 +104,10 @@ class NodeRailUnprojectable(RuntimeError):
 class NodeRailAttempt:
     """The agent attempt one node is currently telling a reader about.
 
-    A succeeded attempt carries no state: the public vocabulary has no word for
-    success, because the transition that records it also moves the run past the
-    attempt. The node's own `succeeded` is what says the work is done.
+    A succeeded attempt carries a state only while the run parks on that node's
+    effect: everywhere else the transition that records the success also moves
+    the run past the attempt, and the node's own `succeeded` is what says the
+    work is done.
     """
 
     ordinal: int
@@ -249,6 +252,10 @@ class _RailDerivation:
             and attempt is not None
             and not never_launched_cleanup_on_failed_run(run, attempt)
         ):
+            # A node whose agent succeeded and whose effect the operator still
+            # owes a decision is that decision, not the attempt behind it.
+            if run.state is RunState.WAITING_RECONCILIATION:
+                return self._reconciliation_state()
             return _NODE_STATES_ENDED_BY_ATTEMPT.get(attempt.state, NodeState.WORKING)
         ended = _state_the_event_ended_in(last_event)
         if ended is not None:
@@ -318,7 +325,11 @@ class _RailDerivation:
         run = self.projection.run
         if not isinstance(run, RunV2 | RunV3) or not _is_agent(node):
             return None
-        from_event = _attempt_the_event_proves(last_event)
+        from_event = _attempt_the_event_proves(
+            last_event,
+            run_state=run.state,
+            reconciliation=self.projection.reconciliation,
+        )
         from_snapshot = (
             self.projection.current_agent_attempt
             if node.id == run.current_node_id
@@ -390,6 +401,9 @@ def _state_the_event_ended_in(
 
 def _attempt_the_event_proves(
     persisted: PersistedRunEvent | None,
+    *,
+    run_state: RunState,
+    reconciliation: WaitingReconciliationProjection | None,
 ) -> NodeRailAttempt | None:
     if persisted is None or persisted.workflow_format_version not in (
         WorkflowFormatVersion.V2,
@@ -402,5 +416,10 @@ def _attempt_the_event_proves(
         return None
     return NodeRailAttempt(
         attempt_binding.attempt_ordinal,
-        public_agent_attempt_state(durable_state),
+        public_agent_attempt_state(
+            durable_state,
+            effect_awaits_reconciliation=execution_awaits_effect_reconciliation(
+                run_state, reconciliation, persisted.event.node_execution_id
+            ),
+        ),
     )

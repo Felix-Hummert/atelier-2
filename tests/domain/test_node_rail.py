@@ -52,6 +52,7 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
     WaitAnswerActor,
+    logical_effect_key_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import RunV3
@@ -155,11 +156,19 @@ def durable_event(
     )
 
 
-def waiting_reconciliation(*, accepted: bool) -> WaitingReconciliationProjection:
-    """The Action node waiting on the operator, with or without their answer."""
+def waiting_reconciliation(
+    *, accepted: bool, node_id: str = "action"
+) -> WaitingReconciliationProjection:
+    """The node waiting on the operator, with or without their answer.
+
+    The intent carries the key of the exact execution it was prepared on, which
+    is what tells the rail whose success the operator still owes a word about.
+    """
     intent = EffectIntent(
         EffectBinding(
-            LogicalEffectKey("node-rail/effect"),
+            logical_effect_key_for(
+                NodeExecutionId.for_node(RUN_ID, REVISION_HASH, node_id)
+            ),
             RUN_ID,
             REVISION_HASH,
             AdapterRevision("node-rail-adapter"),
@@ -348,6 +357,38 @@ def test_a_reconciliation_nobody_answered_still_needs_the_operator() -> None:
     rail = project_node_rail(projection, ())
 
     assert rail[1].state is NodeState.NEEDS_YOU
+
+
+def test_a_parked_later_node_leaves_the_earlier_successes_their_own_vocabulary() -> (
+    None
+):
+    """Only the node the operator owes a word about is told as SUCCEEDED.
+
+    A line parks on its last agent while every node before it is done. Those
+    earlier successes were carried by transitions that did happen, so naming
+    them the same way would tell a reader the run stands in four places at once.
+    """
+    projection = v3_full_line_projection(
+        RunState.WAITING_RECONCILIATION,
+        "final",
+        4,
+        waiting_reconciliation(accepted=False, node_id="final"),
+        attempts=(agent_attempt(1, PublicAgentAttemptState.SUCCEEDED, "final"),),
+    )
+    events = (
+        durable_event(1, "agent", RunEventKind.AGENT_COMPLETED, attempt_ordinal=1),
+        durable_event(2, "action", RunEventKind.ACTION_COMPLETED),
+        durable_event(3, "wait", RunEventKind.WAIT_ANSWERED),
+        durable_event(4, "final", RunEventKind.AGENT_COMPLETED, attempt_ordinal=1),
+    )
+
+    rail = {entry.node_id: entry for entry in project_node_rail(projection, events)}
+
+    assert rail["agent"].attempt == NodeRailAttempt(1, None)
+    assert rail["final"].attempt == NodeRailAttempt(
+        1, PublicAgentAttemptState.SUCCEEDED
+    )
+    assert rail["final"].state is NodeState.NEEDS_YOU
 
 
 def test_the_snapshot_holds_until_events_lead_it_and_then_the_events_decide() -> None:
