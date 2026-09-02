@@ -182,6 +182,13 @@ _JSON_SCHEMA_FLAG = "--json-schema"
 _SCHEMA_DIALECT_KEY = "$schema"
 _MODEL_FLAG = "--model"
 _STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+# Anthropic requires the synthesized `StructuredOutput` custom tool's
+# `input_schema.type` to be `"object"` (#1061: a bare
+# `{"type":"string","minLength":1}` constraint refused the whole call with
+# `tools.0.custom.input_schema.type`). A declared schema that is not itself
+# an object schema is carried inside this one named field instead, and
+# unwrapped symmetrically when the answer comes back.
+_STRUCTURED_OUTPUT_WRAPPER_KEY = "value"
 
 # The containment flags, each measured against every conformant version (see
 # the class docstring for what each one was observed to stop). The two that
@@ -741,6 +748,14 @@ def _output_format_arguments(
     this boundary, for every executor that reaches this function: the CLI is
     handed the constraint the rest of the document states, never the dialect
     line it cannot resolve.
+
+    A declared schema that does not itself resolve to `"type": "object"` is
+    further wrapped under `_STRUCTURED_OUTPUT_WRAPPER_KEY` (see that
+    constant): Anthropic's synthesized `StructuredOutput` tool requires an
+    object `input_schema`, so a bare string or number schema would otherwise
+    make the whole call refuse before a model starts. `_decoded_claude_answer`
+    reverses this exact wrapping, so `output_bytes` stay exactly what the
+    declared schema judges.
     """
 
     if declared_output_schema_bytes is None:
@@ -750,13 +765,37 @@ def _output_format_arguments(
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("declared output schema bytes must be JSON") from error
     if not isinstance(schema, dict) or _SCHEMA_DIALECT_KEY not in schema:
+        stripped: object = schema
         constraint = declared_output_schema_bytes.decode("utf-8")
     else:
         stripped = {
             key: value for key, value in schema.items() if key != _SCHEMA_DIALECT_KEY
         }
         constraint = json.dumps(stripped, ensure_ascii=False, separators=(",", ":"))
+    if not _is_object_schema(stripped):
+        constraint = json.dumps(
+            _wrapped_structured_output_schema(stripped),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     return (_OUTPUT_FORMAT_FLAG, _JSON_OUTPUT_FORMAT, _JSON_SCHEMA_FLAG, constraint)
+
+
+def _is_object_schema(schema: object) -> bool:
+    """Whether a JSON Schema value's own `type` is `"object"`."""
+
+    return isinstance(schema, dict) and schema.get("type") == "object"
+
+
+def _wrapped_structured_output_schema(schema: object) -> dict[str, object]:
+    """Carry a non-object schema inside the one field Anthropic will accept."""
+
+    return {
+        "type": "object",
+        "properties": {_STRUCTURED_OUTPUT_WRAPPER_KEY: schema},
+        "required": [_STRUCTURED_OUTPUT_WRAPPER_KEY],
+        "additionalProperties": False,
+    }
 
 
 def _tools_for_schema(
@@ -1003,6 +1042,11 @@ def _decoded_claude_answer(
     its terminal `result` envelope. The output seam remains the final schema
     judge: this adapter serializes the provider value without deciding whether
     it is valid.
+
+    A declared schema that is not itself an object schema went to the CLI
+    wrapped under `_STRUCTURED_OUTPUT_WRAPPER_KEY` (`_output_format_arguments`);
+    the answer is unwrapped from the same field here, so `output_bytes` are
+    exactly what the declared schema judges.
     """
 
     lines = _stream_lines(completion.standard_output)
@@ -1024,13 +1068,23 @@ def _decoded_claude_answer(
     ):
         return _unusable_provider_answer(transcript)
     command = invocation.command
-    if isinstance(command, ClaudeProcessCommand) and (
-        command.declared_output_schema_bytes is not None
+    if (
+        isinstance(command, ClaudeProcessCommand)
+        and command.declared_output_schema_bytes is not None
     ):
         if _STRUCTURED_OUTPUT_FIELD not in envelope:
             return _unusable_provider_answer(transcript)
+        structured_output = envelope[_STRUCTURED_OUTPUT_FIELD]
+        declared_schema = json.loads(command.declared_output_schema_bytes)
+        if not _is_object_schema(declared_schema):
+            if (
+                not isinstance(structured_output, dict)
+                or _STRUCTURED_OUTPUT_WRAPPER_KEY not in structured_output
+            ):
+                return _unusable_provider_answer(transcript)
+            structured_output = structured_output[_STRUCTURED_OUTPUT_WRAPPER_KEY]
         output_bytes = json.dumps(
-            envelope[_STRUCTURED_OUTPUT_FIELD],
+            structured_output,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")

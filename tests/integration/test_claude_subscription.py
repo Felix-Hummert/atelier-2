@@ -585,6 +585,62 @@ def test_a_declared_schema_uses_claudes_native_structured_output(
     )
 
 
+def test_a_non_object_declared_schema_is_wrapped_for_claudes_object_only_tool() -> None:
+    """Anthropic requires the synthesized `StructuredOutput` custom tool's
+    `input_schema.type` to be `"object"`. `nonempty_string.json` -- a real,
+    committed node output schema -- is a bare `{"type":"string",...}` document
+    that made the whole call refuse with `tools.0.custom.input_schema.type`
+    before this wrapping existed (#1061)."""
+
+    declared_schema_bytes = (
+        Path(__file__).parents[2] / "workflows" / "schemas" / "nonempty_string.json"
+    ).read_bytes()
+    declared_schema = json.loads(declared_schema_bytes)
+    del declared_schema["$schema"]
+
+    constraint = json.loads(_output_format_arguments(declared_schema_bytes)[3])
+
+    assert constraint == {
+        "type": "object",
+        "properties": {"value": declared_schema},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+
+
+def test_a_wrapped_structured_output_answer_unwraps_to_exactly_the_declared_value(
+    tmp_path: Path,
+) -> None:
+    """The end-to-end round trip for a string-typed node output (#1061): the
+    fake CLI answers the wrapped shape Claude's object-only tool requires, and
+    decode hands back exactly what the declared schema judges, never the
+    wrapper it travelled in."""
+
+    declared_schema = (
+        Path(__file__).parents[2] / "workflows" / "schemas" / "nonempty_string.json"
+    ).read_bytes()
+    answer = "a nonempty answer"
+    settings = claude_subscription_deployment(
+        tmp_path,
+        emitting_claude(success_envelope(answer, {"value": answer})),
+    )
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request(declared_output_schema=declared_schema)
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    assert isinstance(command, ClaudeProcessCommand)
+    constraint = json.loads(command.arguments[5])
+    assert constraint["type"] == "object"
+    assert constraint["properties"]["value"] == {"type": "string", "minLength": 1}
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(json.dumps(answer).encode(), spent_only())
+
+
 def test_a_successful_envelope_becomes_the_exact_output_bytes_of_one_receipt(
     tmp_path: Path,
 ) -> None:
