@@ -1004,6 +1004,41 @@ def test_is_startable_reads_the_receipt_state(
     )
 
 
+def test_is_structurally_startable_asks_nothing_about_receipt_state() -> None:
+    """The one question a reprobe exemption or canary discovery may ask.
+
+    Armed with a receipt gate that would refuse every configuration (no
+    receipt on file anywhere), the structural answer still says yes for a
+    registered, available, capable factory -- and still says no for one the
+    operator marked unavailable, regardless of the same missing evidence.
+    """
+
+    available = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "available", b"ok"
+    )
+    unavailable = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli-unavailable/v1", "unavailable", b"must-not-run"
+    )
+    registry = AgentExecutorRegistry(
+        (available, AgentExecutorRegistration.unavailable(unavailable)),
+        receipt_gate=ProviderProbeReceiptGate(
+            _FakeProviderProbeReceiptReads(None),
+            _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+            lambda: RecordedAt("2026-01-01T12:00:00Z"),
+        ),
+    )
+
+    assert registry.is_structurally_startable(
+        available.key, AgentExecutionCapability.HEADLESS
+    )
+    assert not registry.is_startable(
+        available.key, AgentExecutionCapability.HEADLESS, _PROBE_CONFIGURATION_HASH
+    )
+    assert not registry.is_structurally_startable(
+        unavailable.key, AgentExecutionCapability.HEADLESS
+    )
+
+
 @pytest.mark.proves("a-listed-agent-configuration-names-current-startability")
 def test_list_publication_and_start_share_the_current_registry_decision(
     tmp_path: Path,

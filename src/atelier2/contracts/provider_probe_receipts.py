@@ -34,6 +34,27 @@ MAXIMUM_PROVIDER_PROBE_RECEIPT_BYTES = 4_096
 MAXIMUM_PROVIDER_PROBE_VECTOR_ID_BYTES = 128
 MAXIMUM_PROVIDER_PROBE_PROBLEM_CODE_BYTES = 128
 
+PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME = "provider-canary-headless"
+PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME = "provider-canary-workspace-tools"
+PROVIDER_CANARY_ATELIER_DOORS_WORKFLOW_NAME = "provider-canary-atelier-doors"
+PROVIDER_CANARY_WORKFLOW_NAMES = (
+    PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
+    PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
+    PROVIDER_CANARY_ATELIER_DOORS_WORKFLOW_NAME,
+)
+"""The three catalog names a live canary vector may resolve under.
+
+The one production owner of these tokens: `host/provider_canary.py` maps each
+configured executor to one of these names to choose its probe workflow, and
+`adapters/dbos/runtime.py` resolves the same three names to their admitted
+`WorkflowRevisionHash` to build the reprobe exemption set. Neither module
+imports the other -- `atelier2.host` imports `atelier2.adapters.dbos.runtime`,
+so the reverse import would close a cycle -- but both already import this
+contracts module, which is where a stable protocol token belongs. Drift
+between two separately maintained copies would have shrunk the exemption set
+silently; one owner makes that impossible instead of merely tested.
+"""
+
 _SOURCE_COMMIT = re.compile(r"[0-9a-f]{40}")
 _TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 

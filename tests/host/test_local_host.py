@@ -70,7 +70,6 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
-    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentRole,
     AuthMode,
@@ -1014,17 +1013,6 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         assert runtime.agent_executor_registry.keys == frozenset(
             {CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, GROK_SUBSCRIPTION_EXECUTOR_KEY}
         )
-        # Claude's own declared start refusal (the version mismatch above)
-        # makes this executor's factory unavailable, so `is_startable` refuses
-        # on that structural ground alone -- it never reaches a receipt
-        # question for this hash, which is why the hash naming no real
-        # configuration is safe here rather than a gap in the proof.
-        never_published_configuration_hash = AgentConfigurationRevisionHash("0" * 64)
-        assert not runtime.agent_executor_registry.is_startable(
-            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
-            AgentExecutionCapability.HEADLESS,
-            never_published_configuration_hash,
-        )
         catalog = DbosAgentConfigurationCatalog(
             runtime.engine, runtime.agent_executor_registry
         )
@@ -1066,6 +1054,20 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         assert settings.provider_probe_receipt_directory is not None
         settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
         now = datetime.now(UTC)
+        claude_receipt = ProviderProbeReceipt(
+            ProviderProbeVectorId("headless-claude-opus-4-1"),
+            configuration.revision_hash,
+            WorkflowRevisionHash("b" * 64),
+            settings.source_commit,
+            recorded_instant(now - timedelta(minutes=1)),
+            recorded_instant(now + timedelta(hours=1)),
+            ProviderProbeResult.SUCCEEDED,
+            RunId("provider-canary/claude-opus-4-1-fixture"),
+            terminal_hash=Sha256Hash("e" * 64),
+        )
+        (
+            settings.provider_probe_receipt_directory / "claude-opus-4-1.json"
+        ).write_bytes(claude_receipt.canonical_bytes())
         grok_receipt = ProviderProbeReceipt(
             ProviderProbeVectorId("headless-grok-4"),
             grok_configuration.revision_hash,
@@ -1079,6 +1081,15 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         )
         (settings.provider_probe_receipt_directory / "grok-4.json").write_bytes(
             grok_receipt.canonical_bytes()
+        )
+        # Even with a valid, matching receipt now on file, Claude's own
+        # declared start refusal (the version mismatch above) keeps its
+        # factory unavailable -- `is_startable` refuses on that structural
+        # ground alone, proving the refusal is not merely "no receipt yet".
+        assert not runtime.agent_executor_registry.is_startable(
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
+            AgentExecutionCapability.HEADLESS,
+            configuration.revision_hash,
         )
         listed = catalog.list_agent_configuration_revisions(None, 50)
         assert isinstance(listed, AgentConfigurationRevisionPage)

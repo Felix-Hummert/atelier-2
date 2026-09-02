@@ -1085,6 +1085,37 @@ def test_an_empty_reprobe_exemption_set_refuses_every_workflow_including_the_can
     assert result == DurableAgentExecutorBindingUnavailable()
 
 
+def test_reprobe_exemption_never_waives_a_structural_refusal() -> None:
+    """An admitted canary workflow does not resolve an executor the operator
+    marked unavailable -- the exemption bypasses only the receipt gate, never
+    the factory-and-capability decision (real in production: Claude with a
+    declared version mismatch)."""
+    auth = _auth()
+    configuration = _configuration(auth)
+    bindings = AgentBindingSet(
+        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+    )
+    reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
+    admitted_canary_workflow_hash = WorkflowRevisionHash("1" * 64)
+    registry = _registry(
+        FakeExecutorFactory("exact"),
+        unavailable=True,
+        reprobe_exempt_workflow_revisions=lambda: frozenset(
+            {admitted_canary_workflow_hash}
+        ),
+    )
+
+    result = resolve_start_bindings(
+        _single_role_graph(),
+        admitted_canary_workflow_hash,
+        bindings,
+        reads,
+        registry,
+    )
+
+    assert result == DurableAgentExecutorBindingUnavailable()
+
+
 def test_resolves_every_binding_for_a_single_role_graph() -> None:
     auth = _auth()
     configuration = _configuration(auth)

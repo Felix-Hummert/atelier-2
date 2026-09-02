@@ -119,7 +119,9 @@ from atelier2.contracts.host_configuration import (
     ProjectUnknown,
 )
 from atelier2.contracts.provider_probe_receipts import (
+    PROVIDER_CANARY_WORKFLOW_NAMES,
     ProviderProbeReceipt,
+    ProviderProbeReceiptRefused,
     read_provider_probe_receipt,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
@@ -1410,6 +1412,9 @@ class _FilesystemProviderProbeReceiptReads:
     receipt all answer "no receipt for this configuration" rather than
     raising: absent or corrupt evidence is exactly what an armed gate already
     refuses, and one bad file must not blind every other vector's own answer.
+    Each such case is logged once, though, because "every vector reads
+    unstartable" is exactly what an operator needs a trace to diagnose --
+    fail-closed does not have to mean fail-silent.
     """
 
     directory: Path
@@ -1419,35 +1424,34 @@ class _FilesystemProviderProbeReceiptReads:
     ) -> ProviderProbeReceipt | None:
         try:
             entries = tuple(self.directory.glob("*.json"))
-        except OSError:
+        except OSError as unreadable:
+            _LOG.warning(
+                "provider probe receipt directory %s unreadable: %s",
+                self.directory,
+                unreadable,
+            )
             return None
         for entry in entries:
             try:
                 document = entry.read_bytes()
-            except OSError:
+            except OSError as unreadable:
+                _LOG.warning(
+                    "provider probe receipt file %s unreadable: %s",
+                    entry,
+                    unreadable,
+                )
                 continue
             receipt = read_provider_probe_receipt(document)
-            if (
-                isinstance(receipt, ProviderProbeReceipt)
-                and receipt.configuration_hash == configuration_hash
-            ):
+            if isinstance(receipt, ProviderProbeReceiptRefused):
+                _LOG.warning(
+                    "provider probe receipt file %s is not a valid receipt: %s",
+                    entry,
+                    receipt,
+                )
+                continue
+            if receipt.configuration_hash == configuration_hash:
                 return receipt
         return None
-
-
-# The three workflow documents `host/provider_canary.py`'s own
-# `_WORKFLOW_BY_EXECUTOR` names (`provider-canary-headless`,
-# `-workspace-tools`, `-atelier-doors`); mirrored here as catalog identifiers
-# rather than imported because `atelier2.host` imports this module -- the
-# other direction would close an import cycle. `_resolve_admitted_canary_revisions`
-# below reuses that module's own by-name resolution mechanism
-# (`DbosCatalogStore.resolve_name`, the same lookup `GET
-# /workflow-revisions/by-name/{name}` answers from), not a second one.
-_CANARY_WORKFLOW_NAMES = (
-    "provider-canary-headless",
-    "provider-canary-workspace-tools",
-    "provider-canary-atelier-doors",
-)
 
 
 def _resolve_admitted_canary_revisions(
@@ -1458,12 +1462,17 @@ def _resolve_admitted_canary_revisions(
     Asked fresh on every reprobe exemption check, not cached: an unresolved or
     retired name simply contributes no hash, so a misconfigured or empty
     catalog answers the empty set -- the exemption's own structural default,
-    not a special case handled here.
+    not a special case handled here. `PROVIDER_CANARY_WORKFLOW_NAMES` is the
+    one production list of catalog names a canary vector may resolve under
+    (`contracts/provider_probe_receipts.py`, read by `host/provider_canary.py`
+    too); resolution itself reuses `DbosCatalogStore.resolve_name`, the same
+    lookup `GET /workflow-revisions/by-name/{name}` answers from, not a second
+    mechanism.
     """
 
     store = DbosCatalogStore(engine)
     resolved: set[WorkflowRevisionHash] = set()
-    for name in _CANARY_WORKFLOW_NAMES:
+    for name in PROVIDER_CANARY_WORKFLOW_NAMES:
         found = store.resolve_name(
             RevisionKind.WORKFLOW, CatalogLineageDisplayName(name), "head"
         )

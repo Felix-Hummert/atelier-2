@@ -524,6 +524,26 @@ class AgentExecutorRegistry:
     def carrier(self, key: AgentExecutorKey) -> AgentExecutorCarrier:
         return self._by_key[key].manifest_entry.carrier
 
+    def is_structurally_startable(
+        self, key: AgentExecutorKey, capability: AgentExecutionCapability
+    ) -> bool:
+        """Whether a factory is registered, available, and declares this capability.
+
+        Asks nothing about live evidence -- no configuration, no receipt, no
+        clock. This is the *only* question a reprobe exemption may waive past
+        (`resolve_start_bindings`) and the only one a canary discovery may
+        ask: an executor the operator never registered, or marked
+        `unavailable` (a declared version mismatch, say), is not something any
+        run -- canary or ordinary -- could ever produce evidence for, so no
+        exemption and no receipt changes this answer.
+        """
+        entry = self._by_key.get(key)
+        return (
+            entry is not None
+            and entry.factory is not None
+            and capability in entry.manifest_entry.declared_capabilities
+        )
+
     def is_startable(
         self,
         key: AgentExecutorKey,
@@ -536,18 +556,16 @@ class AgentExecutorRegistry:
         answer is about -- several configurations can share one executor
         revision, so a caller with proof state to consult (a provider probe
         receipt is keyed by configuration, not executor) needs the answer at
-        this grain. The factory-and-capability decision below always runs
-        first and alone can already refuse; only once it holds does an armed
-        registry go on to ask its receipt gate whether live evidence for this
-        exact configuration is still trustworthy. A registry built without a
-        receipt gate never asks that second question at all.
+        this grain. `is_structurally_startable` always runs first and alone
+        can already refuse; only once it holds does an armed registry go on to
+        ask its receipt gate whether live evidence for this exact
+        configuration is still trustworthy. A registry built without a
+        receipt gate never asks that second question at all -- this is the
+        full, ordinary-work answer; a caller that must waive only the
+        evidence half (the reprobe exemption) asks `is_structurally_startable`
+        directly instead.
         """
-        entry = self._by_key.get(key)
-        if (
-            entry is None
-            or entry.factory is None
-            or capability not in entry.manifest_entry.declared_capabilities
-        ):
+        if not self.is_structurally_startable(key, capability):
             return False
         if self._receipt_gate is None:
             return True

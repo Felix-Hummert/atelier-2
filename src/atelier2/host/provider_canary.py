@@ -67,6 +67,9 @@ from atelier2.contracts.provider_probe_receipts import (
     _SOURCE_COMMIT as PROVIDER_PROBE_SOURCE_COMMIT_FORMAT,
 )
 from atelier2.contracts.provider_probe_receipts import (
+    PROVIDER_CANARY_ATELIER_DOORS_WORKFLOW_NAME,
+    PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
+    PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
     ProviderProbeProblemCode,
     ProviderProbeReceipt,
     ProviderProbeResult,
@@ -113,27 +116,27 @@ _WORKFLOW_BY_EXECUTOR = {
     (
         CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
         CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-headless",
+    ): PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
     (
         CODEX_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
         CODEX_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-headless",
+    ): PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
     (
         GROK_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
         GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-headless",
+    ): PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
     (
         CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.provider_id.value,
         CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-workspace-tools",
+    ): PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
     (
         GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.provider_id.value,
         GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-workspace-tools",
+    ): PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
     (
         CLAUDE_ATELIER_DOORS_EXECUTOR_KEY.provider_id.value,
         CLAUDE_ATELIER_DOORS_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-atelier-doors",
+    ): PROVIDER_CANARY_ATELIER_DOORS_WORKFLOW_NAME,
 }
 
 
