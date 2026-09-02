@@ -267,6 +267,35 @@ describe("a version 3 run in the cockpit", () => {
     expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
   });
 
+  it("proves(a-live-run-closes-its-stream-when-cancelled): closes the stream once a run watched live lands on CANCELLED, through the one terminality owner", async () => {
+    const feed = new FakeRunEventFeed();
+    const cancelled = v3Run({
+      state: "CANCELLED",
+      cancellation: notCancellableBlock("already-ended"),
+      current_node_id: "review",
+      latest_event_cursor: eventCursor(1),
+      node_rail: [
+        { node_id: "implement", state: "succeeded", attempt: null },
+        { node_id: "review", state: "queued", attempt: null }
+      ]
+    });
+    const getRun = vi.fn().mockResolvedValueOnce(v3Run()).mockResolvedValue(cancelled);
+    const cockpitApi = api(v3Run(), { getRun, openRunEvents: feed.open });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
+
+    await waitFor(() => expect(feed.close).toHaveBeenCalled());
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Cancelled");
+    // Closed, not reconnected: the browser's own EventSource retry never fires
+    // because the app closed the connection itself.
+    expect(feed.open).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the terminal fingerprint out of the main surface and inside the node's evidence", async () => {
     const cockpitApi = api(
       v3Run({ state: "COMPLETED", terminal_hash: terminalHash, current_node_id: "review" }),
