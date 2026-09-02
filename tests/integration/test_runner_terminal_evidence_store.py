@@ -12,7 +12,7 @@ from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     run_from_record_with_bindings,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
@@ -22,7 +22,6 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
 from atelier2.api.wire.events import AgentFailedEventResourceV3
@@ -63,7 +62,6 @@ from atelier2.contracts.agents import (
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_bindings import RunV3
@@ -93,6 +91,10 @@ from tests.scenarios.agents import (
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.runners import FakeRunner
 
 
@@ -168,16 +170,10 @@ def _v3_armed(
     RunnerInvocationId,
 ]:
     runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            root / "atelier.sqlite",
-            "runner-evidence-v3-test",
-            agent_scratch_root=agent_scratch_root(root),
+        canonical_runtime_settings(
+            root, "runner-evidence-v3-test", agent_scratch_root(root)
         ),
-        LoopbackEffectAdapterFactory(
-            root / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(root),
         (failing_agent_executor_factory("exact", []),),
     )
     runtime.initialize_storage()

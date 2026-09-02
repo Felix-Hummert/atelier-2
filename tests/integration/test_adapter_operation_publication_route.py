@@ -17,15 +17,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
 from atelier2.contracts.adapter_operations_v3 import (
     MAXIMUM_ADAPTER_OPERATION_DOCUMENT_BYTES,
     AdapterOperationName,
     AdapterOperationRefusal,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
@@ -33,6 +31,10 @@ from atelier2.ports.published_revisions import (
 )
 from tests.scenarios.agents import RecordingAgentExecutorFactoryV2, agent_scratch_root
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 OPERATION_PATH = f"{API_PREFIX}/adapter-operation-revisions"
@@ -47,16 +49,10 @@ THE_OPERATION = json.dumps({"operation": AdapterOperationName.OPEN_PR.value}).en
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "adapter-operation-door-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "adapter-operation-door-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", b'"done"'),),
     )
     started.initialize_storage()
