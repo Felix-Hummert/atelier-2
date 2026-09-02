@@ -7,4 +7,5 @@ story = "https://github.com/FlexOr2/atelier-2/issues/435"
 [[sentence]]
 id = "the-rail-keeps-its-settings-door-in-view-on-every-room"
 requirement = "REQ-UIQ-02"
+proof = "browser"
 text = "The rail keeps its Settings door in view on every room, including overflowing History before and after scroll, at 1280px and 390px."

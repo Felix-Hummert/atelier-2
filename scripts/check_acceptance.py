@@ -25,7 +25,7 @@ ACCEPTANCE_DIRECTORY = Path("acceptance")
 DECLARATION_SUFFIX = ".toml"
 SUPPORTED_SCHEMA_VERSION = 1
 DECLARATION_KEYS = frozenset({"schema_version", "story", "sentence"})
-SENTENCE_KEYS = frozenset({"id", "text", "requirement"})
+SENTENCE_KEYS = frozenset({"id", "text", "requirement", "proof"})
 SENTENCE_IDENTIFIER = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REQUIREMENT_IDENTIFIER = re.compile(r"^REQ-[A-Z0-9]+-[0-9]{2}$")
 
@@ -75,6 +75,7 @@ HONESTY_BOUND = (
     "proves: every claim was honoured by a passing test in this pipeline's reports",
     "proves: a proposed landing states its sentences by identifier, or why it has none",
     "proves: a sentence that names a requirement names one a document declares",
+    "proves: a sentence bound to proof = 'browser' was honoured only by the Playwright report",
     "does not prove: that a test carries its sentence in meaning - review judges that",
     "does not prove: that a stated exemption is honest - review judges that",
     "does not prove: that a bound sentence serves its requirement - review judges that",
@@ -94,6 +95,17 @@ class ReportFormat(Enum):
     PYTEST_JUNIT = "pytest --junitxml"
     VITEST_JSON = "vitest --reporter=json"
     PLAYWRIGHT_JSON = "Playwright JSON reporter"
+
+
+class ProofKind(Enum):
+    """Which run report alone may honour a sentence bound to it.
+
+    Named after the evidence the gate can check (a report), not the topic a
+    sentence happens to be about: what the gate can tell apart is Playwright
+    from Vitest and JUnit, never a sentence's subject matter.
+    """
+
+    BROWSER = "browser"
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +142,7 @@ class AcceptanceSentence:
     story: str
     declared_in: Path
     requirement: str | None = None
+    proof: ProofKind | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,7 +259,20 @@ def read_sentence_entry(entry: Any, story: str, location: Path) -> AcceptanceSen
             f"{location} binds sentence {identifier!r} to {requirement!r}; "
             "a requirement is named REQ-<AREA>-<nn>"
         )
-    return AcceptanceSentence(identifier, text, story, location, requirement)
+    proof = read_proof_kind(entry.get("proof"), identifier, location)
+    return AcceptanceSentence(identifier, text, story, location, requirement, proof)
+
+
+def read_proof_kind(value: Any, identifier: str, location: Path) -> ProofKind | None:
+    if value is None:
+        return None
+    try:
+        return ProofKind(value)
+    except ValueError:
+        raise AcceptanceGateError(
+            f"{location} binds sentence {identifier!r} to proof {value!r}; "
+            f"proof is one of {[kind.value for kind in ProofKind]}"
+        ) from None
 
 
 def read_junit_proofs(report: Path) -> Iterator[ReportedProof]:
@@ -677,7 +703,8 @@ def acceptance_problems(
     proofs: tuple[ReportedProof, ...],
 ) -> tuple[str, ...]:
     problems: list[str] = []
-    declared = {sentence.identifier for sentence in sentences}
+    sentences_by_identifier = {sentence.identifier: sentence for sentence in sentences}
+    declared = set(sentences_by_identifier)
     claim_counts = Counter(
         (claim.located_in, claim.claiming_test, claim.sentence_identifier)
         for claim in claims
@@ -693,10 +720,26 @@ def acceptance_problems(
             )
     proven: set[str] = set()
     for proof in proofs:
-        if proof.sentence_identifier not in declared:
+        sentence = sentences_by_identifier.get(proof.sentence_identifier)
+        if sentence is None:
             problems.append(
                 f"{proof.reported_in} reports {proof.proving_test} proving "
                 f"{proof.sentence_identifier!r}, which no story declares"
+            )
+            continue
+        if (
+            sentence.proof is ProofKind.BROWSER
+            and proof.reported_in != PLAYWRIGHT_REPORT_FILE_NAME
+        ):
+            # A browser sentence goes red the moment any non-Playwright report
+            # claims it, even beside a valid Playwright proof: that mix is the
+            # phantom verification this key exists to refuse (issue #435), so
+            # the illegitimate claim never counts toward `proven` below.
+            problems.append(
+                f"{sentence.declared_in} binds {sentence.identifier!r} to proof = "
+                f"{ProofKind.BROWSER.value!r}; only {PLAYWRIGHT_REPORT_FILE_NAME} may "
+                f"honour it, but {proof.reported_in} reports {proof.proving_test} "
+                "claiming it"
             )
             continue
         proven.add(proof.sentence_identifier)

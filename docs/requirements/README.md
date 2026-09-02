@@ -121,6 +121,7 @@ proves: every claim in this repository names a sentence some story declared
 proves: every claim was honoured by a passing test in this pipeline's reports
 proves: a proposed landing states its sentences by identifier, or why it has none
 proves: a sentence that names a requirement names one a document declares
+proves: a sentence bound to proof = 'browser' was honoured only by the Playwright report
 does not prove: that a test carries its sentence in meaning - review judges that
 does not prove: that a stated exemption is honest - review judges that
 does not prove: that a bound sentence serves its requirement - review judges that
