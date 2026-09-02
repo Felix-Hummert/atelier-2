@@ -902,6 +902,57 @@ def test_dependencies_require_completed_and_ready_items_order_by_rank_then_id(
     ]
 
 
+def test_list_items_pages_seek_by_the_start_order_key_not_by_item_id(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A page walk survives item ids whose hash order disagrees with rank order.
+
+    `gh:27` hashes below `gh:22` and `gh:26` yet carries the best (lowest)
+    rank, so a seek that continued past the raw `item_id` boundary -- rather
+    than behind the ordering key `advance_queue` and the list share -- would
+    skip or repeat an item once a one-item page forces the boundary between
+    them (Grok pre-review, #1051). The items `advance_queue` starts must also
+    come out of the walk as a subsequence, in the order it started them.
+    """
+
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 10, None), 0)
+    best = _prepare_admitted(queue, lineage_id, "gh:27", rank=1)
+    middle = _prepare_admitted(queue, lineage_id, "gh:22", rank=2)
+    worst = _prepare_admitted(queue, lineage_id, "gh:26", rank=3)
+    unranked = WorkItemReference(PROJECT, TrackerItemReference("gh:23"))
+    _seed_open_items(queue, unranked)
+
+    listed: list[QueueItemId] = []
+    after: QueueItemId | None = None
+    for _ in range(10):
+        page = queue.list_items(after, 1)
+        assert isinstance(page, QueueItemsPage)
+        assert len(page.items) == 1
+        listed.append(page.items[0].item_reference.item_id)
+        if page.next_after is None:
+            break
+        after = page.next_after
+    else:
+        pytest.fail("the page walk did not terminate")
+
+    assert listed == [best.item_id, middle.item_id, worst.item_id, unranked.item_id]
+
+    monkeypatch.setattr(advance_queue_module, "start_published_run", _run_started)
+    outcomes = advance_queue_module.advance_queue(
+        queue, DbosCatalogStore(engine), cast(DurablePublishedRunStarter, object())
+    )
+    started_items = [
+        outcome.item_id for outcome in outcomes if isinstance(outcome, QueueRunStarted)
+    ]
+    assert started_items == [best.item_id, middle.item_id, worst.item_id]
+    assert [listed.index(item_id) for item_id in started_items] == sorted(
+        listed.index(item_id) for item_id in started_items
+    )
+
+
 @pytest.mark.parametrize("proposal_revision", [None, 1])
 def test_phase_d_state_without_its_proposal_fails_loud(
     store: tuple[DbosQueueProjectionStore, Engine], proposal_revision: int | None
