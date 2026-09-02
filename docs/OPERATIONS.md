@@ -660,10 +660,11 @@ The store lives under
 `atelier.sqlite` and `external.sqlite`, plus the SQLite `-wal` and `-shm`
 sidecars when present, into a timestamped `backups/pre-redeploy-*` directory
 and verifies every copied size before migration. A migration refusal restores
-and rebuilds the previous commit, restarts the old Serve, and still exits
-nonzero. A `live serve is DOWN, operator action needed` line means that recovery
-itself failed; inspect `journalctl --user -u atelier2-serve.service -e` before
-acting.
+and rebuilds the commit reported by the running Serve, restarts the Serve, and
+still exits nonzero. With the Serve unreachable and no recorded deploy, the
+command refuses and changes nothing. A `live serve is DOWN, operator action
+needed` line means that recovery itself failed; inspect `journalctl --user -u
+atelier2-serve.service -e` before acting.
 
 Install the clean-stop classification once beside the unit, as the same user:
 

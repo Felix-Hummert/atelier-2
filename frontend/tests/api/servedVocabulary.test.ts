@@ -30,6 +30,7 @@ import {
   projectResourceSchema,
   projectSourceListSchema,
   projectSourceResourceSchema,
+  queueItemSchema,
   nodeDetailSchema,
   nodeRailEntrySchema,
   providerTerminalRefusalEventSchema,
@@ -39,6 +40,7 @@ import {
   unrecognisedProviderOutputEventSchema,
   usageEventSchema,
   runV3Schema,
+  observedQueueItemSchema,
   workflowRevisionSummarySchema,
   decodeStreamFrame
 } from "../../src/api/client";
@@ -75,6 +77,23 @@ const servedDocument = JSON.parse(
 const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
 
 describe("the served vocabulary", () => {
+  it("decodes exactly the queue-item fields the document serves", () => {
+    const served = servedDocument.components.schemas.QueueItemResource;
+
+    expect(Object.keys(queueItemSchema.shape).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
+    expect(Object.keys(observedQueueItemSchema.shape).sort()).toEqual([
+      "item_id",
+      "project_id",
+      "retired_at",
+      "revision",
+      "title",
+      "title_observed_at",
+      "tracker_item_reference"
+    ]);
+  });
+
   it("proves(the-browser-and-the-served-contract-know-the-same-node-states): the browser decodes exactly the node states the document serves", () => {
     expect([...NODE_STATES]).toEqual(
       servedDocument.components.schemas.NodeRailResource?.properties?.state?.enum
