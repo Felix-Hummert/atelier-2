@@ -168,7 +168,7 @@ fi
 
 log "fast-forwarding main"
 git -C "${repository}" pull --ff-only --quiet "${deploy_remote}" "${deploy_branch}" \
-  || fail "main could not fast-forward from ${previous_commit}"
+  || fail "main could not fast-forward from checkout HEAD"
 target_commit="$(git -C "${repository}" rev-parse HEAD)" \
   || fail "the fast-forwarded deploy commit is unreadable"
 
