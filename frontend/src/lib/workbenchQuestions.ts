@@ -37,6 +37,13 @@ export const workbenchQuestions = {
 export type WorkbenchQuestion = (typeof workbenchQuestions)[keyof typeof workbenchQuestions];
 
 export const workbenchQuestionAttribute = "data-workbench-question";
+
+/**
+ * `WorkbenchControlFacts` and its two readers have no production caller --
+ * they are tooling for the e2e gate that proves every rendered Workbench
+ * control is inventoried. They stay beside the production half rather than
+ * move to test support.
+ */
 export type WorkbenchControlFacts = {
   questionId: string | null;
   href: string | null;
