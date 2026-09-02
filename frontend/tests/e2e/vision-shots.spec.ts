@@ -1,7 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { catalogPageCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { standingWords } from "../../src/lib/runState";
+import { stateLabels } from "../../src/lib/stateMarkCopy";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 
 /**
  * The mockup-comparison screenshots of every surface, at both widths and in
@@ -201,11 +206,14 @@ test("captures every surface at both widths", async ({ page }) => {
   const schemaHash = await anyJsonSchema(page);
   const agentHash = await immediateAgent(page);
 
-  // The Workbench before anything needs a person: the pinned region greets
-  // rather than apologises, and the composer is already within reach (#580).
+  // The Workbench before anything is said: the empty room teaches the one
+  // next move instead of staying blank, and the composer is already within
+  // reach (#580, REQ-UI-24).
   await page.goto("/atelier/chat");
-  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
-  await expect(page.getByText("Nothing needs you right now.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: workbenchPageCopy.emptyTitle })
+  ).toBeVisible();
   await shoot(page, "workbench-empty");
 
   const iterate = await page.request.post("/atelier/api/v1/workflow-revisions", {
@@ -268,36 +276,40 @@ test("captures every surface at both widths", async ({ page }) => {
   }).toPass({ timeout: 20_000 });
 
   await page.goto("/atelier/chat");
-  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
   // The waiting run staged above is pinned here: the decision that needs a
-  // person, held in the "Needs you" region so it never scrolls away (#580).
+  // person, held in the open-decisions region so it never scrolls away (#580).
   await expect(page.getByRole("heading", { name: "The review is green. Merge this, or name the blocking defect." })).toBeVisible();
   await shoot(page, "workbench-needs-you");
-  await page.getByLabel("Message").fill("Finish the preview door and fix the wait bug, in parallel.");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByLabel(workbenchPageCopy.composerLabel).fill("Finish the preview door and fix the wait bug, in parallel.");
+  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
   await shoot(page, "workbench-said");
 
   await page.goto("/atelier/catalog/iterate-code");
   await expect(page.getByRole("heading", { level: 1, name: "iterate-code" })).toBeVisible();
   await shoot(page, "workflow-detail");
 
-  await page.getByRole("button", { name: "Start" }).click();
-  await expect(page.getByRole("heading", { name: "Start iterate-code" })).toBeVisible();
+  await page.getByRole("button", { name: catalogPageCopy.start }).click();
+  await expect(
+    page.getByRole("heading", { name: workflowStartCopy.startTitle("iterate-code") })
+  ).toBeVisible();
   await shoot(page, "workflow-start-sheet");
-  await page.getByRole("button", { name: "Cancel" }).first().click();
+  await page.getByRole("button", { name: workflowStartCopy.cancel }).first().click();
 
   await page.goto("/atelier/catalog");
-  await expect(page.getByRole("heading", { level: 1, name: "Catalog" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { level: 1, name: catalogPageCopy.title })
+  ).toBeVisible();
   await shoot(page, "catalog");
 
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Waiting for you");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.waiting);
   await shoot(page, "run-waiting");
 
   await page.getByRole("button", { name: /build/ }).click();
   await expect(page.getByRole("tablist")).toBeVisible();
   await shoot(page, "run-node-tabs");
-  await page.getByRole("tab", { name: "Evidence" }).click();
+  await page.getByRole("tab", { name: runPageCopy.tabEvidence }).click();
   await shoot(page, "run-node-evidence");
 
   await page.goto(`/atelier/runs/${reference}`);
@@ -308,7 +320,7 @@ test("captures every surface at both widths", async ({ page }) => {
     expect((await read.json()).state).toBe("COMPLETED");
   }).toPass({ timeout: 20_000 });
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Done");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.done);
   await shoot(page, "run-answered");
 
   // A run that its own contract stopped: the agent answers prose where the
@@ -323,7 +335,7 @@ test("captures every surface at both widths", async ({ page }) => {
   const failedReference = await startRun(page, "demo/failed-contract", failing, agentHash);
   await runReaches(page, failedReference, "FAILED");
   await page.goto(`/atelier/runs/${failedReference}`);
-  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Failed");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.failed);
   await shoot(page, "run-failed");
 
   // A run that is still working: the delayed executor holds each node long
@@ -334,17 +346,19 @@ test("captures every surface at both widths", async ({ page }) => {
   ]);
   const runningReference = await startRun(page, "demo/still-running", running, slowAgent);
   await page.goto(`/atelier/runs/${runningReference}`);
-  await expect(page.getByRole("button", { name: /Working$/ })).toBeVisible({ timeout: 20_000 });
+  await expect(
+    page.getByRole("button", { name: new RegExp(`${stateLabels.working}$`) })
+  ).toBeVisible({ timeout: 20_000 });
   await shoot(page, "run-running");
 
   await page.goto("/atelier");
-  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
   // Clay, blue and quiet ink on one shelf: what waits and what moves, judged
   // against each other in the room that owns both.
   await shoot(page, "workbench-populated");
 
   await page.goto("/atelier/history");
-  await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: historyPageCopy.title })).toBeVisible();
   await shoot(page, "history");
 
   await page.goto("/atelier/settings");

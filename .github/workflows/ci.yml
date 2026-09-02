@@ -322,14 +322,6 @@ jobs:
       - name: Check product-status partition
         run: uv run --locked python scripts/check_product_status.py
 
-      # REQ-UIQ-11's freshness gate (#994): refuses without a ledger entry
-      # whose scope digest matches HEAD. The ledger ships empty, so this is
-      # expected to refuse until the operator approves the screenshot
-      # artifact the frontend job uploads and a matching entry lands in
-      # docs/requirements/0003-ziel-ui-screenshot-reviews.toml.
-      - name: Check screenshot review freshness
-        run: uv run --locked python scripts/check_screenshot_review.py
-
       - name: Check source
         run: uv run --locked ruff check .
 
@@ -375,6 +367,20 @@ jobs:
             "${uv_path}" run --locked pytest --dist loadgroup -n auto \
               --ignore=tests/crash tests -q \
               --junitxml="${GITHUB_WORKSPACE}/reports/quality.junit.xml"
+
+      # REQ-UIQ-11's freshness gate (#994): refuses without a ledger entry
+      # whose scope digest matches HEAD. The ledger ships empty, so this is
+      # expected to refuse until the operator approves the screenshot
+      # artifact the frontend job uploads and a matching entry lands in
+      # docs/requirements/0003-ziel-ui-screenshot-reviews.toml. Placed last,
+      # after every check that produces its own evidence: an empty ledger is
+      # the designed, permanent-until-approved state, and it must never
+      # swallow ruff/format/pyright/pytest's real signal or starve the
+      # acceptance trace of quality.junit.xml the way an earlier position did
+      # (PR #1007) -- refusal is precisely the state in which the operator
+      # needs the rest of this job's evidence, not less of it.
+      - name: Check screenshot review freshness
+        run: uv run --locked python scripts/check_screenshot_review.py
 
       - name: Upload the quality run report
         if: ${{ !cancelled() }}
