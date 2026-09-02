@@ -11,12 +11,8 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.advancer import (
     EffectIntentIdentityConflict,
 )
-from atelier2.adapters.dbos.runtime import (
-    DbosRuntime,
-    DbosRuntimeSettings,
-)
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import effect_intents
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -28,6 +24,10 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.runs import (
     complete_v3_agent_node,
     prepare_graph_action,
@@ -51,16 +51,10 @@ PROVIDER_OUTPUT = b'"draft-17"'
 @pytest.fixture
 def storage(tmp_path: Path) -> Iterator[DbosRuntime]:
     runtime = recording_exact_runtime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "executor-A",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "executor-A", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         PROVIDER_OUTPUT,
     )
     runtime.initialize_storage()
