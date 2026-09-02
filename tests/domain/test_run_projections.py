@@ -13,25 +13,34 @@ from atelier2.contracts.effects import (
     EffectIntentSnapshot,
     EffectIntentState,
     EffectIntentStateVersion,
-    LogicalEffectKey,
 )
+from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.run_projections import (
     NodeState,
     PublicAgentAttemptState,
     WaitingReconciliationProjection,
+    execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
-    run_awaits_effect_reconciliation,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 
+RUN = RunId("run-projection")
+REVISION = WorkflowRevisionHash("a" * 64)
+PARKED_NODE = "the-node-holding-the-effect"
+ANOTHER_NODE = "the-node-the-run-already-left"
+
+
+def node_execution(node_id: str) -> NodeExecutionId:
+    return NodeExecutionId.for_node(RUN, REVISION, node_id)
+
 
 def waiting_reconciliation(state: EffectIntentState) -> WaitingReconciliationProjection:
-    """One run's effect, standing where the durable store says it stands."""
+    """The parked node's own effect, standing where the durable store says it does."""
     intent = EffectIntent(
         EffectBinding(
-            LogicalEffectKey("run-projection/effect"),
-            RunId("run-projection"),
-            WorkflowRevisionHash("a" * 64),
+            logical_effect_key_for(node_execution(PARKED_NODE)),
+            RUN,
+            REVISION,
             AdapterRevision("run-projection-adapter"),
             EffectDestination("run-projection-destination"),
             AdapterOperationalIdentity("run-projection-operation"),
@@ -119,31 +128,56 @@ def test_an_armed_launch_is_told_as_a_run_that_possibly_ran() -> None:
 
 
 @pytest.mark.parametrize(
-    ("run_state", "intent_state", "awaits"),
+    ("run_state", "intent_state", "node_id", "awaits"),
     (
         (
             RunState.WAITING_RECONCILIATION,
             EffectIntentState.WAITING_RECONCILIATION,
+            PARKED_NODE,
             True,
         ),
-        (RunState.WAITING_RECONCILIATION, EffectIntentState.RECONCILING, True),
-        (RunState.WAITING_RECONCILIATION, EffectIntentState.ABANDONED, False),
-        (RunState.STARTED, EffectIntentState.WAITING_RECONCILIATION, False),
-        (RunState.COMPLETED, EffectIntentState.ABANDONED, False),
+        (
+            RunState.WAITING_RECONCILIATION,
+            EffectIntentState.RECONCILING,
+            PARKED_NODE,
+            True,
+        ),
+        (
+            RunState.WAITING_RECONCILIATION,
+            EffectIntentState.ABANDONED,
+            PARKED_NODE,
+            False,
+        ),
+        (
+            RunState.WAITING_RECONCILIATION,
+            EffectIntentState.WAITING_RECONCILIATION,
+            ANOTHER_NODE,
+            False,
+        ),
+        (
+            RunState.STARTED,
+            EffectIntentState.WAITING_RECONCILIATION,
+            PARKED_NODE,
+            False,
+        ),
+        (RunState.COMPLETED, EffectIntentState.ABANDONED, PARKED_NODE, False),
     ),
 )
-def test_a_run_awaits_its_effect_only_while_it_parks_on_an_unresolved_intent(
-    run_state: RunState, intent_state: EffectIntentState, awaits: bool
+def test_only_the_execution_the_waiting_intent_names_awaits_its_effect(
+    run_state: RunState, intent_state: EffectIntentState, node_id: str, awaits: bool
 ) -> None:
     assert (
-        run_awaits_effect_reconciliation(
-            run_state, waiting_reconciliation(intent_state)
+        execution_awaits_effect_reconciliation(
+            run_state, waiting_reconciliation(intent_state), node_execution(node_id)
         )
         is awaits
     )
 
 
-def test_a_run_with_no_intent_of_its_own_awaits_no_effect() -> None:
+def test_an_execution_with_no_intent_of_its_own_awaits_no_effect() -> None:
     assert (
-        run_awaits_effect_reconciliation(RunState.WAITING_RECONCILIATION, None) is False
+        execution_awaits_effect_reconciliation(
+            RunState.WAITING_RECONCILIATION, None, node_execution(PARKED_NODE)
+        )
+        is False
     )

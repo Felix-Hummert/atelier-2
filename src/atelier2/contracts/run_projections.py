@@ -19,7 +19,7 @@ from atelier2.contracts.effects import (
     EffectIntentState,
     ReconcileCommandSnapshot,
 )
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import AnyRun
@@ -151,14 +151,24 @@ differently from the one before it.
 """
 
 
-def run_awaits_effect_reconciliation(
-    run_state: RunState, reconciliation: WaitingReconciliationProjection | None
+def execution_awaits_effect_reconciliation(
+    run_state: RunState,
+    reconciliation: WaitingReconciliationProjection | None,
+    node_execution_id: NodeExecutionId,
 ) -> bool:
-    """Whether the run stands still on its current node's effect, owed a decision."""
+    """Whether this exact node execution is the one the run stands still on.
+
+    The run's own standing is not enough: a line whose later node parks still
+    holds the finished attempts of every node before it, and those successes
+    were left behind by transitions that did happen. Only the execution the
+    waiting intent was keyed on may be told as `SUCCEEDED`.
+    """
     return (
         run_state is RunState.WAITING_RECONCILIATION
         and reconciliation is not None
         and reconciliation.intent.state in _INTENT_STATES_OWED_THE_OPERATOR
+        and reconciliation.intent.intent.binding.logical_key
+        == logical_effect_key_for(node_execution_id)
     )
 
 

@@ -37,8 +37,9 @@ from atelier2.contracts.run_projections import (
     PublicAgentAttemptState,
     ReusedNodeProjection,
     RunProjection,
+    WaitingReconciliationProjection,
+    execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
-    run_awaits_effect_reconciliation,
 )
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
@@ -326,9 +327,8 @@ class _RailDerivation:
             return None
         from_event = _attempt_the_event_proves(
             last_event,
-            effect_awaits_reconciliation=run_awaits_effect_reconciliation(
-                run.state, self.projection.reconciliation
-            ),
+            run_state=run.state,
+            reconciliation=self.projection.reconciliation,
         )
         from_snapshot = (
             self.projection.current_agent_attempt
@@ -402,7 +402,8 @@ def _state_the_event_ended_in(
 def _attempt_the_event_proves(
     persisted: PersistedRunEvent | None,
     *,
-    effect_awaits_reconciliation: bool,
+    run_state: RunState,
+    reconciliation: WaitingReconciliationProjection | None,
 ) -> NodeRailAttempt | None:
     if persisted is None or persisted.workflow_format_version not in (
         WorkflowFormatVersion.V2,
@@ -416,6 +417,9 @@ def _attempt_the_event_proves(
     return NodeRailAttempt(
         attempt_binding.attempt_ordinal,
         public_agent_attempt_state(
-            durable_state, effect_awaits_reconciliation=effect_awaits_reconciliation
+            durable_state,
+            effect_awaits_reconciliation=execution_awaits_effect_reconciliation(
+                run_state, reconciliation, persisted.event.node_execution_id
+            ),
         ),
     )

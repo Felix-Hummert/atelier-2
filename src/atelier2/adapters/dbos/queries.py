@@ -136,8 +136,8 @@ from atelier2.contracts.run_projections import (
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
+    execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
-    run_awaits_effect_reconciliation,
 )
 from atelier2.contracts.runs import (
     RevisionHashCollision,
@@ -2056,8 +2056,8 @@ class DbosQueries:
                             run=run,
                             graph=graph,
                             effect_awaits_reconciliation=(
-                                run_awaits_effect_reconciliation(
-                                    run.state, reconciliation
+                                execution_awaits_effect_reconciliation(
+                                    run.state, reconciliation, execution
                                 )
                             ),
                         )
