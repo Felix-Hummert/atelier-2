@@ -70,6 +70,7 @@ from atelier2.contracts.queue_projection import (
     QueueAutomationDisposition,
     QueueItemAdmitted,
     QueueItemProposed,
+    QueueItemTrackerObservation,
     QueuePriorityRank,
     QueueProjectionRevision,
     QueueProjectPolicyRevision,
@@ -79,6 +80,7 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunState, WorkflowRevision
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import RoleDifficulty
 from atelier2.host.run_command import AgentRoleBinding, start_request_body
 from atelier2.ports.agent_configurations import (
@@ -315,7 +317,12 @@ def admit_queue_item(runtime: DbosRuntime, lineage_id: CatalogLineageId) -> None
     """Plan and manually confirm one queue item through the Phase-D contract."""
     store = DbosQueueProjectionStore(runtime.engine)
     reference = WorkItemReference(SERVED_PROJECT, TrackerItemReference("gh:680"))
-    store.observe((reference,))
+    observed_at = RecordedAt("2026-08-27T10:00:00Z")
+    store.reconcile_open_items(
+        SERVED_PROJECT,
+        ((reference, QueueItemTrackerObservation("cast the model", observed_at)),),
+        observed_at,
+    )
     store.put_policy(QueueProjectPolicyRevision(SERVED_PROJECT, 1, 1, None), 0)
     proposed = store.plan(
         PlanQueueItem(

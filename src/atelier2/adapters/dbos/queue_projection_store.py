@@ -55,11 +55,10 @@ from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.queue_projection import (
     ConfirmQueueProposalResult,
-    ObserveQueueItemsResult,
     PlanQueueItemResult,
     PutQueueProjectPolicyResult,
-    QueueItemsObserved,
     QueueItemsPage,
+    QueueItemsReconciled,
     QueueLaunchAlreadyBound,
     QueueLaunchBlocked,
     QueueLaunchReserved,
@@ -67,6 +66,7 @@ from atelier2.ports.queue_projection import (
     QueueProjectPolicyRevisionConflict,
     QueueProjectPolicyUnchanged,
     QueueReadUnavailable,
+    ReconcileQueueItemsResult,
     ReserveQueueLaunchResult,
 )
 
@@ -292,96 +292,83 @@ class DbosQueueProjectionStore:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
-    def observe(
-        self, references: tuple[WorkItemReference, ...]
-    ) -> ObserveQueueItemsResult:
-        """Record every reference as an OBSERVED row, counting only what is new.
+    def reconcile_open_items(
+        self,
+        project: ProjectId,
+        items: tuple[tuple[WorkItemReference, QueueItemTrackerObservation], ...],
+        observed_at: RecordedAt,
+    ) -> ReconcileQueueItemsResult:
+        """Insert, re-date, un-retire, and retire one project's rows in one step.
 
-        `INSERT OR IGNORE` on the derived `item_id` is the whole idempotency
-        story: a reference observed before -- or already admitted -- changes
-        nothing, so a repeated import never creates a twin and never rewinds
-        an admission.
+        The retirement is a set difference over this project's rows alone, so a
+        run for one project never touches another's. `INSERT OR IGNORE` on the
+        derived `item_id` keeps a repeated import from creating a twin or
+        rewinding an admission; the observation write that follows it touches
+        only the three ADR 0016 columns, never `state`, `state_version`, or any
+        admission field.
         """
 
-        if not references:
-            return QueueItemsObserved(0, 0)
+        for reference, observation in items:
+            if reference.project != project:
+                raise ValueError("a reconciled item must belong to the named project")
+            if observation.observed_at != observed_at:
+                raise ValueError("a reconciled item must carry the run's read time")
+        observed = tuple(reference.item_id for reference, _ in items)
         try:
             with canonical_write_transaction(self._engine) as connection:
-                newly_observed = 0
-                for reference in references:
-                    inserted = connection.execute(
-                        sa.insert(queue_items)
-                        .prefix_with("OR IGNORE")
+                newly_observed = tuple(
+                    reference.item_id
+                    for reference, _ in items
+                    if self._ensure_observed(connection, reference)
+                )
+                for reference, observation in items:
+                    connection.execute(
+                        queue_items.update()
+                        .where(queue_items.c.item_id == reference.item_id.value)
                         .values(
-                            item_id=reference.item_id.value,
-                            project_id=reference.project.value,
-                            tracker_item_reference=reference.tracker_item.value,
-                            state=QueueItemState.OBSERVED.value,
-                            state_version=QUEUE_PROJECTION_REVISION_OBSERVED.value,
-                            workflow_lineage_id=None,
-                            admission_rationale=None,
+                            observed_title=observation.title,
+                            title_observed_at=observation.observed_at.value,
+                            retired_at=None,
                         )
                     )
-                    newly_observed += inserted.rowcount
-                return QueueItemsObserved(len(references), newly_observed)
-        except (OperationalError, PoolTimeoutError):
-            return DurableWriteUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
-            return DurableStateCorrupt()
-
-    def record_tracker_observation(
-        self, item_id: QueueItemId, observation: QueueItemTrackerObservation
-    ) -> DurableWriteUnavailable | DurableStateCorrupt | None:
-        """Persist the tracker's last-served title and when it was read.
-
-        The write touches only the two observation columns ADR 0016's
-        2026-09-01 amendment adds; it never moves `state`, `state_version`, or
-        any admission field, so it runs independently of the proposal and
-        admission CAS and can repeat any number of times.
-        """
-
-        try:
-            with canonical_write_transaction(self._engine) as connection:
-                updated = connection.execute(
-                    queue_items.update()
-                    .where(queue_items.c.item_id == item_id.value)
-                    .values(
-                        observed_title=observation.title,
-                        title_observed_at=observation.observed_at.value,
-                    )
+                return QueueItemsReconciled(
+                    observed,
+                    newly_observed,
+                    self._retire_absent(connection, project, observed, observed_at),
                 )
-                if updated.rowcount != 1:
-                    raise ValueError("no queue item exists at that id to observe")
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
-        return None
 
-    def record_retirement(
-        self, item_id: QueueItemId, retired_at: RecordedAt
-    ) -> DurableWriteUnavailable | DurableStateCorrupt | None:
-        """Persist when import derived this item retired by set difference.
-
-        Closedness is never observed (ADR 0016 line 120); this records only
-        the derived consequence import already computed. It never moves
-        `state`, `state_version`, or any admission field.
-        """
-
-        try:
-            with canonical_write_transaction(self._engine) as connection:
-                updated = connection.execute(
-                    queue_items.update()
-                    .where(queue_items.c.item_id == item_id.value)
-                    .values(retired_at=retired_at.value)
+    @staticmethod
+    def _retire_absent(
+        connection: Connection,
+        project: ProjectId,
+        observed: tuple[QueueItemId, ...],
+        retired_at: RecordedAt,
+    ) -> tuple[QueueItemId, ...]:
+        absent = tuple(
+            QueueItemId(str(value))
+            for value in connection.scalars(
+                sa.select(queue_items.c.item_id)
+                .where(
+                    queue_items.c.project_id == project.value,
+                    queue_items.c.retired_at.is_(None),
+                    queue_items.c.item_id.not_in(
+                        [item_id.value for item_id in observed]
+                    ),
                 )
-                if updated.rowcount != 1:
-                    raise ValueError("no queue item exists at that id to retire")
-        except (OperationalError, PoolTimeoutError):
-            return DurableWriteUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
-            return DurableStateCorrupt()
-        return None
+                .order_by(queue_items.c.item_id)
+            )
+        )
+        if absent:
+            connection.execute(
+                queue_items.update()
+                .where(queue_items.c.item_id.in_([item_id.value for item_id in absent]))
+                .values(retired_at=retired_at.value)
+            )
+        return absent
 
     def plan(self, command: PlanQueueItem) -> PlanQueueItemResult:
         reference = command.item_reference
@@ -624,8 +611,10 @@ class DbosQueueProjectionStore:
         return QueueItemsPage(*page)
 
     @staticmethod
-    def _ensure_observed(connection: Connection, reference: WorkItemReference) -> None:
-        connection.execute(
+    def _ensure_observed(connection: Connection, reference: WorkItemReference) -> bool:
+        """Give the reference its OBSERVED row if it has none, saying whether it did."""
+
+        inserted = connection.execute(
             sa.insert(queue_items)
             .prefix_with("OR IGNORE")
             .values(
@@ -648,6 +637,7 @@ class DbosQueueProjectionStore:
         ).one_or_none()
         if stored_reference != (reference.project.value, reference.tracker_item.value):
             raise ValueError("queue item id collides with a different work item")
+        return inserted.rowcount == 1
 
     @staticmethod
     def _proposal_refusal(

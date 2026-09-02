@@ -106,6 +106,11 @@ def advance_queue(
             raise QueueAdvanceCorrupt("the queue answered an unknown projection")
         for item in page.items:
             item = _validated_snapshot(item)
+            # A retired item has left the pullable set (ADR 0016, 2026-09-01
+            # amendment): it stays visible in the projection, but the pull
+            # never starts it again.
+            if item.retired_at is not None:
+                continue
             if item.state is QueueItemState.ADMITTED:
                 admitted_items.append(item)
         if page.next_after is None:

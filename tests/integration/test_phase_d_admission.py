@@ -52,10 +52,15 @@ from atelier2.application.advance_queue import (
     QueueItemBlocked,
     QueueRunStarted,
 )
-from atelier2.application.refusals import (
-    DurableStateCorrupt as StartDurableStateCorrupt,
+from atelier2.application.import_project_source_issues import (
+    ImportProjectSourceIssuesOutcome,
+    ProjectSourceIssuesImported,
+    import_project_source_issues,
 )
-from atelier2.application.refusals import WriteUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt as ApplicationDurableStateCorrupt,
+)
+from atelier2.application.refusals import SourcePayloadMalformed, WriteUnavailable
 from atelier2.application.start_published_run import RunCreated
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
@@ -65,7 +70,9 @@ from atelier2.contracts.catalog_v3 import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     ConfirmQueueProposal,
     PlanQueueItem,
     QueueAdmissionAlreadyCurrent,
@@ -106,12 +113,17 @@ from atelier2.ports.durable_runs import (
     DurableStateCorrupt,
     DurableWriteUnavailable,
 )
+from atelier2.ports.issue_observation import (
+    ObservedOpenTrackerItem,
+    OpenTrackerItemsObserved,
+)
 from atelier2.ports.published_revisions import (
     CatalogLineageFounded,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import (
     QueueItemsPage,
+    QueueItemsReconciled,
     QueueLaunchBlocked,
     QueueLaunchReserved,
     QueueProjectPolicyPublished,
@@ -123,9 +135,13 @@ from tests.scenarios.api import (
     durable_api_client,
     event_poll_backoff,
 )
+from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import publish_revision
 
 PROJECT = ProjectId("project1")
+FIRST_READ = RecordedAt("2026-09-01T09:00:00Z")
+SECOND_READ = RecordedAt("2026-09-02T09:00:00Z")
+THIRD_READ = RecordedAt("2026-09-03T09:00:00Z")
 BINDING_FREE_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
 """The one schema a wait-only document needs published before it is executable.
 
@@ -228,6 +244,43 @@ def _insert_dependency_proposal(
         )
 
 
+def _seed_open_items(
+    store: DbosQueueProjectionStore, *references: WorkItemReference
+) -> None:
+    """Seed rows the way an import does: one reconciliation of the open set.
+
+    The project's rows that are already open are carried into the run, so
+    seeding one item never retires an item a test seeded before it.
+    """
+
+    (project,) = {reference.project for reference in references}
+    page = store.list_items(None, MAXIMUM_PAGE_ITEMS)
+    assert isinstance(page, QueueItemsPage)
+    already_open = tuple(
+        item.item_reference
+        for item in page.items
+        if item.item_reference.project == project and item.retired_at is None
+    )
+    open_set = {
+        reference.item_id: reference for reference in (*already_open, *references)
+    }
+    observed_at = RecordedAt("2026-08-27T10:00:00Z")
+    reconciled = store.reconcile_open_items(
+        project,
+        tuple(
+            (
+                reference,
+                QueueItemTrackerObservation(
+                    f"open item {reference.tracker_item.value}", observed_at
+                ),
+            )
+            for reference in open_set.values()
+        ),
+        observed_at,
+    )
+    assert isinstance(reconciled, QueueItemsReconciled)
+
+
 def _prepare_admitted(
     store: DbosQueueProjectionStore,
     lineage_id: CatalogLineageId,
@@ -236,7 +289,7 @@ def _prepare_admitted(
     rank: int = 1,
 ) -> WorkItemReference:
     reference = WorkItemReference(PROJECT, TrackerItemReference(tracker))
-    store.observe((reference,))
+    _seed_open_items(store, reference)
     proposed = store.plan(
         PlanQueueItem(
             reference,
@@ -266,43 +319,208 @@ def store(tmp_path: Path) -> Iterator[tuple[DbosQueueProjectionStore, Engine]]:
         engine.dispose()
 
 
-def test_a_fresh_item_carries_no_observation_or_retirement(
-    store: tuple[DbosQueueProjectionStore, Engine],
-) -> None:
-    queue, _engine = store
-    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
-    queue.observe((reference,))
+def _import(
+    queue: DbosQueueProjectionStore,
+    observed_at: RecordedAt,
+    *open_items: tuple[str, str],
+    project: ProjectId = PROJECT,
+) -> ImportProjectSourceIssuesOutcome:
+    """Run the real import against the real store for one tracker answer."""
 
-    page = queue.list_items(None, 50)
+    source = FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved(
+            tuple(
+                ObservedOpenTrackerItem(TrackerItemReference(reference), title)
+                for reference, title in open_items
+            ),
+            observed_at,
+        )
+    )
+    return import_project_source_issues(project, source, queue)
 
+
+def _snapshots_by_reference(
+    queue: DbosQueueProjectionStore,
+) -> dict[TrackerItemReference, QueueItemSnapshot]:
+    page = queue.list_items(None, MAXIMUM_PAGE_ITEMS)
     assert isinstance(page, QueueItemsPage)
-    (snapshot,) = page.items
-    assert snapshot.observation is None
-    assert snapshot.retired_at is None
+    return {item.item_reference.tracker_item: item for item in page.items}
 
 
-def test_the_store_records_and_returns_a_title_observation_and_a_retirement(
-    store: tuple[DbosQueueProjectionStore, Engine],
-) -> None:
-    queue, _engine = store
-    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
-    queue.observe((reference,))
-    observation = QueueItemTrackerObservation(
-        "Give the queue its last-observed title", RecordedAt("2026-09-01T12:00:00Z")
+def _durable_observations(
+    engine: Engine,
+) -> dict[str, tuple[str | None, str | None, str | None]]:
+    """The three ADR 0016 columns as they lie, for rows a snapshot cannot read."""
+
+    with engine.connect() as connection:
+        return {
+            str(record["tracker_item_reference"]): (
+                record["observed_title"],
+                record["title_observed_at"],
+                record["retired_at"],
+            )
+            for record in connection.execute(
+                sa.select(
+                    schema_module.queue_items.c.tracker_item_reference,
+                    schema_module.queue_items.c.observed_title,
+                    schema_module.queue_items.c.title_observed_at,
+                    schema_module.queue_items.c.retired_at,
+                )
+            ).mappings()
+        }
+
+
+def _run_started(
+    run_id: RunId,
+    workflow_revision_hash: WorkflowRevisionHash,
+    _bindings: object,
+    _starter: object,
+    **_kwargs: object,
+) -> RunCreated:
+    return RunCreated(
+        Run(run_id, workflow_revision_hash, RunState.STARTED, "final", 0, 0)
     )
 
-    written = queue.record_tracker_observation(reference.item_id, observation)
-    retired_at = RecordedAt("2026-09-02T09:00:00Z")
-    retirement_written = queue.record_retirement(reference.item_id, retired_at)
-    page = queue.list_items(None, 50)
 
-    assert written is None
-    assert retirement_written is None
-    assert isinstance(page, QueueItemsPage)
-    (snapshot,) = page.items
-    assert snapshot.observation == observation
-    assert snapshot.retired_at == retired_at
-    assert snapshot.state is QueueItemState.OBSERVED
+def test_an_import_writes_every_open_items_title_with_the_runs_read_time(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, _engine = store
+
+    outcome = _import(
+        queue,
+        FIRST_READ,
+        ("gh:79", "Queue the workshop"),
+        ("gh:962", "Date the observation"),
+    )
+
+    assert outcome == ProjectSourceIssuesImported(observed=2, newly_observed=2)
+    snapshots = _snapshots_by_reference(queue)
+    assert snapshots[TrackerItemReference("gh:79")].observation == (
+        QueueItemTrackerObservation("Queue the workshop", FIRST_READ)
+    )
+    assert snapshots[TrackerItemReference("gh:962")].observation == (
+        QueueItemTrackerObservation("Date the observation", FIRST_READ)
+    )
+    assert [item.retired_at for item in snapshots.values()] == [None, None]
+
+
+def test_an_item_missing_from_the_open_set_retires_at_the_runs_read_time(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, _engine = store
+    _import(queue, FIRST_READ, ("gh:79", "Still open"), ("gh:962", "Closed later"))
+
+    outcome = _import(queue, SECOND_READ, ("gh:79", "Still open"))
+
+    assert outcome == ProjectSourceIssuesImported(observed=1, newly_observed=0)
+    snapshots = _snapshots_by_reference(queue)
+    assert snapshots[TrackerItemReference("gh:962")].retired_at == SECOND_READ
+    assert snapshots[TrackerItemReference("gh:79")].retired_at is None
+
+
+def test_a_re_observed_item_loses_its_retirement(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, _engine = store
+    _import(queue, FIRST_READ, ("gh:79", "Open"))
+    _import(queue, SECOND_READ)
+
+    reopened = _import(queue, THIRD_READ, ("gh:79", "Reopened"))
+
+    assert reopened == ProjectSourceIssuesImported(observed=1, newly_observed=0)
+    (snapshot,) = _snapshots_by_reference(queue).values()
+    assert snapshot.retired_at is None
+    assert snapshot.observation == QueueItemTrackerObservation("Reopened", THIRD_READ)
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["", "x" * (MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS + 1)],
+    ids=["empty", "overlong"],
+)
+def test_a_title_the_projection_cannot_hold_leaves_the_projection_untouched(
+    store: tuple[DbosQueueProjectionStore, Engine], title: str
+) -> None:
+    queue, _engine = store
+    _import(queue, FIRST_READ, ("gh:79", "Open"))
+
+    outcome = _import(queue, SECOND_READ, ("gh:79", "Renamed"), ("gh:962", title))
+
+    assert isinstance(outcome, SourcePayloadMalformed)
+    assert "gh:962" in outcome.detail
+    (snapshot,) = _snapshots_by_reference(queue).values()
+    assert snapshot.observation == QueueItemTrackerObservation("Open", FIRST_READ)
+
+
+def test_a_run_for_one_project_leaves_another_projects_items_open(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, _engine = store
+    other_project = ProjectId("other-project")
+    _import(queue, FIRST_READ, ("gh:79", "Served project item"))
+    _import(queue, FIRST_READ, ("gh:5", "Other project item"), project=other_project)
+
+    _import(queue, SECOND_READ)
+
+    snapshots = _snapshots_by_reference(queue)
+    assert snapshots[TrackerItemReference("gh:79")].retired_at == SECOND_READ
+    assert snapshots[TrackerItemReference("gh:5")].retired_at is None
+
+
+def test_a_retired_item_stays_visible_and_is_never_started(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    monkeypatch.setattr(advance_queue_module, "start_published_run", _run_started)
+
+    _import(queue, SECOND_READ)
+
+    (snapshot,) = _snapshots_by_reference(queue).values()
+    assert snapshot.item_reference == reference
+    assert snapshot.retired_at == SECOND_READ
+    assert snapshot.state is QueueItemState.ADMITTED
+    assert (
+        advance_queue_module.advance_queue(
+            queue, DbosCatalogStore(engine), cast(DurablePublishedRunStarter, object())
+        )
+        == ()
+    )
+
+
+def test_a_run_failing_after_its_first_write_leaves_every_row_unchanged(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """The reconciliation is one transaction, proven by the store's own guard.
+
+    A durable row whose tracker reference was tampered with -- written here
+    with the identity trigger dropped, as only a defect could -- no longer
+    matches the identity its `item_id` derives from, so the run fails loud on
+    that item after it has already inserted the first one. The projection must
+    come back without that insert.
+    """
+
+    queue, engine = store
+    _import(queue, FIRST_READ, ("gh:962", "Second"))
+    tampered = WorkItemReference(PROJECT, TrackerItemReference("gh:962"))
+    with sqlite3.connect(str(engine.url.database)) as connection:
+        connection.execute("DROP TRIGGER queue_items_identity_no_update")
+        connection.execute(
+            "UPDATE queue_items SET tracker_item_reference='gh:tampered' "
+            "WHERE item_id=?",
+            (tampered.item_id.value,),
+        )
+
+    outcome = _import(queue, SECOND_READ, ("gh:79", "First"), ("gh:962", "Renamed"))
+
+    assert outcome == ApplicationDurableStateCorrupt()
+    assert _durable_observations(engine) == {
+        "gh:tampered": ("Second", FIRST_READ.value, None)
+    }
 
 
 def test_validated_snapshot_carries_the_observation_and_retirement_through() -> None:
@@ -338,7 +556,7 @@ def test_proposal_and_manual_confirmation_are_separate_typed_transitions(
     queue, engine = store
     lineage_id, _revision_hash = _found_lineage(engine)
     reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
-    queue.observe((reference,))
+    _seed_open_items(queue, reference)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     command = PlanQueueItem(
         reference, _proposal(lineage_id), QueueProjectionRevision(0)
@@ -347,7 +565,7 @@ def test_proposal_and_manual_confirmation_are_separate_typed_transitions(
     proposed = queue.plan(command)
     repeated_proposal = queue.plan(command)
     stale_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:80"))
-    queue.observe((stale_reference,))
+    _seed_open_items(queue, stale_reference)
     stale = queue.plan(
         PlanQueueItem(
             stale_reference, _proposal(lineage_id), QueueProjectionRevision(9)
@@ -378,7 +596,7 @@ def test_proposal_and_manual_confirmation_are_separate_typed_transitions(
     assert isinstance(repeated_admission, QueueAdmissionAlreadyCurrent)
 
     human_required_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:81"))
-    queue.observe((human_required_reference,))
+    _seed_open_items(queue, human_required_reference)
     human_required_proposal = queue.plan(
         PlanQueueItem(
             human_required_reference,
@@ -515,7 +733,7 @@ def test_missing_policy_fails_launch_reservation_as_corrupt_without_a_binding(
     queue, engine = store
     lineage_id, revision_hash = _found_lineage(engine)
     reference = WorkItemReference(PROJECT, TrackerItemReference("gh:no-policy"))
-    queue.observe((reference,))
+    _seed_open_items(queue, reference)
     proposed = queue.plan(
         PlanQueueItem(
             reference,
@@ -690,7 +908,7 @@ def test_phase_d_state_without_its_proposal_fails_loud(
 ) -> None:
     queue, engine = store
     reference = WorkItemReference(PROJECT, TrackerItemReference("gh:corrupt-proposed"))
-    queue.observe((reference,))
+    _seed_open_items(queue, reference)
     with sqlite3.connect(str(engine.url.database)) as connection:
         connection.execute("DROP TRIGGER queue_items_state_transition")
         connection.execute("PRAGMA ignore_check_constraints=ON")
@@ -783,7 +1001,7 @@ def test_dependency_cycle_check_ignores_superseded_same_project_edges(
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     first = WorkItemReference(PROJECT, TrackerItemReference("gh:first"))
     second = WorkItemReference(PROJECT, TrackerItemReference("gh:second"))
-    queue.observe((first, second))
+    _seed_open_items(queue, first, second)
     assert isinstance(
         queue.plan(
             PlanQueueItem(
@@ -824,7 +1042,7 @@ def test_dependency_cycle_check_ignores_current_cross_project_edges(
     queue.put_policy(QueueProjectPolicyRevision(other_project, 1, 1, None), 0)
     first = WorkItemReference(other_project, TrackerItemReference("gh:first"))
     second = WorkItemReference(other_project, TrackerItemReference("gh:second"))
-    queue.observe((first, second))
+    _seed_open_items(queue, first, second)
     assert isinstance(
         queue.plan(
             PlanQueueItem(
@@ -911,11 +1129,11 @@ def test_queue_proposal_refusals_are_closed_typed_decisions(
     other_project_reference = WorkItemReference(
         ProjectId("other-project"), TrackerItemReference("gh:outside-project")
     )
-    queue.observe((other_project_reference,))
+    _seed_open_items(queue, other_project_reference)
     outside_project = plan("gh:outside-dependent", (other_project_reference.item_id,))
     first = WorkItemReference(PROJECT, TrackerItemReference("gh:cycle-first"))
     second = WorkItemReference(PROJECT, TrackerItemReference("gh:cycle-second"))
-    queue.observe((first, second))
+    _seed_open_items(queue, first, second)
     assert isinstance(
         queue.plan(
             PlanQueueItem(
@@ -1380,7 +1598,7 @@ def test_advance_classifies_catalog_resolution_failures(
     ("start_failure", "expected_error"),
     [
         (WriteUnavailable(), QueueAdvanceUnavailable),
-        (StartDurableStateCorrupt(), QueueAdvanceCorrupt),
+        (ApplicationDurableStateCorrupt(), QueueAdvanceCorrupt),
         (object(), QueueAdvanceCorrupt),
     ],
 )
@@ -1562,7 +1780,7 @@ def test_queue_api_fails_loud_for_illegal_raw_lifecycle_shapes(
     if corruption.startswith("admitted"):
         _prepare_admitted(queue, lineage_id, reference.tracker_item.value)
     else:
-        queue.observe((reference,))
+        _seed_open_items(queue, reference)
         if corruption.startswith("proposed"):
             assert isinstance(
                 queue.plan(
@@ -1627,7 +1845,7 @@ def test_queue_admission_api_requires_a_proposal_before_confirmation(
 ) -> None:
     queue, _engine = store
     reference = WorkItemReference(PROJECT, TrackerItemReference("gh:unproposed"))
-    queue.observe((reference,))
+    _seed_open_items(queue, reference)
 
     with _queue_api(queue) as api:
         response = api.post(
