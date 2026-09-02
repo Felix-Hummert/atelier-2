@@ -38,6 +38,7 @@ from atelier2.contracts.host_configuration import (
     ProjectModelDefaultsRevision,
     ProviderModelCheck,
 )
+from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     BindingConstraint,
@@ -135,6 +136,12 @@ def _configuration(
         capability,
         AgentConfigurationRevisionFormatVersion.V2,
     )
+
+
+# `resolve_start_bindings` only threads its `workflow_hash` through this
+# slice; the reprobe exemption that reads it lands in a later slice, so every
+# scenario here names one hash it never inspects.
+_UNCONSULTED_WORKFLOW_HASH = WorkflowRevisionHash("0" * 64)
 
 
 def _registry(
@@ -859,7 +866,9 @@ def test_without_project_defaults_every_open_role_is_named_uncast() -> None:
 def test_role_completeness_refuses_before_any_read(bindings: AgentBindingSet) -> None:
     reads = ScriptedBindingReads({})
 
-    result = resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
+    result = resolve_start_bindings(
+        _single_role_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, _registry()
+    )
 
     assert result == DurableInvalidAgentBindings()
     assert reads.calls == []
@@ -882,7 +891,9 @@ def test_missing_agent_configuration_refuses() -> None:
     bindings = AgentBindingSet((AgentBinding(AgentRole("builder"), missing_hash),))
     reads = ScriptedBindingReads({})
 
-    result = resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
+    result = resolve_start_bindings(
+        _single_role_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, _registry()
+    )
 
     assert result == DurableAgentConfigurationRevisionMissing()
 
@@ -902,7 +913,13 @@ def test_missing_auth_profile_fails_loud_rather_than_refusing() -> None:
     )
 
     with pytest.raises(AuthProfileMissingForConfiguration):
-        resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
+        resolve_start_bindings(
+            _single_role_graph(),
+            _UNCONSULTED_WORKFLOW_HASH,
+            bindings,
+            reads,
+            _registry(),
+        )
 
 
 def test_unregistered_executor_refuses() -> None:
@@ -913,7 +930,9 @@ def test_unregistered_executor_refuses() -> None:
     )
     reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
 
-    result = resolve_start_bindings(_single_role_graph(), bindings, reads, _registry())
+    result = resolve_start_bindings(
+        _single_role_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, _registry()
+    )
 
     assert result == DurableAgentExecutorBindingUnavailable()
 
@@ -932,7 +951,9 @@ def test_undeclared_capability_refuses() -> None:
         )
     )
 
-    result = resolve_start_bindings(_single_role_graph(), bindings, reads, registry)
+    result = resolve_start_bindings(
+        _single_role_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, registry
+    )
 
     assert result == DurableAgentExecutorCapabilityUnavailable()
 
@@ -946,7 +967,9 @@ def test_declared_but_unstartable_executor_refuses() -> None:
     reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
     registry = _registry(FakeExecutorFactory("exact"), unavailable=True)
 
-    result = resolve_start_bindings(_single_role_graph(), bindings, reads, registry)
+    result = resolve_start_bindings(
+        _single_role_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, registry
+    )
 
     assert result == DurableAgentExecutorBindingUnavailable()
 
@@ -960,7 +983,9 @@ def test_resolves_every_binding_for_a_single_role_graph() -> None:
     reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
     registry = _registry(FakeExecutorFactory("exact"))
 
-    result = resolve_start_bindings(_single_role_graph(), bindings, reads, registry)
+    result = resolve_start_bindings(
+        _single_role_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, registry
+    )
 
     assert result == (ResolvedAgentBinding(AgentRole("builder"), configuration, auth),)
 
@@ -984,7 +1009,9 @@ def test_first_refusal_in_request_binding_order_wins() -> None:
         {merger_configuration.revision_hash: (merger_configuration, auth)}
     )
 
-    result = resolve_start_bindings(_v3_graph(), bindings, reads, _registry())
+    result = resolve_start_bindings(
+        _v3_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, _registry()
+    )
 
     assert result == DurableAgentConfigurationRevisionMissing()
     assert reads.calls == [missing_hash]
@@ -1003,7 +1030,11 @@ def test_distinct_from_refuses_only_after_both_bindings_resolve() -> None:
     registry = _registry(FakeExecutorFactory("exact"))
 
     result = resolve_start_bindings(
-        _v3_graph(distinct_from=True), bindings, reads, registry
+        _v3_graph(distinct_from=True),
+        _UNCONSULTED_WORKFLOW_HASH,
+        bindings,
+        reads,
+        registry,
     )
 
     assert result == DurableBindingConstraintRefused("merge", "implement")
@@ -1029,7 +1060,11 @@ def test_distinct_configurations_satisfy_distinct_from() -> None:
     registry = _registry(FakeExecutorFactory("exact"))
 
     result = resolve_start_bindings(
-        _v3_graph(distinct_from=True), bindings, reads, registry
+        _v3_graph(distinct_from=True),
+        _UNCONSULTED_WORKFLOW_HASH,
+        bindings,
+        reads,
+        registry,
     )
 
     assert result == (

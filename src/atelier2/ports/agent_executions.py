@@ -20,6 +20,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     MAXIMUM_SIGNED_INT64,
     UNATTENDED_AGENT_EXECUTION_CAPABILITIES,
+    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -447,8 +448,21 @@ class AgentExecutorRegistry:
         return self._by_key[key].manifest_entry.carrier
 
     def is_startable(
-        self, key: AgentExecutorKey, capability: AgentExecutionCapability
+        self,
+        key: AgentExecutorKey,
+        capability: AgentExecutionCapability,
+        configuration_hash: AgentConfigurationRevisionHash,
     ) -> bool:
+        """Whether this exact configuration may start now.
+
+        `configuration_hash` names the exact `AgentConfigurationRevision` this
+        answer is about -- several configurations can share one executor
+        revision, so a caller with proof state to consult (a provider probe
+        receipt is keyed by configuration, not executor) needs the answer at
+        this grain. This slice only threads the identity through every
+        caller; the receipt gate that reads it lands in the next slice, armed
+        together with its receipt store.
+        """
         entry = self._by_key.get(key)
         return (
             entry is not None

@@ -274,6 +274,7 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                                     configuration.executor_revision,
                                 ),
                                 configuration.requested_capability,
+                                configuration.revision_hash,
                             ),
                         )
                     )
