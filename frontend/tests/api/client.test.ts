@@ -932,7 +932,9 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
     launch_binding: null,
     blockers: [],
     tracker_enrichment: "ENRICHMENT_UNAVAILABLE",
-    title: null
+    title: "Preview door",
+    title_observed_at: "2026-09-01T14:00:00Z",
+    retired_at: "2026-09-02T09:30:00Z"
   };
   const proposedItem = {
     ...observedItem,
@@ -953,7 +955,10 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
     project_id: observedItem.project_id,
     tracker_item_reference: observedItem.tracker_item_reference,
     item_id: observedItem.item_id,
-    revision: observedItem.revision
+    revision: observedItem.revision,
+    title: observedItem.title,
+    title_observed_at: observedItem.title_observed_at,
+    retired_at: observedItem.retired_at
   };
 
   it("asks the served observed queue page and decodes its items and cursor", async () => {
@@ -986,20 +991,35 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
     expect(page).toEqual({ items: [mappedObservedItem], next_after: digest });
   });
 
-  it("refuses an observed item that carries a title the queue does not own", async () => {
+  it("keeps a null title and timestamp when the projection has no observation", async () => {
+    const unobservedItem = {
+      ...observedItem,
+      title: null,
+      title_observed_at: null,
+      retired_at: null
+    };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
-          items: [{ ...observedItem, title: "Preview door" }],
+          items: [unobservedItem],
           next_after: null
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       )
     );
 
-    await expect(createCockpitApi(fetcher).listObservedQueueItems()).rejects.toThrow(
-      "response did not match the durable wire contract"
-    );
+    await expect(createCockpitApi(fetcher).listObservedQueueItems()).resolves.toEqual({
+      items: [{
+        project_id: unobservedItem.project_id,
+        tracker_item_reference: unobservedItem.tracker_item_reference,
+        item_id: unobservedItem.item_id,
+        revision: unobservedItem.revision,
+        title: null,
+        title_observed_at: null,
+        retired_at: null
+      }],
+      next_after: null
+    });
   });
 });
 

@@ -761,7 +761,24 @@ class QueueItemResource(ApiModel):
     launch_binding: QueueLaunchBindingResource | None
     blockers: tuple[QueueBlockerKind, ...]
     tracker_enrichment: Literal["ENRICHMENT_UNAVAILABLE"]
-    title: None = None
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The tracker title last observed at title_observed_at; an observation, "
+            "not current truth."
+        ),
+    )
+    title_observed_at: str | None = Field(
+        default=None,
+        pattern=RECORDED_AT_PATTERN,
+        description="When the tracker title was last observed.",
+    )
+    retired_at: str | None = Field(
+        default=None,
+        pattern=RECORDED_AT_PATTERN,
+        description="When import observed the item absent from the tracker's open set.",
+    )
 
 
 class QueueItemPageResource(ApiModel):

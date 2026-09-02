@@ -48,9 +48,42 @@ const workItemOrder = {
 
 const groupedObservedQueueItems = {
   items: [
-    { project_id: "atelier", tracker_item_reference: "gh:450", item_id: "1".repeat(64), revision: 0 },
-    { project_id: "atelier", tracker_item_reference: "gh:446", item_id: "3".repeat(64), revision: 0 },
-    { project_id: "infra", tracker_item_reference: "gl:12", item_id: "2".repeat(64), revision: 0 }
+    {
+      project_id: "atelier",
+      tracker_item_reference: "gh:450",
+      item_id: "1".repeat(64),
+      revision: 0,
+      title: "Preview door",
+      title_observed_at: "2026-09-01T14:00:00Z",
+      retired_at: null
+    },
+    {
+      project_id: "atelier",
+      tracker_item_reference: "gh:446",
+      item_id: "3".repeat(64),
+      revision: 0,
+      title: null,
+      title_observed_at: null,
+      retired_at: null
+    },
+    {
+      project_id: "infra",
+      tracker_item_reference: "gl:12",
+      item_id: "2".repeat(64),
+      revision: 0,
+      title: "Rotate keys",
+      title_observed_at: "2026-09-01T14:00:00Z",
+      retired_at: "2026-09-02T09:30:00Z"
+    },
+    {
+      project_id: "infra",
+      tracker_item_reference: "gl:13",
+      item_id: "4".repeat(64),
+      revision: 0,
+      title: "Deploy runner",
+      title_observed_at: "2026-09-01T14:00:00Z",
+      retired_at: null
+    }
   ],
   next_after: null
 };
@@ -294,16 +327,17 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.click(picker);
     expect(screen.getByText(observedSourceHeading("atelier", workflowStartCopy.github))).toBeTruthy();
     expect(screen.getByText(observedSourceHeading("infra", workflowStartCopy.gitlab))).toBeTruthy();
-    expect(screen.getByRole("option", { name: "#450" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "#450 Preview door" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "#446" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "!12" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "!12 Rotate keys" })).toBeNull();
+    expect(screen.getByRole("option", { name: "!13 Deploy runner" })).toBeTruthy();
     expect(screen.queryByText(`${workflowStartCopy.github} · gh:450`)).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
     expect(screen.getByRole("group", { name: "Roles" })).toBeTruthy();
 
     expect(screen.getByRole("listbox", { name: workItemFor("work") })).toBeTruthy();
-    await fireEvent.click(screen.getByRole("option", { name: "#450" }));
-    expect(picker.textContent).toContain("#450");
+    await fireEvent.click(screen.getByRole("option", { name: "#450 Preview door" }));
+    expect(picker.textContent).toContain("#450 Preview door");
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
@@ -334,9 +368,9 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
     const listbox = screen.getByRole("listbox", { name: workItemFor("work") });
     expect(listbox).toBeTruthy();
-    const first = screen.getByRole("option", { name: "#450" });
+    const first = screen.getByRole("option", { name: "#450 Preview door" });
     const second = screen.getByRole("option", { name: "#446" });
-    const third = screen.getByRole("option", { name: "!12" });
+    const third = screen.getByRole("option", { name: "!13 Deploy runner" });
     expect(picker.getAttribute("aria-activedescendant")).toBe(first.id);
     expect(document.activeElement).toBe(picker);
 
@@ -356,16 +390,16 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
     expect(screen.getByRole("listbox", { name: workItemFor("work") })).toBeTruthy();
     expect(picker.getAttribute("aria-activedescendant")).toBe(
-      screen.getByRole("option", { name: "!12" }).id
+      screen.getByRole("option", { name: "!13 Deploy runner" }).id
     );
     await fireEvent.keyDown(picker, { key: " " });
     expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
-    expect(picker.textContent).toContain("!12");
+    expect(picker.textContent).toContain("!13 Deploy runner");
     expect(document.activeElement).toBe(picker);
 
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
     expect(picker.getAttribute("aria-activedescendant")).toBe(
-      screen.getByRole("option", { name: "!12" }).id
+      screen.getByRole("option", { name: "!13 Deploy runner" }).id
     );
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
     expect(picker.getAttribute("aria-activedescendant")).toBe(

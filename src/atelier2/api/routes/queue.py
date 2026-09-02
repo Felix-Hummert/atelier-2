@@ -357,6 +357,7 @@ def _snapshot_resource(snapshot: QueueItemSnapshot) -> QueueItemResource:
     proposal = snapshot.proposal
     admission = snapshot.admission
     binding = snapshot.launch_binding
+    observation = snapshot.observation
     if proposal is None:
         legal_without_proposal = (
             snapshot.state is QueueItemState.OBSERVED
@@ -411,5 +412,9 @@ def _snapshot_resource(snapshot: QueueItemSnapshot) -> QueueItemResource:
         ),
         blockers=snapshot.blockers,
         tracker_enrichment="ENRICHMENT_UNAVAILABLE",
-        title=None,
+        title=None if observation is None else observation.title,
+        title_observed_at=None
+        if observation is None
+        else observation.observed_at.value,
+        retired_at=None if snapshot.retired_at is None else snapshot.retired_at.value,
     )

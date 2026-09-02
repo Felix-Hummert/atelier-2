@@ -13,6 +13,7 @@
   } from "../api/client";
   import {
     observedSourceHeading,
+    observedWorkItemLabel,
     pinnedModelLine,
     projectDefaultLine,
     startAccountSuffix,
@@ -141,7 +142,9 @@
       );
       orders = loadedOrders;
       if (loadedOrders.some((order) => order.shape?.kind === "work_item")) {
-        observedQueueItems = await readEveryObservedQueueItem();
+        observedQueueItems = (await readEveryObservedQueueItem()).filter(
+          (item) => item.retired_at === null
+        );
       }
       if (roles.length > 0) await resolveModels(false);
     } catch (error) {
@@ -447,7 +450,15 @@
 
   function selectedWorkItemLabel(order: OrderDraft): string {
     const reference = order.values.work_item ?? "";
-    return reference.length === 0 ? workflowStartCopy.choose : adapterGrammarLabel(reference);
+    if (reference.length === 0) return workflowStartCopy.choose;
+    const item = observedQueueItems.find(
+      (candidate) => candidate.tracker_item_reference === reference
+    );
+    return item === undefined ? adapterGrammarLabel(reference) : workItemLabel(item);
+  }
+
+  function workItemLabel(item: ObservedQueueItem): string {
+    return observedWorkItemLabel(adapterGrammarLabel(item.tracker_item_reference), item.title);
   }
 
   function workItemListName(orderName: string): string {
@@ -708,7 +719,7 @@
                           onmousedown={(event) => event.preventDefault()}
                           onclick={() => chooseWorkItem(order.name, item.tracker_item_reference)}
                         >
-                          {adapterGrammarLabel(item.tracker_item_reference)}
+                          {workItemLabel(item)}
                         </button>
                       {/each}
                     {/each}
