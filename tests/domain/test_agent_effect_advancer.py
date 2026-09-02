@@ -31,7 +31,7 @@ from atelier2.adapters.dbos.advancer import (
 )
 from atelier2.adapters.dbos.agent_effect_grants import open_pr_capability_for
 from atelier2.adapters.dbos.effect_store import receipt_from_record
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
@@ -59,6 +59,7 @@ from atelier2.contracts.tool_grants_v3 import (
 )
 from atelier2.contracts.workflows_v3 import VersionedReference
 from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.durable_state import canonical_runtime_settings
 from tests.scenarios.runs import (
     complete_v3_agent_node,
     prepare_graph_action,
@@ -90,10 +91,8 @@ def prepared(
         EffectDestination("platform"),
     )
     runtime = recording_exact_runtime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "executor-A",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "executor-A", agent_scratch_root(tmp_path)
         ),
         github,
         PROVIDER_OUTPUT,

@@ -32,10 +32,7 @@ from atelier2.adapters.dbos.run_transitions import (
     commit_reconciliation_required,
     commit_waiting_input,
 )
-from atelier2.adapters.dbos.runtime import (
-    DbosRuntime,
-    DbosRuntimeSettings,
-)
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
@@ -55,7 +52,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     bootstrap_workflow_id_for,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimits, durable_projection_limit
 from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
@@ -66,9 +62,7 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.effects import (
-    AdapterRevision,
     ConfirmationSource,
-    EffectDestination,
     EffectId,
     EffectIntent,
     EffectIntentState,
@@ -134,6 +128,10 @@ from tests.scenarios.api import (
     api_limits,
     durable_ports,
     event_poll_backoff,
+)
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
 )
 from tests.scenarios.runs import (
     NO_AGENT_EXECUTORS,
@@ -260,16 +258,8 @@ NO_WAIT_FOR_A_CONTENDED_WRITE = 0.0
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     configured = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "api-tests",
-            agent_scratch_root=agent_scratch_root(tmp_path),
-        ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_runtime_settings(tmp_path, "api-tests", agent_scratch_root(tmp_path)),
+        canonical_loopback_effects(tmp_path),
         (failing_agent_executor_factory(V3_PROVIDER.value, []),),
     )
     configured.initialize_storage()
