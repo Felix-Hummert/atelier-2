@@ -40,11 +40,10 @@ from atelier2.adapters.dbos.run_store import (
     load_run_inputs,
     run_from_record_with_bindings,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.workflow import _node_binding
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
 from atelier2.application.project_node_rail import NodeRailAttempt, project_node_rail
 from atelier2.contracts.agent_attempts import (
@@ -58,7 +57,6 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
@@ -85,6 +83,10 @@ from tests.scenarios.agents import (
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import durable_queries, permissive_projection_limit
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.workflows import declared_output
 
 RUN = RunId("v3/attempt")
@@ -101,16 +103,8 @@ STRING_ORDER_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type":"string"}
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "h1c-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
-        ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_runtime_settings(tmp_path, "h1c-test", agent_scratch_root(tmp_path)),
+        canonical_loopback_effects(tmp_path),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()
