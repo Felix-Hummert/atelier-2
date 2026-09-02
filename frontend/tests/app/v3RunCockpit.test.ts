@@ -267,7 +267,7 @@ describe("a version 3 run in the cockpit", () => {
     expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
   });
 
-  it("proves(a-live-run-closes-its-stream-when-cancelled): closes the stream once a run watched live lands on CANCELLED, through the one terminality owner", async () => {
+  it("closes the stream once a run watched live lands on CANCELLED, through the one terminality owner", async () => {
     const feed = new FakeRunEventFeed();
     const cancelled = v3Run({
       state: "CANCELLED",
@@ -396,7 +396,7 @@ describe("a version 3 run in the cockpit", () => {
 });
 
 describe("a run whose first read has already ended", () => {
-  it("proves(a-terminal-run-opens-no-event-stream): opens no event stream and never reconnects for a run already FAILED or CANCELLED", async () => {
+  it("opens no event stream and never reconnects for a run already FAILED or CANCELLED", async () => {
     const terminalCases = [
       { state: "FAILED" as const, cancellation: cancellableBlock() },
       { state: "CANCELLED" as const, cancellation: notCancellableBlock("already-ended") }
