@@ -190,6 +190,10 @@ export function observedSourceHeading(projectId: string, platform: string): stri
   return `${projectId} · ${platform}`;
 }
 
+export function observedWorkItemLabel(reference: string, title: string | null): string {
+  return title === null ? reference : `${reference} ${title}`;
+}
+
 /**
  * The short state a card or detail header wears beside a name that is not
  * the catalog's current head for it -- `null` for the ordinary case, an

@@ -4,7 +4,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { z } from "zod";
 
 import { nodeDetailSchema } from "../../src/api/client";
-import { workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import { observedWorkItemLabel, workflowStartCopy } from "../../src/lib/catalogPageCopy";
 import { decodeUtf8Base64 } from "../../src/lib/exactBytes";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
 
@@ -17,6 +17,10 @@ const workItemSchemaDocument =
   '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"}},"required":["body","change_marker","digest","kind","observed_at","reference"],"title":"work item","type":"object"}';
 const observedWorkItemBody = "e2e observed work item gh:450 — Grüße 東京";
 const workItemPickerName = `${workflowStartCopy.workItem} for work_item`;
+// The tracker title the harness seeds for gh:450 (tests/e2e/serve_cockpit.py
+// _E2E_TRACKER_ITEM_TITLE) -- the picker option now carries it beside the
+// reference (#1030).
+const observedWorkItemTitle = "e2e observed work item gh:450";
 const observedWorkItemRevision = {
   body: observedWorkItemBody,
   change_marker: "e2e-etag-gh-450",
@@ -240,7 +244,7 @@ test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catal
     await expect(sheet.getByRole("listbox", { name: workItemPickerName })).toHaveCount(0);
     await expect(sheet).toBeVisible();
     await expect(workItem).toBeFocused();
-    await pickWorkItem(sheet, "#450");
+    await pickWorkItem(sheet, observedWorkItemLabel("#450", observedWorkItemTitle));
     const roleConfiguration = sheet.getByLabel(workflowStartCopy.configurationFor("builder"));
     await roleConfiguration.selectOption(configuration.agentConfigurationRevisionHash);
     await expect(sheet.getByText("Chosen now", { exact: true })).toBeVisible();
