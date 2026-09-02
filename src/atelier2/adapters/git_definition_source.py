@@ -47,7 +47,6 @@ _GITLINK_MODE = "160000"
 _ENTRY_SEPARATOR = "\0"
 _PATH_SEPARATOR = "\t"
 _COMMIT_OF = "^{commit}"
-_WORKING_TREE_GIT_DIRECTORY = ".git"
 _END_OF_OPTIONS = "--end-of-options"
 """What keeps a configured ref that starts with a dash a ref rather than a flag."""
 
@@ -55,9 +54,20 @@ _END_OF_OPTIONS = "--end-of-options"
 class GitDefinitionSource:
     """One local git repository as the source of the definitions it carries."""
 
+    def resolve(self, configuration: DefinitionSourceConfiguration) -> SourceCommit:
+        """The commit this source stands on, reading no file of it.
+
+        What a caller learns from this is exactly whether the location is a
+        repository and whether the ref names something in it, which is what a
+        registration is answerable for; everything a *selection* can be wrong
+        about is the scan's to say.
+        """
+
+        return self._resolved_commit(configuration.location.value, configuration)
+
     def scan(self, configuration: DefinitionSourceConfiguration) -> ScannedSource:
         repository = configuration.location.value
-        commit = self._resolved_commit(repository, configuration)
+        commit = self.resolve(configuration)
         selected = tuple(self._selected(repository, commit, configuration))
         if not selected:
             raise DefinitionSourceUnreadable(
@@ -103,29 +113,57 @@ class GitDefinitionSource:
         the operator never named, under a source id minted from a location that
         holds none of those files. The answer is therefore compared against the
         location rather than merely awaited.
+
+        A working tree is asked for its top level rather than for its git
+        directory, because the two are only the same for a plain checkout: a
+        linked worktree keeps its administrative files under the repository
+        that created it, so its git directory is never anywhere near the
+        location the operator gave. A bare repository has no top level at all,
+        and answers for itself with its git directory.
         """
 
-        located = Path(repository)
         try:
-            found = Path(self._line(repository, ("rev-parse", "--absolute-git-dir")))
-        except (GitRefused, OSError) as error:
-            raise DefinitionSourceUnreadable(
-                DefinitionSourceRefusal.UNREACHABLE,
-                f"{repository} could not be read as a git repository: {error}",
-            ) from error
-        try:
-            resolved = located.resolve(strict=True)
+            resolved = Path(repository).resolve(strict=True)
         except OSError as error:
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.UNREACHABLE,
                 f"{repository} names no directory: {error}",
             ) from error
-        if found not in {resolved, resolved / _WORKING_TREE_GIT_DIRECTORY}:
+        top_level = self._answering(repository, ("rev-parse", "--show-toplevel"))
+        if top_level is None:
+            self._require_bare_repository_at(repository, resolved)
+            return
+        if Path(top_level).resolve() != resolved:
+            raise DefinitionSourceUnreadable(
+                DefinitionSourceRefusal.UNREACHABLE,
+                f"{repository} is not a git repository; it lies inside the working "
+                f"tree at {top_level}, whose content this source never named",
+            )
+
+    def _require_bare_repository_at(self, repository: str, resolved: Path) -> None:
+        """A location with no working tree is a repository only if it is the bare one."""
+
+        found = self._answering(repository, ("rev-parse", "--absolute-git-dir"))
+        if found is None:
+            raise DefinitionSourceUnreadable(
+                DefinitionSourceRefusal.UNREACHABLE,
+                f"{repository} could not be read as a git repository",
+            )
+        if Path(found).resolve() != resolved:
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.UNREACHABLE,
                 f"{repository} is not a git repository; it lies inside the one at "
                 f"{found}, whose content this source never named",
             )
+
+    def _answering(self, repository: str, arguments: tuple[str, ...]) -> str | None:
+        """What git said, or nothing when it would not answer this question here."""
+
+        try:
+            answered = self._line(repository, arguments)
+        except (GitRefused, OSError):
+            return None
+        return answered or None
 
     def _selected(
         self,

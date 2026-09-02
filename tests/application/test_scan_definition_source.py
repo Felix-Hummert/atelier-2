@@ -132,6 +132,9 @@ class SourceReadingOnce:
     scanned: ScannedSource | None = None
     refusal: DefinitionSourceRefusal | None = None
 
+    def resolve(self, configuration: DefinitionSourceConfiguration) -> SourceCommit:
+        return self.scan(configuration).commit
+
     def scan(self, configuration: DefinitionSourceConfiguration) -> ScannedSource:
         del configuration
         if self.refusal is not None:

@@ -62,6 +62,16 @@ class ScannedSource:
 class DefinitionSourceReader(Protocol):
     """The provider-neutral owner of what a configured source currently holds."""
 
+    def resolve(self, configuration: DefinitionSourceConfiguration) -> SourceCommit:
+        """Where the configured ref stands, reading no file of it.
+
+        Its own door because registering answers for the location and the ref
+        and for nothing else: a caller that had to scan to learn those two
+        would refuse a registration for a selection problem it was never
+        asked about.
+        """
+        ...
+
     def scan(self, configuration: DefinitionSourceConfiguration) -> ScannedSource:
         """Resolve the configured ref once and read every selected file of it."""
         ...

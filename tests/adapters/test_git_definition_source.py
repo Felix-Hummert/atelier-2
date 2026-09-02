@@ -59,21 +59,33 @@ def regular(content: str) -> TreeEntry:
     return TreeEntry(REGULAR_FILE, content)
 
 
-class BareRepository:
-    """A bare repository whose trees are written straight through git plumbing."""
+class GitRepository:
+    """A repository whose trees are written straight through git plumbing.
 
-    def __init__(self, path: Path) -> None:
+    Bare or with a working tree, because the two answer differently for what a
+    location *is*: a bare repository answers for itself, a checkout answers
+    with its top level, and a worktree linked to that checkout keeps its
+    administrative files somewhere else entirely.
+    """
+
+    def __init__(self, path: Path, *, bare: bool = True) -> None:
         self.path = path
+        self._git_directory = path if bare else path / ".git"
         path.mkdir(parents=True, exist_ok=True)
-        self._git("init", "--bare", "--quiet", "--initial-branch=main", ".")
+        self._git(
+            "init",
+            *(("--bare",) if bare else ()),
+            "--quiet",
+            "--initial-branch=main",
+            ".",
+        )
 
     @property
     def location(self) -> str:
         return str(self.path)
 
     def commit(self, entries: Mapping[str, TreeEntry], ref: str = MAIN) -> str:
-        index = self.path / "scenario.index"
-        index.unlink(missing_ok=True)
+        self._index.unlink(missing_ok=True)
         described = "".join(
             f"{entry.mode} {self._object(path, entry)}\t{path}\n"
             for path, entry in entries.items()
@@ -83,6 +95,16 @@ class BareRepository:
         commit = self._git("commit-tree", tree, "-m", "scenario")
         self._git("update-ref", ref, commit)
         return commit
+
+    def linked_worktree(self, path: Path, ref: str = MAIN) -> Path:
+        """A second working tree of this repository, checked out elsewhere."""
+
+        self._git("worktree", "add", "--quiet", "--detach", str(path), ref)
+        return path
+
+    @property
+    def _index(self) -> Path:
+        return self._git_directory / "scenario.index"
 
     def _object(self, path: str, entry: TreeEntry) -> str:
         if entry.mode == GITLINK:
@@ -96,8 +118,8 @@ class BareRepository:
             env={
                 **os.environ,
                 **_AUTHORED_BY_THE_SCENARIO,
-                "GIT_DIR": str(self.path),
-                "GIT_INDEX_FILE": str(self.path / "scenario.index"),
+                "GIT_DIR": str(self._git_directory),
+                "GIT_INDEX_FILE": str(self._index),
             },
             input=stdin.encode("utf-8"),
             capture_output=True,
@@ -107,13 +129,13 @@ class BareRepository:
 
 
 def registration(
-    repository: BareRepository | Path,
+    repository: GitRepository | Path,
     *patterns: str,
     ref: str = MAIN,
 ) -> DefinitionSourceConfiguration:
     location = (
         repository.location
-        if isinstance(repository, BareRepository)
+        if isinstance(repository, GitRepository)
         else str(repository)
     )
     return DefinitionSourceConfiguration(
@@ -140,16 +162,33 @@ def refusal_of(
 def test_a_scan_answers_the_commit_its_configured_ref_resolves_to(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     commit = repository.commit({"workflows/build.yaml": regular("name: build")})
 
     assert GitDefinitionSource().scan(registration(repository)).commit.value == commit
 
 
+def test_resolving_answers_the_commit_without_asking_what_is_selected(
+    tmp_path: Path,
+) -> None:
+    """A source claiming nothing yet still has a location and a ref."""
+
+    repository = GitRepository(tmp_path / "definitions.git")
+    commit = repository.commit({"README.md": regular("no workflow here")})
+
+    resolved = GitDefinitionSource().resolve(registration(repository))
+
+    assert resolved.value == commit
+    assert (
+        refusal_of(registration(repository))
+        == DefinitionSourceRefusal.NO_SELECTED_FILES
+    )
+
+
 def test_every_selected_file_arrives_with_its_exact_bytes_in_path_order(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     repository.commit(
         {
             "workflows/zebra.yaml": regular("name: zebra"),
@@ -173,7 +212,7 @@ def test_every_selected_file_arrives_with_its_exact_bytes_in_path_order(
 def test_each_selected_file_carries_the_kind_its_own_selection_configured(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     repository.commit(
         {
             "workflows/build.yaml": regular("name: build"),
@@ -197,7 +236,7 @@ def test_each_selected_file_carries_the_kind_its_own_selection_configured(
 def test_a_moved_ref_is_a_different_commit_and_different_bytes(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     first = repository.commit({"workflows/build.yaml": regular("name: build")})
     second = repository.commit({"workflows/build.yaml": regular("name: rebuilt")})
 
@@ -209,7 +248,7 @@ def test_a_moved_ref_is_a_different_commit_and_different_bytes(
 
 
 def test_a_ref_the_source_does_not_carry_refuses_by_name(tmp_path: Path) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     repository.commit({"workflows/build.yaml": regular("name: build")})
 
     assert (
@@ -232,27 +271,48 @@ def test_a_plain_directory_inside_a_repository_is_not_that_repository(
 ) -> None:
     """Git walks upwards; a source configured here never named those files."""
 
-    enclosing = tmp_path / "checkout"
-    enclosing.mkdir()
-    BareRepository(enclosing / ".git").commit(
-        {"workflows/build.yaml": regular("name: build")}
-    )
-    nested = enclosing / "somewhere" / "inside"
+    checkout = GitRepository(tmp_path / "checkout", bare=False)
+    checkout.commit({"workflows/build.yaml": regular("name: build")})
+    nested = tmp_path / "checkout" / "somewhere" / "inside"
     nested.mkdir(parents=True)
 
     assert refusal_of(registration(nested)) == DefinitionSourceRefusal.UNREACHABLE
 
 
-def test_a_working_tree_is_read_through_the_repository_it_owns(
+def test_a_directory_inside_a_bare_repository_is_not_that_repository(
     tmp_path: Path,
 ) -> None:
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    commit = BareRepository(checkout / ".git").commit(
-        {"workflows/build.yaml": regular("name: build")}
+    repository = GitRepository(tmp_path / "definitions.git")
+    repository.commit({"workflows/build.yaml": regular("name: build")})
+
+    assert (
+        refusal_of(registration(Path(repository.location) / "objects"))
+        == DefinitionSourceRefusal.UNREACHABLE
     )
 
+
+def test_a_checkout_is_read_at_the_top_level_it_answers_with(tmp_path: Path) -> None:
+    checkout = GitRepository(tmp_path / "checkout", bare=False)
+    commit = checkout.commit({"workflows/build.yaml": regular("name: build")})
+
     assert GitDefinitionSource().scan(registration(checkout)).commit.value == commit
+
+
+def test_a_linked_worktree_is_a_repository_this_source_may_be_read_at(
+    tmp_path: Path,
+) -> None:
+    """Its git directory lives under the checkout that created it, never here."""
+
+    checkout = GitRepository(tmp_path / "checkout", bare=False)
+    commit = checkout.commit({"workflows/build.yaml": regular("name: build")})
+    linked = checkout.linked_worktree(tmp_path / "linked")
+
+    scanned = GitDefinitionSource().scan(registration(linked))
+
+    assert scanned.commit.value == commit
+    assert tuple(selected.path.value for selected in scanned.files) == (
+        "workflows/build.yaml",
+    )
 
 
 def test_a_location_that_is_not_even_a_directory_refuses_by_name(
@@ -267,7 +327,7 @@ def test_a_location_that_is_not_even_a_directory_refuses_by_name(
 def test_a_commit_carrying_nothing_the_selections_claim_refuses_by_name(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     repository.commit({"README.md": regular("no workflow here")})
 
     assert (
@@ -279,7 +339,7 @@ def test_a_commit_carrying_nothing_the_selections_claim_refuses_by_name(
 def test_two_selections_claiming_one_file_refuse_the_whole_scan(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     repository.commit({"workflows/build.yaml": regular("name: build")})
 
     assert (
@@ -291,7 +351,7 @@ def test_two_selections_claiming_one_file_refuse_the_whole_scan(
 def test_a_selected_symlink_refuses_rather_than_publishing_its_target(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     repository.commit({"workflows/build.yaml": TreeEntry(SYMLINK, "../../etc/passwd")})
 
     assert (
@@ -302,7 +362,7 @@ def test_a_selected_symlink_refuses_rather_than_publishing_its_target(
 def test_a_selected_gitlink_refuses_rather_than_publishing_a_foreign_commit(
     tmp_path: Path,
 ) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     borrowed = repository.commit({"README.md": regular("first")})
     repository.commit(
         {
@@ -317,7 +377,7 @@ def test_a_selected_gitlink_refuses_rather_than_publishing_a_foreign_commit(
 
 
 def test_a_symlink_no_selection_claims_leaves_the_scan_alone(tmp_path: Path) -> None:
-    repository = BareRepository(tmp_path / "definitions.git")
+    repository = GitRepository(tmp_path / "definitions.git")
     repository.commit(
         {
             "workflows/build.yaml": regular("name: build"),

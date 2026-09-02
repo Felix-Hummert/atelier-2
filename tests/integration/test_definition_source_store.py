@@ -413,7 +413,7 @@ def test_a_moved_ref_changes_the_commit_the_command_reports(
     assert first in standing and second in moved
 
 
-def test_the_command_refuses_to_register_a_location_that_answers_nothing(
+def test_the_command_refuses_to_register_a_location_that_is_no_repository(
     tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """There is no disconnect yet, so a wire to nowhere is never recorded."""
@@ -439,13 +439,79 @@ def test_the_command_refuses_to_register_a_location_that_answers_nothing(
 
     assert exit_code == 1
     assert "definition_source_unreachable" in capsys.readouterr().err
-    with engine.connect() as connection:
-        assert (
-            connection.execute(
-                sa.select(sa.func.count()).select_from(host_definition_source_revisions)
-            ).scalar_one()
-            == 0
+    assert _recorded_revisions(engine) == 0
+
+
+def test_the_command_refuses_to_register_a_ref_that_resolves_nowhere(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"workflows/build.yaml": b"name: build\n"})
+
+    exit_code = main(
+        [
+            "definition-source",
+            "connect",
+            "--database",
+            str(database),
+            "--location",
+            str(repository),
+            "--ref",
+            "refs/heads/absent",
+            "--select",
+            f"{WORKFLOW_SELECTION}=workflow",
+            "--actor",
+            "felix",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "definition_source_ref_unresolved" in capsys.readouterr().err
+    assert _recorded_revisions(engine) == 0
+
+
+def test_the_command_registers_a_source_whose_selections_match_nothing_yet(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Connect answers for the location and the ref; selections show at scan."""
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"README.md": b"no workflow here"})
+
+    assert (
+        main(
+            [
+                "definition-source",
+                "connect",
+                "--database",
+                str(database),
+                "--location",
+                str(repository),
+                "--ref",
+                MAIN,
+                "--select",
+                f"{WORKFLOW_SELECTION}=workflow",
+                "--actor",
+                "felix",
+            ]
         )
+        == 0
+    )
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "definition-source",
+            "scan",
+            "--database",
+            str(database),
+            "--source-id",
+            registration(location=str(repository)).source_id.value,
+        ]
+    )
+
+    assert exit_code == 1
+    assert "definition_source_no_selected_files" in capsys.readouterr().err
 
 
 def test_the_command_names_the_publication_refusal_a_selected_file_earns(

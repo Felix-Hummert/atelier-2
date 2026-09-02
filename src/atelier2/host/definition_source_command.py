@@ -1,10 +1,10 @@
 """Connect a git definition source, and look at where it stands. Offline, both.
 
-`connect` reads the repository and the ref the operator gave, then registers
-what they configured -- and takes nothing in. It reads first because there is
-no way to disconnect a source yet, so a location or ref that answers nothing
-would otherwise stand registered forever as a wire to nowhere. `scan` resolves
-the ref, reads
+`connect` resolves the repository and the ref the operator gave, then registers
+what they configured -- and takes nothing in. It resolves first because there
+is no way to disconnect a source yet, so a location or ref that answers nothing
+would otherwise stand registered forever as a wire to nowhere; what a selection
+claims is not its question, and surfaces at scan. `scan` resolves the ref, reads
 every selected file, and reports per path whether the catalog is behind. Taking
 content in is its own operation, and `serve` performs neither at startup: a
 newer version arrives because the operator asked for it (`#660` ruled line 2).
@@ -49,7 +49,9 @@ from atelier2.contracts.definition_sources import (
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.host.serving import api_limits
 from atelier2.ports.definition_sources import (
+    DefinitionSourceReader,
     DefinitionSourceRegistered,
+    DefinitionSourceRegistrar,
     DefinitionSourceUnchanged,
     DefinitionSourceUnreadable,
 )
@@ -141,17 +143,31 @@ def _require_store(database: Path) -> None:
 
 
 def _connect(parsed: argparse.Namespace) -> int:
+    """Build what this command depends on, then let the decision have it."""
+
     configuration = _configured(parsed)
-    _verified(configuration)
     engine = create_canonical_engine(parsed.database)
     try:
         try:
             initialize_schema(engine)
         except UnsupportedSchemaVersion as refusal:
             raise _CommandRefused(str(refusal)) from refusal
-        result = DbosDefinitionSources(engine).register(configuration)
+        return connect_definition_source(
+            configuration, GitDefinitionSource(), DbosDefinitionSources(engine)
+        )
     finally:
         engine.dispose()
+
+
+def connect_definition_source(
+    configuration: DefinitionSourceConfiguration,
+    reader: DefinitionSourceReader,
+    registrar: DefinitionSourceRegistrar,
+) -> int:
+    """Verify the source answers, then record it, and say which of the two happened."""
+
+    _verified(configuration, reader)
+    result = registrar.register(configuration)
     match result:
         case DefinitionSourceRegistered(registered):
             configured = registered.configuration
@@ -242,11 +258,19 @@ def _configured(parsed: argparse.Namespace) -> DefinitionSourceConfiguration:
         raise _CommandRefused(str(error)) from error
 
 
-def _verified(configuration: DefinitionSourceConfiguration) -> None:
-    """Read the source before recording it, so a dead wire is never registered."""
+def _verified(
+    configuration: DefinitionSourceConfiguration, reader: DefinitionSourceReader
+) -> None:
+    """Answer for the location and the ref before recording either.
+
+    Only those two: there is no disconnect yet, so a registration pointing at
+    no repository or no ref would stand forever -- while a selection that
+    matches nothing today is an ordinary thing to configure before the files
+    exist, and the scan is where it shows.
+    """
 
     try:
-        GitDefinitionSource().scan(configuration)
+        reader.resolve(configuration)
     except DefinitionSourceUnreadable as refused:
         raise _CommandRefused(f"{refused.refusal.value}: {refused.detail}") from refused
 
