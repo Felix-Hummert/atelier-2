@@ -345,7 +345,10 @@ def test_with_a_target_argument_it_fast_forwards_exactly_to_that_commit(
 
     assert completed.returncode == 0, completed.stderr
     assert harness.state()["head"] == target_commit
-    assert harness.deployed_commit_marker.read_text(encoding="utf-8") == f"{target_commit}\n"
+    assert (
+        harness.deployed_commit_marker.read_text(encoding="utf-8")
+        == f"{target_commit}\n"
+    )
     git_arguments = [call[3:] for call in harness.invocations() if call[0] == "git"]
     assert ["fetch", "--quiet", "origin", "main"] in git_arguments
     assert ["merge-base", "--is-ancestor", target_commit, "FETCH_HEAD"] in git_arguments
