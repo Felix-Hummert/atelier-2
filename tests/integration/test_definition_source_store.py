@@ -24,6 +24,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.definition_source_store import DbosDefinitionSources
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
@@ -34,6 +35,12 @@ from atelier2.adapters.dbos.schema import (
     host_definition_source_selections,
     initialize_schema,
     published_revisions,
+)
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogLineageDisplayName,
+    CatalogLineageFounded,
 )
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
@@ -50,6 +57,7 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
 from atelier2.host import main
 from atelier2.ports.definition_sources import (
@@ -700,7 +708,7 @@ def test_one_intake_takes_every_authored_workflow_in_with_its_provenance(
     reported = capsys.readouterr().out
     assert commit in reported
     assert [line.split() for line in reported.splitlines()[1:]] == [
-        ["aufgenommen", "workflow", path] for path in sorted(authored)
+        ["published", "workflow", path] for path in sorted(authored)
     ]
     assert recorded_intakes(engine) == [
         (
@@ -742,7 +750,7 @@ def test_the_same_commit_taken_in_again_writes_nothing_and_says_so(
     assert intake(database, source_id) == 0
 
     assert [line.split() for line in capsys.readouterr().out.splitlines()[1:]] == [
-        ["vorhanden", "workflow", "workflows/build.yaml"]
+        ["present", "workflow", "workflows/build.yaml"]
     ]
     assert logical_dump(database) == settled
 
@@ -764,7 +772,7 @@ def test_a_moved_ref_takes_the_new_revision_in_and_keeps_the_one_before_it(
     assert intake(database, source_id) == 0
 
     assert [line.split() for line in capsys.readouterr().out.splitlines()[1:]] == [
-        ["aufgenommen", "workflow", "workflows/build.yaml"]
+        ["published", "workflow", "workflows/build.yaml"]
     ]
     assert recorded_intakes(engine) == [
         (
@@ -811,7 +819,7 @@ def test_an_intake_refused_at_its_last_file_leaves_the_store_byte_identical(
     assert intake(database, source_id) == 1
 
     refused = capsys.readouterr().err
-    assert refused.startswith("verweigert workflows/z-last.yaml")
+    assert refused.startswith("refused workflows/z-last.yaml")
     assert "'build'" in refused
     assert logical_dump(database) == settled
 
@@ -834,7 +842,7 @@ def test_a_name_the_catalog_cannot_hold_refuses_before_anything_is_written(
     assert intake(database, source_id) == 1
 
     refused = capsys.readouterr().err
-    assert refused.startswith("verweigert workflows/shout.yaml")
+    assert refused.startswith("refused workflows/shout.yaml")
     assert "'SHOUT'" in refused
     assert logical_dump(database) == settled
 
@@ -856,4 +864,39 @@ def test_an_intake_refuses_a_commit_the_ref_has_moved_away_from(
 
     refused = capsys.readouterr().err
     assert scanned in refused and moved in refused
+    assert logical_dump(database) == settled
+
+
+def test_bytes_the_catalog_holds_under_another_name_refuse_the_whole_batch(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Identical bytes under a foreign name are somebody else's entry, not a delivery."""
+
+    elsewhere = workflow_named("alpha")
+    assert isinstance(
+        DbosCatalogStore(engine).add_workflow(
+            WorkflowRevision(elsewhere),
+            CatalogLineageDisplayName("elsewhere"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-03T08:00:00Z"),
+        ),
+        CatalogLineageFounded,
+    )
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(
+        repository,
+        {
+            "workflows/a-first.yaml": workflow_named("ship"),
+            "workflows/z-last.yaml": elsewhere,
+        },
+    )
+    source_id = connect(database, repository)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/z-last.yaml")
+    assert "already belong to lineage" in refused
     assert logical_dump(database) == settled

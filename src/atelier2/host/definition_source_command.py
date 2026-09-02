@@ -99,12 +99,13 @@ class IntakeWord(StrEnum):
     Three words for three outcomes: the bytes entered the catalog, the catalog
     already held them, or nothing of this commit entered at all. They are the
     operator's vocabulary for the operation, so they live here with the surface
-    that speaks them rather than in a layer that has no reader.
+    that speaks them rather than in a layer that has no reader, and they read
+    like `scan`'s `in_sync` and `source_ahead` beside them.
     """
 
-    INTAKEN = "aufgenommen"
-    PRESENT = "vorhanden"
-    REFUSED = "verweigert"
+    PUBLISHED = "published"
+    PRESENT = "present"
+    REFUSED = "refused"
 
 
 DEFINITION_SOURCE_DESCRIPTION = """\
@@ -328,7 +329,7 @@ def _intake_report(result: IntakeDefinitionSourceResult) -> int:
                 match entered:
                     case PathIntaken(intake):
                         print(
-                            f"  {IntakeWord.INTAKEN.value} "
+                            f"  {IntakeWord.PUBLISHED.value} "
                             f"{intake.revision_kind.value} {intake.path.value}"
                         )
                     case PathAlreadyInCatalog(path, kind, _):

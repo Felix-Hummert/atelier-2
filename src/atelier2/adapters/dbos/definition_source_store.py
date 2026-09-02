@@ -216,7 +216,21 @@ class DbosDefinitionSources:
                 )
                 _insert_intake(connection, intake, actor, intaken_at)
                 return PathIntaken(intake)
-            case CatalogAdmissionExisting():
+            case CatalogAdmissionExisting(lineage, _, _, held_name):
+                # Founding reaches the lineage these exact bytes started, whatever
+                # name it carries. Under another name they are somebody else's
+                # entry, not this path's: reporting them present would call a
+                # foreign catalog entry this source's delivery and let the paths
+                # already written commit behind it. Admitting into the path's own
+                # lineage has no such doubt -- the catalog answered
+                # `CatalogAdmissionRevisionOwned` before ever reaching here.
+                if previous is None and held_name != selected.display_name:
+                    return SourceIntakeRefused(
+                        selected.path,
+                        CatalogAdmissionRevisionOwned(
+                            published.revision_hash, lineage.lineage_id
+                        ),
+                    )
                 return PathAlreadyInCatalog(
                     selected.path, RevisionKind.WORKFLOW, published.revision_hash
                 )

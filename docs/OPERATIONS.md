@@ -904,12 +904,13 @@ its document authored, and records where it came from -- source, commit and
 path -- in one transaction. A refusal anywhere in the batch writes nothing at
 all, so a failed intake leaves the catalog exactly as it was.
 
-It prints the commit followed by one word per path: `aufgenommen` when the
-bytes entered the catalog, and `vorhanden` when the catalog already held them,
-which is why taking the same commit in twice writes no second row. `verweigert`
-names the one path that stopped the whole batch: an authored `name` outside the
-catalog's `[a-z][a-z0-9._-]*`, a name another lineage already holds, bytes that
-already belong to another lineage, or a retired lineage. Pass
+It prints the commit followed by one word per path: `published` when the bytes
+entered the catalog, and `present` when the catalog already held them under the
+name they author, which is why taking the same commit in twice writes no second
+row. `refused` names the one path that stopped the whole batch: an authored
+`name` outside the catalog's `[a-z][a-z0-9._-]*`, a name another lineage
+already holds, bytes that already belong to another lineage -- including the
+same bytes catalogued under a different name -- or a retired lineage. Pass
 `--source-position <commit>` to take in exactly the commit a scan showed; a ref
 that moved in between is refused rather than published unseen.
 
