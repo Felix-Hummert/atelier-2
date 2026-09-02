@@ -305,6 +305,33 @@ def test_the_store_records_and_returns_a_title_observation_and_a_retirement(
     assert snapshot.state is QueueItemState.OBSERVED
 
 
+def test_validated_snapshot_carries_the_observation_and_retirement_through() -> None:
+    """advance_queue's revalidation cannot silently drop a snapshot field.
+
+    Regression for a real finding: a fixed positional reconstruction dropped
+    `observation` and `retired_at` to None on every item it revalidated.
+    """
+
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
+    observation = QueueItemTrackerObservation(
+        "Give the queue its last-observed title", RecordedAt("2026-09-01T12:00:00Z")
+    )
+    retired_at = RecordedAt("2026-09-02T09:00:00Z")
+    item = QueueItemSnapshot(
+        reference,
+        QueueItemState.OBSERVED,
+        QueueProjectionRevision(0),
+        None,
+        observation=observation,
+        retired_at=retired_at,
+    )
+
+    validated = advance_queue_module._validated_snapshot(item)
+
+    assert validated.observation == observation
+    assert validated.retired_at == retired_at
+
+
 def test_proposal_and_manual_confirmation_are_separate_typed_transitions(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:

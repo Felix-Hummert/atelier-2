@@ -4186,7 +4186,7 @@ def test_v46_failure_after_version_cas_restores_the_exact_v45_store(
     assert _logical_dump(database_path) == before
 
 
-def test_v46_store_migrates_to_v47_with_immutable_catalog_intakes(
+def test_v46_store_migrates_to_the_current_schema_with_immutable_catalog_intakes(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
