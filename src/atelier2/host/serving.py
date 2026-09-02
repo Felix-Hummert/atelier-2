@@ -5,10 +5,13 @@ import logging
 import os
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import assert_never
@@ -819,24 +822,109 @@ def _model_validation_request(
     )
 
 
+_MODEL_DISCOVERY_JOB_DIRECTORY_PREFIX = "atelier2-model-discovery-"
+_MODEL_DISCOVERY_JOB_DIRECTORY_MODE = 0o700
+# Both the Grok and Codex CLIs keep this file, at private (0600) permissions,
+# as their credential record -- established from the pinned executables' own
+# strings (Codex: "Paste or type your API key below. It will be stored
+# locally in auth.json") and from each CLI's own live credential directory,
+# the same way #993 established Claude's credential file. Model discovery
+# asks a provider account what it may serve; it runs no job and grants no
+# tool, so this is the only file it needs, whatever else the operator's
+# directory also holds.
+_MODEL_DISCOVERY_CREDENTIAL_FILE_NAME = "auth.json"
+_MODEL_DISCOVERY_CREDENTIAL_FILE_MODE = 0o400
+_MODEL_DISCOVERY_PRIVATE_FILE_FLAGS = (
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+)
+_MAXIMUM_MODEL_DISCOVERY_CREDENTIAL_FILE_BYTES = 1_048_576
+
+
+def _model_discovery_credential_bytes(credential_directory: Path) -> bytes:
+    """Read one provider's own `auth.json`, and nothing else it holds."""
+
+    path = credential_directory / _MODEL_DISCOVERY_CREDENTIAL_FILE_NAME
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) & 0o077:
+            raise ValueError(
+                f"the {_MODEL_DISCOVERY_CREDENTIAL_FILE_NAME} credential file "
+                "must be a private regular file"
+            )
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                return b"".join(chunks)
+            size += len(chunk)
+            if size > _MAXIMUM_MODEL_DISCOVERY_CREDENTIAL_FILE_BYTES:
+                raise ValueError(
+                    f"the {_MODEL_DISCOVERY_CREDENTIAL_FILE_NAME} credential "
+                    "file exceeds its private copy bound"
+                )
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _private_model_discovery_home(credential_directory: Path) -> Iterator[Path]:
+    """One private, disposable directory holding a copy of `auth.json` alone.
+
+    Model discovery spawns a real provider process, so it is never handed the
+    operator's own credential directory to run in -- mirroring the discipline
+    the job path already carries for a real attempt (`claude_subscription`,
+    `grok_subscription`, `codex_subscription`). The directory is removed on
+    every exit from this context, success, refusal or exception alike,
+    because `TemporaryDirectory.__exit__` runs unconditionally.
+    """
+
+    payload = _model_discovery_credential_bytes(credential_directory)
+    with tempfile.TemporaryDirectory(
+        prefix=_MODEL_DISCOVERY_JOB_DIRECTORY_PREFIX
+    ) as directory_name:
+        directory = Path(directory_name)
+        os.chmod(directory, _MODEL_DISCOVERY_JOB_DIRECTORY_MODE)
+        descriptor = os.open(
+            directory / _MODEL_DISCOVERY_CREDENTIAL_FILE_NAME,
+            _MODEL_DISCOVERY_PRIVATE_FILE_FLAGS,
+            _MODEL_DISCOVERY_CREDENTIAL_FILE_MODE,
+        )
+        try:
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written < 1:
+                    raise OSError(
+                        "private model-discovery credential file write made no progress"
+                    )
+                remaining = remaining[written:]
+        finally:
+            os.close(descriptor)
+        yield directory
+
+
 def _discover_grok_models(
     settings: GrokSubscriptionSettings, timeout_seconds: float
 ) -> tuple[str, ...]:
-    process = subprocess.Popen(
-        (str(settings.executable), "models"),
-        cwd=settings.workspace,
-        env={
-            "HOME": str(settings.credential_directory),
-            "GROK_HOME": str(settings.credential_directory),
-            "PATH": settings.search_path,
-        },
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
-    return_code, standard_output, _standard_error = bounded_process_streams(
-        process, timeout_seconds, _MODEL_DISCOVERY_OUTPUT_BYTES
-    )
+    with _private_model_discovery_home(settings.credential_directory) as home:
+        process = subprocess.Popen(
+            (str(settings.executable), "models"),
+            cwd=settings.workspace,
+            env={
+                "HOME": str(home),
+                "GROK_HOME": str(home),
+                "PATH": settings.search_path,
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        return_code, standard_output, _standard_error = bounded_process_streams(
+            process, timeout_seconds, _MODEL_DISCOVERY_OUTPUT_BYTES
+        )
     if return_code != 0:
         raise ValueError("Grok model discovery failed")
     models: list[str] = []
@@ -864,64 +952,65 @@ def _discover_codex_models(
     timeout_seconds: float,
     termination_grace_seconds: float,
 ) -> tuple[str, ...]:
-    process = subprocess.Popen(
-        (str(settings.executable), "app-server"),
-        cwd=settings.credential_directory,
-        env={
-            "HOME": str(settings.credential_directory),
-            "CODEX_HOME": str(settings.credential_directory),
-            "PATH": settings.search_path,
-        },
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    assert process.stdin is not None and process.stdout is not None
-    deadline = time.monotonic() + timeout_seconds
-    try:
-        _send_json_rpc(
-            process,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "clientInfo": {
-                        "name": "atelier2",
-                        "title": "Atelier 2",
-                        "version": "1",
-                    },
-                    "capabilities": {},
-                },
+    with _private_model_discovery_home(settings.credential_directory) as home:
+        process = subprocess.Popen(
+            (str(settings.executable), "app-server"),
+            cwd=home,
+            env={
+                "HOME": str(home),
+                "CODEX_HOME": str(home),
+                "PATH": settings.search_path,
             },
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-        _read_json_rpc_result(process, 1, deadline)
-        _send_json_rpc(
-            process,
-            {"jsonrpc": "2.0", "method": "initialized", "params": {}},
-        )
-        _send_json_rpc(
-            process,
-            {"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": {}},
-        )
-        result = _read_json_rpc_result(process, 2, deadline)
-        data = result.get("data")
-        if not isinstance(data, list):
-            raise TypeError("Codex model discovery returned no data list")
-        models: list[str] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            model_id = item.get("model")
-            if isinstance(model_id, str):
-                models.append(model_id)
-        if len(models) != len(data) or not models:
-            raise ValueError("Codex model discovery returned an unknown shape")
-        return tuple(models)
-    finally:
-        process.stdin.close()
-        _terminate_inspection_process(process, termination_grace_seconds)
+        assert process.stdin is not None and process.stdout is not None
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            _send_json_rpc(
+                process,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {
+                            "name": "atelier2",
+                            "title": "Atelier 2",
+                            "version": "1",
+                        },
+                        "capabilities": {},
+                    },
+                },
+            )
+            _read_json_rpc_result(process, 1, deadline)
+            _send_json_rpc(
+                process,
+                {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+            )
+            _send_json_rpc(
+                process,
+                {"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": {}},
+            )
+            result = _read_json_rpc_result(process, 2, deadline)
+            data = result.get("data")
+            if not isinstance(data, list):
+                raise TypeError("Codex model discovery returned no data list")
+            models: list[str] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                model_id = item.get("model")
+                if isinstance(model_id, str):
+                    models.append(model_id)
+            if len(models) != len(data) or not models:
+                raise ValueError("Codex model discovery returned an unknown shape")
+            return tuple(models)
+        finally:
+            process.stdin.close()
+            _terminate_inspection_process(process, termination_grace_seconds)
 
 
 def _send_json_rpc(process: subprocess.Popen[bytes], message: object) -> None:
