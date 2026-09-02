@@ -75,6 +75,7 @@ export const runPageCopy = {
   doorCall: "Door call",
   doorAnswer: "Door answer",
   attemptStdout: "Attempt stdout",
+  providerRefusal: "Provider refusal",
   argumentsFold: "arguments",
   transcriptEmpty: "no transcript for this attempt",
   redacted: "redacted",

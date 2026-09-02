@@ -136,6 +136,31 @@
           </div>
           <p>{wrapDisplayCopy(usageLine(event.input_tokens, event.output_tokens, durationWords))}</p>
         </article>
+      {:else if event.event === "provider-terminal-refusal"}
+        <article class="transcript-entry refusal">
+          <div class="entry-head">
+            <span>{wrapDisplayCopy(runPageCopy.providerRefusal)}</span>
+            {#if failed}
+              <span class="failed-word">{wrapDisplayCopy(stateLabels.failed)}</span>
+            {/if}
+            {#if closeClock !== null && endedAt !== null}
+              <time datetime={endedAt}>{closeClock}</time>
+            {/if}
+          </div>
+          <p class="refusal-reason">
+            {#each redactionParts(event.terminal_reason, event.redacted) as part, partIndex (`refusal-reason-${index}-${partIndex}`)}
+              {#if part.kind === "text"}{part.text}{:else}{#if part.wrapped}[{/if}<span class="redaction">{wrapDisplayCopy(runPageCopy.redacted)}</span>{#if part.wrapped}]{/if}{/if}
+            {/each}
+            {#if event.api_error_status.length > 0}
+              ({#each redactionParts(event.api_error_status, event.redacted) as part, partIndex (`refusal-status-${index}-${partIndex}`)}{#if part.kind === "text"}{part.text}{:else}{#if part.wrapped}[{/if}<span class="redaction">{wrapDisplayCopy(runPageCopy.redacted)}</span>{#if part.wrapped}]{/if}{/if}{/each})
+            {/if}
+          </p>
+          <p>
+            {#each redactionParts(event.text, event.redacted) as part, partIndex (`refusal-text-${index}-${partIndex}`)}
+              {#if part.kind === "text"}{part.text}{:else}{#if part.wrapped}[{/if}<span class="redaction">{wrapDisplayCopy(runPageCopy.redacted)}</span>{#if part.wrapped}]{/if}{/if}
+            {/each}
+          </p>
+        </article>
       {:else if event.event === "unrecognised-provider-output"}
         <article class="transcript-entry stdout">
           <div class="entry-head">
@@ -189,8 +214,16 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .transcript-entry.stdout {
+  .transcript-entry.stdout,
+  .transcript-entry.refusal {
     border-left-color: var(--signal-failure);
+  }
+
+  .refusal-reason {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: var(--weight-strong);
+    color: var(--signal-failure);
   }
 
   .entry-head,

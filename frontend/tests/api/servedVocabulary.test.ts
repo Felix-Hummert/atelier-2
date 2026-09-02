@@ -32,6 +32,7 @@ import {
   projectSourceResourceSchema,
   nodeDetailSchema,
   nodeRailEntrySchema,
+  providerTerminalRefusalEventSchema,
   toolCalledEventSchema,
   toolReturnedEventSchema,
   transcriptTruncatedEventSchema,
@@ -554,6 +555,7 @@ describe("the served vocabulary", () => {
       "tool-returned": toolReturnedEventSchema,
       "assistant-turn": assistantTurnEventSchema,
       usage: usageEventSchema,
+      "provider-terminal-refusal": providerTerminalRefusalEventSchema,
       "unrecognised-provider-output": unrecognisedProviderOutputEventSchema,
       "transcript-truncated": transcriptTruncatedEventSchema
     };
@@ -609,6 +611,14 @@ describe("the served vocabulary", () => {
         output_tokens: 0,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        moment: beforeMoments
+      },
+      {
+        event: "provider-terminal-refusal" as const,
+        terminal_reason: "rate_limit_error",
+        api_error_status: "429",
+        text: "refused",
+        redacted: false,
         moment: beforeMoments
       },
       {
