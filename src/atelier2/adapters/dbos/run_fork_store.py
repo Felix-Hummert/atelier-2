@@ -312,7 +312,9 @@ class DbosRunForkStore:
                 key
             ):
                 return DurableRunForkCapabilityUnavailable()
-            if not self._agent_executor_registry.is_startable(key, capability):
+            if not self._agent_executor_registry.is_startable(
+                key, capability, binding.configuration.revision_hash
+            ):
                 return DurableRunForkExecutorUnavailable()
         return None
 

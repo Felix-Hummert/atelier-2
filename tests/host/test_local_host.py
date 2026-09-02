@@ -69,6 +69,7 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
+    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentRole,
     AuthMode,
@@ -997,7 +998,9 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             {CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, GROK_SUBSCRIPTION_EXECUTOR_KEY}
         )
         assert not runtime.agent_executor_registry.is_startable(
-            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionHash("0" * 64),
         )
         catalog = DbosAgentConfigurationCatalog(
             runtime.engine, runtime.agent_executor_registry
@@ -1042,7 +1045,9 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         startability = {item.revision.model: item.startable for item in listed.items}
         assert startability == {"claude-opus-4-1": False, "grok-4": True}
         assert runtime.agent_executor_registry.is_startable(
-            GROK_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
+            GROK_SUBSCRIPTION_EXECUTOR_KEY,
+            AgentExecutionCapability.HEADLESS,
+            grok_configuration.revision_hash,
         )
         publish_checked_model_registry(
             runtime.engine, ProviderId("anthropic"), (configuration,)

@@ -21,6 +21,7 @@ from atelier2.contracts.host_configuration import (
     ProviderModelCheck,
     UncastRole,
 )
+from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     DeclaredRole,
@@ -561,6 +562,7 @@ def cast_unbound_roles(
 
 def resolve_start_bindings(
     graph: WorkflowGraphV3,
+    workflow_hash: WorkflowRevisionHash,
     agent_bindings: AgentBindingSet,
     reads: AgentConfigurationBindingReads,
     registry: AgentExecutorRegistry,
@@ -581,6 +583,13 @@ def resolve_start_bindings(
     every binding has resolved are a V3 graph's `distinct_from` constraints
     checked, last, because they compare resolutions nothing before this point
     has produced.
+
+    `workflow_hash` is the published identity of `graph` itself -- a
+    `WorkflowRevisionHash` hashes source document bytes, so it cannot be
+    recovered from the parsed graph and must travel from the caller that
+    resolved it (`starter.py`'s `request.revision_hash`). This slice only
+    threads it through; the reprobe exemption that reads it lands in the next
+    slice, armed together with the receipt store.
     """
     role_refusal = agent_role_completeness_refusal(graph, agent_bindings)
     if role_refusal is not None:
@@ -603,7 +612,11 @@ def resolve_start_bindings(
             executor_key
         ):
             return DurableAgentExecutorCapabilityUnavailable()
-        if not registry.is_startable(executor_key, configuration.requested_capability):
+        if not registry.is_startable(
+            executor_key,
+            configuration.requested_capability,
+            configuration.revision_hash,
+        ):
             return DurableAgentExecutorBindingUnavailable()
         resolved.append(ResolvedAgentBinding(binding.role, configuration, auth))
 

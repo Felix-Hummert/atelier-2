@@ -59,6 +59,7 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
+    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -870,16 +871,29 @@ def test_registry_startability_is_one_declared_factory_and_capability_decision()
     missing_key = AgentExecutorKey(
         ProviderId("missing"), AgentExecutorRevision("missing/v1")
     )
+    # This test proves the factory-and-capability decision only; a receipt-aware
+    # gate is a later slice, so no configuration's own hash is exercised here.
+    unconsulted_configuration_hash = AgentConfigurationRevisionHash("0" * 64)
 
     assert registry.contains(startable_key)
     assert registry.contains(unavailable_key)
     assert not registry.contains(missing_key)
-    assert registry.is_startable(startable_key, AgentExecutionCapability.HEADLESS)
-    assert not registry.is_startable(
-        startable_key, AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    assert registry.is_startable(
+        startable_key, AgentExecutionCapability.HEADLESS, unconsulted_configuration_hash
     )
-    assert not registry.is_startable(unavailable_key, AgentExecutionCapability.HEADLESS)
-    assert not registry.is_startable(missing_key, AgentExecutionCapability.HEADLESS)
+    assert not registry.is_startable(
+        startable_key,
+        AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+        unconsulted_configuration_hash,
+    )
+    assert not registry.is_startable(
+        unavailable_key,
+        AgentExecutionCapability.HEADLESS,
+        unconsulted_configuration_hash,
+    )
+    assert not registry.is_startable(
+        missing_key, AgentExecutionCapability.HEADLESS, unconsulted_configuration_hash
+    )
     assert startable.opens == 0
     assert unavailable.opens == 0
 

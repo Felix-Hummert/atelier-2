@@ -795,6 +795,7 @@ class DbosDurableRunStarter:
                     )
                 bindings_result = resolve_start_bindings(
                     graph,
+                    request.revision_hash,
                     binding_set,
                     _TransactionAgentConfigurationReads(connection),
                     self._agent_executor_registry,
