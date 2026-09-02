@@ -56,17 +56,31 @@ if os.environ.get("ATELIER2_TEST_UPDATE_FAILS") == "1":
     print("serve live update: refused", file=sys.stderr)
     raise SystemExit(1)
 
+target_commit = sys.argv[1]
 repository = Path(__file__).resolve().parent.parent
-commit = subprocess.run(
+current_head = subprocess.run(
     ["git", "-C", str(repository), "rev-parse", "HEAD"],
     check=True,
     capture_output=True,
     text=True,
 ).stdout.strip()
-Path(os.environ["ATELIER2_TEST_SERVED_COMMIT_FILE"]).write_text(
-    commit, encoding="utf-8"
+if current_head == target_commit:
+    print(
+        "serve live update: checkout was already at the target commit; "
+        "the watcher must not fast-forward itself",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+subprocess.run(
+    ["git", "-C", str(repository), "merge", "--ff-only", "--quiet", target_commit],
+    check=True,
+    capture_output=True,
+    text=True,
 )
-print(f"serve live update: now serves {commit}")
+Path(os.environ["ATELIER2_TEST_SERVED_COMMIT_FILE"]).write_text(
+    target_commit, encoding="utf-8"
+)
+print(f"serve live update: now serves {target_commit}")
 """,
     )
 
@@ -357,17 +371,22 @@ def prepare_pending_deploy(tmp_path: Path) -> tuple[AutoRedeployHarness, str, st
     return harness, previous_commit, target_commit
 
 
-def test_a_green_commit_is_fast_forwarded_and_given_to_the_loopback_update(
+def test_a_green_commit_is_handed_to_the_loopback_update_without_the_watcher_moving_the_checkout(
     tmp_path: Path,
 ) -> None:
     harness, _, target_commit = prepare_pending_deploy(tmp_path)
 
     completed = harness.run()
 
+    # serve_live_update_stub refuses if the checkout is already at target_commit
+    # when it is invoked, so a returncode of 0 proves the watcher itself never
+    # fast-forwarded the checkout; only the stub's own ff-only merge did.
     assert completed.returncode == 0, completed.stderr
     assert run_git(harness.deploy, "rev-parse", "HEAD") == target_commit
     assert harness.served_commit_file.read_text(encoding="utf-8") == target_commit
-    assert harness.invocations("serve_live_update") == [["serve_live_update"]]
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", target_commit]
+    ]
     assert harness.invocations("gh")[0][1:4] == [
         "api",
         "--paginate",
@@ -378,7 +397,7 @@ def test_a_green_commit_is_fast_forwarded_and_given_to_the_loopback_update(
     assert not list(harness.git_admin_directory.glob("*deployed*"))
 
 
-def test_busy_checks_cover_every_run_state_before_and_after_the_fast_forward(
+def test_busy_checks_cover_every_run_state_before_and_after_the_github_checks(
     tmp_path: Path,
 ) -> None:
     harness, _, _ = prepare_pending_deploy(tmp_path)
@@ -415,10 +434,10 @@ def test_each_busy_run_state_defers_without_failing_or_touching_the_checkout(
     assert harness.state("auto-redeploy.failures") == 0
 
 
-def test_a_run_starting_after_fast_forward_still_defers_the_update(
+def test_a_run_starting_after_the_checks_pass_still_defers_without_touching_the_checkout(
     tmp_path: Path,
 ) -> None:
-    harness, _, target_commit = prepare_pending_deploy(tmp_path)
+    harness, previous_commit, _ = prepare_pending_deploy(tmp_path)
 
     completed = harness.run(
         ATELIER2_TEST_BUSY_STATE="STARTED",
@@ -426,7 +445,7 @@ def test_a_run_starting_after_fast_forward_still_defers_the_update(
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert run_git(harness.deploy, "rev-parse", "HEAD") == target_commit
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == previous_commit
     assert harness.invocations("serve_live_update") == []
     assert harness.state("auto-redeploy.busy") == 1
 
@@ -481,7 +500,9 @@ def test_neutral_and_skipped_check_runs_are_not_red(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert run_git(harness.deploy, "rev-parse", "HEAD") == target_commit
-    assert harness.invocations("serve_live_update") == [["serve_live_update"]]
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", target_commit]
+    ]
 
 
 def test_no_check_runs_wait_during_the_appearance_grace_period(
@@ -627,12 +648,14 @@ def test_successful_deploy_and_nothing_to_do_reset_both_counters(
 def test_a_failed_loopback_update_counts_without_calling_a_container_command(
     tmp_path: Path,
 ) -> None:
-    harness, _, _ = prepare_pending_deploy(tmp_path)
+    harness, _, target_commit = prepare_pending_deploy(tmp_path)
 
     completed = harness.run(ATELIER2_TEST_UPDATE_FAILS="1")
 
     assert completed.returncode == 0
-    assert harness.invocations("serve_live_update") == [["serve_live_update"]]
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", target_commit]
+    ]
     assert harness.state("auto-redeploy.failures") == 1
     assert any(
         "(exit 1)" in " ".join(invocation)

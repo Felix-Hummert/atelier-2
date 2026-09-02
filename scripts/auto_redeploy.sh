@@ -14,6 +14,7 @@ readonly busy_alert_threshold=30
 readonly alert_repeat_seconds=3600
 readonly check_run_lookup_timeout_seconds=60
 readonly check_run_appearance_grace_seconds=1800
+readonly github_repository="repos/FlexOr2/atelier-2"
 
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 serve_live_update="${repository}/scripts/serve_live_update.sh"
@@ -34,6 +35,10 @@ log_warning() {
 
 log_error() {
   log err "$*"
+}
+
+log_info() {
+  log info "$*"
 }
 
 if ! git_admin_directory="$(git -C "${repository}" rev-parse --absolute-git-dir 2>&1)"; then
@@ -186,7 +191,7 @@ remote_check_status() {
     return 1
   fi
   if check_runs="$(timeout "${check_run_lookup_timeout_seconds}" gh api --paginate \
-    "repos/FlexOr2/atelier-2/commits/${commit_sha}/check-runs" \
+    "${github_repository}/commits/${commit_sha}/check-runs" \
     --jq 'if (type == "object" and (.total_count | type == "number") and (.check_runs | type == "array")) then "envelope\t\(.total_count)", (.check_runs[] | "check\t\(.status // "")\t\(.conclusion // "")") else error("GitHub returned malformed check-runs response") end' 2>&1)"; then
     :
   else
@@ -315,7 +320,7 @@ if [[ -n "${worktree_status}" ]]; then
 fi
 
 if ! active_runs="$(active_run_count)"; then
-  refuse_tick "run state is unreadable before fast-forward" "cannot establish whether runs are active before fast-forward: ${active_runs}"
+  refuse_tick "run state is unreadable before checking GitHub checks" "cannot establish whether runs are active before checking GitHub checks: ${active_runs}"
 fi
 if ((active_runs > 0)); then
   record_busy_deferral "${active_runs}"
@@ -346,13 +351,6 @@ case "${check_status}" in
     ;;
 esac
 
-if ! merge_output="$(git -C "${repository}" merge --ff-only "${target_commit}" 2>&1)"; then
-  refuse_tick "checkout could not fast-forward" "cannot fast-forward the deploy checkout to ${target_commit}: ${merge_output}"
-fi
-if [[ "$(git -C "${repository}" rev-parse --verify HEAD)" != "${target_commit}" ]]; then
-  refuse_tick "checkout reached the wrong commit" "deploy checkout did not land on verified commit ${target_commit}"
-fi
-
 if ! active_runs="$(active_run_count)"; then
   refuse_tick "run state is unreadable before update" "cannot establish whether runs are active immediately before update: ${active_runs}"
 fi
@@ -361,9 +359,9 @@ if ((active_runs > 0)); then
   exit 0
 fi
 
-if "${serve_live_update}"; then
+if "${serve_live_update}" "${target_commit}"; then
   reset_counters
-  echo "auto redeploy: main now served at ${target_commit}"
+  log_info "auto redeploy: main now served at ${target_commit}"
   exit 0
 else
   update_exit=$?

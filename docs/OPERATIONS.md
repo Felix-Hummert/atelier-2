@@ -607,45 +607,9 @@ that plainly in its own output, and only when a volume actually existed to
 lose — a sweep that only ever found a stray container or network never
 claims a store was lost.
 
-**Auto-redeploy is the deploy path for the loopback host Serve: a green landing
-on `main` reaches it without an operator hand.** A systemd user timer
-(`scripts/atelier2-auto-redeploy.timer`, a two-minute poll) runs
-`scripts/auto_redeploy.sh`. The watcher serializes timer and hand runs in the
-checkout's Git admin directory, fetches `origin/main`, and compares it with the
-commit reported by live health. A matching commit is a no-op. Otherwise the
-watcher requires a clean `main` checkout and green GitHub check runs, checks all
-three active run states before fast-forwarding and again immediately before the
-update, then calls `scripts/serve_live_update.sh`. That script remains the one
-owner of build, backup, migration, restart, and post-update health verification.
-
-Queued or running GitHub checks wait for another tick. No reported checks wait
-for up to 30 minutes after the commit; after that they count as red. A busy run
-in `STARTED`, `WAITING_INPUT`, or `WAITING_RECONCILIATION` also waits without
-failing the unit. An unreadable health, run list, or check result fails closed.
-The watcher never deploys a commit with a failed, cancelled, or timed-out check;
-completed neutral and skipped checks are accepted as non-red.
-
-Enable it once per host, from the deploy checkout, no root:
-
-```bash
-mkdir -p ~/.config/systemd/user
-sed "s|/absolute/path/to/atelier-2|${PWD}|" \
-  scripts/atelier2-auto-redeploy.service \
-  > ~/.config/systemd/user/atelier2-auto-redeploy.service
-cp scripts/atelier2-auto-redeploy.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now atelier2-auto-redeploy.timer
-```
-
-The Git admin directory holds `auto-redeploy.failures`, `auto-redeploy.busy`,
-and `auto-redeploy.last-alert`. A successful deploy or genuine no-op clears both
-streaks. Dirty or non-`main` checkouts warn and increment the failure streak but
-leave the tree untouched. The third consecutive failure, and the first repeat
-at least one hour later while the streak persists, logs at error priority and
-fails that oneshot tick; other failure ticks exit successfully. The 30th busy
-tick warns but never fails the unit. Inspect the tagged journal and unit state
-with `journalctl --user -t atelier2-autodeploy -e` and
-`systemctl --user status atelier2-auto-redeploy.service`.
+This container installation has no automatic deploy path; `update` above is
+always a hand command. The automatic auto-redeploy watcher below applies only
+to the loopback host Serve installation.
 
 ### Loopback host Serve hand update
 
@@ -683,6 +647,51 @@ systemctl --user daemon-reload
 The drop-in makes the launcher's SIGTERM exit code 143 a successful stop, so a
 deliberate update stop does not leave the unit failed. Installation does not
 start, restart, or enable the live service; those remain explicit host actions.
+
+### Auto-redeploy watcher
+
+**Auto-redeploy is the deploy path for the loopback host Serve above: a green
+landing on `main` reaches it without an operator hand.** A systemd user timer
+(`scripts/atelier2-auto-redeploy.timer`, a two-minute poll) runs
+`scripts/auto_redeploy.sh`. The watcher serializes timer and hand runs in the
+checkout's Git admin directory, fetches `origin/main`, and compares it with the
+commit reported by live health. A matching commit is a no-op. Otherwise the
+watcher requires a clean `main` checkout and green GitHub check runs, checks
+all three active run states before requesting GitHub check runs and again
+immediately before the update, then hands the verified commit to
+`scripts/serve_live_update.sh`. That script owns the fast-forward to the
+verified commit and remains the one owner of build, backup, migration,
+restart, and post-update health verification; the watcher never moves the
+checkout itself.
+
+Queued or running GitHub checks wait for another tick. No reported checks wait
+for up to 30 minutes after the commit; after that they count as red. A busy run
+in `STARTED`, `WAITING_INPUT`, or `WAITING_RECONCILIATION` also waits without
+failing the unit. An unreadable health, run list, or check result fails closed.
+The watcher never deploys a commit with a failed, cancelled, or timed-out check;
+completed neutral and skipped checks are accepted as non-red.
+
+Enable it once per host, from the deploy checkout, no root:
+
+```bash
+mkdir -p ~/.config/systemd/user
+sed "s|/absolute/path/to/atelier-2|${PWD}|" \
+  scripts/atelier2-auto-redeploy.service \
+  > ~/.config/systemd/user/atelier2-auto-redeploy.service
+cp scripts/atelier2-auto-redeploy.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now atelier2-auto-redeploy.timer
+```
+
+The Git admin directory holds `auto-redeploy.failures`, `auto-redeploy.busy`,
+and `auto-redeploy.last-alert`. A successful deploy or genuine no-op clears both
+streaks. Dirty or non-`main` checkouts warn and increment the failure streak but
+leave the tree untouched. The third consecutive failure, and the first repeat
+at least one hour later while the streak persists, logs at error priority and
+fails that oneshot tick; other failure ticks exit successfully. The 30th busy
+tick warns but never fails the unit. Inspect the tagged journal and unit state
+with `journalctl --user -t atelier2-autodeploy -e` and
+`systemctl --user status atelier2-auto-redeploy.service`.
 
 ### Live provider canaries
 
