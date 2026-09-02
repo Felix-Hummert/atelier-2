@@ -35,19 +35,17 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from atelier2.adapters.dbos.host_configuration import publish_project_root_revision
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     host_model_registry_revisions,
     host_project_model_defaults_revisions,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
 from atelier2.api.references import (
     encode_canonical_base64,
     encode_public_project_reference,
 )
 from atelier2.contracts.agents import AgentConfigurationRevision, AuthProfileRevision
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import (
     ProjectId,
     ProjectRootRevision,
@@ -66,6 +64,10 @@ from tests.scenarios.agents import (
     agent_scratch_root,
 )
 from tests.scenarios.api import ExactConfiguredModelInspector, durable_api_client
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 
 WORKFLOW_PATH = API_PREFIX + "/workflow-revisions"
 LINEAGE_PATH = API_PREFIX + "/workflow-lineages"
@@ -153,16 +155,10 @@ def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntim
     """A runtime whose agents succeed, so the line reaches the person and ends."""
 
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "round-trip-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "round-trip-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (
             RecordingAgentExecutorFactoryV2(
                 "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT

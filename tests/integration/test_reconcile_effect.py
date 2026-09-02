@@ -17,10 +17,7 @@ from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     commit_reconciliation_required,
 )
-from atelier2.adapters.dbos.runtime import (
-    DbosRuntime,
-    DbosRuntimeSettings,
-)
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
@@ -30,7 +27,6 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import reconcile_workflow_id_for
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.reconcile_effect import (
     ReconcileRunResult,
     ReconciliationAcceptedPending,
@@ -40,9 +36,7 @@ from atelier2.application.reconcile_effect import (
     reconcile_effect_result,
 )
 from atelier2.contracts.effects import (
-    AdapterRevision,
     ConfirmationSource,
-    EffectDestination,
     EffectId,
     EffectIntent,
     EffectIntentState,
@@ -59,6 +53,10 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.runs import (
     complete_v3_agent_node,
     prepare_and_launch_graph_action,
@@ -84,16 +82,10 @@ def waiting(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, DbosEffectReconcileCommander, EffectIntent]]:
     runtime = recording_exact_runtime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "executor-A",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "executor-A", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         PROVIDER_OUTPUT,
     )
     runtime.initialize_storage()
