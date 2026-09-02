@@ -469,6 +469,7 @@ describe("the served vocabulary", () => {
       requested_capability: "headless" as const,
       agent_configuration_revision_hash: "b".repeat(64),
       startable: false,
+      structurally_startable: false,
       not_startable_reason: "agent-executor-binding-unavailable" as const
     };
 

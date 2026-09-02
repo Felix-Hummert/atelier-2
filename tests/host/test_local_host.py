@@ -1051,6 +1051,23 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             catalog.publish_agent_configuration_revision(grok_configuration),
             AgentConfigurationRevisionCreated,
         )
+        # Pin the real catalog producing the exact pair the reprobe exemption
+        # depends on, not a fake standing in for it: before any receipt
+        # exists, Claude is unstartable structurally (its factory is
+        # unavailable) while Grok is unstartable only evidentially (nothing
+        # has proven it live yet) -- the two questions genuinely disagree here,
+        # answered by `DbosAgentConfigurationCatalog` itself.
+        pre_receipt_listed = catalog.list_agent_configuration_revisions(None, 50)
+        assert isinstance(pre_receipt_listed, AgentConfigurationRevisionPage)
+        pre_receipt_pairs = {
+            item.revision.model: (item.startable, item.structurally_startable)
+            for item in pre_receipt_listed.items
+        }
+        assert pre_receipt_pairs == {
+            "claude-opus-4-1": (False, False),
+            "grok-4": (False, True),
+        }
+
         assert settings.provider_probe_receipt_directory is not None
         settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
         now = datetime.now(UTC)

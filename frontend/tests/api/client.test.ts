@@ -843,6 +843,7 @@ describe("the published agent-configuration listing", () => {
       requested_capability: "headless",
       agent_configuration_revision_hash: digest,
       startable: true,
+      structurally_startable: true,
       not_startable_reason: null
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
@@ -874,6 +875,36 @@ describe("the published agent-configuration listing", () => {
               requested_capability: "headless",
               agent_configuration_revision_hash: digest,
               startable: false,
+              structurally_startable: true,
+              not_startable_reason: null
+            }
+          ],
+          next_after_revision_hash: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(createCockpitApi(fetcher).listAgentConfigurationRevisions()).rejects.toThrow(
+      "response did not match the durable wire contract"
+    );
+  });
+
+  it("refuses a list item claiming startability without its own structural startability", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              model: "sonnet",
+              auth_profile_revision_hash: digest,
+              executor_revision: "claude-subscription/v1",
+              provider_id: "anthropic",
+              auth_mode: "subscription",
+              requested_capability: "headless",
+              agent_configuration_revision_hash: digest,
+              startable: true,
+              structurally_startable: false,
               not_startable_reason: null
             }
           ],

@@ -243,15 +243,14 @@ class AgentConfigurationRevisionResource(ApiModel):
 class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResource):
     """A listed configuration plus the host's two independent startability answers.
 
-    `startable` is the receipt-gated answer: the cockpit's own Start button
-    gates on it (`WorkflowStartSheet.svelte`), and it is the same answer a
-    real start door acts on. `structurally_startable` asks only whether a
-    factory is registered, available, and declares the capability, with no
-    live evidence asked at all -- the live provider canary's own discovery
-    reads that one, because it exists to produce the evidence `startable` is
-    missing and could never find a vector to probe through a question that
-    already requires the evidence. `startable` cannot hold without
-    `structurally_startable`.
+    `startable` is the receipt-gated answer: an operator's own Start control
+    gates on it, and it is the same answer a real start door acts on.
+    `structurally_startable` asks only whether a factory is registered,
+    available, and declares the capability, with no live evidence asked at
+    all -- the live provider canary's own discovery reads that one, because it
+    exists to produce the evidence `startable` is missing and could never find
+    a vector to probe through a question that already requires the evidence.
+    `startable` cannot hold without `structurally_startable`.
     """
 
     startable: bool
