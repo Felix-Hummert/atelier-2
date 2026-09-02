@@ -99,10 +99,17 @@ def cached_schema_document(
     """`read_schema_document`, replayed from the process cache on a repeat.
 
     The one owner of whether a schema document is accepted or refused stays
-    `read_schema_document`, called exactly once per hash for the process; this
-    wrapper is the only place that remembers its answer, so every caller --
-    inside this module and in `read_workflow_revisions` -- shares one verdict
-    per hash rather than deriving it a second way.
+    `read_schema_document`; this wrapper is the only place that remembers its
+    answer, so every caller -- inside this module and in
+    `read_workflow_revisions` -- shares one verdict per hash rather than
+    deriving it a second way.
+
+    Two callers racing on the same still-uncached hash can both miss, both
+    validate and both `remember`: `BoundedProcessCache` holds no lock across
+    that validation. That is fine here because `document` is the immutable
+    content `revision_hash` names, so both validations read the same bytes
+    and produce the same verdict -- the race can cost one duplicate
+    validation, never a wrong cached answer.
     """
     accepted = _SCHEMA_VERDICTS.found(revision_hash)
     if accepted is not None:

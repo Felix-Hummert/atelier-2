@@ -8,14 +8,24 @@ document the same shape. Both keys are the content hash of bytes that cannot
 change once published, so a value found once never goes stale for the rest
 of the process's life -- there is nothing to invalidate, only a capacity to
 respect so a pathological amount of distinct keys cannot grow this cache
-without bound. The API can execute reads in a worker pool, so the lock makes
-lookup and insertion safe across threads.
+without bound: once that capacity is spent, `remember` silently declines a
+new key -- every lookup for it stays a miss and the owner recomputes it on
+every call -- while every key already remembered keeps answering for the
+rest of the process.
 
-Whether a failed or refused answer is worth remembering is each owner's own
-decision, never this cache's: an owner that calls `remember` only for its
-accepted outcomes keeps a transient failure retryable instead of turning it
-into process-lifetime durable-state corruption; this cache stores whatever
-it is given and forgets nothing until the process ends.
+`found` and `remember` each hold the lock only for their own dict access, not
+across whatever the caller does between them. Two callers racing on the same
+still-uncached key can therefore both recompute and both `remember`: that is
+allowed on purpose rather than serialized, because every value this cache is
+asked to hold is a pure function of the key's own immutable content, so a
+duplicate computation can never disagree with the first -- it only repeats
+work one unlucky race already decided to pay, which costs less than making
+every unrelated key's lookup wait behind one key's computation.
+
+Whether a failed or refused answer is worth remembering at all is each
+owner's own decision, never this cache's: an owner that calls `remember`
+only for its accepted outcomes keeps a transient failure retryable instead of
+turning it into process-lifetime durable-state corruption.
 """
 
 from __future__ import annotations

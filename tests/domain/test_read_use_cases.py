@@ -479,6 +479,36 @@ def test_a_schema_document_is_validated_at_most_once_across_two_separate_reads(
     assert validated <= 1
 
 
+def test_a_resolver_answering_a_different_revision_than_pinned_is_not_cached() -> None:
+    """#937 round 4 review finding 2: the cache is keyed by the *requested* hash,
+    so a resolver whose answer names a different revision must be refused
+    rather than remembered under the hash actually pinned -- otherwise the
+    stranger's schema would poison every later reader of that hash for the
+    rest of the process."""
+    pinned = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
+    stranger = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
+    projection = _wait_revision_projection(pinned.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+
+    mismatched = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(stranger))
+    )
+    correct = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(pinned))
+    )
+
+    assert isinstance(mismatched, WorkflowRevisionRead)
+    assert mismatched.wait_answer_classifications == (
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free"),
+    )
+    assert isinstance(correct, WorkflowRevisionRead)
+    assert correct.wait_answer_classifications == (
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="boolean"),
+    ), (
+        "the mismatched resolve must not have cached the stranger's schema under the pinned hash"
+    )
+
+
 def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() -> None:
     listed = AgentConfigurationRevisionPage((), None)
 

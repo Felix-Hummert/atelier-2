@@ -267,7 +267,11 @@ def _resolved_schema_document(
     this same document (#937 round 4). The reference still resolves through
     the caller's own session every time: what this cache saves is the Draft
     2020-12 meta-schema validation, the cost profiling found dominant, never
-    the one session's own lookup.
+    the one session's own lookup. Caching is keyed by the *requested* hash,
+    so the resolver's own answer is checked against it before anything is
+    remembered: a resolver that ever answered a different revision than the
+    one asked for would otherwise poison this hash's process-lifetime entry
+    with a stranger's schema.
     """
     try:
         revision_hash = PublishedRevisionHash(reference.revision)
@@ -286,6 +290,8 @@ def _resolved_schema_document(
             assert_never(unreachable)
     if resolved.revision.kind is not RevisionKind.SCHEMA:
         return None  # this hash names a revision of a different published kind
+    if resolved.revision.revision_hash != revision_hash:
+        return None  # the registry answered a different revision than the one pinned
     verdict = cached_schema_document(revision_hash, resolved.revision.document)
     if isinstance(verdict, SchemaRefused):
         return None  # published bytes are not a schema this product enforces
