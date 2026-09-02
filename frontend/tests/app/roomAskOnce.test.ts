@@ -129,14 +129,17 @@ function historyRun(index: number): RunV3 {
     workflow_format_version: 3,
     run_id: runId,
     public_run_reference: encodePublicRunReference(runId),
-    workflow_revision_hash: revisionHash,
+    // Each row names its own revision hash (#1045 REVISE O1): a reintroduced
+    // per-hash getWorkflowRevision would then scale with the row count and
+    // this suite's own growth assertions would catch it again.
+    workflow_revision_hash: hexId(index, "1"),
     workflow_name: "Two agents in a line",
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
     orders: [],
     work_item_reference: null,
-    answer: { value_base64: btoa('{"answer":"ok"}'), value_hash: "f".repeat(64) },
+    answer: { kind: "value", value_base64: btoa('{"answer":"ok"}'), value_hash: "f".repeat(64) },
     refusal_output: null,
     state_version: 1,
     state: "COMPLETED",

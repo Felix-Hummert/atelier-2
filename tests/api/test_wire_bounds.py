@@ -144,7 +144,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "RunResourceV3.fork_successors": MAXIMUM_RUN_FORK_SUCCESSORS,
     "RunResourceV3.orders": MAXIMUM_RUN_ORDERS,
     "RunResourceV3.work_item_reference": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
-    "RunTerminalAnswerResource.value_base64": (
+    "RunTerminalAnswerValueResource.value_base64": (
         MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS
     ),
     # A document declares no more roles than a run can bind: one role is one

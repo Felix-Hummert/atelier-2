@@ -16,7 +16,12 @@ from pydantic import ValidationError
 
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import MAXIMUM_RUN_TERMINAL_ANSWER_BYTES
-from atelier2.api.wire.resources import RunResourceV3
+from atelier2.api.wire.resources import (
+    RunResourceV3,
+    RunTerminalAnswerOmissionReasonName,
+    RunTerminalAnswerOmittedResource,
+    RunTerminalAnswerValueResource,
+)
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput
@@ -105,7 +110,7 @@ def test_a_completed_run_carries_its_terminal_answer_never_a_refusal() -> None:
     )
 
     assert isinstance(resource, RunResourceV3)
-    assert resource.answer is not None
+    assert isinstance(resource.answer, RunTerminalAnswerValueResource)
     assert resource.answer.value_base64 == "eyJhbnN3ZXIiOiJQUiBtZXJnZWQifQ=="
     assert resource.answer.value_hash == answer.value_hash.value
     assert resource.refusal_output is None
@@ -134,7 +139,9 @@ def test_a_live_run_carries_neither_a_terminal_answer_nor_a_refusal() -> None:
     assert resource.refusal_output is None
 
 
-def test_a_terminal_answer_over_the_list_bound_is_nulled_not_truncated() -> None:
+def test_a_terminal_answer_over_the_list_bound_is_omitted_by_name_not_truncated() -> (
+    None
+):
     oversized = b"a" * (MAXIMUM_RUN_TERMINAL_ANSWER_BYTES + 1)
     answer = NodeAnswer(oversized, Sha256Hash.of(oversized))
 
@@ -145,7 +152,9 @@ def test_a_terminal_answer_over_the_list_bound_is_nulled_not_truncated() -> None
     )
 
     assert isinstance(resource, RunResourceV3)
-    assert resource.answer is None
+    assert isinstance(resource.answer, RunTerminalAnswerOmittedResource)
+    assert resource.answer.reason == RunTerminalAnswerOmissionReasonName.TOO_LARGE
+    assert resource.answer.maximum_bytes == MAXIMUM_RUN_TERMINAL_ANSWER_BYTES
 
 
 def test_a_terminal_answer_at_the_list_bound_is_admitted() -> None:
@@ -159,7 +168,7 @@ def test_a_terminal_answer_at_the_list_bound_is_admitted() -> None:
     )
 
     assert isinstance(resource, RunResourceV3)
-    assert resource.answer is not None
+    assert isinstance(resource.answer, RunTerminalAnswerValueResource)
     assert resource.answer.value_hash == answer.value_hash.value
 
 

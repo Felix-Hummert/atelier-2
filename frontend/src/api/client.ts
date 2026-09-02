@@ -876,12 +876,33 @@ const nodeRefusalOutputSchema = z
  */
 export const MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = 65_536;
 
-const runTerminalAnswerSchema = z
+const runTerminalAnswerValueSchema = z
   .object({
+    kind: z.literal("value"),
     value_base64: z.string().max(MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS),
     value_hash: sha256,
   })
   .strict();
+
+/**
+ * A terminal node did write an answer, but not the value this row carries
+ * (#1045): a bare `null` would read the same as a node that wrote nothing at
+ * all, so an oversized value is named instead of hidden behind that absence.
+ */
+const runTerminalAnswerOmittedSchema = z
+  .object({
+    kind: z.literal("omitted"),
+    reason: z.literal("too_large"),
+    maximum_bytes: nonnegativeSafeInteger,
+  })
+  .strict();
+
+const runTerminalAnswerSchema = z.discriminatedUnion("kind", [
+  runTerminalAnswerValueSchema,
+  runTerminalAnswerOmittedSchema,
+]);
+
+export type RunTerminalAnswer = z.infer<typeof runTerminalAnswerSchema>;
 
 export const runV3Schema = z
   .object({

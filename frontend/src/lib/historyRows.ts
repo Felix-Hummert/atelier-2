@@ -91,7 +91,7 @@ function historyWorkItem(
   sourceConnection: TrackerSourceConnection | null
 ): HistoryWorkItem | null {
   const reference = run.work_item_reference;
-  if (reference == null || reference.length === 0) return null;
+  if (reference == null) return null;
   return { reference, title: null, href: trackerItemHref(reference, sourceConnection) };
 }
 
@@ -105,11 +105,22 @@ function historyResult(run: RunV3): HistoryRowResult {
 
 function historyResultSentence(run: RunV3): string | null {
   const encoded =
-    run.state === "FAILED" ? run.refusal_output?.value_base64 : run.answer?.value_base64;
+    run.state === "FAILED"
+      ? run.refusal_output?.value_base64
+      : answerValueBase64(run.answer);
   if (encoded == null || encoded.length === 0) return null;
   const decoded = decodeUtf8Base64(encoded);
   if (decoded == null || decoded.length === 0) return null;
   return historyOutcome(run.workflow_name, decoded);
+}
+
+/**
+ * The row's own accepted answer bytes, or none for a run that named none and
+ * for one whose value the list omitted for size (#1045) -- honest, since a
+ * derived sentence needs the actual bytes and this row was never given them.
+ */
+function answerValueBase64(answer: RunV3["answer"]): string | undefined {
+  return answer?.kind === "value" ? answer.value_base64 : undefined;
 }
 
 function historySpan(run: RunV3): { startedAt: string; endedAt: string } | null {

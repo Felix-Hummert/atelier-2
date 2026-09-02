@@ -23,7 +23,7 @@ from __future__ import annotations
 import pytest
 
 from atelier2.api.limits import ApiLimitExceeded
-from atelier2.api.projection.runs import run_resource
+from atelier2.api.projection.runs import WorkItemOrderDurableStateCorrupt, run_resource
 from atelier2.api.references import MAXIMUM_RUN_ORDERS
 from atelier2.api.wire.resources import RunOrderResource, RunResourceV3
 from atelier2.contracts.agents import AgentBindingSet
@@ -162,3 +162,14 @@ def test_an_order_pinned_to_another_schema_is_never_a_work_item_reference() -> N
 
     assert isinstance(resource, RunResourceV3)
     assert resource.work_item_reference is None
+
+
+def test_an_order_pinned_to_the_work_item_schema_with_corrupt_bytes_fails_loud() -> (
+    None
+):
+    order = RunInput(
+        "work_item", WORK_ITEM_ORDER_SCHEMA_REVISION, b'{"reference":"gh:1"}'
+    )
+
+    with pytest.raises(WorkItemOrderDurableStateCorrupt):
+        run_resource(_projection((order,)))

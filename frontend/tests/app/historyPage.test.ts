@@ -72,7 +72,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
 }
 
 function answerOf(raw: string): NonNullable<RunV3["answer"]> {
-  return { value_base64: btoa(raw), value_hash: "f".repeat(64) };
+  return { kind: "value", value_base64: btoa(raw), value_hash: "f".repeat(64) };
 }
 
 function refusalOutputOf(raw: string): NonNullable<RunV3["refusal_output"]> {

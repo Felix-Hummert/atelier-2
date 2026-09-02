@@ -1287,20 +1287,45 @@ class RunForkSuccessorResource(ApiModel):
     fork_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
-class RunTerminalAnswerResource(ApiModel):
+class RunTerminalAnswerValueResource(ApiModel):
     """The terminal node's own accepted answer, bounded for a listed run row.
 
     Not `NodeAnswerResource`: that one stays unbounded because a single node
     detail read has no byte bound shared across every answer-bearing node
     kind (#238). This resource is served on every listed and read V3 run
-    instead (#1045), so `run_resource` nulls the field rather than admitting
-    a value over `MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS` -- an
-    oversized terminal value is absent from the list, never truncated
-    mid-byte; the run's own node detail route still reads it in full.
+    instead (#1045).
     """
 
+    kind: Literal["value"]
     value_base64: str = Field(max_length=MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS)
     value_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class RunTerminalAnswerOmissionReasonName(StrEnum):
+    """Why a run's own terminal answer is not the value this row carries."""
+
+    TOO_LARGE = "too_large"
+
+
+class RunTerminalAnswerOmittedResource(ApiModel):
+    """A terminal node did write an answer, but not the value on this row (#1045).
+
+    A bare `null` here would read the same as a node that wrote nothing at
+    all -- two different facts a reader could not tell apart. `reason` names
+    which rule omitted it; `maximum_bytes` is the bound that rule enforced,
+    so a reader is told the ceiling rather than left to guess it. The run's
+    own node detail route still reads the value in full, never omitting it.
+    """
+
+    kind: Literal["omitted"]
+    reason: Literal[RunTerminalAnswerOmissionReasonName.TOO_LARGE]
+    maximum_bytes: int = Field(ge=0, le=MAX_SIGNED_INT64)
+
+
+RunTerminalAnswer = Annotated[
+    RunTerminalAnswerValueResource | RunTerminalAnswerOmittedResource,
+    Field(discriminator="kind"),
+]
 
 
 class RunResourceV3(ApiModel):
@@ -1370,19 +1395,22 @@ class RunResourceV3(ApiModel):
     fork_successors: tuple[RunForkSuccessorResource, ...] = Field(
         default=(), max_length=MAXIMUM_RUN_FORK_SUCCESSORS
     )
-    answer: RunTerminalAnswerResource | None = None
+    answer: RunTerminalAnswer | None = None
     refusal_output: NodeRefusalOutputResource | None = None
     """What the terminal node wrote or refused, mutually exclusive (#1045).
 
     Both are read from `current_node_id` at `current_node_execution_id` --
     the node this run ended on -- and both are `None` on a run that has not
-    ended, exactly where `terminal_hash` is also `None`. `answer` is the
-    accepted value, bounded for a list row by `RunTerminalAnswerResource`;
-    `refusal_output` is the already-redacted schema refusal `NodeDetail`
-    itself carries (#664), served here unbounded-in-name only because its own
-    field bound already proves every value fits. History used to ask
-    `getNodeDetail` once per row for exactly these two facts (REQ-UIQ-08);
-    this is that fact carried on the row instead.
+    ended, exactly where `terminal_hash` is also `None`. `answer` is `None`
+    only where the node wrote no answer at all; a node that did write one but
+    whose value is over the list row's own bound answers
+    `RunTerminalAnswerOmittedResource` instead of a bare `None` -- an
+    omission is a different fact from an absence, and the two must not read
+    the same. `refusal_output` is the already-redacted schema refusal
+    `NodeDetail` itself carries (#664), served here unbounded-in-name only
+    because its own field bound already proves every value fits. History
+    used to ask `getNodeDetail` once per row for exactly these two facts
+    (REQ-UIQ-08); this is that fact carried on the row instead.
     """
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal[

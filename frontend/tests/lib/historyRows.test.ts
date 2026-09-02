@@ -47,7 +47,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
 }
 
 function answerOf(raw: string): NonNullable<RunV3["answer"]> {
-  return { value_base64: btoa(raw), value_hash: "f".repeat(64) };
+  return { kind: "value", value_base64: btoa(raw), value_hash: "f".repeat(64) };
 }
 
 function refusalOutputOf(raw: string): NonNullable<RunV3["refusal_output"]> {
@@ -106,7 +106,6 @@ describe("projecting History's finished-run rows", () => {
 
   it.each([
     ["a real work item reference", "gh:510", { reference: "gh:510", title: null, href: null }],
-    ["an empty work item reference", "", null],
     ["no work item reference", null, null]
   ] as const)("workItem is %s", (_name, workItemReference, expected) => {
     const row = presentHistoryRow(v3Run({ work_item_reference: workItemReference }), null);
@@ -147,6 +146,18 @@ describe("projecting History's finished-run rows", () => {
       kind: "completed",
       sentence: historyOutcome("Two agents in a line", raw)
     });
+  });
+
+  it("reads a completed result with a null sentence when the row's answer was omitted for size (#1045)", () => {
+    const [row] = projectHistoryRows(
+      [
+        v3Run({
+          answer: { kind: "omitted", reason: "too_large", maximum_bytes: 49_152 }
+        })
+      ],
+      null
+    );
+    expect(row?.result).toEqual({ kind: "completed", sentence: null });
   });
 
   it("reads a failed result with its node id, deriving the sentence from refusal_output", () => {

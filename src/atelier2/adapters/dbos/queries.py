@@ -781,58 +781,43 @@ def _node_receipt_refusal(
     return reason
 
 
-def _node_receipt_refusal_output(
+def _refusal_output_without_terminal_receipt(
     connection: Connection,
     execution_id: NodeExecutionId,
 ) -> NodeAnswer | None:
-    """A redacted presentation of what a schema owner judged and refused.
+    """Ordinal one's own immutable Attempt receipt, before any `node-receipt/v3` exists.
 
-    A terminal ordinal-two refusal names its value hash in `node-receipt/v3`;
-    before that terminal row exists, ordinal one's immutable Attempt receipt
-    names the same evidence for its nonterminal repair event. A plain reason,
-    an unjudged failure, or absence from both receipt families has nothing to
-    resolve and reads honestly absent. Where either receipt names a hash, its
-    failure transaction also published these exact bytes as an artifact under
-    that same address (#664) -- so a reader who wants to see what was refused,
-    not just that it was, reads them back through the one content-addressed
-    store every other artifact uses. Empty judged bytes need no artifact and
-    project as an empty answer. A nonempty hash whose artifact is absent or
-    disagrees is corrupt durable state, never an absent answer.
-
-    A provider's refused output is untrusted text on its way to a browser, and
-    a schema refusal is exactly the shape of episode where a provider might
-    have echoed a credential it was handed -- so `redact_credentials` runs over
-    it here, at the read boundary, before this projection's caller ever builds
-    a wire resource from it (#664). `value_hash` is left exactly as the receipt
-    named it: the hash of the original, unredacted bytes the schema judged, so
-    it goes on proving what was judged even though the returned `value` is a
-    presentation of that judgment rather than its exact preimage. Bytes that do
-    not decode as UTF-8 cannot be scanned for a credential shape at all, so the
-    durable read fails loud instead of hiding or exposing them.
+    Shared tail of `_node_receipt_refusal_output` (single execution) and the
+    page-batched terminal-result assembly (#1045): both fall back here only
+    once the batched or single `node_receipts_v3` read named no row.
     """
-    record = connection.execute(
-        sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
-            node_receipts_v3.c.node_execution_id == execution_id.value
-        )
-    ).one_or_none()
-    if record is None:
-        refusal = _attempt_output_schema_refusal(connection, execution_id)
-        if refusal is None:
-            return None
-        value_hash = refusal.value_hash
-        if refusal.artifact_hash is None:
-            return NodeAnswer(b"", value_hash)
-        artifact = read_stored_artifact(connection, refusal.artifact_hash)
-        if artifact is None:
-            raise RuntimeError("output-schema refusal artifact is missing")
-        text = artifact.content.decode("utf-8")
-        return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
-    disposition = PersistedReceiptDisposition(str(record.disposition))
-    if disposition is PersistedReceiptDisposition.SUCCEEDED:
+    refusal = _attempt_output_schema_refusal(connection, execution_id)
+    if refusal is None:
         return None
-    _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
-        str(record.reason)
-    )
+    value_hash = refusal.value_hash
+    if refusal.artifact_hash is None:
+        return NodeAnswer(b"", value_hash)
+    artifact = read_stored_artifact(connection, refusal.artifact_hash)
+    if artifact is None:
+        raise RuntimeError("output-schema refusal artifact is missing")
+    text = artifact.content.decode("utf-8")
+    return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
+
+
+def _refusal_output_from_receipt_reason(
+    connection: Connection, reason: str
+) -> NodeAnswer | None:
+    """A redacted presentation of a terminal `node-receipt/v3` row's own reason.
+
+    Shared tail of `_node_receipt_refusal_output` (single execution) and the
+    page-batched terminal-result assembly (#1045): both already know the
+    receipt's own `reason` column -- one from its own query, the other from a
+    single batched read over the whole page -- so this is the one place that
+    turns it into artifact bytes and redacts them (#664). A nonempty hash
+    whose artifact is absent or disagrees is corrupt durable state, never an
+    absent answer.
+    """
+    _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(reason)
     if value_hash is None:
         return None
     artifact = read_stored_artifact(connection, ArtifactHash(value_hash.value))
@@ -842,6 +827,44 @@ def _node_receipt_refusal_output(
         raise RuntimeError("refused node output artifact is missing")
     text = artifact.content.decode("utf-8")
     return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
+
+
+def _node_receipt_refusal_output(
+    connection: Connection,
+    execution_id: NodeExecutionId,
+) -> NodeAnswer | None:
+    """A redacted presentation of what a schema owner judged and refused.
+
+    A terminal ordinal-two refusal names its value hash in `node-receipt/v3`;
+    before that terminal row exists, ordinal one's immutable Attempt receipt
+    names the same evidence for its nonterminal repair event
+    (`_refusal_output_without_terminal_receipt`). A plain reason, an unjudged
+    failure, or absence from both receipt families has nothing to resolve and
+    reads honestly absent. Where either receipt names a hash, its failure
+    transaction also published these exact bytes as an artifact under that
+    same address (#664) -- so a reader who wants to see what was refused, not
+    just that it was, reads them back through the one content-addressed store
+    every other artifact uses (`_refusal_output_from_receipt_reason`).
+
+    A provider's refused output is untrusted text on its way to a browser, and
+    a schema refusal is exactly the shape of episode where a provider might
+    have echoed a credential it was handed -- so `redact_credentials` runs over
+    it here, at the read boundary, before this projection's caller ever builds
+    a wire resource from it (#664). Bytes that do not decode as UTF-8 cannot be
+    scanned for a credential shape at all, so the durable read fails loud
+    instead of hiding or exposing them.
+    """
+    record = connection.execute(
+        sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
+            node_receipts_v3.c.node_execution_id == execution_id.value
+        )
+    ).one_or_none()
+    if record is None:
+        return _refusal_output_without_terminal_receipt(connection, execution_id)
+    disposition = PersistedReceiptDisposition(str(record.disposition))
+    if disposition is PersistedReceiptDisposition.SUCCEEDED:
+        return None
+    return _refusal_output_from_receipt_reason(connection, str(record.reason))
 
 
 def _node_transcript(
@@ -1191,27 +1214,84 @@ def _node_answer(
     return NodeAnswer(bytes(record.payload), Sha256Hash(str(record.payload_hash)))
 
 
-def _run_terminal_result(
-    connection: Connection, run: AnyRun
-) -> tuple[NodeAnswer | None, NodeAnswer | None]:
-    """The terminal node's own answer and refusal, for `RunProjection` (#1045).
+def _run_terminal_results(
+    connection: Connection, ended_runs: Sequence[RunV3]
+) -> dict[str, tuple[NodeAnswer | None, NodeAnswer | None]]:
+    """Every ended run's own terminal answer and refusal, batched once per page (#1045).
 
-    Only an ended run has a node to call terminal: `Run.validate_head` ties
-    `terminal_hash` to exactly that, so a caller asks this only where that
-    already holds. The execution id is the same deterministic identity
-    `current_node_execution_id` names on the wire -- `current_node_id` at
-    `current_round_ordinal` -- and the reads are exactly `_node_answer` and
-    `_node_receipt_refusal_output`, the two functions `get_node_detail` calls
-    for the single-node route, so a listed row and a node detail read can
-    never disagree about what a node wrote or why it was refused.
+    A page of History rows used to cost two statements per ended run (#1045
+    REVISE C1). Every ended run's terminal execution id is the same
+    deterministic identity `current_node_execution_id` already names on the
+    wire -- `current_node_id` at `current_round_ordinal` -- so this reads the
+    answer-bearing event and the terminal `node-receipt/v3` disposition each
+    in one statement over the whole set, keyed by that identity, and only
+    falls back to a per-execution read (`_refusal_output_without_terminal_receipt`)
+    for the executions a terminal receipt does not yet name -- the same rare
+    edge `_node_receipt_refusal_output` itself falls back for, never the common
+    case. `get_node_detail`'s own single-node route still resolves an artifact
+    per refused execution; a page's `answer` values never touch the artifact
+    store at all, and `refusal_output` only does for rows that actually refused.
     """
-    execution_id = NodeExecutionId.for_node(
-        run.run_id, run.revision_hash, run.current_node_id, run.current_round_ordinal
+    if not ended_runs:
+        return {}
+    execution_by_run_id = {
+        run.run_id.value: NodeExecutionId.for_node(
+            run.run_id,
+            run.revision_hash,
+            run.current_node_id,
+            run.current_round_ordinal,
+        )
+        for run in ended_runs
+    }
+    execution_values = tuple(
+        execution.value for execution in execution_by_run_id.values()
     )
-    return (
-        _node_answer(connection, execution_id),
-        _node_receipt_refusal_output(connection, execution_id),
-    )
+
+    answers_by_execution: dict[str, NodeAnswer] = {}
+    for record in connection.execute(
+        sa.select(
+            run_events.c.node_execution_id,
+            run_events.c.payload,
+            run_events.c.payload_hash,
+        ).where(
+            run_events.c.node_execution_id.in_(execution_values),
+            run_events.c.event_kind.in_(ANSWER_BEARING_EVENT_KINDS),
+        )
+    ):
+        answers_by_execution[str(record.node_execution_id)] = NodeAnswer(
+            bytes(record.payload), Sha256Hash(str(record.payload_hash))
+        )
+
+    receipts_by_execution = {
+        str(record.node_execution_id): record
+        for record in connection.execute(
+            sa.select(
+                node_receipts_v3.c.node_execution_id,
+                node_receipts_v3.c.disposition,
+                node_receipts_v3.c.reason,
+            ).where(node_receipts_v3.c.node_execution_id.in_(execution_values))
+        )
+    }
+
+    results: dict[str, tuple[NodeAnswer | None, NodeAnswer | None]] = {}
+    for run_id, execution in execution_by_run_id.items():
+        answer = answers_by_execution.get(execution.value)
+        receipt_record = receipts_by_execution.get(execution.value)
+        if receipt_record is None:
+            refusal_output = _refusal_output_without_terminal_receipt(
+                connection, execution
+            )
+        else:
+            disposition = PersistedReceiptDisposition(str(receipt_record.disposition))
+            refusal_output = (
+                None
+                if disposition is PersistedReceiptDisposition.SUCCEEDED
+                else _refusal_output_from_receipt_reason(
+                    connection, str(receipt_record.reason)
+                )
+            )
+        results[run_id] = (answer, refusal_output)
+    return results
 
 
 def _node_provenance(
@@ -1998,6 +2078,12 @@ class DbosQueries:
                 None if ended is None else RecordedAt(str(ended)),
             )
         orders_by_run = load_run_orders(connection, run_ids)
+        ended_v3_runs = tuple(
+            run
+            for run in loaded_runs
+            if isinstance(run, RunV3) and run.terminal_hash is not None
+        )
+        terminal_results = _run_terminal_results(connection, ended_v3_runs)
 
         projections = []
         for run in loaded_runs:
@@ -2092,12 +2178,9 @@ class DbosQueries:
                         if not never_launched_cleanup_on_failed_run(run, attempt)
                     )
             instant = instants.get(run.run_id.value)
-            terminal_answer: NodeAnswer | None = None
-            terminal_refusal_output: NodeAnswer | None = None
-            if isinstance(run, RunV3) and run.terminal_hash is not None:
-                terminal_answer, terminal_refusal_output = _run_terminal_result(
-                    connection, run
-                )
+            terminal_answer, terminal_refusal_output = terminal_results.get(
+                run.run_id.value, (None, None)
+            )
             projections.append(
                 RunProjection(
                     run,

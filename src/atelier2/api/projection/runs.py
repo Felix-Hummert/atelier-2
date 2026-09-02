@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Literal, assert_never, cast
 
@@ -32,7 +31,9 @@ from atelier2.api.wire.resources import (
     RunNotCancellableReasonName,
     RunOrderResource,
     RunResourceV3,
-    RunTerminalAnswerResource,
+    RunTerminalAnswerOmissionReasonName,
+    RunTerminalAnswerOmittedResource,
+    RunTerminalAnswerValueResource,
     ToolCalledEventResource,
     ToolReturnedEventResource,
     TranscriptBeforeMomentsOrigin,
@@ -71,7 +72,10 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunState
-from atelier2.contracts.work_items import WORK_ITEM_ORDER_SCHEMA_REVISION
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    read_work_item_order_document,
+)
 from atelier2.contracts.workflows_v3 import AgentNodeV3
 
 _LIVE_ATTEMPT_STATES = frozenset(
@@ -125,44 +129,63 @@ def run_order_resource(order: RunInput) -> RunOrderResource:
     )
 
 
+class WorkItemOrderDurableStateCorrupt(ValueError):
+    """A run's own order pins the work-item schema but is not that document.
+
+    A `ValueError` because that is what corrupt durable state already raises
+    as, here and at `UnservedWorkflowFormat` beside it: `WORK_ITEM_ORDER_SCHEMA_REVISION`
+    is the store's own admission gate (a start refuses any other schema under
+    it, `contracts.work_items`), so an order that names it and still fails
+    `read_work_item_order_document` is the store disagreeing with itself, not
+    a caller's mistake this reader may quietly fold into `None`.
+    """
+
+
 def run_work_item_reference(orders: Sequence[RunInput]) -> str | None:
     """The tracker reference one of this run's own orders names, or none (#1045).
 
     An order counts only when it pins `WORK_ITEM_ORDER_SCHEMA_REVISION` --
     the exact pin a start already refuses to admit any other schema under
-    (`contracts.work_items`), so trusting it here reads the fact the store
-    already enforced rather than re-guessing a shape from a node's composed
-    job text. The first such order wins; a workflow that starts more than one
-    names the same run purpose either way.
+    (`contracts.work_items`) -- and its bytes are read through
+    `read_work_item_order_document`, the one owner that already wrote them,
+    never a second guess parsed from a node's composed job text. The first
+    such order wins; a workflow that starts more than one names the same run
+    purpose either way.
     """
     for order in orders:
         if order.schema_revision != WORK_ITEM_ORDER_SCHEMA_REVISION:
             continue
-        try:
-            document = json.loads(order.value.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(document, dict):
-            continue
-        reference = document.get("reference")
-        if isinstance(reference, str) and reference:
-            return reference
+        document = read_work_item_order_document(order.value)
+        if document is None:
+            raise WorkItemOrderDurableStateCorrupt(
+                "a work-item-schema order's bytes are not a work-item order document"
+            )
+        return document.reference.value
     return None
 
 
 def run_terminal_answer_resource(
     answer: NodeAnswer | None,
-) -> RunTerminalAnswerResource | None:
+) -> RunTerminalAnswerValueResource | RunTerminalAnswerOmittedResource | None:
     """The terminal node's accepted answer, bounded for a listed run row (#1045).
 
-    `None` both where the run named none and where the value is larger than
-    `MAXIMUM_RUN_TERMINAL_ANSWER_BYTES` allows on a list row -- an oversized
-    value is absent here, never truncated mid-byte; the run's own node detail
-    route still reads it in full.
+    `None` only where the run named no answer at all. A value larger than
+    `MAXIMUM_RUN_TERMINAL_ANSWER_BYTES` allows on a list row is a different
+    fact -- the node did write one, this row just does not carry it -- so it
+    answers `RunTerminalAnswerOmittedResource` naming the bound, never a bare
+    `None` a reader could mistake for absence. The run's own node detail
+    route still reads the value in full, never omitting it.
     """
-    if answer is None or len(answer.value) > MAXIMUM_RUN_TERMINAL_ANSWER_BYTES:
+    if answer is None:
         return None
-    return RunTerminalAnswerResource(
+    if len(answer.value) > MAXIMUM_RUN_TERMINAL_ANSWER_BYTES:
+        return RunTerminalAnswerOmittedResource(
+            kind="omitted",
+            reason=RunTerminalAnswerOmissionReasonName.TOO_LARGE,
+            maximum_bytes=MAXIMUM_RUN_TERMINAL_ANSWER_BYTES,
+        )
+    return RunTerminalAnswerValueResource(
+        kind="value",
         value_base64=encode_canonical_base64(answer.value),
         value_hash=answer.value_hash.value,
     )
