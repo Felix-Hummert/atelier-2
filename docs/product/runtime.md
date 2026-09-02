@@ -231,9 +231,15 @@ answer envelope its predecessor read alone and whose earlier lines are the
 attempt's steps; that changed wire shape is a changed operation, so each of the
 three Claude vectors carries its own new operational identity rather than
 widening the one it had. It hands the job to the
-process over standard input rather than its command line, and grants it only
-the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
-executable search path; nothing else of the server's environment is inherited. A
+process over standard input rather than its command line, and grants it one
+private, disposable per-invocation `CLAUDE_CONFIG_DIR` plus the serving
+host's executable search path; nothing else of the server's environment is
+inherited. That directory holds a copy of exactly the declared credential
+directory's `.credentials.json` and a written onboarding stub, and is removed
+on every lifecycle path -- release, refusal, or executor shutdown -- without
+touching another invocation. The declared credential directory is read as a
+source at composition and per invocation; it is never itself the directory a
+process runs against, so no launched process shares it with another. A
 configuration binding a non-subscription profile to this executor is refused
 before any process is prepared, and V1 admits only a personal `max` or `pro`
 credential, refusing a Team, Enterprise, absent or unreadable one, because an

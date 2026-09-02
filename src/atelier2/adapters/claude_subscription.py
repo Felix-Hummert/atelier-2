@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
+import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -464,6 +466,17 @@ class ClaudeSubscriptionSettings:
     also resolve bubblewrap: measured on every conformant version, a CLI told to
     scrub without it refuses to start, so a deployment that could only fail at
     invocation time is refused here instead.
+
+    `credential_directory` is read as a SOURCE only. It is the operator's own
+    live `~/.claude`-equivalent, opened once per invocation to copy
+    `.credentials.json` out of (`_open_job_directory` below) and read at
+    composition to attest the account -- never itself named as
+    `CLAUDE_CONFIG_DIR` for a launched process. Issue #993 traced this
+    deployment's spawn deaths to exactly the prior design, which handed every
+    invocation this same directory while other processes read and wrote it
+    concurrently: every conformant version holds a lock on its config
+    directory's own files against concurrent instances (Anthropic GH #3117),
+    and this deployment was manufacturing that contention on every call.
     """
 
     executable: Path
@@ -492,18 +505,204 @@ class ClaudeSubscriptionSettings:
             )
 
 
+_ONBOARDING_STUB_FILE_NAME = ".claude.json"
+# Mirrors Anthropic's own isolated-home construction for an unattended call,
+# read directly out of the pinned 2.1.221 executable's own bundle by static
+# inspection (`strings`/disassembly, never a live invocation): its internal
+# plugin-eval isolation helper (`Fuf`/`Uuf` in the minified bundle) builds a
+# fresh config directory that states onboarding already complete before the
+# CLI is ever started in it, and separately copies exactly `.credentials.json`
+# into that directory -- nothing else the operator's directory holds. The same
+# helper reads `.credentials.json` off `CLAUDE_CONFIG_DIR` (or `~/.claude`)
+# for the CLI's own OAuth session and falls back to `ANTHROPIC_API_KEY` when
+# it is absent, which is this module's independent confirmation that no
+# second file carries authentication. `autoUpdates` and
+# `bypassPermissionsModeAccepted` are that helper's own defaults for an
+# isolated home, kept identical here rather than invented.
+_ONBOARDING_STUB_BYTES = json.dumps(
+    {
+        "hasCompletedOnboarding": True,
+        "autoUpdates": False,
+        "bypassPermissionsModeAccepted": False,
+    },
+    ensure_ascii=False,
+    separators=(",", ":"),
+).encode("utf-8")
+
+_JOB_DIRECTORY_PREFIX = "atelier2-claude-job-"
+_JOB_DIRECTORY_MODE = 0o700
+# The copied credential is handed out read-only: nothing this executor asks
+# the CLI to do needs it to rewrite its own session, and the whole directory
+# is disposed of at the end of the one call it was minted for regardless.
+_CREDENTIAL_COPY_FILE_MODE = 0o400
+_ONBOARDING_STUB_FILE_MODE = 0o600
+_PRIVATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+_MAXIMUM_CREDENTIAL_FILE_BYTES = 1_048_576
+
+
+def _write_private_file(path: Path, payload: bytes, mode: int) -> None:
+    """Create one file only this call may have named, and nothing else can follow.
+
+    `O_EXCL` refuses a name that already exists and `O_NOFOLLOW` refuses a
+    symlink -- both matter here because the directory this writes into is
+    freshly minted per invocation and every entry in it is this seam's own.
+    """
+
+    descriptor = os.open(path, _PRIVATE_FILE_FLAGS, mode)
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written < 1:
+                raise OSError("private Claude config file write made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+
+
+def _credential_bytes(settings: ClaudeSubscriptionSettings) -> bytes:
+    """Read the operator's own `.credentials.json`, and nothing else it holds.
+
+    See `_ONBOARDING_STUB_BYTES` above for how this file, and only this file,
+    was established as the CLI's authentication material.
+    """
+
+    path = settings.credential_directory / CREDENTIAL_RECORD_ENTRY
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise ValueError(
+                f"the Claude {CREDENTIAL_RECORD_ENTRY} must be a regular file"
+            )
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                return b"".join(chunks)
+            size += len(chunk)
+            if size > _MAXIMUM_CREDENTIAL_FILE_BYTES:
+                raise ValueError(
+                    f"the Claude {CREDENTIAL_RECORD_ENTRY} exceeds its private "
+                    "copy bound"
+                )
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+
+def _open_job_directory(settings: ClaudeSubscriptionSettings) -> Path:
+    """Prepare one private, disposable Claude config directory.
+
+    Every invocation this module prepares -- a real one and the jobless
+    startability probes alike -- gets one of these instead of the operator's
+    own `CLAUDE_CONFIG_DIR`: a private copy of `.credentials.json` and a fresh
+    onboarding stub, on a path the operator's own live directory never sees a
+    launched process open. Cleanup on every path -- success, refusal, timeout,
+    cancellation, exception and a killed process alike -- is the caller's
+    contract, carried out through `_ClaudeJobDirectories` below; this
+    function's own contract is narrower: leave nothing behind when *it* fails
+    to finish preparing the directory.
+    """
+
+    directory = Path(tempfile.mkdtemp(prefix=_JOB_DIRECTORY_PREFIX))
+    os.chmod(directory, _JOB_DIRECTORY_MODE)
+    prepared = False
+    try:
+        _write_private_file(
+            directory / CREDENTIAL_RECORD_ENTRY,
+            _credential_bytes(settings),
+            _CREDENTIAL_COPY_FILE_MODE,
+        )
+        _write_private_file(
+            directory / _ONBOARDING_STUB_FILE_NAME,
+            _ONBOARDING_STUB_BYTES,
+            _ONBOARDING_STUB_FILE_MODE,
+        )
+        prepared = True
+        return directory
+    finally:
+        if not prepared:
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass
+
+
+@dataclass(frozen=True)
+class _ClaudeJobDirectories:
+    """Every private config directory this module's executors handed a provider.
+
+    All three executors below share this exact shape rather than each
+    reimplementing it, because the property under test is the same for all
+    three: a directory registered here is guaranteed removed on every path --
+    a normal release, a refusal that was never decoded, an exception, or
+    executor shutdown while attempts are still outstanding. `register` itself
+    can refuse, because a directory prepared after `close()` had already
+    started tearing every other one down would otherwise survive it.
+    """
+
+    _directories: set[Path] = field(
+        default_factory=set, init=False, compare=False, repr=False
+    )
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, compare=False, repr=False
+    )
+    _closed: threading.Event = field(
+        default_factory=threading.Event, init=False, compare=False, repr=False
+    )
+
+    def register(self, directory: Path) -> None:
+        with self._lock:
+            if self._closed.is_set():
+                raise RuntimeError("the Claude executor is closed")
+            self._directories.add(directory)
+
+    def release(self, directory: Path) -> None:
+        with self._lock:
+            if directory not in self._directories:
+                return
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass
+            self._directories.remove(directory)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed.set()
+            directories = tuple(self._directories)
+            errors: list[Exception] = []
+            for directory in directories:
+                try:
+                    shutil.rmtree(directory)
+                except FileNotFoundError:
+                    self._directories.remove(directory)
+                except OSError as error:
+                    errors.append(error)
+                else:
+                    self._directories.remove(directory)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("Claude invocation cleanup failed", errors)
+
+
 def _credential_environment(
-    settings: ClaudeSubscriptionSettings,
+    settings: ClaudeSubscriptionSettings, state_directory: Path
 ) -> tuple[tuple[str, str], ...]:
     """The complete environment every invocation of this CLI is handed.
 
-    It is the same whatever the invocation may do, because it is the credential
-    boundary plus the retry, prompt-history and subprocess hardening -- and none
-    of those is a property of the operation's tool surface.
+    `CLAUDE_CONFIG_DIR` names `state_directory` -- one private, disposable
+    directory this call alone was handed, prepared by `_open_job_directory` --
+    never `settings.credential_directory`. The rest is the same whatever the
+    invocation may do: the retry, prompt-history and subprocess hardening,
+    none of which is a property of the operation's tool surface.
     """
 
     return (
-        (_CREDENTIAL_DIRECTORY_VARIABLE, str(settings.credential_directory)),
+        (_CREDENTIAL_DIRECTORY_VARIABLE, str(state_directory)),
         (_SEARCH_PATH_VARIABLE, settings.search_path),
         (_SKIP_PROMPT_HISTORY_VARIABLE, _SKIP_PROMPT_HISTORY),
         (_MAXIMUM_RETRIES_VARIABLE, _NO_RETRIES),
@@ -817,8 +1016,11 @@ class ClaudeSubscriptionExecutor:
     """One bare headless `claude --print` invocation and its JSON envelope.
 
     The invocation is as close to text-in/text-out as subscription
-    authentication allows, because the process is handed the operator's
-    credential directory. It decides no working directory: the CLI writes into
+    authentication allows. The process is handed a private, disposable
+    `CLAUDE_CONFIG_DIR` prepared for this call alone (`_open_job_directory`) --
+    never the operator's own directory -- and that directory is removed on
+    every path once the call ends (`release_credential_channel`, `close`).
+    It decides no working directory: the CLI writes into
     wherever it is started, so where that is belongs to the attempt that owns
     the process, not to this executor. Every flag and variable below exists in
     every conformant version and is measured there before it is admitted --
@@ -885,17 +1087,27 @@ class ClaudeSubscriptionExecutor:
     outside that set -- and against one that will not say which it is.
 
     Residual risk, deliberately not claimed as closed. The process still runs
-    as the serving user and can read `CLAUDE_CONFIG_DIR`; tool-free, it spawns
-    no descendant that could inherit it, but nothing in the operating system
-    forbids one. The account attestation is a disk read of a record the CLI
-    itself writes, taken once at composition, so it neither proves what the
-    network will deliver nor survives an account converted while the server
-    runs. The operator ruled on 2026-08-14 that OS-enforced isolation stays
-    planned as its own slice but does not gate this local heartbeat; it is what
-    would make the premise hold regardless of the host or the account.
+    as the serving user and can read the private `CLAUDE_CONFIG_DIR` it was
+    handed for this one call; tool-free, it spawns no descendant that could
+    inherit it, but nothing in the operating system forbids one. That
+    directory holds a copy of the operator's `.credentials.json`, not the
+    operator's own directory, so a compromise of one call's process can no
+    longer reach every other credential the operator's directory carries --
+    but the copy itself is still readable by the serving user's other
+    processes while it lives, which OS-enforced isolation would close and
+    this heartbeat does not claim to. The account attestation is a disk read
+    of a record the CLI itself writes, taken once at composition, so it
+    neither proves what the network will deliver nor survives an account
+    converted while the server runs. The operator ruled on 2026-08-14 that
+    OS-enforced isolation stays planned as its own slice but does not gate
+    this local heartbeat; it is what would make the premise hold regardless
+    of the host or the account.
     """
 
     settings: ClaudeSubscriptionSettings
+    _job_directories: _ClaudeJobDirectories = field(
+        default_factory=_ClaudeJobDirectories, init=False, compare=False, repr=False
+    )
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
@@ -904,32 +1116,44 @@ class ClaudeSubscriptionExecutor:
                 "the Claude subscription executor serves subscription profiles only"
             )
         settings = self.settings
-        return ClaudeProcessCommand(
-            (
-                str(settings.executable),
-                _PRINT_FLAG,
-                *_output_format_arguments(request.declared_output_schema_bytes),
-                _MODEL_FLAG,
-                binding.configuration.model,
-                _tool_free_tools_argument(request.declared_output_schema_bytes),
-                _NO_SETTING_SOURCES,
-                _SAFE_MODE_FLAG,
-                _STRICT_MCP_CONFIG_FLAG,
-                _MCP_CONFIG_FLAG,
-                _EMPTY_MCP_CONFIG,
-                _DISABLE_SLASH_COMMANDS_FLAG,
-                _NO_CHROME_FLAG,
-                _NO_SESSION_PERSISTENCE_FLAG,
-                _MAXIMUM_TURNS_FLAG,
-                _HEARTBEAT_MAXIMUM_TURNS,
-            ),
-            _credential_environment(settings),
-            # The job travels through standard input so no prompt ever appears
-            # in the process table of a host the operator shares.
-            request.job_bytes,
-            standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
-            declared_output_schema_bytes=request.declared_output_schema_bytes,
-        )
+        state_directory = _open_job_directory(settings)
+        registered = False
+        try:
+            command = ClaudeProcessCommand(
+                (
+                    str(settings.executable),
+                    _PRINT_FLAG,
+                    *_output_format_arguments(request.declared_output_schema_bytes),
+                    _MODEL_FLAG,
+                    binding.configuration.model,
+                    _tool_free_tools_argument(request.declared_output_schema_bytes),
+                    _NO_SETTING_SOURCES,
+                    _SAFE_MODE_FLAG,
+                    _STRICT_MCP_CONFIG_FLAG,
+                    _MCP_CONFIG_FLAG,
+                    _EMPTY_MCP_CONFIG,
+                    _DISABLE_SLASH_COMMANDS_FLAG,
+                    _NO_CHROME_FLAG,
+                    _NO_SESSION_PERSISTENCE_FLAG,
+                    _MAXIMUM_TURNS_FLAG,
+                    _HEARTBEAT_MAXIMUM_TURNS,
+                ),
+                _credential_environment(settings, state_directory),
+                # The job travels through standard input so no prompt ever
+                # appears in the process table of a host the operator shares.
+                request.job_bytes,
+                standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+                declared_output_schema_bytes=request.declared_output_schema_bytes,
+            )
+            self._job_directories.register(state_directory)
+            registered = True
+            return command
+        finally:
+            if not registered:
+                try:
+                    shutil.rmtree(state_directory)
+                except FileNotFoundError:
+                    pass
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -940,13 +1164,23 @@ class ClaudeSubscriptionExecutor:
         return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
-        credential directory, and this executor copies it nowhere."""
+        """Take back the private config directory this invocation was handed.
 
-        del command
+        The directory holds a private copy of the operator's own
+        `.credentials.json`, so it is taken back on every path rather than
+        with the attempt's workspace: the workspace keeps what a provider
+        left behind until the attempt is durably terminal, and a credential
+        must not wait that long.
+        """
+
+        environment = dict(command.environment)
+        state_directory = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
+        if state_directory is None:
+            raise ValueError("Claude invocation state binding is missing")
+        self._job_directories.release(Path(state_directory))
 
     def close(self) -> None:
-        return
+        self._job_directories.close()
 
 
 @dataclass(frozen=True)
@@ -1105,36 +1339,47 @@ def _jobless_invocation_answer(
     on the diagnostic one. The call is handed the deployment's real environment,
     unlike the version probe: what is being attested is the invocation form this
     executor will really launch, and an environment of its own would attest a
-    different one.
+    different one. The config directory is the same private, disposable copy
+    every real invocation gets (`_open_job_directory`): this probe runs at every
+    serve start, so pointing it at the operator's own directory instead would
+    itself be the contention issue #993 traced this deployment's crashes to,
+    just moved from the first bound node to the first attempt to serve.
     """
 
-    with tempfile.TemporaryDirectory(
-        prefix="atelier2-claude-invocation-"
-    ) as probe_root:
+    state_directory = _open_job_directory(settings)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="atelier2-claude-invocation-"
+        ) as probe_root:
+            try:
+                process = subprocess.Popen(
+                    arguments,
+                    cwd=probe_root,
+                    env=dict(_credential_environment(settings, state_directory)),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+            except OSError as error:
+                raise ClaudeExecutableUnsupported(
+                    f"the Claude executable could not start this executor's "
+                    f"invocation: {error}"
+                ) from error
+            try:
+                return_code, answer, diagnostics = bounded_process_streams(
+                    process, timeout_seconds, _INVOCATION_PROBE_OUTPUT_BYTES
+                )
+            except OSError as error:
+                raise ClaudeExecutableUnsupported(
+                    f"the Claude executable could not start this executor's "
+                    f"invocation: {error}"
+                ) from error
+    finally:
         try:
-            process = subprocess.Popen(
-                arguments,
-                cwd=probe_root,
-                env=dict(_credential_environment(settings)),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as error:
-            raise ClaudeExecutableUnsupported(
-                f"the Claude executable could not start this executor's "
-                f"invocation: {error}"
-            ) from error
-        try:
-            return_code, answer, diagnostics = bounded_process_streams(
-                process, timeout_seconds, _INVOCATION_PROBE_OUTPUT_BYTES
-            )
-        except OSError as error:
-            raise ClaudeExecutableUnsupported(
-                f"the Claude executable could not start this executor's "
-                f"invocation: {error}"
-            ) from error
+            shutil.rmtree(state_directory)
+        except FileNotFoundError:
+            pass
     if return_code == 0:
         raise ClaudeExecutableUnsupported(
             "the Claude executable answered a jobless invocation successfully: "
@@ -1257,13 +1502,15 @@ class ClaudeWorkspaceToolExecutor:
 
     WHAT IT DOES NOT CLAIM. No operating-system isolation. The process runs as
     the serving user, and `Bash` and `Write` reach every path that user reaches
-    -- including the credential directory this invocation hands it. The
-    attempt's workspace is where the process is *started*, not a boundary it is
-    held inside: the lease says in its own words that it claims nothing about
-    operating-system isolation, and this executor claims nothing beyond it. A
-    tool this vector did not name cannot be used; where a named tool may reach
-    is the CLI's own business and no promise of this module's. The boundary that
-    would make those claims is a separate slice and has its own owners (#242,
+    -- including the private, disposable config directory this invocation
+    hands it (a copy of `.credentials.json`, never the operator's own
+    directory -- see `_open_job_directory`). The attempt's workspace is where
+    the process is *started*, not a boundary it is held inside: the lease
+    says in its own words that it claims nothing about operating-system
+    isolation, and this executor claims nothing beyond it. A tool this vector
+    did not name cannot be used; where a named tool may reach is the CLI's
+    own business and no promise of this module's. The boundary that would
+    make those claims is a separate slice and has its own owners (#242,
     #312).
 
     WHAT IS NOT MEASURED, said here rather than discovered later. The tool-free
@@ -1279,6 +1526,9 @@ class ClaudeWorkspaceToolExecutor:
     """
 
     settings: ClaudeSubscriptionSettings
+    _job_directories: _ClaudeJobDirectories = field(
+        default_factory=_ClaudeJobDirectories, init=False, compare=False, repr=False
+    )
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
@@ -1287,20 +1537,32 @@ class ClaudeWorkspaceToolExecutor:
                 "the Claude workspace-tool executor serves subscription profiles only"
             )
         settings = self.settings
-        return ClaudeProcessCommand(
-            _workspace_tool_arguments(
-                settings.executable,
-                binding.configuration.model,
-                request.declared_output_schema_bytes,
-                request.maximum_assistant_turns,
-            ),
-            _credential_environment(settings),
-            # The job travels through standard input so no prompt ever appears
-            # in the process table of a host the operator shares.
-            request.job_bytes,
-            standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
-            declared_output_schema_bytes=request.declared_output_schema_bytes,
-        )
+        state_directory = _open_job_directory(settings)
+        registered = False
+        try:
+            command = ClaudeProcessCommand(
+                _workspace_tool_arguments(
+                    settings.executable,
+                    binding.configuration.model,
+                    request.declared_output_schema_bytes,
+                    request.maximum_assistant_turns,
+                ),
+                _credential_environment(settings, state_directory),
+                # The job travels through standard input so no prompt ever
+                # appears in the process table of a host the operator shares.
+                request.job_bytes,
+                standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+                declared_output_schema_bytes=request.declared_output_schema_bytes,
+            )
+            self._job_directories.register(state_directory)
+            registered = True
+            return command
+        finally:
+            if not registered:
+                try:
+                    shutil.rmtree(state_directory)
+                except FileNotFoundError:
+                    pass
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -1316,13 +1578,23 @@ class ClaudeWorkspaceToolExecutor:
         return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
-        credential directory, and this executor copies it nowhere."""
+        """Take back the private config directory this invocation was handed.
 
-        del command
+        The directory holds a private copy of the operator's own
+        `.credentials.json`, so it is taken back on every path rather than
+        with the attempt's workspace: the workspace keeps what a provider
+        left behind until the attempt is durably terminal, and a credential
+        must not wait that long.
+        """
+
+        environment = dict(command.environment)
+        state_directory = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
+        if state_directory is None:
+            raise ValueError("Claude invocation state binding is missing")
+        self._job_directories.release(Path(state_directory))
 
     def close(self) -> None:
-        return
+        self._job_directories.close()
 
 
 @dataclass(frozen=True)
@@ -1544,9 +1816,13 @@ class ClaudeAtelierDoorsExecutor:
     stdio subprocess. That child speaks only the loopback HTTP API and refuses
     any other address itself, and it needs no credential because the loopback
     API has none to offer. What keeps the operator's Anthropic credential out
-    of the child is that the invocation's environment never carries a secret
-    value in the first place -- `CLAUDE_CONFIG_DIR` names a directory and the
-    credential stays a file on disk. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
+    of the child is twofold: the invocation's environment never carries a
+    secret value in the first place -- `CLAUDE_CONFIG_DIR` names a directory
+    and the credential stays a file on disk -- and that directory is itself a
+    private, disposable copy of `.credentials.json` prepared for this one call
+    (`_open_job_directory`), never the operator's own directory, so even a
+    child that inherited the variable would inherit no path back to every
+    other credential the operator's directory carries. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
     travels beside that as defense in depth: it was measured on the tool-free
     sibling, not on an MCP stdio child.
 
@@ -1589,6 +1865,9 @@ class ClaudeAtelierDoorsExecutor:
     """
 
     settings: ClaudeAtelierDoorsSettings
+    _job_directories: _ClaudeJobDirectories = field(
+        default_factory=_ClaudeJobDirectories, init=False, compare=False, repr=False
+    )
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
@@ -1597,20 +1876,32 @@ class ClaudeAtelierDoorsExecutor:
                 "the Claude atelier-doors executor serves subscription profiles only"
             )
         settings = self.settings
-        return ClaudeProcessCommand(
-            _atelier_doors_arguments(
-                settings,
-                binding.configuration.model,
-                request.declared_output_schema_bytes,
-                request.maximum_assistant_turns,
-            ),
-            _credential_environment(settings.deployment),
-            # The job travels through standard input so no prompt ever appears
-            # in the process table of a host the operator shares.
-            request.job_bytes,
-            standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
-            declared_output_schema_bytes=request.declared_output_schema_bytes,
-        )
+        state_directory = _open_job_directory(settings.deployment)
+        registered = False
+        try:
+            command = ClaudeProcessCommand(
+                _atelier_doors_arguments(
+                    settings,
+                    binding.configuration.model,
+                    request.declared_output_schema_bytes,
+                    request.maximum_assistant_turns,
+                ),
+                _credential_environment(settings.deployment, state_directory),
+                # The job travels through standard input so no prompt ever
+                # appears in the process table of a host the operator shares.
+                request.job_bytes,
+                standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+                declared_output_schema_bytes=request.declared_output_schema_bytes,
+            )
+            self._job_directories.register(state_directory)
+            registered = True
+            return command
+        finally:
+            if not registered:
+                try:
+                    shutil.rmtree(state_directory)
+                except FileNotFoundError:
+                    pass
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -1621,13 +1912,23 @@ class ClaudeAtelierDoorsExecutor:
         return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
-        credential directory, and this executor copies it nowhere."""
+        """Take back the private config directory this invocation was handed.
 
-        del command
+        The directory holds a private copy of the operator's own
+        `.credentials.json`, so it is taken back on every path rather than
+        with the attempt's workspace: the workspace keeps what a provider
+        left behind until the attempt is durably terminal, and a credential
+        must not wait that long.
+        """
+
+        environment = dict(command.environment)
+        state_directory = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
+        if state_directory is None:
+            raise ValueError("Claude invocation state binding is missing")
+        self._job_directories.release(Path(state_directory))
 
     def close(self) -> None:
-        return
+        self._job_directories.close()
 
 
 @dataclass(frozen=True)
