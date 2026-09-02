@@ -127,6 +127,7 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     publish_checked_model_registry,
 )
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runners import (
     RunnerSessionAdvancerLike,
     drive_free_runner_session_to_released,
@@ -858,7 +859,7 @@ def test_a_fake_free_node_completes_over_the_lease_path_touching_no_process_supe
             _FREE_RUNNER_CONFIGURATION,
             _free_runner_document("hello"),
         )
-        wait_for_state(runtime, run_id, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, run_id, RunState.COMPLETED)
         wait_for_drives(tracking, 1)
         assert runtime.agent_workspace_owner is None
     finally:
@@ -889,7 +890,7 @@ def test_a_local_process_node_still_runs_the_process_path_unchanged(
             _LOCAL_PROCESS_CONFIGURATION,
             _LOCAL_PROCESS_DOCUMENT,
         )
-        wait_for_state(runtime, run_id, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, run_id, RunState.COMPLETED)
         assert not tracking.completed_attempt_ids
     finally:
         runtime.close()
@@ -939,8 +940,8 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
         wait_for_waiting_lease_attempts(runtime, 1)
         admission_order = slot_admission_order(runtime)
         tracking.released.set()
-        wait_for_state(runtime, run_a, RunState.COMPLETED)
-        wait_for_state(runtime, run_b, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, run_a, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, run_b, RunState.COMPLETED)
         wait_for_drives(tracking, 2)
         assert tracking.peak <= 1
         # Driven in the order production's own dequeue reads them, and each
@@ -1258,7 +1259,7 @@ def test_waiting_lease_attempts_stall_no_independent_workflow(
             _LOCAL_PROCESS_CONFIGURATION,
             _LOCAL_PROCESS_DOCUMENT,
         )
-        wait_for_state(runtime, independent, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, independent, RunState.COMPLETED)
     finally:
         tracking.released.set()
         runtime.close()
@@ -1359,7 +1360,7 @@ def test_refuse_unavailable_executor_holds_for_a_lease_carried_key(
     )
     try:
         restarted.launch()
-        wait_for_state(restarted, run_id, RunState.FAILED)
+        wait_for_run_state(restarted.engine, run_id, RunState.FAILED)
         assert not restarted_tracking.completed_attempt_ids
     finally:
         restarted.close()
