@@ -12,6 +12,10 @@ from sqlalchemy import exc
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
+from atelier2.adapters.dbos import schema as schema_module
+from atelier2.adapters.dbos.published_schema_shapes import (
+    PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION,
+)
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256,
@@ -55,10 +59,12 @@ from atelier2.adapters.dbos.schema import (
     V44_SCHEMA_HANDOFF,
     V45_SCHEMA_HANDOFF,
     V46_SCHEMA_HANDOFF,
+    V47_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
     _product_schema_fingerprint_sha256,
+    _require_product_shape,
     catalog_lineage_aliases,
     catalog_lineage_members,
     catalog_lineage_retirements,
@@ -73,6 +79,7 @@ from atelier2.adapters.dbos.schema import (
     node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
+    queue_items,
     reconcile_commands,
     run_configuration_revisions,
     run_events,
@@ -83,6 +90,12 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
+from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.queue_projection import (
+    QueueItemState,
+    TrackerItemReference,
+    WorkItemReference,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from tests.integration.test_store_migration import _create_populated_v41_store
@@ -506,12 +519,89 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[46]
         == "1428683e38b4cce26b866e02ef1afa974a2c3208e26606f8792d0d48f0b1a43b"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 47
+    assert V47_SCHEMA_HANDOFF.version == 47
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V47_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[47]
         == "d7987152a11a2702808b5fb1b71c0891e1c6724519435e87ee840cc235c00e39"
     )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 48
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[48]
+        == "ecf4b2aba21f7225f121a3afc128d76e9ce10801c83121a93712f39320704653"
+    )
+
+
+def test_v47_store_migrates_to_v48_inventing_no_observation_or_retirement(
+    tmp_path: Path,
+) -> None:
+    """A real V47 queue row crosses the hop with its new columns NULL.
+
+    The store is raised to today's declaration, then `queue_items` and its
+    transition trigger are rebuilt down to the exact bytes V47 published --
+    proving the migration on a real predecessor row, not on a freshly
+    created database.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(revision_hash="a" * 64, document=b"kept")
+        )
+    engine.dispose()
+    reference = WorkItemReference(ProjectId("project1"), TrackerItemReference("gh:79"))
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        schema_module._rebuild_product_table(
+            connection,
+            queue_items,
+            "queue_items_v48",
+            (
+                "queue_items_identity_no_update",
+                "queue_items_no_delete",
+                "queue_items_no_nonobserved_insert",
+                "queue_items_state_transition",
+            ),
+            48,
+            47,
+            trigger_source={
+                **schema_module._PRODUCT_TRIGGERS,
+                "queue_items_state_transition": (
+                    PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION
+                ),
+            },
+        )
+        connection.execute(
+            f"INSERT INTO queue_items VALUES "
+            f"(?, ?, ?, '{QueueItemState.OBSERVED.value}', 0, NULL, NULL, NULL, NULL)",
+            (
+                reference.item_id.value,
+                reference.project.value,
+                reference.tracker_item.value,
+            ),
+        )
+        connection.execute("UPDATE atelier_schema_versions SET version = 47")
+        connection.commit()
+        _require_product_shape(connection, 47)
+
+    report = migrate_store(database_path)
+
+    assert (report.source_version, report.target_version) == (47, 48)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT document FROM workflow_revisions"
+        ).fetchone() == (b"kept",)
+        row = connection.execute(
+            "SELECT state, observed_title, title_observed_at, retired_at "
+            "FROM queue_items WHERE item_id = ?",
+            (reference.item_id.value,),
+        ).fetchone()
+        assert row == (QueueItemState.OBSERVED.value, None, None, None)
+        _require_product_shape(connection, 48)
 
 
 def test_populated_v41_effect_rows_are_backfilled_before_v42_publish(

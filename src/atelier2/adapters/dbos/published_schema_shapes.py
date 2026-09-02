@@ -675,6 +675,9 @@ PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
         _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
     ),
     (44, "queue_items"): _V44_QUEUE_ITEMS,
+    # No hop between V44 and V47 moved queue_items; V48 is the first to add a
+    # column, so V47 published the same bytes V44 did.
+    (47, "queue_items"): _V44_QUEUE_ITEMS,
     (40, "effect_receipts"): _EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     (41, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
     (41, "effect_receipts"): _EFFECT_RECEIPTS_WITH_FORK_REFERENCE,
@@ -1385,3 +1388,51 @@ PUBLISHED_TABLE_INDEXES: Mapping[tuple[int, str], tuple[str, ...]] = {
     (34, "run_events"): _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE,
     (35, "run_events"): _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE,
 }
+
+PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION = """
+        CREATE TRIGGER queue_items_state_transition
+        BEFORE UPDATE ON queue_items
+        WHEN NOT (
+          (OLD.state = 'OBSERVED'
+           AND NEW.state = 'PROPOSED'
+           AND NEW.state_version = OLD.state_version + 1
+           AND NEW.current_proposal_revision = NEW.state_version
+           AND NEW.workflow_lineage_id IS NULL
+           AND NEW.admission_rationale IS NULL
+           AND NEW.decision_authority IS NULL
+           AND EXISTS (
+             SELECT 1 FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = NEW.current_proposal_revision
+           ))
+          OR
+          (OLD.state = 'PROPOSED'
+           AND NEW.state = 'ADMITTED'
+           AND NEW.state_version = OLD.state_version + 1
+           AND NEW.current_proposal_revision = OLD.current_proposal_revision
+           AND NEW.workflow_lineage_id = (
+             SELECT proposal.workflow_lineage_id
+             FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = OLD.current_proposal_revision
+           )
+           AND NEW.admission_rationale IS NOT NULL
+           AND NEW.decision_authority IN ('OPERATOR', 'AUTOMATION_RULE')
+           AND (NEW.decision_authority = 'OPERATOR' OR EXISTS (
+             SELECT 1 FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = OLD.current_proposal_revision
+               AND proposal.automation_disposition = 'AUTOMATION_AUTHORIZED'
+           )))
+        ) BEGIN
+          SELECT RAISE(ABORT, 'invalid queue item transition');
+        END
+    """
+"""The queue item transition trigger V44 through V47 published.
+
+V48 adds a third branch letting an observation-only update pass without a
+state transition (ADR 0016, 2026-09-01 amendment). `_apply_v43_to_v44` installs
+this exact predecessor text rather than today's declaration, or the V44
+fingerprint taken while migrating up from V43 would disagree with the one V44
+actually published.
+"""

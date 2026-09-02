@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from atelier2.adapters.dbos.published_schema_shapes import (
+    PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION,
     PUBLISHED_TABLE_INDEXES,
     PUBLISHED_TABLE_SHAPES,
     PUBLISHED_WAIT_ANSWER_TRIGGERS,
@@ -50,6 +51,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ACTIVE_RUNS,
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
     MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
+    MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     QueueAutomationDisposition,
     QueueDecisionAuthority,
@@ -76,8 +78,9 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 46 attributes wait answers and fences every submission to one execution.
-_HOP_PREDECESSOR_VERSION = 46
+# Hop 47 gives the queue item its last-observed tracker title, when it was
+# observed, and when import derived it retired (ADR 0016, 2026-09-01 amendment).
+_HOP_PREDECESSOR_VERSION = 47
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -118,6 +121,7 @@ _VERSION_FORTY_FOUR = 44
 _VERSION_FORTY_FIVE = 45
 _VERSION_FORTY_SIX = 46
 _VERSION_FORTY_SEVEN = 47
+_VERSION_FORTY_EIGHT = 48
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -275,6 +279,12 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # records the closed actor it expects; every new answer records that actor, while
 # predecessor answers carry the named LEGACY_UNATTRIBUTED kind and no invented
 # actor.
+# V48 gives the queue item the tracker title as it was last observed, the marker
+# of when it was observed, and the marker of when import derived the item
+# retired by set difference (ADR 0016, 2026-09-01 amendment). All three are
+# dated observations, never core-asserted facts: a queue row keeps them NULL
+# until an import writes them, and none of the three participates in the
+# proposal or admission state machine.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -319,6 +329,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     45: "39d0811369f0b7a4b248448042623ecde0d290e95d191d75c32a9faf538fffa5",
     46: "1428683e38b4cce26b866e02ef1afa974a2c3208e26606f8792d0d48f0b1a43b",
     47: "d7987152a11a2702808b5fb1b71c0891e1c6724519435e87ee840cc235c00e39",
+    48: "ecf4b2aba21f7225f121a3afc128d76e9ce10801c83121a93712f39320704653",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -471,6 +482,10 @@ V45_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V46_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FORTY_SIX,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_SIX],
+)
+V47_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY_SEVEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_SEVEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -2191,6 +2206,18 @@ queue_items = sa.Table(
     sa.Column("admission_rationale", sa.Text, nullable=True),
     sa.Column("current_proposal_revision", sa.Integer, nullable=True),
     sa.Column("decision_authority", sa.Text, nullable=True),
+    # Dated observations of a tracker-owned fact, never core truth (ADR 0016,
+    # 2026-09-01 amendment): `observed_title` is the title as the tracker last
+    # served it and `title_observed_at` is when that read happened, so a reader
+    # can tell a fresh title from a stale one instead of taking either as
+    # current. `retired_at` is not an observed fact either -- closedness is
+    # derived by set difference at import (ADR 0016 line 120) -- but the marker
+    # of when import derived that retirement is durable state the import
+    # records (ADR 0016 line 121). None of the three enters the proposal or
+    # admission state machine below.
+    sa.Column("observed_title", sa.Text, nullable=True),
+    sa.Column("title_observed_at", sa.Text, nullable=True),
+    sa.Column("retired_at", sa.Text, nullable=True),
     sa.UniqueConstraint("project_id", "tracker_item_reference"),
     sa.UniqueConstraint("item_id", "project_id"),
     sa.ForeignKeyConstraint(
@@ -2239,6 +2266,13 @@ queue_items = sa.Table(
         "AND current_proposal_revision IS NULL "
         "AND decision_authority IS NULL)"
     ),
+    sa.CheckConstraint(
+        "observed_title IS NULL OR length(observed_title) BETWEEN 1 AND "
+        f"{MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS}"
+    ),
+    sa.CheckConstraint("(observed_title IS NULL) = (title_observed_at IS NULL)"),
+    sa.CheckConstraint(_rfc3339_utc_or_null("title_observed_at")),
+    sa.CheckConstraint(_rfc3339_utc_or_null("retired_at")),
 )
 queue_project_policy_revisions = sa.Table(
     "queue_project_policy_revisions",
@@ -3332,6 +3366,13 @@ _PRODUCT_TRIGGERS = {
                AND proposal.proposal_revision = OLD.current_proposal_revision
                AND proposal.automation_disposition = 'AUTOMATION_AUTHORIZED'
            )))
+          OR
+          (NEW.state = OLD.state
+           AND NEW.state_version = OLD.state_version
+           AND NEW.workflow_lineage_id IS OLD.workflow_lineage_id
+           AND NEW.admission_rationale IS OLD.admission_rationale
+           AND NEW.current_proposal_revision IS OLD.current_proposal_revision
+           AND NEW.decision_authority IS OLD.decision_authority)
         ) BEGIN
           SELECT RAISE(ABORT, 'invalid queue item transition');
         END
@@ -3594,7 +3635,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_FORTY_SEVEN}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_FORTY_SIX, _VERSION_FORTY_FIVE, _VERSION_FORTY_FOUR}:
         return predecessor_product_tables
@@ -5654,7 +5695,9 @@ def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
         _VERSION_FORTY_FOUR,
     )
     connection.execute(_PRODUCT_TRIGGERS["queue_items_no_nonobserved_insert"])
-    connection.execute(_PRODUCT_TRIGGERS["queue_items_state_transition"])
+    connection.execute(
+        PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION
+    )
     _raise_declared_version(connection, _VERSION_FORTY_THREE, _VERSION_FORTY_FOUR)
 
 
@@ -5907,6 +5950,34 @@ def _apply_v46_to_v47(connection: sqlite3.Connection) -> None:
     )(connection)
 
 
+_V47_QUEUE_ITEMS = "queue_items_before_tracker_observation"
+
+
+def _apply_v47_to_v48(connection: sqlite3.Connection) -> None:
+    """Give the queue item its last-observed title and two observation markers.
+
+    Every stored row crosses byte-for-byte in its existing columns; the three
+    new columns are nullable and carry no invented value (ADR 0016, 2026-09-01
+    amendment) -- a predecessor row simply has no observation until an import
+    writes one.
+    """
+
+    _rebuild_product_table(
+        connection,
+        queue_items,
+        _V47_QUEUE_ITEMS,
+        (
+            "queue_items_identity_no_update",
+            "queue_items_no_delete",
+            "queue_items_no_nonobserved_insert",
+            "queue_items_state_transition",
+        ),
+        _VERSION_FORTY_SEVEN,
+        _VERSION_FORTY_EIGHT,
+    )
+    _raise_declared_version(connection, _VERSION_FORTY_SEVEN, _VERSION_FORTY_EIGHT)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6081,6 +6152,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _apply_v45_to_v46,
     ),
     _SchemaMigrationStep(_VERSION_FORTY_SIX, _VERSION_FORTY_SEVEN, _apply_v46_to_v47),
+    _SchemaMigrationStep(_VERSION_FORTY_SEVEN, _VERSION_FORTY_EIGHT, _apply_v47_to_v48),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
