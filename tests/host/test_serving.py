@@ -107,6 +107,10 @@ def _settings(tmp_path: Path, **runner_lease: Any) -> HostSettings:
         source_commit="c" * 40,
         source_tree="tree",
         frontend_dist=_frontend(tmp_path),
+        # Isolated per test, never the operator's real XDG state directory:
+        # a stray real receipt must never make an unrelated test's gate
+        # answer depend on what happens to sit on the machine running it.
+        provider_probe_receipt_directory=tmp_path / "provider-probes",
         **runner_lease,
     )
 
