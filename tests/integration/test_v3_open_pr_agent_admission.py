@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.github import GitHubEffectAdapterFactory
 from atelier2.contracts.effects import (
@@ -16,6 +16,7 @@ from atelier2.contracts.runs import RunId
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.durable_state import canonical_runtime_settings
 from tests.scenarios.open_pr_agent import (
     PR_SPEC,
     open_pr_agent_executor_factory,
@@ -43,10 +44,8 @@ def test_an_agent_open_pr_grant_is_admitted_without_proving_absence(
     tmp_path: Path,
 ) -> None:
     runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "agent-open-pr-admission",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "agent-open-pr-admission", agent_scratch_root(tmp_path)
         ),
         _NonProvingFactory(
             GitHubEffectAdapterFactory(
