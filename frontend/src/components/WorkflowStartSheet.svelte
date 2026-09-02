@@ -13,6 +13,7 @@
   } from "../api/client";
   import {
     observedSourceHeading,
+    observedWorkItemLabel,
     pinnedModelLine,
     projectDefaultLine,
     startAccountSuffix,
@@ -98,7 +99,8 @@
     !starting &&
     roles.every(roleCanStart) &&
     orders.every(orderCanStart);
-  $: observedItemsBySource = groupObservedItemsBySource(observedQueueItems);
+  $: offerableQueueItems = observedQueueItems.filter((item) => item.retired_at === null);
+  $: observedItemsBySource = groupObservedItemsBySource(offerableQueueItems);
   $: disabledStartReason = startDisabledReason(
     loading,
     resolving,
@@ -447,7 +449,15 @@
 
   function selectedWorkItemLabel(order: OrderDraft): string {
     const reference = order.values.work_item ?? "";
-    return reference.length === 0 ? workflowStartCopy.choose : adapterGrammarLabel(reference);
+    if (reference.length === 0) return workflowStartCopy.choose;
+    const item = observedQueueItems.find(
+      (candidate) => candidate.tracker_item_reference === reference
+    );
+    return item === undefined ? adapterGrammarLabel(reference) : workItemLabel(item);
+  }
+
+  function workItemLabel(item: ObservedQueueItem): string {
+    return observedWorkItemLabel(adapterGrammarLabel(item.tracker_item_reference), item.title);
   }
 
   function workItemListName(orderName: string): string {
@@ -655,7 +665,7 @@
           {#if order.shape?.kind === "work_item"}
             <div class="work-item">
               <span>{workflowStartCopy.workItem}</span>
-              {#if observedItemsBySource.length === 0}
+              {#if observedQueueItems.length === 0}
                 <div class="degraded">
                   <span>{workflowStartCopy.noSource}</span>
                   <button
@@ -708,7 +718,7 @@
                           onmousedown={(event) => event.preventDefault()}
                           onclick={() => chooseWorkItem(order.name, item.tracker_item_reference)}
                         >
-                          {adapterGrammarLabel(item.tracker_item_reference)}
+                          {workItemLabel(item)}
                         </button>
                       {/each}
                     {/each}
