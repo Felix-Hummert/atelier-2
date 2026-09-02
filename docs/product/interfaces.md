@@ -9,7 +9,9 @@ priority, workflow lineage, and prerequisites the operator will inspect through
 `POST /queue-admissions`. The priority wire shape is `{"rank": n}`. Queue
 responses use the contract's typed state, authority, automation disposition,
 and blocker values. A tracker read failure never drops a durable queue row: the
-resource instead reports `ENRICHMENT_UNAVAILABLE` and leaves its title absent.
+resource instead reports `ENRICHMENT_UNAVAILABLE` while the row still carries
+the tracker title last observed at import, its observation timestamp, and,
+for a retired item, when import saw it leave the tracker's open set.
 It can
 publish secret-free auth-profile and agent-configuration revisions and list
 both; publish

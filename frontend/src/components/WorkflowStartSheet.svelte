@@ -99,7 +99,8 @@
     !starting &&
     roles.every(roleCanStart) &&
     orders.every(orderCanStart);
-  $: observedItemsBySource = groupObservedItemsBySource(observedQueueItems);
+  $: offerableQueueItems = observedQueueItems.filter((item) => item.retired_at === null);
+  $: observedItemsBySource = groupObservedItemsBySource(offerableQueueItems);
   $: disabledStartReason = startDisabledReason(
     loading,
     resolving,
@@ -142,9 +143,7 @@
       );
       orders = loadedOrders;
       if (loadedOrders.some((order) => order.shape?.kind === "work_item")) {
-        observedQueueItems = (await readEveryObservedQueueItem()).filter(
-          (item) => item.retired_at === null
-        );
+        observedQueueItems = await readEveryObservedQueueItem();
       }
       if (roles.length > 0) await resolveModels(false);
     } catch (error) {
@@ -666,7 +665,7 @@
           {#if order.shape?.kind === "work_item"}
             <div class="work-item">
               <span>{workflowStartCopy.workItem}</span>
-              {#if observedItemsBySource.length === 0}
+              {#if observedQueueItems.length === 0}
                 <div class="degraded">
                   <span>{workflowStartCopy.noSource}</span>
                   <button

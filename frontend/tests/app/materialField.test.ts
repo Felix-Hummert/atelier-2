@@ -430,6 +430,41 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
   });
 
+  it("does not claim a connected source is missing when every observed item from it is retired", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
+      getSchemaRevision: vi.fn(async () => workItemSchema),
+      listObservedQueueItems: vi.fn(async () => ({
+        items: [
+          {
+            project_id: "atelier",
+            tracker_item_reference: "gh:450",
+            item_id: "1".repeat(64),
+            revision: 0,
+            title: "Preview door",
+            title_observed_at: "2026-09-01T14:00:00Z",
+            retired_at: "2026-09-02T09:30:00Z"
+          }
+        ],
+        next_after: null
+      }))
+    });
+    await openStart(cockpitApi);
+
+    expect(screen.queryByText(workflowStartCopy.noSource)).toBeNull();
+    expect(screen.queryByRole("button", { name: workflowStartCopy.connectSource })).toBeNull();
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+    const startRun = screen.getByRole("button", { name: workflowStartCopy.startRun }) as HTMLButtonElement;
+    expect(startRun.disabled).toBe(true);
+    expect(startRun.title).toBe(workflowStartCopy.startNeedsWorkItem);
+    const picker = screen.getByRole("combobox", { name: workItemFor("work") });
+    await fireEvent.click(picker);
+    expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
+    expect(screen.queryByRole("option", { name: "#450 Preview door" })).toBeNull();
+  });
+
   it("refuses a work-item lookalike before it can enable Start", async () => {
     const cockpitApi = api({
       getWorkflowRevision: vi.fn(async () =>

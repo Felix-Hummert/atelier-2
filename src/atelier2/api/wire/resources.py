@@ -68,6 +68,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ACTIVE_RUNS,
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
     MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
+    MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     QueueAutomationDisposition,
     QueueBlockerKind,
@@ -762,20 +763,18 @@ class QueueItemResource(ApiModel):
     blockers: tuple[QueueBlockerKind, ...]
     tracker_enrichment: Literal["ENRICHMENT_UNAVAILABLE"]
     title: str | None = Field(
-        default=None,
         min_length=1,
+        max_length=MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
         description=(
             "The tracker title last observed at title_observed_at; an observation, "
             "not current truth."
         ),
     )
     title_observed_at: str | None = Field(
-        default=None,
         pattern=RECORDED_AT_PATTERN,
         description="When the tracker title was last observed.",
     )
     retired_at: str | None = Field(
-        default=None,
         pattern=RECORDED_AT_PATTERN,
         description="When import observed the item absent from the tracker's open set.",
     )
