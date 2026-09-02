@@ -57,6 +57,7 @@ from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
     ToolCalled,
     ToolReturned,
     UnrecognisedProviderOutput,
@@ -665,9 +666,7 @@ def test_an_answer_at_the_durable_output_bound_still_completes(tmp_path: Path) -
         pytest.param(
             json.dumps({"type": "result", "is_error": True, "result": "pong"}),
             0,
-            kept_whole(
-                json.dumps({"type": "result", "is_error": True, "result": "pong"})
-            ),
+            AttemptTranscript.of([ProviderTerminalRefusal("", "", "pong")]),
             id="the envelope declares an error",
         ),
         pytest.param(
@@ -2472,6 +2471,60 @@ def test_a_stream_becomes_the_steps_that_reached_the_answer(tmp_path: Path) -> N
                 ENVELOPE_USAGE,
             ]
         ),
+    )
+
+
+def test_a_call_the_provider_refused_before_inference_names_its_own_reason(
+    tmp_path: Path,
+) -> None:
+    """The CLI can reach the API and be refused before any inference runs.
+
+    The exit code and an empty standard error say nothing about that (#1029,
+    #942): the process behaved exactly as designed. The `result` line it wrote
+    instead is the only account, and this pins that the transcript keeps it as
+    a named step rather than as raw, unread JSON.
+    """
+
+    rate_limit_event = json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rateLimitType": "five_hour",
+            "overageStatus": "rejected",
+        }
+    )
+    system_init = json.dumps({"type": "system", "subtype": "init", "model": "haiku"})
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "is_error": True,
+            "terminal_reason": "api_error",
+            "result": "Not logged in · Please run /login",
+        }
+    )
+    stream = f"{system_init}\n{rate_limit_event}\n{result_line}"
+    settings = claude_subscription_deployment(
+        tmp_path, emitting_claude(stream, return_code=1)
+    )
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+    invocation = leased(request, command, workspace)
+
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
+
+    assert result == unusable(
+        AttemptTranscript.of(
+            [
+                UnrecognisedProviderOutput(system_init),
+                UnrecognisedProviderOutput(rate_limit_event),
+                ProviderTerminalRefusal(
+                    "api_error", "", "Not logged in · Please run /login"
+                ),
+            ]
+        )
     )
 
 

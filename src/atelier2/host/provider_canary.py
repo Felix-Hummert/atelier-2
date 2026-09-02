@@ -61,8 +61,10 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionPageResource,
     CatalogNameResolutionResource,
     HealthResource,
+    NodeDetailResource,
     RunResourceV3,
 )
+from atelier2.contracts.agent_transcripts import TranscriptEventKind
 from atelier2.contracts.agents import AgentConfigurationRevisionHash
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.provider_probe_receipts import (
@@ -110,6 +112,7 @@ _health_resource = TypeAdapter(HealthResource)
 _configuration_page_resource = TypeAdapter(AgentConfigurationRevisionPageResource)
 _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
 _run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
+_node_detail_resource = TypeAdapter[NodeDetailResource](NodeDetailResource)
 
 # These executor keys choose the matching probe workflow only. The served
 # structurally-startable configuration list remains the sole owner of which
@@ -653,7 +656,13 @@ def _execute_vector(
                 settings.state_directory / f"{vector.vector_id.value}.json", receipt
             )
             return None
-        problem_code = ProviderProbeProblemCode(f"run-{ended.state.lower()}")
+        problem_code = (
+            _failed_run_problem_code(
+                client, started, ended, clock, deadline, timeout_error
+            )
+            if ended.state == "FAILED"
+            else ProviderProbeProblemCode(f"run-{ended.state.lower()}")
+        )
         detail = f"run {run_id.value} ended {ended.state}"
     except ProviderCanaryServerUnavailable as unavailable:
         problem_code = ProviderProbeProblemCode("server-unavailable")
@@ -728,6 +737,51 @@ def _wait_for_terminal(
     if current.terminal_hash is None:
         raise ProviderCanaryAnswerUnreadable("a terminal run carries no terminal hash")
     return current
+
+
+def _failed_run_problem_code(
+    client: ProviderCanaryHttp,
+    started: RunResourceV3,
+    ended: RunResourceV3,
+    clock: ProviderCanaryClock,
+    deadline: float,
+    timeout_error: Callable[[], RuntimeError],
+) -> ProviderProbeProblemCode:
+    """`provider-refused` where the failed node's own transcript named one.
+
+    A run's own terminal state carries no more than `FAILED`; telling a
+    provider that read and refused a call apart from a genuinely broken vector
+    needs the node's own transcript (#1029), so a rate limit does not read as a
+    defect. Reading that transcript is itself a live call this classification
+    alone should not fail over: any refusal to answer it just keeps the plain
+    `run-failed` code the caller already had.
+    """
+
+    try:
+        detail = _decoded(
+            _node_detail_resource,
+            _get_before_deadline(
+                client,
+                f"{RUN_PATH}/{started.public_run_reference}/nodes/"
+                f"{ended.current_node_id}",
+                clock=clock,
+                deadline=deadline,
+                timeout_error=timeout_error,
+            ),
+            "failed node detail",
+        )
+    except (
+        ProviderCanaryHttpRefused,
+        ProviderCanaryServerUnavailable,
+        ProviderCanaryAnswerUnreadable,
+    ):
+        return ProviderProbeProblemCode("run-failed")
+    if detail.transcript is not None and any(
+        event.event == TranscriptEventKind.PROVIDER_TERMINAL_REFUSAL
+        for event in detail.transcript.events
+    ):
+        return ProviderProbeProblemCode("provider-refused")
+    return ProviderProbeProblemCode("run-failed")
 
 
 def _receipt(

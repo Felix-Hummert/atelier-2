@@ -102,6 +102,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
     WatchdogGenerationId,
+    process_exit_verdict,
 )
 from atelier2.contracts.agent_refusals import (
     AGENT_REFUSAL_SCHEMA,
@@ -2699,7 +2700,7 @@ class DbosAgentAttemptStore:
                 AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
                 node_receipt_reason(
                     NodeReceiptReason.PROCESS_EXITED_UNSUCCESSFULLY,
-                    exit_signature.named(),
+                    process_exit_verdict(exit_signature, transcript),
                 ),
                 transcript=transcript,
             )

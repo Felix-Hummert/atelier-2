@@ -14,6 +14,7 @@ from atelier2.contracts.agent_transcripts import (
     TRANSCRIPT_STEP_CUT_MARKER,
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
     ToolCalled,
     ToolReturned,
     TranscriptEvent,
@@ -271,6 +272,19 @@ def test_a_transcript_that_fits_loses_nothing_and_keeps_its_order() -> None:
             id="usage",
         ),
         pytest.param(
+            ProviderTerminalRefusal(
+                "rate_limit_error", "429", "Not logged in · Please run /login"
+            ),
+            {
+                "event": "provider-terminal-refusal",
+                "terminal_reason": "rate_limit_error",
+                "api_error_status": "429",
+                "text": "Not logged in · Please run /login",
+                "redacted": False,
+            },
+            id="provider terminal refusal",
+        ),
+        pytest.param(
             UnrecognisedProviderOutput("Error: connection reset"),
             {
                 "event": "unrecognised-provider-output",
@@ -359,6 +373,19 @@ def test_a_truncation_marker_stands_for_a_real_loss() -> None:
                 "cache_creation_input_tokens": 128,
             },
             id="usage",
+        ),
+        pytest.param(
+            ProviderTerminalRefusal(
+                "rate_limit_error", "429", "Not logged in · Please run /login"
+            ),
+            {
+                "event": "provider-terminal-refusal",
+                "terminal_reason": "rate_limit_error",
+                "api_error_status": "429",
+                "text": "Not logged in · Please run /login",
+                "redacted": False,
+            },
+            id="provider terminal refusal",
         ),
         pytest.param(
             UnrecognisedProviderOutput("Error: connection reset"),

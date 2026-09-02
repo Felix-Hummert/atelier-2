@@ -235,6 +235,13 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "ToolCalledEventResource.name": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
     "ToolReturnedEventResource.name": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
     "ToolReturnedEventResource.result": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    "ProviderTerminalRefusalEventResource.terminal_reason": (
+        MAXIMUM_TRANSCRIPT_STEP_CHARACTERS
+    ),
+    "ProviderTerminalRefusalEventResource.api_error_status": (
+        MAXIMUM_TRANSCRIPT_STEP_CHARACTERS
+    ),
+    "ProviderTerminalRefusalEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
     "UnrecognisedProviderOutputEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
 }
 

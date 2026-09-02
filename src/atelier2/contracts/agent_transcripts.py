@@ -68,6 +68,7 @@ class TranscriptEventKind(StrEnum):
     TOOL_RETURNED = "tool-returned"
     ASSISTANT_TURN = "assistant-turn"
     USAGE = "usage"
+    PROVIDER_TERMINAL_REFUSAL = "provider-terminal-refusal"
     UNRECOGNISED_PROVIDER_OUTPUT = "unrecognised-provider-output"
     TRANSCRIPT_TRUNCATED = "transcript-truncated"
 
@@ -158,6 +159,28 @@ class Usage:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderTerminalRefusal:
+    """The provider read this call and refused it before any inference ran.
+
+    Distinct from `UnrecognisedProviderOutput`: that step is for a line this
+    vocabulary does not know, and this one is for a line it knows exactly --
+    the provider's own terminal `result` naming `is_error` true. A refusal like
+    this ends the call with the exit code and standard error of a process that
+    behaved exactly as designed, which explained nothing at all (`#1029`).
+    `api_error_status` and `terminal_reason` are kept as empty text rather than
+    omitted where the provider's line did not carry them, so every step of this
+    kind has the same three readable fields regardless of which provider
+    release wrote it.
+    """
+
+    terminal_reason: str
+    api_error_status: str
+    text: str
+    redacted: bool = False
+    moment: TranscriptEventMoment = field(default_factory=TranscriptBeforeMoments)
+
+
+@dataclass(frozen=True, slots=True)
 class UnrecognisedProviderOutput:
     """The provider wrote this, and no step above describes it.
 
@@ -192,6 +215,7 @@ type TranscriptEvent = (
     | ToolReturned
     | AssistantTurn
     | Usage
+    | ProviderTerminalRefusal
     | UnrecognisedProviderOutput
     | TranscriptTruncated
 )
@@ -237,6 +261,14 @@ def _event_document(event: TranscriptEvent, document_kind: str) -> dict[str, obj
                 "output_tokens": output_tokens,
                 "cache_read_input_tokens": cache_read,
                 "cache_creation_input_tokens": cache_creation,
+            }
+        case ProviderTerminalRefusal(terminal_reason, api_error_status, text, redacted):
+            document = {
+                _KIND_FIELD: TranscriptEventKind.PROVIDER_TERMINAL_REFUSAL.value,
+                "terminal_reason": terminal_reason,
+                "api_error_status": api_error_status,
+                "text": text,
+                "redacted": redacted,
             }
         case UnrecognisedProviderOutput(text, redacted):
             document = {
@@ -345,6 +377,13 @@ def _event_from_document(payload: object, document_kind: str) -> TranscriptEvent
                     "cache_creation_input_tokens",
                 ),
             )
+        case TranscriptEventKind.PROVIDER_TERMINAL_REFUSAL:
+            event = ProviderTerminalRefusal(
+                _require_text(payload.get("terminal_reason"), "terminal_reason"),
+                _require_text(payload.get("api_error_status"), "api_error_status"),
+                _require_text(payload.get("text"), "text"),
+                _require_flag(payload.get("redacted"), "redacted"),
+            )
         case TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT:
             event = UnrecognisedProviderOutput(
                 _require_text(payload.get("text"), "text"),
@@ -419,6 +458,15 @@ def _kept(event: TranscriptEvent) -> TranscriptEvent:
         case AssistantTurn(text, marked, moment):
             (kept_text,), redacted = _readable(text)
             return AssistantTurn(kept_text, redacted or marked, moment)
+        case ProviderTerminalRefusal(
+            terminal_reason, api_error_status, text, marked, moment
+        ):
+            (kept_reason, kept_status, kept_text), redacted = _readable(
+                terminal_reason, api_error_status, text
+            )
+            return ProviderTerminalRefusal(
+                kept_reason, kept_status, kept_text, redacted or marked, moment
+            )
         case UnrecognisedProviderOutput(text, marked, moment):
             (kept_text,), redacted = _readable(text)
             return UnrecognisedProviderOutput(kept_text, redacted or marked, moment)

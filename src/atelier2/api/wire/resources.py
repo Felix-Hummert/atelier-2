@@ -1096,6 +1096,15 @@ class UsageEventResource(ApiModel):
     moment: TranscriptMomentResource
 
 
+class ProviderTerminalRefusalEventResource(ApiModel):
+    event: Literal[TranscriptEventKind.PROVIDER_TERMINAL_REFUSAL]
+    terminal_reason: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    api_error_status: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    redacted: bool
+    moment: TranscriptMomentResource
+
+
 class UnrecognisedProviderOutputEventResource(ApiModel):
     event: Literal[TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT]
     text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
@@ -1114,6 +1123,7 @@ AttemptTranscriptEventResource = Annotated[
     | ToolReturnedEventResource
     | AssistantTurnEventResource
     | UsageEventResource
+    | ProviderTerminalRefusalEventResource
     | UnrecognisedProviderOutputEventResource
     | TranscriptTruncatedEventResource,
     Field(discriminator="event"),
