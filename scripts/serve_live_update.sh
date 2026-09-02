@@ -43,7 +43,12 @@ build_checkout() {
 
 prepare_root_package() {
   log "checking the root package.json stub"
-  [[ -e "${root_package}" ]] || return 0
+  [[ -e "${root_package}" || -L "${root_package}" ]] || return 0
+
+  if [[ -L "${root_package}" ]]; then
+    echo "serve live update: root package.json is a symlink; refusing to remove it" >&2
+    return 1
+  fi
 
   if git -C "${repository}" ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
     echo "serve live update: root package.json is tracked; refusing to remove it" >&2
@@ -76,7 +81,7 @@ backup_file() {
 
 backup_live_store() {
   local backup_directory filename source
-  backup_directory="${live_store}/backups/pre-redeploy-$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_directory="${live_store}/backups/pre-redeploy-$(date -u +%Y%m%dT%H%M%S.%NZ)"
 
   [[ -f "${database}" ]] || {
     echo "serve live update: live database is missing: ${database}" >&2
@@ -97,15 +102,19 @@ backup_live_store() {
 }
 
 rollback_previous_serve() {
-  log "migration failed; restoring ${previous_commit}"
+  log "restoring ${previous_commit}"
   git -C "${repository}" reset --hard "${previous_commit}" || return 1
   build_checkout || return 1
   log "starting the previous atelier2-serve.service"
   systemctl --user start "${serve_unit}" || return 1
+  wait_for_served_health || return 1
+  [[ "${served_status}" == "serving" && "${served_commit}" == "${previous_commit}" ]]
 }
 
 served_status=""
 served_commit=""
+# Duplicates auto_redeploy.sh's read_served_health; a later slice extracts the
+# shared health-parsing helper.
 read_served_health() {
   local body
   body="$(curl -fsS --max-time 5 "${health_url}")" || return 1
@@ -114,6 +123,20 @@ read_served_health() {
   served_commit="$(grep -oE '"source_commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' <<<"${body}" \
     | head -n 1 | sed -E 's/^.*"([0-9a-f]{40})"$/\1/')" || true
   [[ -n "${served_status}" && -n "${served_commit}" ]]
+}
+
+# Polls the same way container_live.sh's start_container waits for
+# container_is_healthy (scripts/container_live.sh:576-584): the unit is
+# Type=exec, so uvicorn is not yet listening the instant `systemctl start`
+# returns.
+wait_for_served_health() {
+  local attempt
+  log "waiting up to 30s for live serve health"
+  for attempt in $(seq 1 30); do
+    read_served_health && return 0
+    sleep 1
+  done
+  return 1
 }
 
 log "checking the deploy checkout"
@@ -143,8 +166,8 @@ systemctl --user stop "${serve_unit}" \
 
 log "backing up the live store"
 if ! backup_live_store; then
-  if systemctl --user start "${serve_unit}"; then
-    fail "live store backup failed; restarted the live serve"
+  if rollback_previous_serve; then
+    fail "live store backup failed; restored the previous commit and restarted the live serve"
   fi
   fail "live serve is DOWN, operator action needed"
 fi
@@ -162,7 +185,7 @@ systemctl --user start "${serve_unit}" \
   || fail "live serve is DOWN, operator action needed"
 
 log "checking live serve health"
-read_served_health \
+wait_for_served_health \
   || fail "live serve health is unavailable after start; the update is unverified"
 [[ "${served_status}" == "serving" ]] \
   || fail "live serve health reports ${served_status@Q}, not serving"

@@ -116,6 +116,10 @@ if command == "systemctl":
 if command == "curl":
     if not state["serve_started"]:
         raise SystemExit(7)
+    if state.get("health_refusals", 0) > 0:
+        state["health_refusals"] -= 1
+        save()
+        raise SystemExit(7)
     health_commit = state.get("health_commit") or state["head"]
     print(json.dumps({"status": state["health_status"], "source_commit": health_commit}))
     raise SystemExit(0)
@@ -174,6 +178,7 @@ class UpdateHarness:
         write_stub(tool_stub, TOOL_STUB)
         for command in ("git", "uv", "npm", "systemctl", "curl"):
             (bin_directory / command).symlink_to(tool_stub.name)
+        write_stub(bin_directory / "sleep", "")
 
         environment = {
             **os.environ,
@@ -441,15 +446,36 @@ def test_missing_frontend_artifact_refuses_before_stopping_the_serve(
     assert not any(call[0] == "systemctl" for call in harness.invocations())
 
 
-def test_backup_failure_restarts_the_serve(tmp_path: Path) -> None:
+def test_backup_failure_rolls_back_to_the_previous_build_after_health_confirms_it(
+    tmp_path: Path,
+) -> None:
     harness = UpdateHarness.create(tmp_path)
+    previous_commit = str(harness.state()["head"])
     (harness.store / "external.sqlite").unlink()
 
     completed = harness.run()
 
     assert completed.returncode != 0
+    assert harness.state()["head"] == previous_commit
     assert harness.state()["serve_started"] is True
-    assert "live store backup failed; restarted the live serve" in completed.stderr
+    assert harness.state()["sync_count"] == 2
+    assert harness.state()["npm_build_count"] == 2
+    assert [
+        invocation
+        for invocation in harness.invocations()
+        if invocation[0] in {"git", "uv", "npm", "systemctl"}
+    ][-5:] == [
+        ["git", "-C", str(harness.repository), "reset", "--hard", previous_commit],
+        ["uv", "sync", "--locked"],
+        ["npm", "ci"],
+        ["npm", "run", "build"],
+        ["systemctl", "--user", "start", "atelier2-serve.service"],
+    ]
+    assert (
+        "live store backup failed; restored the previous commit and restarted the live serve"
+        in completed.stderr
+    )
+    assert "live serve is DOWN" not in completed.stderr
     assert not any(
         call[0] == "uv" and call[1:5] == ["run", "--locked", "atelier2", "migrate"]
         for call in harness.invocations()
@@ -469,3 +495,42 @@ def test_absent_sqlite_sidecars_do_not_block_a_complete_backup(tmp_path: Path) -
         "atelier.sqlite",
         "external.sqlite",
     }
+
+
+def test_health_polls_past_an_initial_refusal_after_start(tmp_path: Path) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    harness.configure(health_refusals=3)
+
+    completed = harness.run()
+
+    assert completed.returncode == 0, completed.stderr
+    assert "waiting up to 30s for live serve health" in completed.stdout
+    assert "now serves" in completed.stdout
+
+
+def test_health_that_never_becomes_available_fails_after_the_deadline(
+    tmp_path: Path,
+) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    harness.configure(health_refusals=999)
+
+    completed = harness.run()
+
+    assert completed.returncode != 0
+    assert "health is unavailable after start" in completed.stderr
+    assert "now serves" not in completed.stdout
+    curl_calls = [call for call in harness.invocations() if call[0] == "curl"]
+    assert len(curl_calls) == 30
+
+
+def test_symlinked_root_package_is_refused(tmp_path: Path) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    (harness.repository / "package.json").symlink_to("does-not-exist")
+
+    completed = harness.run()
+
+    assert completed.returncode != 0
+    assert "is a symlink" in completed.stderr
+    assert not any(
+        call[0] in {"uv", "npm", "systemctl"} for call in harness.invocations()
+    )

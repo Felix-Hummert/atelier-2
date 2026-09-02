@@ -608,7 +608,8 @@ lose — a sweep that only ever found a stray container or network never
 claims a store was lost.
 
 **Auto-redeploy is the one deploy way: a landing on `main` reaches this
-installation without an operator hand.** A systemd user timer
+installation without an operator hand.** This describes the container
+installation above, not the loopback host below. A systemd user timer
 (`scripts/atelier2-auto-redeploy.timer`, a two-minute poll) runs
 `scripts/auto_redeploy.sh`, which fetches `origin/main` and reads the commit
 the serve itself reports on its health endpoint. Only when they differ does
@@ -643,7 +644,8 @@ stays your hand, through the paragraphs above.
 
 ### Loopback host Serve hand update
 
-The host-process installation runs as the systemd user unit
+This section describes the loopback host installation, not the container
+installation above. The host-process installation runs as the systemd user unit
 `atelier2-serve.service`. From its clean `main` deploy checkout, one hand
 command fast-forwards, installs the locked Python and frontend dependencies,
 builds the frontend, stops the unit, backs up the live store, migrates it,
