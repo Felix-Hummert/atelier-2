@@ -28,7 +28,7 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.node_binding_codec import EncodedAgentBindingV2
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     run_configuration_revisions,
@@ -40,7 +40,6 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.workflow import _node_binding
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.project_verification import declared_project
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
@@ -56,7 +55,6 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.budgets_v3 import BudgetField
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentExecutionRefusal
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict, RunV3
@@ -94,6 +92,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client, durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.projects import git_project
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
@@ -130,16 +132,10 @@ RUN = RunId("v3/one-agent")
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "v3-start-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "v3-start-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (failing_agent_executor_factory("exact", []),),
     )
     started.initialize_storage()
@@ -289,11 +285,7 @@ def test_a_bound_v3_run_refuses_before_an_attempt_when_its_executor_is_unavailab
     unavailable_factory = failing_agent_executor_factory("exact", [])
     restarted = DbosRuntime(
         settings,
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (AgentExecutorRegistration.unavailable(unavailable_factory),),
     )
     try:
