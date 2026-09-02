@@ -94,6 +94,11 @@
   }
 
   function ensureEventStream(read: RunV3): void {
+    // A run whose delivered state already stands still gets no further
+    // event: opening the stream anyway only earns the browser's EventSource
+    // an ordinary server close it then reconnects from on its own, forever
+    // (#1044).
+    if (runHasEnded(read.state)) return;
     if (stream !== null || projection?.connection === "complete" || projection?.connection === "failed") return;
     projection = projection === null
       ? streamProjection(read.public_run_reference, read.workflow_revision_hash)
