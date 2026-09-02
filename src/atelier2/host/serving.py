@@ -824,13 +824,14 @@ def _model_validation_request(
 
 _MODEL_DISCOVERY_JOB_DIRECTORY_PREFIX = "atelier2-model-discovery-"
 _MODEL_DISCOVERY_JOB_DIRECTORY_MODE = 0o700
-# Both the Grok and Codex CLIs keep exactly this one file, at private (0600)
-# permissions, as their credential record -- established from the pinned
-# executables' own strings (Codex: "Paste or type your API key below. It will
-# be stored locally in auth.json") and from each CLI's own live credential
-# directory, the same way #993 established Claude's single credential file.
-# Model discovery asks a provider account what it may serve; it runs no job
-# and grants no tool, so this is the only file it needs.
+# Both the Grok and Codex CLIs keep this file, at private (0600) permissions,
+# as their credential record -- established from the pinned executables' own
+# strings (Codex: "Paste or type your API key below. It will be stored
+# locally in auth.json") and from each CLI's own live credential directory,
+# the same way #993 established Claude's credential file. Model discovery
+# asks a provider account what it may serve; it runs no job and grants no
+# tool, so this is the only file it needs, whatever else the operator's
+# directory also holds.
 _MODEL_DISCOVERY_CREDENTIAL_FILE_NAME = "auth.json"
 _MODEL_DISCOVERY_CREDENTIAL_FILE_MODE = 0o400
 _MODEL_DISCOVERY_PRIVATE_FILE_FLAGS = (

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from atelier2.adapters import codex_subscription
 from atelier2.adapters.codex_subscription import (
     CODEX_SUBSCRIPTION_EXECUTOR_KEY,
     CODEX_SUBSCRIPTION_FRAME_BYTES,
@@ -393,6 +394,49 @@ def test_executor_close_removes_an_unreleased_output_schema_file(
 
     assert not command.output_schema_path.exists()
     assert not job_home.exists()
+
+
+def test_a_failing_schema_write_leaves_no_private_home_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_open_job_directory` runs before `_write_output_schema` can fail.
+
+    A private home already holding a copy of `auth.json` is minted first;
+    `_write_output_schema` (a full disk, a rejected tmp permission) can still
+    raise afterwards. That home must not survive the refusal -- mirroring
+    `claude_subscription`'s shape, where state-directory creation and every
+    later failure both live inside the same `try`.
+    """
+
+    settings = codex_subscription_deployment(tmp_path)
+    executor = CodexSubscriptionExecutorFactory(settings).open()
+    opened_directories: list[Path] = []
+    real_open_job_directory = codex_subscription._open_job_directory
+
+    def recording_open_job_directory(
+        deployment_settings: CodexSubscriptionSettings,
+    ) -> Path:
+        directory = real_open_job_directory(deployment_settings)
+        opened_directories.append(directory)
+        return directory
+
+    def failing_write_output_schema(document: bytes) -> Path:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        codex_subscription, "_open_job_directory", recording_open_job_directory
+    )
+    monkeypatch.setattr(
+        codex_subscription, "_write_output_schema", failing_write_output_schema
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        executor.prepare_process(
+            subscription_request(declared_output_schema=b'{"type":"object"}')
+        )
+
+    assert len(opened_directories) == 1
+    assert not opened_directories[0].exists()
 
 
 def test_a_non_subscription_profile_is_refused_before_any_invocation(

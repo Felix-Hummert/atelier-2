@@ -429,8 +429,10 @@ print(f"* AUTH={auth}")
 """
 
 
-def _grok_discovery_deployment(tmp_path: Path) -> GrokSubscriptionSettings:
-    executable = _write_executable(tmp_path / "grok", DISCOVERING_GROK)
+def _grok_discovery_deployment(
+    tmp_path: Path, source: str = DISCOVERING_GROK
+) -> GrokSubscriptionSettings:
+    executable = _write_executable(tmp_path / "grok", source)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     credentials = tmp_path / "grok-home"
@@ -462,6 +464,33 @@ def test_grok_model_discovery_never_runs_inside_the_operators_credential_directo
     assert reported["AUTH"] == "{}"
     assert reported["HOME"] != str(settings.credential_directory)
     assert not Path(reported["HOME"]).exists()
+
+
+# A `models` subcommand that refuses outright, after recording the private
+# home it was launched with beside itself -- the one channel left once
+# `_discover_grok_models` never returns a value to read the home back from.
+DISCOVERING_GROK_FAILING = """
+import os, sys
+from pathlib import Path
+
+home = os.environ.get("GROK_HOME", "")
+(Path(sys.argv[0]).resolve().parent / "observed-home.txt").write_text(home)
+sys.stderr.write("synthetic Grok refusal\\n")
+raise SystemExit(1)
+"""
+
+
+def test_grok_model_discovery_removes_its_private_home_after_a_failing_run(
+    tmp_path: Path,
+) -> None:
+    settings = _grok_discovery_deployment(tmp_path, DISCOVERING_GROK_FAILING)
+
+    with pytest.raises(ValueError, match="Grok model discovery failed"):
+        _discover_grok_models(settings, timeout_seconds=5.0)
+
+    reported_home = (tmp_path / "observed-home.txt").read_text()
+    assert reported_home != str(settings.credential_directory)
+    assert not Path(reported_home).exists()
 
 
 # Stands in for `codex app-server`'s JSON-RPC handshake: rather than listing
@@ -504,8 +533,10 @@ for line in sys.stdin:
 """
 
 
-def _codex_discovery_deployment(tmp_path: Path) -> CodexSubscriptionSettings:
-    executable = _write_executable(tmp_path / "codex", DISCOVERING_CODEX)
+def _codex_discovery_deployment(
+    tmp_path: Path, source: str = DISCOVERING_CODEX
+) -> CodexSubscriptionSettings:
+    executable = _write_executable(tmp_path / "codex", source)
     credentials = tmp_path / "codex-home"
     credentials.mkdir()
     authentication = credentials / "auth.json"
@@ -540,3 +571,37 @@ def test_codex_model_discovery_never_runs_inside_the_operators_credential_direct
     assert reported["AUTH"] == "{}"
     assert reported["HOME"] != str(settings.credential_directory)
     assert not Path(reported["HOME"]).exists()
+
+
+# An `app-server` that answers the `initialize` handshake with garbage
+# JSON-RPC (no `result` field), after recording the private home it was
+# launched with beside itself -- the one channel left once
+# `_discover_codex_models` never returns a value to read the home back from.
+DISCOVERING_CODEX_FAILING = """
+import json, sys, os
+from pathlib import Path
+
+home = os.environ.get("CODEX_HOME", "")
+(Path(sys.argv[0]).resolve().parent / "observed-home.txt").write_text(home)
+
+message = json.loads(sys.stdin.readline())
+sys.stdout.write(
+    json.dumps({"jsonrpc": "2.0", "id": message["id"], "malformed": True}) + "\\n"
+)
+sys.stdout.flush()
+"""
+
+
+def test_codex_model_discovery_removes_its_private_home_after_a_failing_run(
+    tmp_path: Path,
+) -> None:
+    settings = _codex_discovery_deployment(tmp_path, DISCOVERING_CODEX_FAILING)
+
+    with pytest.raises(TypeError, match="Codex model discovery returned no result"):
+        _discover_codex_models(
+            settings, timeout_seconds=5.0, termination_grace_seconds=5.0
+        )
+
+    reported_home = (tmp_path / "observed-home.txt").read_text()
+    assert reported_home != str(settings.credential_directory)
+    assert not Path(reported_home).exists()

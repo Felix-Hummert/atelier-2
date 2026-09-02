@@ -14,10 +14,11 @@ into it, with an exclusive no-follow open, then removes the whole home on
 every lifecycle path -- success, refusal, an exception, or executor shutdown
 alike. codex-0.147.0's own strings name that file as the CLI's credential
 fallback store ("Paste or type your API key below. It will be stored locally
-in auth.json"), and it is the only file the operator's live `CODEX_HOME` keeps
-at private (0600) permissions; `config.toml` is deliberately never copied,
-because this executor's own containment attestation requires it absent from a
-served profile. codex-0.147.0 also issues single-use OAuth refresh tokens and
+in auth.json"), and it is the CLI's own credential store among the several
+files the operator's live `CODEX_HOME` keeps at private (0600) permissions;
+`config.toml` is deliberately never copied, because this executor's own
+containment attestation requires it absent from a served profile.
+codex-0.147.0 also issues single-use OAuth refresh tokens and
 rewrites its own credential state through an atomic replace ("failed to
 atomically replace secrets file at ..."), so two invocations sharing one
 `CODEX_HOME` would race a token refresh against each other exactly as #993
@@ -483,20 +484,21 @@ def _authentication_bytes(settings: CodexSubscriptionSettings) -> bytes:
     static inspection (`strings`, never a billed invocation): its CLI auth
     storage falls back to exactly this file when no OS keyring is used
     ("Paste or type your API key below. It will be stored locally in
-    auth.json"), and it is the only regular file the operator's own live
-    `CODEX_HOME` keeps at private (0600) permissions alongside `config.toml` --
-    which this executor's own containment attestation (`attest_codex_containment`
-    above) requires to be absent from a served profile, and is therefore never
-    copied here.
+    auth.json"). Several other files under the operator's own live
+    `CODEX_HOME` also carry private (0600) permissions, but `auth.json` is the
+    CLI's own credential store among them; `config.toml` in particular is
+    never copied, because this executor's own containment attestation
+    (`attest_codex_containment` above) requires it absent from a served
+    profile.
     """
 
     path = settings.credential_directory / _AUTHENTICATION_FILE_NAME
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode):
+        if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) & 0o077:
             raise ValueError(
-                f"the Codex {_AUTHENTICATION_FILE_NAME} must be a regular file"
+                f"the Codex {_AUTHENTICATION_FILE_NAME} must be a private regular file"
             )
         chunks: list[bytes] = []
         size = 0
@@ -616,13 +618,14 @@ class CodexSubscriptionExecutor:
             )
         settings = self.settings
         state_directory = _open_job_directory(settings)
-        output_schema_path = (
-            None
-            if request.declared_output_schema_bytes is None
-            else _write_output_schema(request.declared_output_schema_bytes)
-        )
         registered = False
+        output_schema_path: Path | None = None
         try:
+            output_schema_path = (
+                None
+                if request.declared_output_schema_bytes is None
+                else _write_output_schema(request.declared_output_schema_bytes)
+            )
             command = CodexSubscriptionProcessCommand(
                 (
                     str(settings.executable),
