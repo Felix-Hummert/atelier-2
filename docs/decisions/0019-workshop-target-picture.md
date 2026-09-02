@@ -12,6 +12,8 @@
   that date are not covered by this acceptance; §6 collects them, each with
   its own date, source and executing party.
 - Date: 2026-08-25
+- Amended 2026-09-02 (#1037, from #435): the five `0003-ziel-ui-gates` scripts
+  named in Required proofs are removed. See "Amendment 2026-09-02" below.
 - Requirement authority: [Requirement 0003](../requirements/0003-ziel-ui.md)
   (the target UI), [HEART](../HEART.md) (what it must feel like),
   [Issue #516](https://github.com/FlexOr2/atelier-2/issues/516) (the epic that
@@ -417,6 +419,25 @@ surface that claims this picture as its standard.
   import 1 by drop, 3 by button; cancel 3; connect a source 3 + one address;
   see the queue 1, admit an item +1.
   A surface exceeding its budget is a defect (REQ-UIQ-08).
+
+## Amendment 2026-09-02 — the five `0003-ziel-ui-gates` scripts are removed
+
+This record's Required proofs named five scripts in
+[`0003-ziel-ui-gates/`](../requirements/0003-ziel-ui-gates/) (`shoot-v8.mjs`,
+`measure-v8.mjs`, `rm-check.mjs`, `measure-ear.mjs`, `count-restating.mjs`)
+as the measurement of the picture. Those scripts are deleted. They had no
+caller in `.github/workflows`, `frontend/package.json`, or `scripts/`; each
+measured `process.env.MOCK || "0003-ziel-ui-mockup-v8.html"` against the
+static mockup file itself.
+
+Enforcement of the Required proofs is the three CI tests
+`frontend/tests/app/uiQuality.test.ts`, `frontend/tests/e2e/ui-quality.spec.ts`,
+and `frontend/tests/e2e/uiq-budget.spec.ts`.
+
+Whether those tests miss cases the scripts claimed (tap sizes, reduced
+motion, …) is an open question on REQ-UIQ-05, REQ-UIQ-08 and REQ-UIQ-13 in
+[#435](https://github.com/FlexOr2/atelier-2/issues/435), not a new spec in
+this change.
 
 ## Out of scope and stop conditions
 
