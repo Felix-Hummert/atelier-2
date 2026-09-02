@@ -56,3 +56,9 @@ def test_serve_drop_in_triggers_the_provider_canary_unit_after_start() -> None:
         "start",
         "atelier2-provider-canary.service",
     ]
+
+
+def test_serve_clean_stop_drop_in_accepts_sigterm_exit_status() -> None:
+    drop_in = unit(SCRIPTS / "atelier2-serve.service.d" / "clean-stop.conf")
+
+    assert drop_in["Service"]["SuccessExitStatus"] == "143"
