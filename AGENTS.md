@@ -1,5 +1,7 @@
-This file is reusable AI policy. Keep project facts, provider glue, architecture
-state, tool commands, and plans outside it.
+Reusable policy is owned by the atelier marketplace's instructions file; this
+file restates it for readers in this tree, and a change to the owner lands here
+in the same session. Keep project facts, provider glue, architecture state, tool
+commands, and plans outside it.
 
 Entry points (pointers only; the facts live there): `docs/README.md` maps the
 documentation layers; `docs/PRODUCT.md` indexes implementation-status sections;
