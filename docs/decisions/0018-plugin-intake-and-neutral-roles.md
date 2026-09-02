@@ -290,6 +290,28 @@ and click-intake; `catalog_source_intakes`, which ADR 0007 names as a store shap
 and no schema carries yet; the `mcp_server` kind; §4's rendering operation; and
 the executor that loads a plugin.
 
+**Amendment 2026-09-02 (operator ruling, issue #660 — "was ein Agent mitbekommt";
+four independent counter-checks): Pieces reach a run individually, never a plugin
+whole.** `profile` travels inside the execution request ahead of the instruction
+(ADR 0006 lines 604-606: profile bytes first, instruction second);
+`application/compose_node_job.py` composes it once bound (today it composes the
+instruction only). `skills` are written by the delivering adapter into its
+private state directory. `required_context` is written into the lease by a new
+step of `execute_agent_attempt` after materialization (today the invocation is
+built right after `materialize`, with no context step). Hooks, settings,
+commands and provider configuration files are never written from a piece — they
+have no piece kind, so the allowlist holds by construction; `.mcp.json` is
+recognised at intake as `mcp_server` (§5, lines 153/181) and enters
+`RevisionKind` before any `tools:` grant references it. The document pins
+`{ref, revision}`; `head` resolves only at authoring (ADR 0007). Content
+refusals for provider-bound kinds belong to the delivering adapter and are
+invoked at intake, never at run start (Refusals). This amends §1 (whole-plugin
+casting), §2 (rendered whole) and §4 (`--plugin-dir`); intake stays atomic per
+plugin. Deferred and named on #660: sub-agent placement (agents reach a run
+only through casting, §6), a project-default profile, and the containment
+vector after a carrier cage (#632 covers Runner attempts only; local attempts
+keep today's vector).
+
 ## Refusals
 
 An ingredient can be wrong in three ways, each with its own boundary, so a
