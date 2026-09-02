@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import math
 import sqlite3
-import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -67,6 +66,7 @@ from atelier2.adapters.dbos.workflow import (
     _pinned_maximum_assistant_turns,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.bounded_process_cache import BoundedProcessCache
 from atelier2.application.compose_node_job import (
     NodeJobCompositionVersion,
     node_job,
@@ -213,39 +213,20 @@ invalidate.
 """
 
 
-class _ParsedWorkflowRevisionCache:
-    """Workflow revision graphs this process has already parsed successfully.
-
-    #937 (round 3): profiling a described page after the lookup and settlement
-    caches from rounds 1 and 2 found the dominant remaining cost was parsing
-    every immutable revision again on every read. All `DbosQueries` instances
-    share this module-level cache so reads across pages and adapter instances
-    pay that parse once per content hash. The API can execute those reads in a
-    worker pool, so the lock makes lookup and insertion safe across threads.
-
-    A failed parse is deliberately never cached: it proved no graph value, and
-    remembering its exception would turn one transient parser or runtime failure
-    into process-lifetime durable-state corruption instead of letting the next
-    read retry.
-    """
-
-    def __init__(self) -> None:
-        self._found: dict[WorkflowRevisionHash, AnyWorkflowDocument] = {}
-        self._lock = threading.Lock()
-
-    def found(self, revision_hash: WorkflowRevisionHash) -> AnyWorkflowDocument | None:
-        with self._lock:
-            return self._found.get(revision_hash)
-
-    def remember(
-        self, revision_hash: WorkflowRevisionHash, graph: AnyWorkflowDocument
-    ) -> None:
-        with self._lock:
-            if len(self._found) < _PARSED_WORKFLOW_REVISION_CACHE_CAPACITY:
-                self._found[revision_hash] = graph
-
-
-_PARSED_WORKFLOW_REVISIONS = _ParsedWorkflowRevisionCache()
+# #937 (round 3): profiling a described page after the lookup and settlement
+# caches from rounds 1 and 2 found the dominant remaining cost was parsing
+# every immutable revision again on every read. All `DbosQueries` instances
+# share this module-level cache (`BoundedProcessCache`, round 4's extracted
+# owner) so reads across pages and adapter instances pay that parse once per
+# content hash.
+#
+# A failed parse is deliberately never cached: it proved no graph value, and
+# remembering its exception would turn one transient parser or runtime failure
+# into process-lifetime durable-state corruption instead of letting the next
+# read retry.
+_PARSED_WORKFLOW_REVISIONS: BoundedProcessCache[
+    WorkflowRevisionHash, AnyWorkflowDocument
+] = BoundedProcessCache(capacity=_PARSED_WORKFLOW_REVISION_CACHE_CAPACITY)
 
 
 def _parsed_workflow_revision(
