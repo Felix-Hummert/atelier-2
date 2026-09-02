@@ -7,7 +7,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import OperationalError
 
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     node_execution_requests_v3,
@@ -24,11 +24,9 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
 from atelier2.contracts.agents import AgentExecutionCapability
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_forks import (
     MAXIMUM_RUN_FORK_SUCCESSORS,
@@ -86,6 +84,10 @@ from tests.integration.test_v3_wait_run import (
 )
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.api import durable_api_client, durable_queries
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
+)
 from tests.scenarios.workflows import LOOPED_LINE_DOCUMENT
 
 
@@ -110,16 +112,10 @@ def _runtime(
         "exact", "exact/v1", "exact-operation", output
     )
     runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "run-fork-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+        canonical_runtime_settings(
+            tmp_path, "run-fork-test", agent_scratch_root(tmp_path)
         ),
-        LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(tmp_path),
         (recording,),
     )
     runtime.initialize_storage()
