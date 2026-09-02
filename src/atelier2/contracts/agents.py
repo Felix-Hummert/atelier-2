@@ -236,15 +236,35 @@ class AgentConfigurationRevision:
 
 @dataclass(frozen=True)
 class AgentConfigurationRevisionListItem:
-    """A listed immutable configuration with the host's current startability."""
+    """A listed immutable configuration with the host's current startability.
+
+    Two independent questions, not one: `startable` is the receipt-gated
+    answer an ordinary start and the cockpit's own Start button both act on --
+    it must keep agreeing with the start door. `structurally_startable` asks
+    only whether a factory is registered, available, and declares the
+    capability, with no live evidence asked at all; a live canary's own
+    discovery reads that one, because it exists to produce the evidence
+    `startable` is missing and could never find itself through a question
+    that already requires it. `startable` implies `structurally_startable` --
+    evidence proves nothing about a configuration whose executor cannot run.
+    """
 
     revision: AgentConfigurationRevision
     auth_profile: AuthProfileRevision
     startable: bool
+    structurally_startable: bool
 
     def __post_init__(self) -> None:
-        if type(self.startable) is not bool:
+        if (
+            type(self.startable) is not bool
+            or type(self.structurally_startable) is not bool
+        ):
             raise TypeError("agent configuration startability must be a bool")
+        if self.startable and not self.structurally_startable:
+            raise ValueError(
+                "agent configuration startability cannot hold without its own "
+                "structural startability"
+            )
 
 
 @dataclass(frozen=True)

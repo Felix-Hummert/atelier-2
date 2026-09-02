@@ -126,6 +126,7 @@ from atelier2.host.conductor_workflow import (
     CONDUCTOR_DOOR_TOOLS,
 )
 from atelier2.host.logging import configure_process_logging
+from atelier2.host.provider_canary import default_provider_canary_state_directory
 from atelier2.host.run_command import REQUEST_TIMEOUT_SECONDS
 from atelier2.host.webhook_delivery import (
     WebhookDeliveryLoop,
@@ -329,6 +330,13 @@ class HostSettings:
     # `compose_application`. Not the project-scoped configuration channel
     # (`#425`), because the attention page is project-wide.
     webhook: WebhookDeliverySettings | None = None
+    # The provider-probe receipt gate's evidence directory (`#1013`): `None`
+    # takes the same default `atelier2 provider-canary` already writes to
+    # (`default_provider_canary_state_directory`, reused rather than a second
+    # constant), so a real deployment arms the gate without naming a flag.
+    # Overriding it is for isolating a fixture's own receipts, never for
+    # turning the gate off -- `source_commit` above always travels with it.
+    provider_probe_receipt_directory: Path | None = None
 
     @property
     def billed_providers(self) -> tuple[str, ...]:
@@ -369,6 +377,12 @@ class HostSettings:
             runner_lease_source_commit=(
                 self.source_commit if self.runner_lease_root is not None else None
             ),
+            provider_probe_receipt_directory=(
+                self.provider_probe_receipt_directory
+                if self.provider_probe_receipt_directory is not None
+                else default_provider_canary_state_directory()
+            ),
+            provider_probe_receipt_source_commit=self.source_commit,
         )
 
     def __post_init__(self) -> None:
@@ -387,6 +401,12 @@ class HostSettings:
                 self,
                 "runner_core_identity_directory",
                 self.runner_core_identity_directory.resolve(),
+            )
+        if self.provider_probe_receipt_directory is not None:
+            object.__setattr__(
+                self,
+                "provider_probe_receipt_directory",
+                self.provider_probe_receipt_directory.resolve(),
             )
         if database_path == effect_store_path:
             raise ValueError("durable database and effect store must be distinct")

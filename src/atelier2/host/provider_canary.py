@@ -1,10 +1,12 @@
 """Run the configured live provider vectors and leave bounded proof behind.
 
 The served agent-configuration list is the deployment's answer about which
-exact provider/executor/configuration vectors are startable now. This client
-reads that list, resolves the matching admitted workflow, starts one fresh run
-with the listed configuration hash, and polls the public run resource to a
-terminal state. It owns no provider process and opens no store.
+exact provider/executor/configuration vectors are structurally startable now
+-- a factory registered, available, and declaring the capability, with no
+live evidence asked at all. This client reads that list, resolves the
+matching admitted workflow, starts one fresh run with the listed
+configuration hash, and polls the public run resource to a terminal state. It
+owns no provider process and opens no store.
 
 Discovery is receipt-neutral: health, the bounded configuration list, and all
 distinct admitted workflow names must resolve before any vector becomes an
@@ -67,6 +69,9 @@ from atelier2.contracts.provider_probe_receipts import (
     _SOURCE_COMMIT as PROVIDER_PROBE_SOURCE_COMMIT_FORMAT,
 )
 from atelier2.contracts.provider_probe_receipts import (
+    PROVIDER_CANARY_ATELIER_DOORS_WORKFLOW_NAME,
+    PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
+    PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
     ProviderProbeProblemCode,
     ProviderProbeReceipt,
     ProviderProbeResult,
@@ -107,33 +112,34 @@ _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
 _run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
 
 # These executor keys choose the matching probe workflow only. The served
-# startable configuration list remains the sole owner of which vectors run,
-# using the same executor constants that the Serve composition registers.
+# structurally-startable configuration list remains the sole owner of which
+# vectors run, using the same executor constants that the Serve composition
+# registers.
 _WORKFLOW_BY_EXECUTOR = {
     (
         CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
         CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-headless",
+    ): PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
     (
         CODEX_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
         CODEX_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-headless",
+    ): PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
     (
         GROK_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
         GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-headless",
+    ): PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME,
     (
         CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.provider_id.value,
         CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-workspace-tools",
+    ): PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
     (
         GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.provider_id.value,
         GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-workspace-tools",
+    ): PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
     (
         CLAUDE_ATELIER_DOORS_EXECUTOR_KEY.provider_id.value,
         CLAUDE_ATELIER_DOORS_EXECUTOR_KEY.executor_revision.value,
-    ): "provider-canary-atelier-doors",
+    ): PROVIDER_CANARY_ATELIER_DOORS_WORKFLOW_NAME,
 }
 
 
@@ -500,10 +506,17 @@ def _configured_vectors(
             ),
             "agent-configuration page",
         )
+        # `structurally_startable`, not `startable`: discovery must find a
+        # vector whose only problem is the receipt this very run would write.
+        # Selecting on `startable` here would be the same surface-vs-start-door
+        # divergence this gate exists to close, running the other way -- the
+        # listing saying "not startable" while the one run that could produce
+        # the missing evidence is refused from ever finding it.
         vectors.extend(
             vector
             for item in page.items
-            if item.startable and (vector := _canary_vector(item)) is not None
+            if item.structurally_startable
+            and (vector := _canary_vector(item)) is not None
         )
         if len(vectors) > PROVIDER_CANARY_MAXIMUM_VECTORS:
             raise ProviderCanaryDiscoveryFailed(

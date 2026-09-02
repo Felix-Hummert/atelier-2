@@ -279,6 +279,7 @@
           {
             ...revision,
             startable: pin.startable,
+            structurally_startable: pin.structurally_startable,
             not_startable_reason: pin.not_startable_reason
           }
         ]

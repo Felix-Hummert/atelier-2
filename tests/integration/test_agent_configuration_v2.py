@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Never, cast
 
@@ -78,7 +79,14 @@ from atelier2.contracts.executions import (
     SubmitWaitAnswerRequest,
     WaitAnswerActor,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
+from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeProblemCode,
+    ProviderProbeReceipt,
+    ProviderProbeResult,
+    ProviderProbeVectorId,
+)
 from atelier2.contracts.run_bindings import (
     AnyBoundRun,
     RunBindingConflict,
@@ -94,6 +102,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationStale,
@@ -114,6 +123,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorKey,
     AgentExecutorRegistration,
     AgentExecutorRegistry,
+    ProviderProbeReceiptGate,
 )
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorBindingUnavailable,
@@ -871,8 +881,11 @@ def test_registry_startability_is_one_declared_factory_and_capability_decision()
     missing_key = AgentExecutorKey(
         ProviderId("missing"), AgentExecutorRevision("missing/v1")
     )
-    # This test proves the factory-and-capability decision only; a receipt-aware
-    # gate is a later slice, so no configuration's own hash is exercised here.
+    # This registry is built with no receipt gate wired, so `is_startable`
+    # keeps its factory-and-capability decision alone
+    # (`test_is_startable_reads_the_receipt_state` below owns the armed
+    # registry's receipt behaviour); this hash is genuinely never consulted
+    # here, not a placeholder standing in for one that should be.
     unconsulted_configuration_hash = AgentConfigurationRevisionHash("0" * 64)
 
     assert registry.contains(startable_key)
@@ -896,6 +909,134 @@ def test_registry_startability_is_one_declared_factory_and_capability_decision()
     )
     assert startable.opens == 0
     assert unavailable.opens == 0
+
+
+_PROBE_CONFIGURATION_HASH = AgentConfigurationRevisionHash("e" * 64)
+_PROBE_DEPLOYMENT_SOURCE_COMMIT = "a" * 40
+_PROBE_FOREIGN_SOURCE_COMMIT = "b" * 40
+
+
+@dataclass
+class _FakeProviderProbeReceiptReads:
+    """A fixed-answer stand-in for the filesystem receipt store."""
+
+    receipt: ProviderProbeReceipt | None
+
+    def receipt_for(
+        self, configuration_hash: AgentConfigurationRevisionHash
+    ) -> ProviderProbeReceipt | None:
+        if (
+            self.receipt is None
+            or self.receipt.configuration_hash != configuration_hash
+        ):
+            return None
+        return self.receipt
+
+
+def _probe_receipt(
+    *,
+    source_commit: str = _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+    valid_until: str = "2026-01-02T00:00:00Z",
+    result: ProviderProbeResult = ProviderProbeResult.SUCCEEDED,
+) -> ProviderProbeReceipt:
+    return ProviderProbeReceipt(
+        ProviderProbeVectorId("headless-fixture"),
+        _PROBE_CONFIGURATION_HASH,
+        WorkflowRevisionHash("f" * 64),
+        source_commit,
+        RecordedAt("2026-01-01T00:00:00Z"),
+        RecordedAt(valid_until),
+        result,
+        RunId("provider-canary/fixture"),
+        terminal_hash=(
+            Sha256Hash("c" * 64) if result is ProviderProbeResult.SUCCEEDED else None
+        ),
+        problem_code=(
+            None
+            if result is ProviderProbeResult.SUCCEEDED
+            else ProviderProbeProblemCode("run-failed")
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("receipt", "expected"),
+    [
+        pytest.param(None, False, id="missing_receipt"),
+        pytest.param(
+            _probe_receipt(result=ProviderProbeResult.FAILED), False, id="red_receipt"
+        ),
+        pytest.param(
+            _probe_receipt(valid_until="2026-01-01T06:00:00Z"),
+            False,
+            id="expired_receipt",
+        ),
+        pytest.param(
+            _probe_receipt(source_commit=_PROBE_FOREIGN_SOURCE_COMMIT),
+            False,
+            id="foreign_source_commit",
+        ),
+        pytest.param(_probe_receipt(), True, id="good_receipt"),
+    ],
+)
+def test_is_startable_reads_the_receipt_state(
+    receipt: ProviderProbeReceipt | None, expected: bool
+) -> None:
+    """Missing, red, expired, foreign-commit, and good receipts each answer as proven."""
+
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "receipt-gated", b"ok"
+    )
+    registry = AgentExecutorRegistry(
+        (factory,),
+        receipt_gate=ProviderProbeReceiptGate(
+            _FakeProviderProbeReceiptReads(receipt),
+            _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+            lambda: RecordedAt("2026-01-01T12:00:00Z"),
+        ),
+    )
+
+    assert (
+        registry.is_startable(
+            factory.key, AgentExecutionCapability.HEADLESS, _PROBE_CONFIGURATION_HASH
+        )
+        is expected
+    )
+
+
+def test_is_structurally_startable_asks_nothing_about_receipt_state() -> None:
+    """The one question a reprobe exemption or canary discovery may ask.
+
+    Armed with a receipt gate that would refuse every configuration (no
+    receipt on file anywhere), the structural answer still says yes for a
+    registered, available, capable factory -- and still says no for one the
+    operator marked unavailable, regardless of the same missing evidence.
+    """
+
+    available = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "available", b"ok"
+    )
+    unavailable = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli-unavailable/v1", "unavailable", b"must-not-run"
+    )
+    registry = AgentExecutorRegistry(
+        (available, AgentExecutorRegistration.unavailable(unavailable)),
+        receipt_gate=ProviderProbeReceiptGate(
+            _FakeProviderProbeReceiptReads(None),
+            _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+            lambda: RecordedAt("2026-01-01T12:00:00Z"),
+        ),
+    )
+
+    assert registry.is_structurally_startable(
+        available.key, AgentExecutionCapability.HEADLESS
+    )
+    assert not registry.is_startable(
+        available.key, AgentExecutionCapability.HEADLESS, _PROBE_CONFIGURATION_HASH
+    )
+    assert not registry.is_structurally_startable(
+        unavailable.key, AgentExecutionCapability.HEADLESS
+    )
 
 
 @pytest.mark.proves("a-listed-agent-configuration-names-current-startability")

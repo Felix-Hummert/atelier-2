@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -12,6 +13,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 from unittest.mock import patch
@@ -58,9 +60,13 @@ from atelier2.application.publish_workflow_revision import (
 from atelier2.application.read_run_events import RunEventsRead
 from atelier2.application.read_runs import RunRead
 from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
+    AuthProfileRevision,
+    AuthProfileRevisionHash,
 )
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
@@ -79,15 +85,26 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeReceipt,
+    ProviderProbeResult,
+    ProviderProbeVectorId,
+)
 from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
     RevisionKind,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
+from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.contracts.work_items import (
     ObservedWorkItemRevision,
     WorkItemChangeMarker,
@@ -99,7 +116,20 @@ from atelier2.host.conductor_workflow import (
     CONDUCTOR_REPORT_SCHEMA,
     conductor_workflow_document,
 )
+from atelier2.host.provider_canary import (
+    PROVIDER_CANARY_RECEIPT_VALIDITY,
+    write_provider_canary_receipt_atomic,
+)
 from atelier2.host.serving import HostSettings
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationCatalog,
+    AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionExisting,
+    ListAgentConfigurationRevisionsResult,
+    ListAuthProfileRevisionsResult,
+    PublishAgentConfigurationRevisionResult,
+    PublishAuthProfileRevisionResult,
+)
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorFactoryV2,
@@ -1201,6 +1231,110 @@ def reset_to_boot_baseline(
     seed_boot_baseline(database, effects, application_version)
 
 
+def e2e_source_commit() -> str:
+    """This checkout's own HEAD commit, in the one place the harness can
+    truthfully learn it: the repository it is running from. Mirrors
+    `scripts/container_snapshot.sh`'s own `git rev-parse --verify
+    HEAD^{commit}` -- a real deploy's `--source-commit` flag is required and
+    has no default (`host/__init__.py`'s `serve` parser), always filled from
+    that same git identity. A provider probe receipt's own `source_commit` is
+    validated as 40 lowercase hex, so the harness has to report an identity a
+    receipt it mints could ever equal; a made-up label could not.
+    """
+
+    repository_root = Path(__file__).resolve().parents[2]
+    resolved = subprocess.run(
+        ["git", "-C", str(repository_root), "rev-parse", "--verify", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return resolved.stdout.strip()
+
+
+def _write_e2e_provider_probe_receipt(
+    receipt_directory: Path,
+    configuration_hash: AgentConfigurationRevisionHash,
+    source_commit: str,
+) -> None:
+    """Proves a configuration this deployment just accepted, immediately.
+
+    Every executor this harness serves is a fake that always answers the same
+    way a live canary would find it: successfully. So the instant this
+    deployment accepts a configuration bound to one of them, it already knows
+    what a canary run would prove -- and mints the receipt itself, the same
+    atomic write `host/provider_canary.py`'s own live canary uses, rather than
+    leaving a spec or a fixture to ask for one. A fresh spec publishing a new
+    model needs no Python change here: publication itself is what triggers
+    proof, for every configuration this harness will ever accept.
+    """
+
+    observed = datetime.now(UTC)
+    receipt = ProviderProbeReceipt(
+        ProviderProbeVectorId(f"e2e-harness-{configuration_hash.value}"),
+        configuration_hash,
+        WorkflowRevisionHash.of(b"e2e-harness-proof-of-vector"),
+        source_commit,
+        recorded_instant(observed),
+        recorded_instant(observed + PROVIDER_CANARY_RECEIPT_VALIDITY),
+        ProviderProbeResult.SUCCEEDED,
+        RunId(f"e2e-harness-proof/{configuration_hash.value}"),
+        terminal_hash=Sha256Hash.of(b"e2e-harness-proof-of-vector"),
+    )
+    write_provider_canary_receipt_atomic(
+        receipt_directory / f"{configuration_hash.value}.json", receipt
+    )
+
+
+@dataclass(frozen=True)
+class ReceiptMintingAgentConfigurationCatalog:
+    """The real catalog, plus the one thing this deployment does that a
+    production one cannot: it already knows every configuration it accepts
+    is provably startable, because it is the deployment that decides what
+    "successfully" means for its own fake executors. Every other read and
+    write passes straight through.
+    """
+
+    inner: AgentConfigurationCatalog
+    receipt_directory: Path
+    source_commit: str
+
+    def publish_auth_profile_revision(
+        self, revision: AuthProfileRevision
+    ) -> PublishAuthProfileRevisionResult:
+        return self.inner.publish_auth_profile_revision(revision)
+
+    def publish_agent_configuration_revision(
+        self, revision: AgentConfigurationRevision
+    ) -> PublishAgentConfigurationRevisionResult:
+        published = self.inner.publish_agent_configuration_revision(revision)
+        if isinstance(
+            published,
+            AgentConfigurationRevisionCreated | AgentConfigurationRevisionExisting,
+        ):
+            _write_e2e_provider_probe_receipt(
+                self.receipt_directory,
+                published.revision.revision_hash,
+                self.source_commit,
+            )
+        return published
+
+    def agent_configuration_revision(
+        self, revision_hash: AgentConfigurationRevisionHash
+    ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None:
+        return self.inner.agent_configuration_revision(revision_hash)
+
+    def list_agent_configuration_revisions(
+        self, after: AgentConfigurationRevisionHash | None, limit: int
+    ) -> ListAgentConfigurationRevisionsResult:
+        return self.inner.list_agent_configuration_revisions(after, limit)
+
+    def list_auth_profile_revisions(
+        self, after: AuthProfileRevisionHash | None, limit: int
+    ) -> ListAuthProfileRevisionsResult:
+        return self.inner.list_auth_profile_revisions(after, limit)
+
+
 def main() -> None:
     root = Path(os.environ["ATELIER2_E2E_ROOT"]).resolve()
     if root.name != ".playwright-runtime":
@@ -1210,6 +1344,11 @@ def main() -> None:
     port = int(os.environ["ATELIER2_E2E_PORT"])
     database = root / "atelier.sqlite"
     effects = root / "effects.sqlite"
+    # Isolated under this harness's own runtime root, wiped with it above:
+    # never the operator's real XDG state directory, and never read by
+    # anything but this deployment's own registry.
+    receipt_directory = root / "provider-probes"
+    harness_source_commit = e2e_source_commit()
     application_version = "r3-phase5-e2e"
     seed_boot_baseline(database, effects, application_version)
 
@@ -1290,12 +1429,13 @@ def main() -> None:
         effect_adapter_revision="loopback-v1",
         effect_destination="r3-phase5-e2e",
         application_version=application_version,
-        source_commit="r3-phase5-e2e",
+        source_commit=harness_source_commit,
         source_tree="r3-phase5-e2e",
         frontend_dist=Path(os.environ["ATELIER2_E2E_FRONTEND_DIST"]),
         port=port,
         project_id=ProjectId("e2e-workshop"),
         project_root=Path(__file__).resolve().parents[2],
+        provider_probe_receipt_directory=receipt_directory,
     )
 
     original_create_app = serving.create_app
@@ -1324,6 +1464,9 @@ def main() -> None:
                 snapshot_answer=WorkItemRevisionObserved(_E2E_OBSERVED_REVISION),
                 expected_snapshot_reference=_E2E_TRACKER_ITEM,
                 unexpected_snapshot_answer=TrackerItemUnknown,
+            ),
+            agent_configuration_catalog=ReceiptMintingAgentConfigurationCatalog(
+                ports.agent_configuration_catalog, receipt_directory, source_commit
             ),
         )
         app = original_create_app(
