@@ -29,13 +29,14 @@ is what survives.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import assert_never
 
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
-from atelier2.contracts.secret_redaction import redact_credentials
+from atelier2.contracts.secret_redaction import REDACTION_MARKER, redact_credentials
 from atelier2.contracts.when import RecordedAt
 
 MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES = MAXIMUM_ARTIFACT_BYTES
@@ -439,6 +440,26 @@ def _readable(*texts: str) -> tuple[tuple[str, ...], bool]:
     )
 
 
+_OPERATOR_HOME_PATH = re.compile(r"/(?:home|Users)/[A-Za-z0-9_.-]+(?:/[^\s\"'`]*)?")
+"""An operator's own filesystem path, from the home root onward."""
+
+
+def _scrubbed_provider_refusal_text(text: str) -> tuple[str, bool]:
+    """A provider refusal's own text, with the operator's home path taken out.
+
+    Scoped to this one step kind, not to `redact_credentials`: a provider
+    refusal can echo the CLI's own config path back verbatim (`#1029` review),
+    which is worth hiding, but an ordinary tool call or result naming a
+    workspace or lease path is exactly the evidence a transcript exists to
+    keep -- adding this pattern to the shared redactor hid legitimate content
+    from the operator in every attempt, not only a refusal, and widened the
+    wire bound derived from it for no step that needed it.
+    """
+
+    scrubbed = _OPERATOR_HOME_PATH.sub(REDACTION_MARKER, text)
+    return scrubbed, scrubbed != text
+
+
 def _kept(event: TranscriptEvent) -> TranscriptEvent:
     """This step as the document may hold it, whatever it arrived as.
 
@@ -461,11 +482,16 @@ def _kept(event: TranscriptEvent) -> TranscriptEvent:
         case ProviderTerminalRefusal(
             terminal_reason, api_error_status, text, marked, moment
         ):
+            scrubbed_text, path_redacted = _scrubbed_provider_refusal_text(text)
             (kept_reason, kept_status, kept_text), redacted = _readable(
-                terminal_reason, api_error_status, text
+                terminal_reason, api_error_status, scrubbed_text
             )
             return ProviderTerminalRefusal(
-                kept_reason, kept_status, kept_text, redacted or marked, moment
+                kept_reason,
+                kept_status,
+                kept_text,
+                redacted or path_redacted or marked,
+                moment,
             )
         case UnrecognisedProviderOutput(text, marked, moment):
             (kept_text,), redacted = _readable(text)

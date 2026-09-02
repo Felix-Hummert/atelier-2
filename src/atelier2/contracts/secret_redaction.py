@@ -1,5 +1,4 @@
-"""Credential and operator-identifying shapes taken out of provider bytes before
-anything durable keeps them.
+"""Credential shapes taken out of provider bytes before anything durable keeps them.
 
 **Why this is not the CI secret scan.** The `Secret scan` job owns a different
 boundary: it reads the repository's own git history with a pinned `gitleaks`
@@ -15,9 +14,8 @@ on their way into an artifact nobody can delete. The two owners answer different
 questions about different material and neither can stand in for the other.
 
 **Why the set is small and named.** Every shape below is one a reader can judge:
-what it matches, and why bytes of that shape are a credential -- or, for one
-shape, an operator's own filesystem path -- rather than prose. It is
-deliberately not a corpus. A match is replaced, never dropped, and
+what it matches, and why bytes of that shape are a credential rather than
+prose. It is deliberately not a corpus. A match is replaced, never dropped, and
 the caller learns that something was replaced -- material this cannot recognise
 is still kept, because a transcript that quietly held back what it could not
 classify would be exactly the silence this repository is removing.
@@ -135,19 +133,6 @@ CREDENTIAL_SHAPES = (
         ),
         # Only the `value` group is replaced; its own minimum is 12.
         minimum_replaced_characters=12,
-    ),
-    CredentialShape(
-        # A local filesystem path under an operator's own home directory. Not a
-        # secret in the cryptographic sense, but the same kind of bytes this
-        # boundary exists to stop: it names exactly who ran the call and how
-        # their machine is laid out, in an artifact nobody can delete (#1029
-        # review). Matched from the home root onward, because a path with the
-        # root cut off but the rest kept would still spell the operator's own
-        # directory names right after the marker.
-        "operator-local-path",
-        re.compile(r"/(?:home|Users)/[A-Za-z0-9_.-]+(?:/[^\s\"'`]*)?"),
-        # "/home/" or "/Users/" (6 or 7) plus at least one username character.
-        minimum_replaced_characters=len("/home/") + 1,
     ),
 )
 
