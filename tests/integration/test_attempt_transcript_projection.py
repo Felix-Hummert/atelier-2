@@ -36,6 +36,7 @@ from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
     ToolCalled,
     ToolReturned,
     TranscriptMomentOrigin,
@@ -265,6 +266,28 @@ def _canary_in_failed_stdout(canary: str) -> AgentExecutionFailure:
                 }
             ],
             id="failed attempt with redacted stdout",
+        ),
+        pytest.param(
+            _failure(
+                AttemptTranscript.of(
+                    [
+                        ProviderTerminalRefusal(
+                            "rate_limit_error", "429", f"blocked by {_canary()}"
+                        )
+                    ]
+                )
+            ),
+            [
+                {
+                    "event": "provider-terminal-refusal",
+                    "terminal_reason": "rate_limit_error",
+                    "api_error_status": "429",
+                    "text": f"blocked by {REDACTION_MARKER}",
+                    "redacted": True,
+                    "moment": _RECORDED_MOMENT,
+                }
+            ],
+            id="failed attempt with a provider-refused step",
         ),
         pytest.param(
             _success(),
