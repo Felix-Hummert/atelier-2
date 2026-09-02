@@ -56,7 +56,6 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_MODEL_DEFAULTS,
-    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
@@ -203,14 +202,6 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "ProjectSourceResource.kind": MAXIMUM_SOURCE_KIND_CHARACTERS,
     "ProjectSourceResource.address": MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     "ProjectSourceListResource.items": MAXIMUM_ACTIVE_PROJECT_SOURCES,
-    "ProjectRootRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
-    "ProjectRootRevisionResource.public_project_reference": (
-        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
-    ),
-    "ProjectRootRevisionResource.root_path": MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
-    "PutProjectRootRevisionRequestResource.root_path": (
-        MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
-    ),
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     "UncastRoleResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,

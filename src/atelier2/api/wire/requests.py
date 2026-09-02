@@ -33,7 +33,6 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_MODEL_DEFAULTS,
-    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_TOKEN_CHARACTERS,
 )
@@ -158,13 +157,6 @@ class PublishAgentConfigurationRevisionRequestResource(ApiModel):
 class StartRunRequestResource(ApiModel):
     run_id: str = Field(min_length=1)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-
-
-class PutProjectRootRevisionRequestResource(ApiModel):
-    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    root_path: str = Field(
-        min_length=1, max_length=MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
-    )
 
 
 class ConnectProjectSourceRequestResource(ApiModel):

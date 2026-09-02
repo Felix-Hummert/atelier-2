@@ -28,7 +28,6 @@ from atelier2.api.routes import (
     events,
     health,
     models,
-    project_root,
     project_source_connection,
     projects,
     queue,
@@ -78,10 +77,6 @@ from atelier2.application.project_connections import (
     list_served_project_sources,
     new_project_source_id,
     rotate_project_source_token,
-)
-from atelier2.application.project_root import (
-    get_project_root_revision,
-    publish_project_root_revision,
 )
 from atelier2.application.publish_adapter_operation_revision import (
     publish_adapter_operation_revision,
@@ -469,19 +464,6 @@ def bound_use_cases(
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander
         ),
-        get_project_root_revision=lambda project_id: get_project_root_revision(
-            project_id, ports.host_configuration_channel
-        ),
-        publish_project_root_revision=(
-            lambda project_id, revision_number, root_path: (
-                publish_project_root_revision(
-                    project_id,
-                    revision_number,
-                    root_path,
-                    ports.host_configuration_channel,
-                )
-            )
-        ),
         confirm_queue_proposal=lambda command: confirm_queue_proposal(
             command, ports.queue_projection
         ),
@@ -590,7 +572,6 @@ def create_app(
     app.include_router(revisions.router)
     app.include_router(projects.router)
     app.include_router(models.router)
-    app.include_router(project_root.router)
     app.include_router(project_source_connection.router)
     app.include_router(runs.router)
     app.include_router(events.router)

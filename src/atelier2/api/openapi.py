@@ -76,7 +76,6 @@ RUN_CANCELLATION_PATH = API_PREFIX + "/runs/{public_ref}/cancellations"
 RUN_FORK_PATH = API_PREFIX + "/runs/{public_ref}/forks"
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
-PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
 PROJECT_SOURCE_CONNECTION_PATH = PROJECT_PATH + "/source-connection"
 PROJECT_SOURCES_PATH = PROJECT_PATH + "/sources"
 PROJECT_SOURCE_PATH = PROJECT_SOURCES_PATH + "/{public_source_reference}"
@@ -362,24 +361,6 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-request",
         "unsupported-media-type",
         "temporarily-unavailable",
-        "durable-state-corrupt",
-        "internal-error",
-    ),
-    (PROJECT_ROOT_PATH, "put"): (
-        "invalid-public-project-reference",
-        "project-unknown",
-        "invalid-request",
-        "unsupported-media-type",
-        "project-root-revision-conflict",
-        "host-configuration-unreadable",
-        "durable-state-corrupt",
-        "internal-error",
-    ),
-    (PROJECT_ROOT_PATH, "get"): (
-        "invalid-public-project-reference",
-        "project-unknown",
-        "project-root-missing",
-        "host-configuration-unreadable",
         "durable-state-corrupt",
         "internal-error",
     ),
@@ -1037,8 +1018,6 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 "public_project_reference",
                 "path",
             ),
-            (PROJECT_ROOT_PATH, "put", "public_project_reference", "path"),
-            (PROJECT_ROOT_PATH, "get", "public_project_reference", "path"),
             (
                 PROJECT_SOURCE_CONNECTION_PATH,
                 "get",
