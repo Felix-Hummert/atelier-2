@@ -832,13 +832,27 @@ class DbosQueueProjectionStore:
     def _queue_start_order_key(
         connection: Connection, after: QueueItemId
     ) -> tuple[bool, int, str]:
-        """The queue-start ordering key of one item a previous page already served.
+        """The after-item's *current* start-order key, read fresh for this page.
 
         The wire cursor is opaque and only ever comes back from a `next_after`
         this store issued, so the item it names exists; the seek continues
-        behind this exact key triple rather than behind the bare `item_id`,
-        which would skip or repeat items whenever hash order disagrees with
-        rank order.
+        behind this key triple rather than behind the bare `item_id`, which
+        would skip or repeat items whenever hash order disagrees with rank
+        order (#1051).
+
+        The guarantee holds exactly while the after-item's key is unchanged
+        between the page that served it and this one. It is not unchanged in
+        general: `QueueItemSnapshot.plan` lets an OBSERVED item (no proposal,
+        sorted last) gain a proposal and become PROPOSED (ranked, sorted by
+        `priority.rank`) at any time, which moves that item's key earlier.
+        Once a proposal is planned it cannot be re-planned or withdrawn (`plan`
+        refuses a second call for a PROPOSED or ADMITTED item), so this is the
+        only key change this codebase can produce, and it only ever moves an
+        item earlier. Read fresh here, an after-item that moved earlier since
+        its page seeks from its new, earlier position: an item that used to
+        sort between the old and new position is served again on the next
+        page (a repeat), never dropped (a skip) -- there is no production path
+        that moves an item later.
         """
 
         row = connection.execute(

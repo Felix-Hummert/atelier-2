@@ -913,7 +913,10 @@ def test_list_items_pages_seek_by_the_start_order_key_not_by_item_id(
     than behind the ordering key `advance_queue` and the list share -- would
     skip or repeat an item once a one-item page forces the boundary between
     them (Grok pre-review, #1051). The items `advance_queue` starts must also
-    come out of the walk as a subsequence, in the order it started them.
+    come out of the walk as a subsequence, in the order it started them. One
+    item (`gh:22`) is retired through the production import path partway
+    through, proving ADR 0016's split: the list keeps it in its ordered
+    place, the start walk does not.
     """
 
     queue, engine = store
@@ -925,20 +928,32 @@ def test_list_items_pages_seek_by_the_start_order_key_not_by_item_id(
     unranked = WorkItemReference(PROJECT, TrackerItemReference("gh:23"))
     _seed_open_items(queue, unranked)
 
-    listed: list[QueueItemId] = []
+    retirement = _import(
+        queue,
+        SECOND_READ,
+        ("gh:27", "Best"),
+        ("gh:26", "Worst"),
+        ("gh:23", "Unranked"),
+    )
+    assert isinstance(retirement, ProjectSourceIssuesImported)
+
+    listed_items: list[QueueItemSnapshot] = []
     after: QueueItemId | None = None
     for _ in range(10):
         page = queue.list_items(after, 1)
         assert isinstance(page, QueueItemsPage)
         assert len(page.items) == 1
-        listed.append(page.items[0].item_reference.item_id)
+        listed_items.append(page.items[0])
         if page.next_after is None:
             break
         after = page.next_after
     else:
         pytest.fail("the page walk did not terminate")
 
+    listed = [item.item_reference.item_id for item in listed_items]
     assert listed == [best.item_id, middle.item_id, worst.item_id, unranked.item_id]
+    (retired_middle,) = (item for item in listed_items if item.item_reference == middle)
+    assert retired_middle.retired_at is not None
 
     monkeypatch.setattr(advance_queue_module, "start_published_run", _run_started)
     outcomes = advance_queue_module.advance_queue(
@@ -947,10 +962,61 @@ def test_list_items_pages_seek_by_the_start_order_key_not_by_item_id(
     started_items = [
         outcome.item_id for outcome in outcomes if isinstance(outcome, QueueRunStarted)
     ]
-    assert started_items == [best.item_id, middle.item_id, worst.item_id]
+    assert started_items == [best.item_id, worst.item_id]
     assert [listed.index(item_id) for item_id in started_items] == sorted(
         listed.index(item_id) for item_id in started_items
     )
+
+
+def test_a_page_walk_repeats_an_item_that_gains_a_proposal_between_pages(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """The seek's one honest edge: the after-item's key can move earlier mid-walk.
+
+    `_queue_start_order_key` reads the after-item's *current* key fresh for
+    every page, not the key the previous page served it under. The only
+    reachable key change in this codebase is an OBSERVED item (no proposal,
+    sorted last) gaining a proposal via `QueueItemSnapshot.plan` and becoming
+    PROPOSED (ranked, sorted by `priority.rank`) -- always earlier, since a
+    planned proposal can never be re-planned or withdrawn (`plan` refuses a
+    second call once PROPOSED or ADMITTED). Read fresh, the after-item then
+    seeks from its new, earlier position: an item that used to sort between
+    the two positions is served again (a repeat). Nothing moves an item
+    *later* in this codebase, so a skip is not a reachable outcome here; this
+    test pins the one direction that is.
+    """
+
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 10, None), 0)
+    ranked = _prepare_admitted(queue, lineage_id, "gh:ranked", rank=5)
+    after_item = WorkItemReference(PROJECT, TrackerItemReference("gh:after-item"))
+    later_item = WorkItemReference(PROJECT, TrackerItemReference("gh:later-item"))
+    _seed_open_items(queue, after_item, later_item)
+
+    first_page = queue.list_items(None, 2)
+    assert isinstance(first_page, QueueItemsPage)
+    assert [item.item_reference.item_id for item in first_page.items] == [
+        ranked.item_id,
+        after_item.item_id,
+    ]
+    assert first_page.next_after == after_item.item_id
+
+    promoted = queue.plan(
+        PlanQueueItem(
+            after_item, _proposal(lineage_id, rank=1), QueueProjectionRevision(0)
+        )
+    )
+    assert isinstance(promoted, QueueItemProposed)
+
+    second_page = queue.list_items(first_page.next_after, 2)
+
+    assert isinstance(second_page, QueueItemsPage)
+    assert [item.item_reference.item_id for item in second_page.items] == [
+        ranked.item_id,
+        later_item.item_id,
+    ]
+    assert second_page.next_after is None
 
 
 @pytest.mark.parametrize("proposal_revision", [None, 1])
