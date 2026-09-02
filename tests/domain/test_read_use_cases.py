@@ -8,6 +8,7 @@ import pytest
 
 from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application import resolve_references as resolve_references_module
 from atelier2.application.evaluate_executability import (
     DocumentNotExecutable,
     ExecutableDocument,
@@ -430,6 +431,52 @@ def test_a_wait_answer_schema_classifies_free_for_every_named_resolution_failure
     assert result.wait_answer_classifications == (
         WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free"),
     )
+
+
+def test_a_schema_document_is_validated_at_most_once_across_two_separate_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#937 round 4: two separate reads pinning the same schema hash -- as two
+    separate `GET /workflow-revisions/{hash}` requests would -- pay the Draft
+    2020-12 validation once for the process, not once per request. The same
+    document is also settled twice inside one such read (once by
+    `evaluate_executability`, once by the wait-node classifier), so this pins
+    the process cache is the one owner both share, not just a per-request one."""
+    schema = PublishedRevision(
+        RevisionKind.SCHEMA, b'{"type": "string", "enum": ["issue-937-round-4"]}'
+    )
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+    validated = 0
+    original_read_schema_document = resolve_references_module.read_schema_document
+
+    def counting_read_schema_document(document: bytes) -> object:
+        nonlocal validated
+        validated += 1
+        return original_read_schema_document(document)
+
+    monkeypatch.setattr(
+        resolve_references_module,
+        "read_schema_document",
+        counting_read_schema_document,
+    )
+
+    first = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+    second = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(first, WorkflowRevisionRead)
+    assert isinstance(second, WorkflowRevisionRead)
+    assert first.wait_answer_classifications == (
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID, kind="enum", values=('"issue-937-round-4"',)
+        ),
+    )
+    assert second.wait_answer_classifications == first.wait_answer_classifications
+    assert validated <= 1
 
 
 def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() -> None:

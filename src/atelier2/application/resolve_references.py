@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import assert_never
 
+from atelier2.application.bounded_process_cache import BoundedProcessCache
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.adapter_operations_v3 import (
     AdapterOperationRefused,
@@ -32,7 +33,12 @@ from atelier2.contracts.run_configuration_v3 import (
     ResolvedReference,
     declared_references,
 )
-from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
+from atelier2.contracts.schemas_v3 import (
+    SchemaAccepted,
+    SchemaDocumentVerdict,
+    SchemaRefused,
+    read_schema_document,
+)
 from atelier2.contracts.tool_grants_v3 import (
     ToolGrantRefused,
     read_tool_grant_document,
@@ -53,6 +59,58 @@ type SettledResolution = ResolvedReference | ReferenceRefusal
 """What a registry that answered says about one reference."""
 type ReferenceResolution = SettledResolution | ReadUnavailable | DurableStateCorrupt
 """That, or the registry could not answer -- which is about the store, not the reference."""
+
+
+_SCHEMA_VERDICT_CACHE_CAPACITY = 4_096
+"""Comfortably above the tens of schema revisions one project holds today.
+
+The cap bounds memory for a pathological project; it never bounds
+correctness. A published schema revision is content-addressed and cannot
+change once published, so an accepted verdict stays correct for the
+process's whole lifetime -- there is no staleness to invalidate.
+"""
+
+# #937 round 4: profiling a described page after round 3 gave the workflow
+# parse a process-lifetime cache found the dominant remaining cost was
+# validating the same immutable schema document against the Draft 2020-12
+# meta-schema on every request -- every node's own declared output schema,
+# not only a wait node's, reaches `read_schema_document` through this
+# module's `_unreadable_document`. This module-level cache
+# (`BoundedProcessCache`, the same owner round 3's parsed workflow cache
+# uses) is shared by every caller of `cached_schema_document`, so a schema
+# pinned by many revisions, across many pages and many requests -- the
+# described listing, the single-revision read and the start alike -- is
+# validated once for the process rather than once per page (round 2) or once
+# per request (before round 2).
+#
+# A refused verdict is deliberately never cached: it proved no schema value,
+# and remembering it would turn one document's refusal into process-lifetime
+# durable-state corruption instead of letting the next read re-examine it --
+# the same reasoning round 3 already applies to a failed workflow parse.
+# Refused schema documents are also rare, so the repeat cost stays small.
+_SCHEMA_VERDICTS: BoundedProcessCache[PublishedRevisionHash, SchemaAccepted] = (
+    BoundedProcessCache(capacity=_SCHEMA_VERDICT_CACHE_CAPACITY)
+)
+
+
+def cached_schema_document(
+    revision_hash: PublishedRevisionHash, document: bytes
+) -> SchemaDocumentVerdict:
+    """`read_schema_document`, replayed from the process cache on a repeat.
+
+    The one owner of whether a schema document is accepted or refused stays
+    `read_schema_document`, called exactly once per hash for the process; this
+    wrapper is the only place that remembers its answer, so every caller --
+    inside this module and in `read_workflow_revisions` -- shares one verdict
+    per hash rather than deriving it a second way.
+    """
+    accepted = _SCHEMA_VERDICTS.found(revision_hash)
+    if accepted is not None:
+        return accepted
+    verdict = read_schema_document(document)
+    if isinstance(verdict, SchemaAccepted):
+        _SCHEMA_VERDICTS.remember(revision_hash, verdict)
+    return verdict
 
 
 def declared_through(
@@ -153,7 +211,7 @@ def _unreadable_document(
     bound.
     """
     if declared.kind is RevisionKind.SCHEMA:
-        verdict = read_schema_document(revision.document)
+        verdict = cached_schema_document(revision.revision_hash, revision.document)
         if isinstance(verdict, SchemaRefused):
             return _refusal(
                 ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT,
