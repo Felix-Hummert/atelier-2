@@ -14,12 +14,16 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import AgentExecutionRequestHash
-from atelier2.contracts.effects import EffectIntentSnapshot, ReconcileCommandSnapshot
+from atelier2.contracts.effects import (
+    EffectIntentSnapshot,
+    EffectIntentState,
+    ReconcileCommandSnapshot,
+)
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import AnyRun
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.runs import RunId, RunState
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 
@@ -51,7 +55,13 @@ class NodeState(StrEnum):
 
 
 class PublicAgentAttemptState(StrEnum):
-    """What a reader of a run is told about that run's current agent attempt."""
+    """What a reader of a run is told about that run's current agent attempt.
+
+    `SUCCEEDED` is the one name a run says only while it stands still on the
+    effect its finished node asks the operator to reconcile (decision 0010).
+    Everywhere else the success has already moved the run on, and the reader is
+    told about the successor instead.
+    """
 
     PREPARED = "PREPARED"
     POSSIBLY_RAN = "POSSIBLY_RAN"
@@ -59,27 +69,39 @@ class PublicAgentAttemptState(StrEnum):
     CANCELLED = "CANCELLED"
     INTERRUPTED = "INTERRUPTED"
     FAILED = "FAILED"
+    SUCCEEDED = "SUCCEEDED"
 
 
-_PUBLIC_ATTEMPT_STATES: Mapping[AgentAttemptState, PublicAgentAttemptState | None] = {
+_PUBLIC_ATTEMPT_STATES: Mapping[AgentAttemptState, PublicAgentAttemptState] = {
     AgentAttemptState.PREPARED: PublicAgentAttemptState.PREPARED,
     AgentAttemptState.LAUNCH_ARMED: PublicAgentAttemptState.POSSIBLY_RAN,
     AgentAttemptState.CANCEL_REQUESTED: PublicAgentAttemptState.CANCEL_REQUESTED,
     AgentAttemptState.CANCELLED: PublicAgentAttemptState.CANCELLED,
     AgentAttemptState.INTERRUPTED: PublicAgentAttemptState.INTERRUPTED,
-    AgentAttemptState.SUCCEEDED: None,
     AgentAttemptState.FAILED: PublicAgentAttemptState.FAILED,
 }
 
 
 def public_agent_attempt_state(
     durable_state: AgentAttemptState,
+    *,
+    effect_awaits_reconciliation: bool,
 ) -> PublicAgentAttemptState | None:
     """The public name of one durable attempt state, or None where a run has none.
 
-    A succeeded attempt is never the current one: the transition that records the
-    success also moves the run past it, so a reader is told about its successor.
+    A succeeded attempt is normally not the current one: the transition that
+    records the success also moves the run past it, so a reader is told about its
+    successor. A node whose own effect the operator still has to reconcile is the
+    exception the push and open-pr grants create: the agent is done, the run
+    parks on that same node, and the reader is told `SUCCEEDED` beside the run's
+    `WAITING_RECONCILIATION`. Without that standing the success has no successor
+    to speak of, and naming it would tell the reader a run stands where no
+    transition ever left it.
     """
+    if durable_state is AgentAttemptState.SUCCEEDED:
+        return (
+            PublicAgentAttemptState.SUCCEEDED if effect_awaits_reconciliation else None
+        )
     return _PUBLIC_ATTEMPT_STATES[durable_state]
 
 
@@ -116,6 +138,28 @@ class RunCancellationRefusal(StrEnum):
 class WaitingReconciliationProjection:
     intent: EffectIntentSnapshot
     pending_command: ReconcileCommandSnapshot | None
+
+
+_INTENT_STATES_OWED_THE_OPERATOR = frozenset(
+    {EffectIntentState.WAITING_RECONCILIATION, EffectIntentState.RECONCILING}
+)
+"""The two standings of an intent that is still the operator's move to make.
+
+`RECONCILING` is the same standing with the operator's word already submitted
+and not yet applied; a reader loses sight of the run if that moment reads
+differently from the one before it.
+"""
+
+
+def run_awaits_effect_reconciliation(
+    run_state: RunState, reconciliation: WaitingReconciliationProjection | None
+) -> bool:
+    """Whether the run stands still on its current node's effect, owed a decision."""
+    return (
+        run_state is RunState.WAITING_RECONCILIATION
+        and reconciliation is not None
+        and reconciliation.intent.state in _INTENT_STATES_OWED_THE_OPERATOR
+    )
 
 
 @dataclass(frozen=True)

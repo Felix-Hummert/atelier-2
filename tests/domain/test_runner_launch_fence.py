@@ -449,9 +449,9 @@ def test_silence_at_or_after_arm_stays_possibly_ran_without_replacement() -> Non
     core.arm_and_launch()
 
     assert runner.observed_evidence(first) is None
-    assert public_agent_attempt_state(core.attempt_state) is (
-        PublicAgentAttemptState.POSSIBLY_RAN
-    )
+    assert public_agent_attempt_state(
+        core.attempt_state, effect_awaits_reconciliation=False
+    ) is (PublicAgentAttemptState.POSSIBLY_RAN)
     second = replace(first, generation_id=RunnerGenerationId("core-generation-2"))
     with pytest.raises(RunnerBindingConflict, match="no-launch evidence"):
         core.place(second)

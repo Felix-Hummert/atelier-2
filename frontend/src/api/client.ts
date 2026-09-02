@@ -634,6 +634,7 @@ export const PUBLIC_ATTEMPT_STATES = [
   "CANCELLED",
   "INTERRUPTED",
   "FAILED",
+  "SUCCEEDED",
 ] as const;
 
 /** The states the served document names; tests/api/servedVocabulary holds them to it. */
