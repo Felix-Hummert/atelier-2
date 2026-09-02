@@ -23,6 +23,7 @@ from atelier2.application.scan_definition_source import (
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
     DefinitionSourceActor,
+    DefinitionSourceConfiguration,
     DefinitionSourceId,
     DefinitionSourceKind,
     DefinitionSourceRefusal,
@@ -39,12 +40,9 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.ports.definition_sources import (
     DefinitionSourceFound,
     DefinitionSourceMissing,
-    DefinitionSourceRegistered,
-    DefinitionSourceUnchanged,
     DefinitionSourceUnreadable,
     ReadDefinitionSourceResult,
     ReadSourceIntakesResult,
-    RegisterDefinitionSourceResult,
     ScannedSource,
     SelectedFile,
 )
@@ -81,9 +79,8 @@ def published_hash(document: bytes) -> PublishedRevisionHash:
     return PublishedRevisionHash.of(document)
 
 
-def registration(*patterns: str) -> DefinitionSourceRevision:
-    return DefinitionSourceRevision(
-        1,
+def registration(*patterns: str) -> DefinitionSourceConfiguration:
+    return DefinitionSourceConfiguration(
         DefinitionSourceKind.GIT,
         RepositoryLocation("/srv/definitions.git"),
         RepositoryRef("refs/heads/main"),
@@ -109,19 +106,14 @@ def intake(path: RepositoryPath, document: bytes, number: int = 1) -> SourceInta
 
 @dataclass
 class SourcesKeptInMemory:
-    """The durable side of a scan, reduced to what a caller can observe."""
+    """The read-only durable side of a scan, and only that.
+
+    It has no `register`, because the port a scan is handed has none: what
+    proves the scan writes nothing is that nothing it holds can write.
+    """
 
     registered: dict[str, DefinitionSourceRevision] = field(default_factory=dict)
     intaken: dict[str, dict[RepositoryPath, SourceIntake]] = field(default_factory=dict)
-
-    def register(
-        self, revision: DefinitionSourceRevision
-    ) -> RegisterDefinitionSourceResult:
-        standing = self.registered.get(revision.source_id.value)
-        if standing is not None and standing.revision_hash == revision.revision_hash:
-            return DefinitionSourceUnchanged(standing)
-        self.registered[revision.source_id.value] = revision
-        return DefinitionSourceRegistered(revision)
 
     def read_source(self, source_id: DefinitionSourceId) -> ReadDefinitionSourceResult:
         standing = self.registered.get(source_id.value)
@@ -140,8 +132,8 @@ class SourceReadingOnce:
     scanned: ScannedSource | None = None
     refusal: DefinitionSourceRefusal | None = None
 
-    def scan(self, revision: DefinitionSourceRevision) -> ScannedSource:
-        del revision
+    def scan(self, configuration: DefinitionSourceConfiguration) -> ScannedSource:
+        del configuration
         if self.refusal is not None:
             raise DefinitionSourceUnreadable(self.refusal, "as the scenario prepared")
         assert self.scanned is not None
@@ -149,12 +141,13 @@ class SourceReadingOnce:
 
 
 def selected(
-    revision: DefinitionSourceRevision, files: Mapping[RepositoryPath, bytes]
+    configuration: DefinitionSourceConfiguration,
+    files: Mapping[RepositoryPath, bytes],
 ) -> ScannedSource:
     return ScannedSource(
         COMMIT,
         tuple(
-            SelectedFile(path, revision.selections[0], document)
+            SelectedFile(path, configuration.selections[0], document)
             for path, document in files.items()
         ),
     )
@@ -171,10 +164,12 @@ def scanning(
 def connected(
     *, intakes: Mapping[RepositoryPath, SourceIntake] | None = None
 ) -> SourcesKeptInMemory:
-    revision = registration()
+    configured = registration()
     sources = SourcesKeptInMemory()
-    sources.register(revision)
-    sources.intaken[revision.source_id.value] = dict(intakes or {})
+    sources.registered[configured.source_id.value] = DefinitionSourceRevision(
+        configured, 1
+    )
+    sources.intaken[configured.source_id.value] = dict(intakes or {})
     return sources
 
 

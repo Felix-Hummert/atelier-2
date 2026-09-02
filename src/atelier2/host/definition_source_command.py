@@ -1,7 +1,10 @@
 """Connect a git definition source, and look at where it stands. Offline, both.
 
-`connect` registers what the operator configured -- repository, ref, and which
-paths carry which kind -- and takes nothing in; `scan` resolves the ref, reads
+`connect` reads the repository and the ref the operator gave, then registers
+what they configured -- and takes nothing in. It reads first because there is
+no way to disconnect a source yet, so a location or ref that answers nothing
+would otherwise stand registered forever as a wire to nowhere. `scan` resolves
+the ref, reads
 every selected file, and reports per path whether the catalog is behind. Taking
 content in is its own operation, and `serve` performs neither at startup: a
 newer version arrives because the operator asked for it (`#660` ruled line 2).
@@ -35,9 +38,9 @@ from atelier2.application.scan_definition_source import (
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
     DefinitionSourceActor,
+    DefinitionSourceConfiguration,
     DefinitionSourceId,
     DefinitionSourceKind,
-    DefinitionSourceRevision,
     DefinitionSourceSelection,
     RepositoryLocation,
     RepositoryRef,
@@ -48,6 +51,7 @@ from atelier2.host.serving import api_limits
 from atelier2.ports.definition_sources import (
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
+    DefinitionSourceUnreadable,
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
@@ -57,7 +61,6 @@ from atelier2.ports.durable_runs import DurableWriteUnavailable
 CONNECT_COMMAND = "connect"
 SCAN_COMMAND = "scan"
 _SELECTION_SEPARATOR = "="
-_FIRST_REVISION_NUMBER = 1
 
 DEFINITION_SOURCE_DESCRIPTION = """\
 Register a git repository the catalog may take definitions out of, and look at
@@ -138,32 +141,35 @@ def _require_store(database: Path) -> None:
 
 
 def _connect(parsed: argparse.Namespace) -> int:
-    revision = _configured(parsed)
+    configuration = _configured(parsed)
+    _verified(configuration)
     engine = create_canonical_engine(parsed.database)
     try:
         try:
             initialize_schema(engine)
         except UnsupportedSchemaVersion as refusal:
             raise _CommandRefused(str(refusal)) from refusal
-        result = DbosDefinitionSources(engine).register(revision)
+        result = DbosDefinitionSources(engine).register(configuration)
     finally:
         engine.dispose()
     match result:
         case DefinitionSourceRegistered(registered):
+            configured = registered.configuration
             print(
-                f"connected {registered.kind.value} source "
-                f"{registered.location.value!r} at {registered.ref.value!r} as "
-                f"{registered.source_id.value} revision "
+                f"connected {configured.kind.value} source "
+                f"{configured.location.value!r} at {configured.ref.value!r} as "
+                f"{configured.source_id.value} revision "
                 f"{registered.revision_number}"
             )
-            for selection in registered.selections:
+            for selection in configured.selections:
                 print(f"  {selection.pattern.value} -> {selection.kind.value}")
             return 0
         case DefinitionSourceUnchanged(standing):
+            configured = standing.configuration
             print(
-                f"{standing.source_id.value} is already connected to "
-                f"{standing.location.value!r} at {standing.ref.value!r}; revision "
-                f"{standing.revision_number} is unchanged"
+                f"{configured.source_id.value} is already connected to "
+                f"{configured.location.value!r} at {configured.ref.value!r}; "
+                f"revision {standing.revision_number} is unchanged"
             )
             return 0
         case DurableWriteUnavailable():
@@ -194,8 +200,8 @@ def _scan(parsed: argparse.Namespace) -> int:
     match result:
         case DefinitionSourceScanned(revision, commit, paths):
             print(
-                f"{revision.source_id.value} at {revision.ref.value!r} "
-                f"resolves to {commit.value}"
+                f"{revision.configuration.source_id.value} at "
+                f"{revision.configuration.ref.value!r} resolves to {commit.value}"
             )
             for scanned in paths:
                 print(
@@ -207,8 +213,13 @@ def _scan(parsed: argparse.Namespace) -> int:
             return _refused(f"no definition source is registered as {unknown.value}")
         case ScanRefused(refusal, detail):
             return _refused(f"{refusal.value}: {detail}")
-        case ScannedDocumentInvalid(path, detail, _refusal):
-            return _refused(f"{path.value} would not be published: {detail}")
+        case ScannedDocumentInvalid(path, detail, refusal):
+            named = (
+                ""
+                if refusal is None
+                else f" ({refusal.reason.value} at {refusal.field!r})"
+            )
+            return _refused(f"{path.value} would not be published{named}: {detail}")
         case ReadUnavailable():
             return _refused("the store could not be read")
         case DurableStateCorrupt():
@@ -217,10 +228,9 @@ def _scan(parsed: argparse.Namespace) -> int:
             assert_never(unreachable)
 
 
-def _configured(parsed: argparse.Namespace) -> DefinitionSourceRevision:
+def _configured(parsed: argparse.Namespace) -> DefinitionSourceConfiguration:
     try:
-        return DefinitionSourceRevision(
-            _FIRST_REVISION_NUMBER,
+        return DefinitionSourceConfiguration(
             DefinitionSourceKind.GIT,
             RepositoryLocation(parsed.location),
             RepositoryRef(parsed.ref),
@@ -230,6 +240,15 @@ def _configured(parsed: argparse.Namespace) -> DefinitionSourceRevision:
         )
     except (TypeError, ValueError) as error:
         raise _CommandRefused(str(error)) from error
+
+
+def _verified(configuration: DefinitionSourceConfiguration) -> None:
+    """Read the source before recording it, so a dead wire is never registered."""
+
+    try:
+        GitDefinitionSource().scan(configuration)
+    except DefinitionSourceUnreadable as refused:
+        raise _CommandRefused(f"{refused.refusal.value}: {refused.detail}") from refused
 
 
 def _selection(declared: str) -> DefinitionSourceSelection:

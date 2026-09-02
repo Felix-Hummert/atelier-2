@@ -3,9 +3,11 @@
 One configuration is one immutable row plus its ordered selection rows, and the
 two are written inside the one canonical write transaction so a registration
 can never stand with half its selections. Re-registering the configuration that
-already stands changes nothing and says so; a changed configuration of the same
-repository and ref appends the next revision of that same source rather than
-founding a second one (`#660` ruled line 5).
+already stands changes nothing and says so -- whatever number it stands under,
+because what is compared is the configuration and never the number it landed
+with; a changed configuration of the same repository and ref appends the next
+revision of that same source rather than founding a second one
+(`#660` ruled line 5).
 
 Reading intakes is what a write-free scan needs and all it needs: the highest
 `intake_number` per path, which is what ADR 0007 calls the latest intake.
@@ -31,6 +33,7 @@ from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
     DefinitionSourceActor,
+    DefinitionSourceConfiguration,
     DefinitionSourceId,
     DefinitionSourceKind,
     DefinitionSourceRevision,
@@ -54,6 +57,7 @@ from atelier2.ports.definition_sources import (
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
+_FIRST_REVISION_NUMBER = 1
 _FIRST_SELECTION_ORDINAL = 1
 
 
@@ -64,19 +68,18 @@ class DbosDefinitionSources:
         self._engine = engine
 
     def register(
-        self, revision: DefinitionSourceRevision
+        self, configuration: DefinitionSourceConfiguration
     ) -> RegisterDefinitionSourceResult:
         try:
             with canonical_write_transaction(self._engine) as connection:
-                standing = self._newest(connection, revision.source_id)
-                if standing is not None and standing.revision_hash == (
-                    revision.revision_hash
-                ):
+                standing = self._newest(connection, configuration.source_id)
+                if standing is not None and standing.configuration == configuration:
                     return DefinitionSourceUnchanged(standing)
-                appended = (
-                    revision
+                appended = DefinitionSourceRevision(
+                    configuration,
+                    _FIRST_REVISION_NUMBER
                     if standing is None
-                    else _renumbered(revision, standing.revision_number + 1)
+                    else standing.revision_number + 1,
                 )
                 self._insert(connection, appended)
                 return DefinitionSourceRegistered(appended)
@@ -141,13 +144,13 @@ class DbosDefinitionSources:
         connection.execute(
             host_definition_source_revisions.insert().values(
                 revision_hash=revision.revision_hash.value,
-                source_id=revision.source_id.value,
+                source_id=revision.configuration.source_id.value,
                 revision_number=revision.revision_number,
-                source_kind=revision.kind.value,
-                repository_location=revision.location.value,
-                repository_ref=revision.ref.value,
-                access=revision.access.value,
-                connected_by=revision.connected_by.value,
+                source_kind=revision.configuration.kind.value,
+                repository_location=revision.configuration.location.value,
+                repository_ref=revision.configuration.ref.value,
+                access=revision.configuration.access.value,
+                connected_by=revision.configuration.connected_by.value,
             )
         )
         connection.execute(
@@ -160,7 +163,8 @@ class DbosDefinitionSources:
                     "revision_kind": selection.kind.value,
                 }
                 for ordinal, selection in enumerate(
-                    revision.selections, start=_FIRST_SELECTION_ORDINAL
+                    revision.configuration.selections,
+                    start=_FIRST_SELECTION_ORDINAL,
                 )
             ],
         )
@@ -201,43 +205,25 @@ class DbosDefinitionSources:
         }
 
 
-def _renumbered(
-    revision: DefinitionSourceRevision, revision_number: int
-) -> DefinitionSourceRevision:
-    """The same configuration as the next revision of the same source.
-
-    Rebuilt rather than copied with a replaced field, because the revision hash
-    covers the number and only construction derives it.
-    """
-
-    return DefinitionSourceRevision(
-        revision_number,
-        revision.kind,
-        revision.location,
-        revision.ref,
-        revision.access,
-        revision.connected_by,
-        revision.selections,
-    )
-
-
 def _revision_from_records(
     record: Mapping[Any, Any], selections: Sequence[Mapping[Any, Any]]
 ) -> DefinitionSourceRevision:
     revision = DefinitionSourceRevision(
-        int(str(record["revision_number"])),
-        DefinitionSourceKind(str(record["source_kind"])),
-        RepositoryLocation(str(record["repository_location"])),
-        RepositoryRef(str(record["repository_ref"])),
-        DefinitionSourceAccess(str(record["access"])),
-        DefinitionSourceActor(str(record["connected_by"])),
-        tuple(
-            DefinitionSourceSelection(
-                SelectionPattern(str(selection["path_pattern"])),
-                RevisionKind(str(selection["revision_kind"])),
-            )
-            for selection in selections
+        DefinitionSourceConfiguration(
+            DefinitionSourceKind(str(record["source_kind"])),
+            RepositoryLocation(str(record["repository_location"])),
+            RepositoryRef(str(record["repository_ref"])),
+            DefinitionSourceAccess(str(record["access"])),
+            DefinitionSourceActor(str(record["connected_by"])),
+            tuple(
+                DefinitionSourceSelection(
+                    SelectionPattern(str(selection["path_pattern"])),
+                    RevisionKind(str(selection["revision_kind"])),
+                )
+                for selection in selections
+            ),
         ),
+        int(str(record["revision_number"])),
     )
     if revision.revision_hash.value != record["revision_hash"]:
         raise ValueError("durable definition source hash disagrees with its fields")

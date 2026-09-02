@@ -1,9 +1,11 @@
 """Reaching a definition source, and keeping what was configured about it.
 
-Two owners, deliberately apart. The reader answers what a repository holds at
-one resolved commit and knows nothing about a store; the registry keeps the
-configuration and the intake history and never runs git. A scan is the only
-caller that needs both, and it writes through neither.
+Three owners, deliberately apart. The reader answers what a repository holds
+at one resolved commit and knows nothing about a store. The registry answers
+what is registered and what it has delivered, and nothing else -- a scan is
+handed that one, so its write-freedom is the shape of what it was given rather
+than a promise about what it does with more. Registering is the registrar's,
+and only a caller that means to write asks for it.
 
 Reading refuses in the source's own closed vocabulary
 (`DefinitionSourceRefusal`), because every one of those refusals happens before
@@ -19,6 +21,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.definition_sources import (
+    DefinitionSourceConfiguration,
     DefinitionSourceId,
     DefinitionSourceRefusal,
     DefinitionSourceRevision,
@@ -59,7 +62,7 @@ class ScannedSource:
 class DefinitionSourceReader(Protocol):
     """The provider-neutral owner of what a configured source currently holds."""
 
-    def scan(self, revision: DefinitionSourceRevision) -> ScannedSource:
+    def scan(self, configuration: DefinitionSourceConfiguration) -> ScannedSource:
         """Resolve the configured ref once and read every selected file of it."""
         ...
 
@@ -103,14 +106,8 @@ type ReadSourceIntakesResult = (
 )
 
 
-class DefinitionSources(Protocol):
-    """The durable owner of registered sources and of what they have delivered."""
-
-    def register(
-        self, revision: DefinitionSourceRevision
-    ) -> RegisterDefinitionSourceResult:
-        """Keep this configuration, answering the one already standing unchanged."""
-        ...
+class DefinitionSourceRegistry(Protocol):
+    """What is registered and what it has delivered. Nothing here writes."""
 
     def read_source(self, source_id: DefinitionSourceId) -> ReadDefinitionSourceResult:
         """The newest configuration this source was registered with."""
@@ -118,4 +115,18 @@ class DefinitionSources(Protocol):
 
     def latest_intakes(self, source_id: DefinitionSourceId) -> ReadSourceIntakesResult:
         """The highest durable intake of every path this source has delivered."""
+        ...
+
+
+class DefinitionSourceRegistrar(DefinitionSourceRegistry, Protocol):
+    """The registry, plus the one door that adds to it."""
+
+    def register(
+        self, configuration: DefinitionSourceConfiguration
+    ) -> RegisterDefinitionSourceResult:
+        """Keep this configuration under the next number, or say it already stands.
+
+        The number is this owner's to give: it is the count of what already
+        stands under that source id, which no caller can know.
+        """
         ...

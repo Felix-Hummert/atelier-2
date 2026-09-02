@@ -10,6 +10,9 @@ Every selected file is put through `read_publishable_workflow`, the same door
 an intake would use, so a scan already says what an intake would refuse instead
 of discovering it halfway through the batch. The refusal is repeated in the
 publication door's own words rather than renamed here.
+
+That it writes nothing is the shape of what it is handed: the durable side it
+takes is `DefinitionSourceRegistry`, which has no door that writes.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ from atelier2.ports.definition_sources import (
     DefinitionSourceFound,
     DefinitionSourceMissing,
     DefinitionSourceReader,
-    DefinitionSources,
+    DefinitionSourceRegistry,
     DefinitionSourceUnreadable,
     SelectedFile,
 )
@@ -119,7 +122,7 @@ type ScanDefinitionSourceResult = (
 
 def scan_definition_source(
     source_id: DefinitionSourceId,
-    sources: DefinitionSources,
+    sources: DefinitionSourceRegistry,
     reader: DefinitionSourceReader,
     parser: WorkflowDocumentParser,
     limits: WorkflowPublicationLimits,
@@ -139,7 +142,7 @@ def scan_definition_source(
         case _ as unreachable:
             assert_never(unreachable)
     try:
-        scanned = reader.scan(revision)
+        scanned = reader.scan(revision.configuration)
     except DefinitionSourceUnreadable as refused:
         return ScanRefused(refused.refusal, refused.detail)
     published = _published_hashes(scanned.files, parser, limits)

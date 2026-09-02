@@ -11,9 +11,10 @@ Four identities stay separate on purpose (ADR 0007):
 * the registered source is `source_id`, minted from the repository and the ref
   it was configured with, so connecting the same repository at the same ref a
   second time is the same source rather than a second copy of it;
-* one configuration of that source is `revision_hash`, over every configured
-  field including its selections, so a changed selection set is a new revision
-  of the same source;
+* what the operator configured is a `DefinitionSourceConfiguration`, compared as
+  a whole and ordered so that the same claim written differently is the same
+  claim; the store decides which `revision_number` it lands under, and
+  `revision_hash` names that pairing;
 * authored continuity is `(source_id, repository path)`, which is why a rename
   in the repository founds a new lineage instead of quietly joining an old one;
 * a published revision is the SHA-256 of the exact file bytes, and the commit a
@@ -271,6 +272,8 @@ class DefinitionSourceSelection:
     def __post_init__(self) -> None:
         if not isinstance(self.pattern, SelectionPattern):
             raise TypeError("a selection pattern must use its typed contract")
+        if not isinstance(self.kind, RevisionKind):
+            raise TypeError("a selection kind must use its typed contract")
         if self.kind not in _SELECTION_KINDS:
             raise ValueError(
                 f"a selection may declare only {sorted(kind.value for kind in _SELECTION_KINDS)}; "
@@ -296,10 +299,15 @@ def _ordered(
 
 
 @dataclass(frozen=True)
-class DefinitionSourceRevision:
-    """One immutable configuration of one registered definition source."""
+class DefinitionSourceConfiguration:
+    """Everything the operator configured about one source, and nothing else.
 
-    revision_number: int
+    Separate from the revision that keeps it because only the store knows which
+    number a configuration lands under: a caller that named one would be saying
+    what it cannot know, and two callers naming different numbers for the same
+    claim would look like two different configurations.
+    """
+
     kind: DefinitionSourceKind
     location: RepositoryLocation
     ref: RepositoryRef
@@ -307,16 +315,8 @@ class DefinitionSourceRevision:
     connected_by: DefinitionSourceActor
     selections: tuple[DefinitionSourceSelection, ...]
     source_id: DefinitionSourceId = field(init=False)
-    revision_hash: DefinitionSourceRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
-        if (
-            type(self.revision_number) is not int
-            or not 1 <= self.revision_number <= MAXIMUM_SIGNED_INT64
-        ):
-            raise ValueError(
-                "a definition source revision number must be a positive signed int64"
-            )
         if not isinstance(self.kind, DefinitionSourceKind):
             raise TypeError("a definition source kind must use its typed contract")
         if not isinstance(self.location, RepositoryLocation):
@@ -340,8 +340,18 @@ class DefinitionSourceRevision:
                 "one pattern is configured twice"
             )
         object.__setattr__(self, "selections", selections)
-        object.__setattr__(self, "source_id", self._minted_source_id())
-        object.__setattr__(self, "revision_hash", self._configuration_hash())
+        object.__setattr__(
+            self,
+            "source_id",
+            DefinitionSourceId.of(
+                frame(
+                    "definition-source/v1",
+                    self.kind.value.encode("ascii"),
+                    self.location.value.encode("utf-8"),
+                    self.ref.value.encode("utf-8"),
+                )
+            ),
+        )
 
     def selection_for(self, path: RepositoryPath) -> DefinitionSourceSelection | None:
         """The one selection claiming this path, or nothing when none does.
@@ -364,27 +374,39 @@ class DefinitionSourceRevision:
             )
         return claiming[0] if claiming else None
 
-    def _minted_source_id(self) -> DefinitionSourceId:
-        return DefinitionSourceId.of(
-            frame(
-                "definition-source/v1",
-                self.kind.value.encode("ascii"),
-                self.location.value.encode("utf-8"),
-                self.ref.value.encode("utf-8"),
-            )
-        )
 
-    def _configuration_hash(self) -> DefinitionSourceRevisionHash:
+@dataclass(frozen=True)
+class DefinitionSourceRevision:
+    """One configuration of a source, under the number the store gave it."""
+
+    configuration: DefinitionSourceConfiguration
+    revision_number: int
+    revision_hash: DefinitionSourceRevisionHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.configuration, DefinitionSourceConfiguration):
+            raise TypeError("a source configuration must use its typed contract")
+        if (
+            type(self.revision_number) is not int
+            or not 1 <= self.revision_number <= MAXIMUM_SIGNED_INT64
+        ):
+            raise ValueError(
+                "a definition source revision number must be a positive signed int64"
+            )
+        object.__setattr__(self, "revision_hash", self._hashed())
+
+    def _hashed(self) -> DefinitionSourceRevisionHash:
+        configured = self.configuration
         return DefinitionSourceRevisionHash.of(
             frame(
                 "definition-source-revision/v1",
-                self.source_id.value.encode("ascii"),
+                configured.source_id.value.encode("ascii"),
                 struct.pack(">Q", self.revision_number),
-                self.access.value.encode("ascii"),
-                self.connected_by.value.encode("utf-8"),
+                configured.access.value.encode("ascii"),
+                configured.connected_by.value.encode("utf-8"),
                 *(
                     field_bytes
-                    for selection in self.selections
+                    for selection in configured.selections
                     for field_bytes in (
                         selection.pattern.value.encode("utf-8"),
                         selection.kind.value.encode("ascii"),

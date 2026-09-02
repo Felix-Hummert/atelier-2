@@ -18,6 +18,7 @@ before any caller has opened a transaction.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 from atelier2.adapters.project_source import (
     GitRefused,
@@ -26,8 +27,8 @@ from atelier2.adapters.project_source import (
 )
 from atelier2.contracts.definition_sources import (
     AmbiguousSelection,
+    DefinitionSourceConfiguration,
     DefinitionSourceRefusal,
-    DefinitionSourceRevision,
     DefinitionSourceSelection,
     RepositoryPath,
     SourceCommit,
@@ -46,6 +47,7 @@ _GITLINK_MODE = "160000"
 _ENTRY_SEPARATOR = "\0"
 _PATH_SEPARATOR = "\t"
 _COMMIT_OF = "^{commit}"
+_WORKING_TREE_GIT_DIRECTORY = ".git"
 _END_OF_OPTIONS = "--end-of-options"
 """What keeps a configured ref that starts with a dash a ref rather than a flag."""
 
@@ -53,10 +55,10 @@ _END_OF_OPTIONS = "--end-of-options"
 class GitDefinitionSource:
     """One local git repository as the source of the definitions it carries."""
 
-    def scan(self, revision: DefinitionSourceRevision) -> ScannedSource:
-        repository = revision.location.value
-        commit = self._resolved_commit(repository, revision)
-        selected = tuple(self._selected(repository, commit, revision))
+    def scan(self, configuration: DefinitionSourceConfiguration) -> ScannedSource:
+        repository = configuration.location.value
+        commit = self._resolved_commit(repository, configuration)
+        selected = tuple(self._selected(repository, commit, configuration))
         if not selected:
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.NO_SELECTED_FILES,
@@ -65,7 +67,7 @@ class GitDefinitionSource:
         return ScannedSource(commit, selected)
 
     def _resolved_commit(
-        self, repository: str, revision: DefinitionSourceRevision
+        self, repository: str, configuration: DefinitionSourceConfiguration
     ) -> SourceCommit:
         """The commit the configured ref names, refusing the two failures apart.
 
@@ -74,13 +76,7 @@ class GitDefinitionSource:
         typo in the branch -- so the repository is asked first.
         """
 
-        try:
-            self._answered(repository, ("rev-parse", "--git-dir"))
-        except GitRefused as error:
-            raise DefinitionSourceUnreadable(
-                DefinitionSourceRefusal.UNREACHABLE,
-                f"{repository} could not be read as a git repository: {error}",
-            ) from error
+        self._require_repository_at(repository)
         try:
             named = self._line(
                 repository,
@@ -88,21 +84,57 @@ class GitDefinitionSource:
                     "rev-parse",
                     "--verify",
                     _END_OF_OPTIONS,
-                    f"{revision.ref.value}{_COMMIT_OF}",
+                    f"{configuration.ref.value}{_COMMIT_OF}",
                 ),
             )
             return SourceCommit(named)
         except (GitRefused, ValueError) as error:
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.REF_UNRESOLVED,
-                f"{revision.ref.value!r} names no commit in {repository}: {error}",
+                f"{configuration.ref.value!r} names no commit in {repository}: {error}",
             ) from error
 
+    def _require_repository_at(self, repository: str) -> None:
+        """Refuse unless the configured location *is* the repository being read.
+
+        Git walks upwards until it finds one, so a plain directory inside a
+        checkout answers with the repository above it -- and a source
+        configured at that directory would then be scanned out of a repository
+        the operator never named, under a source id minted from a location that
+        holds none of those files. The answer is therefore compared against the
+        location rather than merely awaited.
+        """
+
+        located = Path(repository)
+        try:
+            found = Path(self._line(repository, ("rev-parse", "--absolute-git-dir")))
+        except (GitRefused, OSError) as error:
+            raise DefinitionSourceUnreadable(
+                DefinitionSourceRefusal.UNREACHABLE,
+                f"{repository} could not be read as a git repository: {error}",
+            ) from error
+        try:
+            resolved = located.resolve(strict=True)
+        except OSError as error:
+            raise DefinitionSourceUnreadable(
+                DefinitionSourceRefusal.UNREACHABLE,
+                f"{repository} names no directory: {error}",
+            ) from error
+        if found not in {resolved, resolved / _WORKING_TREE_GIT_DIRECTORY}:
+            raise DefinitionSourceUnreadable(
+                DefinitionSourceRefusal.UNREACHABLE,
+                f"{repository} is not a git repository; it lies inside the one at "
+                f"{found}, whose content this source never named",
+            )
+
     def _selected(
-        self, repository: str, commit: SourceCommit, revision: DefinitionSourceRevision
+        self,
+        repository: str,
+        commit: SourceCommit,
+        configuration: DefinitionSourceConfiguration,
     ) -> Iterator[SelectedFile]:
         for mode, object_name, path in self._entries(repository, commit):
-            selection = self._claiming(revision, path)
+            selection = self._claiming(configuration, path)
             if selection is None:
                 continue
             self._require_regular_blob(mode, path)
@@ -166,10 +198,10 @@ class GitDefinitionSource:
             ) from error
 
     def _claiming(
-        self, revision: DefinitionSourceRevision, path: RepositoryPath
+        self, configuration: DefinitionSourceConfiguration, path: RepositoryPath
     ) -> DefinitionSourceSelection | None:
         try:
-            return revision.selection_for(path)
+            return configuration.selection_for(path)
         except AmbiguousSelection as error:
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.SELECTION_AMBIGUOUS, str(error)

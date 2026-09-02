@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from atelier2.contracts.definition_sources import (
     AmbiguousSelection,
     DefinitionSourceAccess,
     DefinitionSourceActor,
+    DefinitionSourceConfiguration,
     DefinitionSourceKind,
     DefinitionSourceRevision,
     DefinitionSourceSelection,
@@ -30,11 +33,9 @@ def registration(
     location: str = "/srv/definitions.git",
     ref: str = "refs/heads/main",
     actor: str = "felix",
-    revision_number: int = 1,
     patterns: tuple[str, ...] = ("workflows/*.yaml",),
-) -> DefinitionSourceRevision:
-    return DefinitionSourceRevision(
-        revision_number,
+) -> DefinitionSourceConfiguration:
+    return DefinitionSourceConfiguration(
         DefinitionSourceKind.GIT,
         RepositoryLocation(location),
         RepositoryRef(ref),
@@ -56,24 +57,45 @@ def test_a_different_repository_is_a_different_source() -> None:
     assert registration().source_id != registration(location="/srv/other.git").source_id
 
 
-def test_the_configuration_hash_covers_the_selections() -> None:
+def test_a_changed_selection_set_is_another_configuration_of_one_source() -> None:
     widened = registration(patterns=("workflows/*.yaml", "flows/*.yaml"))
 
     assert widened.source_id == registration().source_id
-    assert widened.revision_hash != registration().revision_hash
+    assert widened != registration()
 
 
-def test_the_configuration_hash_covers_the_revision_number_and_the_actor() -> None:
-    assert registration().revision_hash != registration(revision_number=2).revision_hash
-    assert registration().revision_hash != registration(actor="dana").revision_hash
+def test_the_revision_hash_covers_the_number_the_store_gave_it() -> None:
+    configured = registration()
+
+    assert DefinitionSourceRevision(configured, 1).revision_hash != (
+        DefinitionSourceRevision(configured, 2).revision_hash
+    )
+
+
+def test_the_configuration_covers_the_connecting_actor() -> None:
+    assert registration() != registration(actor="dana")
 
 
 def test_selections_written_in_another_order_are_the_same_configuration() -> None:
     typed_one_way = registration(patterns=("workflows/*.yaml", "flows/*.yaml"))
     typed_the_other = registration(patterns=("flows/*.yaml", "workflows/*.yaml"))
 
-    assert typed_one_way.revision_hash == typed_the_other.revision_hash
+    assert typed_one_way == typed_the_other
     assert typed_one_way.selections == typed_the_other.selections
+
+
+def test_a_configuration_names_no_revision_number_of_its_own() -> None:
+    """Only the store knows what already stands, so only the store numbers it."""
+
+    assert not hasattr(registration(), "revision_number")
+
+
+@pytest.mark.parametrize("declared", ["workflow", "skill"])
+def test_a_selection_kind_that_is_only_a_string_is_refused(declared: str) -> None:
+    """`RevisionKind` is a `StrEnum`, so a bare string would pass membership."""
+
+    with pytest.raises(TypeError, match="typed contract"):
+        DefinitionSourceSelection(WORKFLOWS, cast(RevisionKind, declared))
 
 
 def test_a_registration_keeps_its_selections_in_one_stored_order() -> None:

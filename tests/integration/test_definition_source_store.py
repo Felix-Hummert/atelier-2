@@ -32,6 +32,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
     DefinitionSourceActor,
+    DefinitionSourceConfiguration,
     DefinitionSourceId,
     DefinitionSourceKind,
     DefinitionSourceRevision,
@@ -43,6 +44,7 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
 from atelier2.host import main
 from atelier2.ports.definition_sources import (
     DefinitionSourceFound,
@@ -84,9 +86,8 @@ def engine(database: Path) -> Iterator[Engine]:
 
 def registration(
     *patterns: str, location: str = "/srv/definitions.git", ref: str = MAIN
-) -> DefinitionSourceRevision:
-    return DefinitionSourceRevision(
-        1,
+) -> DefinitionSourceConfiguration:
+    return DefinitionSourceConfiguration(
         DefinitionSourceKind.GIT,
         RepositoryLocation(location),
         RepositoryRef(ref),
@@ -152,7 +153,7 @@ def logical_dump(database: Path) -> tuple[str, ...]:
 
 def stored_intake(
     engine: Engine,
-    revision: DefinitionSourceRevision,
+    configuration: DefinitionSourceConfiguration,
     path: str,
     document: bytes,
     intake_number: int,
@@ -177,7 +178,7 @@ def stored_intake(
         )
         connection.execute(
             catalog_source_intakes.insert().values(
-                source_id=revision.source_id.value,
+                source_id=configuration.source_id.value,
                 source_path=path,
                 intake_number=intake_number,
                 revision_kind=RevisionKind.WORKFLOW.value,
@@ -192,18 +193,18 @@ def stored_intake(
 def test_a_connected_source_and_its_selections_survive_a_new_store_reader(
     engine: Engine, database: Path
 ) -> None:
-    revision = registration("workflows/*.yaml", "flows/*.yaml")
+    configured = registration("workflows/*.yaml", "flows/*.yaml")
 
-    stored = DbosDefinitionSources(engine).register(revision)
+    stored = DbosDefinitionSources(engine).register(configured)
     engine.dispose()
 
-    assert stored == DefinitionSourceRegistered(revision)
+    assert stored == DefinitionSourceRegistered(DefinitionSourceRevision(configured, 1))
     reopened = create_canonical_engine(database)
     try:
-        read = DbosDefinitionSources(reopened).read_source(revision.source_id)
+        read = DbosDefinitionSources(reopened).read_source(configured.source_id)
     finally:
         reopened.dispose()
-    assert read == DefinitionSourceFound(revision)
+    assert read == DefinitionSourceFound(DefinitionSourceRevision(configured, 1))
 
 
 def test_connecting_the_same_source_again_keeps_one_source_and_one_revision(
@@ -214,14 +215,38 @@ def test_connecting_the_same_source_again_keeps_one_source_and_one_revision(
 
     again = sources.register(registration())
 
-    assert again == DefinitionSourceUnchanged(registration())
+    assert again == DefinitionSourceUnchanged(
+        DefinitionSourceRevision(registration(), 1)
+    )
+    assert _recorded_revisions(engine) == 1
+
+
+def test_the_standing_selection_set_registered_again_adds_no_revision(
+    engine: Engine,
+) -> None:
+    """The number a configuration stands under is the store's, never a caller's.
+
+    Widening and then narrowing back is the case a caller-numbered revision got
+    wrong: the second registration of the original claim would hash under the
+    number the caller happened to name and be appended a third time.
+    """
+
+    sources = DbosDefinitionSources(engine)
+    sources.register(registration())
+    sources.register(registration("workflows/*.yaml", "flows/*.yaml"))
+
+    again = sources.register(registration("flows/*.yaml", "workflows/*.yaml"))
+
+    assert isinstance(again, DefinitionSourceUnchanged)
+    assert again.revision.revision_number == 2
+    assert _recorded_revisions(engine) == 2
+
+
+def _recorded_revisions(engine: Engine) -> int:
     with engine.connect() as connection:
-        assert (
-            connection.execute(
-                sa.select(sa.func.count()).select_from(host_definition_source_revisions)
-            ).scalar_one()
-            == 1
-        )
+        return connection.execute(
+            sa.select(sa.func.count()).select_from(host_definition_source_revisions)
+        ).scalar_one()
 
 
 def test_a_changed_selection_set_appends_a_revision_of_the_same_source(
@@ -233,7 +258,7 @@ def test_a_changed_selection_set_appends_a_revision_of_the_same_source(
     widened = sources.register(registration("workflows/*.yaml", "flows/*.yaml"))
 
     assert isinstance(widened, DefinitionSourceRegistered)
-    assert widened.revision.source_id == registration().source_id
+    assert widened.revision.configuration.source_id == registration().source_id
     assert widened.revision.revision_number == 2
     assert sources.read_source(registration().source_id) == DefinitionSourceFound(
         widened.revision
@@ -251,13 +276,13 @@ def test_a_source_nobody_registered_is_missing(engine: Engine) -> None:
 def test_the_latest_intake_of_a_path_is_the_highest_intake_number(
     engine: Engine,
 ) -> None:
-    revision = registration()
-    DbosDefinitionSources(engine).register(revision)
-    stored_intake(engine, revision, "workflows/build.yaml", b"first bytes", 1)
-    stored_intake(engine, revision, "workflows/build.yaml", b"second bytes", 2)
-    stored_intake(engine, revision, "workflows/ship.yaml", b"ship bytes", 1)
+    configured = registration()
+    DbosDefinitionSources(engine).register(configured)
+    stored_intake(engine, configured, "workflows/build.yaml", b"first bytes", 1)
+    stored_intake(engine, configured, "workflows/build.yaml", b"second bytes", 2)
+    stored_intake(engine, configured, "workflows/ship.yaml", b"ship bytes", 1)
 
-    latest = DbosDefinitionSources(engine).latest_intakes(revision.source_id)
+    latest = DbosDefinitionSources(engine).latest_intakes(configured.source_id)
 
     assert isinstance(latest, Mapping)
     assert {
@@ -284,9 +309,9 @@ def test_the_latest_intake_of_a_path_is_the_highest_intake_number(
 def test_what_a_definition_source_recorded_cannot_be_edited_or_removed(
     engine: Engine, table: sa.Table
 ) -> None:
-    revision = registration()
-    DbosDefinitionSources(engine).register(revision)
-    stored_intake(engine, revision, "workflows/build.yaml", b"bytes", 1)
+    configured = registration()
+    DbosDefinitionSources(engine).register(configured)
+    stored_intake(engine, configured, "workflows/build.yaml", b"bytes", 1)
 
     for statement in (table.delete(), table.update().values(revision_hash="0" * 64)):
         with pytest.raises(IntegrityError, match="immutable"), engine.begin() as opened:
@@ -319,8 +344,8 @@ def test_the_command_connects_a_repository_and_scans_every_workflow_in_it(
         )
         == 0
     )
-    connected = capsys.readouterr().out
-    source_id = connected.split(" as ")[1].split(" revision ")[0]
+    source_id = registration(location=str(repository)).source_id.value
+    assert source_id in capsys.readouterr().out
     before = logical_dump(database)
 
     assert (
@@ -367,7 +392,8 @@ def test_a_moved_ref_changes_the_commit_the_command_reports(
             "felix",
         ]
     )
-    source_id = capsys.readouterr().out.split(" as ")[1].split(" revision ")[0]
+    source_id = registration(location=str(repository)).source_id.value
+    assert source_id in capsys.readouterr().out
     scan = [
         "definition-source",
         "scan",
@@ -385,6 +411,90 @@ def test_a_moved_ref_changes_the_commit_the_command_reports(
     moved = capsys.readouterr().out
     assert first != second
     assert first in standing and second in moved
+
+
+def test_the_command_refuses_to_register_a_location_that_answers_nothing(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """There is no disconnect yet, so a wire to nowhere is never recorded."""
+
+    (tmp_path / "not-a-repository").mkdir()
+
+    exit_code = main(
+        [
+            "definition-source",
+            "connect",
+            "--database",
+            str(database),
+            "--location",
+            str(tmp_path / "not-a-repository"),
+            "--ref",
+            MAIN,
+            "--select",
+            f"{WORKFLOW_SELECTION}=workflow",
+            "--actor",
+            "felix",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "definition_source_unreachable" in capsys.readouterr().err
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                sa.select(sa.func.count()).select_from(host_definition_source_revisions)
+            ).scalar_one()
+            == 0
+        )
+
+
+def test_the_command_names_the_publication_refusal_a_selected_file_earns(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The scan repeats the publication door's own token, not a paraphrase."""
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(
+        repository,
+        {"workflows/broken.yaml": b"format_version: 3\nname: b\nnodes: []\n"},
+    )
+    assert (
+        main(
+            [
+                "definition-source",
+                "connect",
+                "--database",
+                str(database),
+                "--location",
+                str(repository),
+                "--ref",
+                MAIN,
+                "--select",
+                f"{WORKFLOW_SELECTION}=workflow",
+                "--actor",
+                "felix",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "definition-source",
+            "scan",
+            "--database",
+            str(database),
+            "--source-id",
+            registration(location=str(repository)).source_id.value,
+        ]
+    )
+
+    assert exit_code == 1
+    refused = capsys.readouterr().err
+    assert "workflows/broken.yaml" in refused
+    assert WorkflowRefusalReason.INVALID_VALUE.value in refused
+    assert "'nodes'" in refused
 
 
 def test_the_command_refuses_a_source_id_nobody_registered(

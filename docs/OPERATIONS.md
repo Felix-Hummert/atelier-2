@@ -845,9 +845,13 @@ atelier2 definition-source connect --database /path/to/atelier.sqlite \
     --select 'workflows/*.yaml=workflow' --actor felix
 ```
 
-`connect` records the repository, the ref, and the selections, and prints the
-source id every later command names. A selection is `PATTERN=KIND`; the kind is
-configured, never guessed from the repository's layout
+`connect` reads the repository at the given location and resolves the ref
+before it records anything, and refuses without writing when either answers
+nothing -- there is no way to disconnect a source yet, so a wire to nowhere is
+never registered. It then records the repository, the ref, and the selections,
+and prints the source id every later command names. A selection is
+`PATTERN=KIND`; the kind is configured, never guessed from the repository's
+layout
 ([ADR 0018](decisions/0018-plugin-intake-and-neutral-roles.md)). The one
 wildcard is `*`, matching inside a single path segment. Connecting the same
 repository at the same ref again is the same source, not a second one.
@@ -863,7 +867,9 @@ catalog does not hold these bytes, `in_sync` when it does, and `source_absent`
 for a path the catalog holds that the source stopped carrying. It writes
 nothing at all, so a scan never changes what a run would use.
 
-Both refuse before writing anything, in one closed vocabulary:
+The location must *be* the repository: a directory that merely lies inside one
+is refused, because a scan of it would read a repository the operator never
+named. Both commands refuse before writing anything, in one closed vocabulary:
 `definition_source_unreachable`, `_ref_unresolved`, `_layout_unrecognized`,
 `_selection_ambiguous`, `_path_escapes_repository`, `_no_selected_files`,
 `_symlink_selected`, `_gitlink_selected`. A selected file the publication door

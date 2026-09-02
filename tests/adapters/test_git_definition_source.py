@@ -20,9 +20,9 @@ from atelier2.adapters.git_definition_source import GitDefinitionSource
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
     DefinitionSourceActor,
+    DefinitionSourceConfiguration,
     DefinitionSourceKind,
     DefinitionSourceRefusal,
-    DefinitionSourceRevision,
     DefinitionSourceSelection,
     RepositoryLocation,
     RepositoryRef,
@@ -110,14 +110,13 @@ def registration(
     repository: BareRepository | Path,
     *patterns: str,
     ref: str = MAIN,
-) -> DefinitionSourceRevision:
+) -> DefinitionSourceConfiguration:
     location = (
         repository.location
         if isinstance(repository, BareRepository)
         else str(repository)
     )
-    return DefinitionSourceRevision(
-        1,
+    return DefinitionSourceConfiguration(
         DefinitionSourceKind.GIT,
         RepositoryLocation(location),
         RepositoryRef(ref),
@@ -130,9 +129,11 @@ def registration(
     )
 
 
-def refusal_of(revision: DefinitionSourceRevision) -> DefinitionSourceRefusal:
+def refusal_of(
+    configuration: DefinitionSourceConfiguration,
+) -> DefinitionSourceRefusal:
     with pytest.raises(DefinitionSourceUnreadable) as refused:
-        GitDefinitionSource().scan(revision)
+        GitDefinitionSource().scan(configuration)
     return refused.value.refusal
 
 
@@ -224,6 +225,34 @@ def test_a_location_that_is_no_repository_refuses_by_name(tmp_path: Path) -> Non
         refusal_of(registration(tmp_path / "not-a-repository"))
         == DefinitionSourceRefusal.UNREACHABLE
     )
+
+
+def test_a_plain_directory_inside_a_repository_is_not_that_repository(
+    tmp_path: Path,
+) -> None:
+    """Git walks upwards; a source configured here never named those files."""
+
+    enclosing = tmp_path / "checkout"
+    enclosing.mkdir()
+    BareRepository(enclosing / ".git").commit(
+        {"workflows/build.yaml": regular("name: build")}
+    )
+    nested = enclosing / "somewhere" / "inside"
+    nested.mkdir(parents=True)
+
+    assert refusal_of(registration(nested)) == DefinitionSourceRefusal.UNREACHABLE
+
+
+def test_a_working_tree_is_read_through_the_repository_it_owns(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    commit = BareRepository(checkout / ".git").commit(
+        {"workflows/build.yaml": regular("name: build")}
+    )
+
+    assert GitDefinitionSource().scan(registration(checkout)).commit.value == commit
 
 
 def test_a_location_that_is_not_even_a_directory_refuses_by_name(
