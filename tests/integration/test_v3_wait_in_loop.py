@@ -35,9 +35,8 @@ from httpx import Response
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
-from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.references import encode_public_run_reference
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
@@ -51,7 +50,6 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
@@ -79,6 +77,10 @@ from tests.scenarios.api import (
     durable_ports,
     durable_queries,
     event_poll_backoff,
+)
+from tests.scenarios.durable_state import (
+    canonical_loopback_effects,
+    canonical_runtime_settings,
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
@@ -241,16 +243,10 @@ def provider() -> RecordingAgentExecutorFactoryV2:
 def runtime_over(root: Path, recording: RecordingAgentExecutorFactoryV2) -> DbosRuntime:
     """A runtime over the durable state in this directory, as a restart builds one."""
     return DbosRuntime(
-        DbosRuntimeSettings(
-            root / "atelier.sqlite",
-            "v3-wait-in-loop-test",
-            agent_scratch_root=agent_scratch_root(root),
+        canonical_runtime_settings(
+            root, "v3-wait-in-loop-test", agent_scratch_root(root)
         ),
-        LoopbackEffectAdapterFactory(
-            root / "external.sqlite",
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-        ),
+        canonical_loopback_effects(root),
         (recording,),
     )
 
