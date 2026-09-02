@@ -3,14 +3,13 @@
 # installation", auto-redeploy); its enable command fills in the two
 # placeholder paths below.
 #
-# `systemctl start` on an already-active oneshot unit is a no-op rather than a
-# second concurrent run, so a poll that outlasts the timer's interval cannot
-# overlap itself; scripts/auto_redeploy.sh needs no lock of its own for that.
-# scripts/container_live.sh still serializes the redeploy itself.
+# The watcher also takes a lock in Git's admin directory so timer and hand-run
+# cycles share the same serialization and counters.
 [Unit]
 Description=Atelier2 auto redeploy: pull origin/main and update the local live serve
 
 [Service]
 Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/absolute/path/to/atelier-2
 ExecStart=/absolute/path/to/atelier-2/scripts/auto_redeploy.sh
