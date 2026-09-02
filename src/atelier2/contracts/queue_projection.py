@@ -582,3 +582,24 @@ class QueueItemSnapshot:
             admission,
             QueueProjectionRevision(self.revision.value + 1),
         )
+
+
+type QueueStartOrderKey = tuple[bool, int, str]
+
+
+def queue_start_order_key(snapshot: QueueItemSnapshot) -> QueueStartOrderKey:
+    """The one ordering an admitted item's start, and its list position, share.
+
+    `advance_queue` starts admitted items in this order; `GET /queue-items`
+    (the DBOS store) lists every item in this same order over the same three
+    members, computed in SQL. One owner for the rule keeps the list an
+    operator reads honest about the order a run would actually take: an item
+    with no proposal (a legacy admission) sorts after every ranked item,
+    lower `priority.rank` runs first, and `item_id` breaks a tie.
+    """
+
+    return (
+        snapshot.proposal is None,
+        snapshot.proposal.priority.rank if snapshot.proposal is not None else 0,
+        snapshot.item_reference.item_id.value,
+    )
