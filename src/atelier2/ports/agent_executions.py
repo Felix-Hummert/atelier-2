@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -29,6 +30,12 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeReceipt,
+    ProviderProbeResult,
+)
+from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
 
 MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = MAXIMUM_RUNNER_STANDARD_ERROR_BYTES
 
@@ -306,6 +313,54 @@ class AgentExecutorFactoryV2(Protocol):
     def open(self) -> AgentExecutorV2: ...
 
 
+class ProviderProbeReceiptReads(Protocol):
+    """The narrow read this registry needs from wherever receipts are filed.
+
+    Kept apart from the receipt's own storage shape (a small `.json` file per
+    vector, which `host/provider_canary.py` writes) so the registry never
+    learns where or how evidence is kept -- only that it can be asked for, by
+    the configuration it proves.
+    """
+
+    def receipt_for(
+        self, configuration_hash: AgentConfigurationRevisionHash
+    ) -> ProviderProbeReceipt | None: ...
+
+
+@dataclass(frozen=True)
+class ProviderProbeReceiptGate:
+    """Whether one configuration's live evidence is still trustworthy, right now.
+
+    Three independent facts must all hold: a receipt exists, it succeeded (a
+    receipt carrying a problem code is evidence of the opposite), it was
+    proven under the source this deployment actually runs (a receipt from a
+    different `source_commit` proves nothing about this one), and the clock
+    still sits inside its validity window. Any one absence answers `False` --
+    there is no partial credit for stale or foreign proof.
+    """
+
+    reads: ProviderProbeReceiptReads
+    deployment_source_commit: str
+    clock: Callable[[], RecordedAt]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.deployment_source_commit, str) or not (
+            self.deployment_source_commit
+        ):
+            raise ValueError(
+                "a provider probe receipt gate needs this deployment's own "
+                "nonempty source commit to judge foreign evidence"
+            )
+
+    def is_proven(self, configuration_hash: AgentConfigurationRevisionHash) -> bool:
+        receipt = self.reads.receipt_for(configuration_hash)
+        if receipt is None or receipt.result is not ProviderProbeResult.SUCCEEDED:
+            return False
+        if receipt.source_commit != self.deployment_source_commit:
+            return False
+        return receipt.is_valid_at(self.clock())
+
+
 @dataclass(frozen=True)
 class AgentExecutorRegistryEntry:
     object_identity: int | None
@@ -365,7 +420,29 @@ class AgentExecutorRegistry:
         registrations: tuple[
             AgentExecutorFactoryV2 | AgentExecutorRegistration, ...
         ] = (),
+        *,
+        receipt_gate: ProviderProbeReceiptGate | None = None,
+        reprobe_exempt_workflow_revisions: Callable[
+            [], frozenset[WorkflowRevisionHash]
+        ] = lambda: frozenset(),
     ) -> None:
+        """Build the registry, optionally armed with its receipt gate.
+
+        `receipt_gate` is the registry's one safety switch: omitted, every
+        caller keeps today's factory-and-capability answer exactly, which is
+        what every registry outside a served deployment still wants. Wired
+        (`adapters/dbos/runtime.py`'s single production construction site
+        always wires it), `is_startable` additionally requires live proof for
+        the exact configuration asked about. `reprobe_exempt_workflow_revisions`
+        is asked fresh on every call rather than resolved once here, because
+        the deployment's admitted canary revisions can change while this
+        registry keeps serving; its structural default, an empty set, exempts
+        nothing -- there is no flag to leave off by accident, only hashes to
+        list.
+        """
+
+        self._receipt_gate = receipt_gate
+        self._reprobe_exempt_workflow_revisions = reprobe_exempt_workflow_revisions
         factories = tuple(
             registration.factory
             if isinstance(registration, AgentExecutorRegistration)
@@ -459,13 +536,35 @@ class AgentExecutorRegistry:
         answer is about -- several configurations can share one executor
         revision, so a caller with proof state to consult (a provider probe
         receipt is keyed by configuration, not executor) needs the answer at
-        this grain. This slice only threads the identity through every
-        caller; the receipt gate that reads it lands in the next slice, armed
-        together with its receipt store.
+        this grain. The factory-and-capability decision below always runs
+        first and alone can already refuse; only once it holds does an armed
+        registry go on to ask its receipt gate whether live evidence for this
+        exact configuration is still trustworthy. A registry built without a
+        receipt gate never asks that second question at all.
         """
         entry = self._by_key.get(key)
-        return (
-            entry is not None
-            and entry.factory is not None
-            and capability in entry.manifest_entry.declared_capabilities
-        )
+        if (
+            entry is None
+            or entry.factory is None
+            or capability not in entry.manifest_entry.declared_capabilities
+        ):
+            return False
+        if self._receipt_gate is None:
+            return True
+        return self._receipt_gate.is_proven(configuration_hash)
+
+    def reprobe_exempt(self, workflow_hash: WorkflowRevisionHash) -> bool:
+        """Whether starting this exact workflow needs no receipt evidence yet.
+
+        The one reprobe exemption: a fresh canary run of a currently admitted
+        `provider-canary-*` workflow is what produces the receipt a normal
+        start would otherwise require, so refusing it too would strand the
+        deployment with no way to ever prove itself again. Membership is
+        judged by `WorkflowRevisionHash` alone, never by a name or a flag --
+        the admitted set is asked fresh, and an empty or unresolved set
+        exempts nothing, structurally, because there is no hash it could ever
+        equal.
+        """
+        if not isinstance(workflow_hash, WorkflowRevisionHash):
+            raise TypeError("a reprobe exemption is asked about a typed workflow hash")
+        return workflow_hash in self._reprobe_exempt_workflow_revisions()

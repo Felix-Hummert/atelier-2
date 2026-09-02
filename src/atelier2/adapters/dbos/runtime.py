@@ -97,12 +97,14 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationBinding,
 )
 from atelier2.contracts.agents import (
+    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutorRevision,
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.catalog_v3 import CatalogLineageDisplayName
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -116,6 +118,11 @@ from atelier2.contracts.host_configuration import (
     ProjectRootMissing,
     ProjectUnknown,
 )
+from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeReceipt,
+    read_provider_probe_receipt,
+)
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runner_leases import RunnerLeaseId
 from atelier2.contracts.runner_manifests import (
     _COMMIT as RUNNER_SOURCE_COMMIT_FORMAT,
@@ -127,6 +134,8 @@ from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
     candidate_runner_manifest,
 )
+from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.when import recorded_instant
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_executions import (
     AgentExecutorCarrier,
@@ -136,6 +145,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorRegistration,
     AgentExecutorRegistry,
     AgentExecutorV2,
+    ProviderProbeReceiptGate,
 )
 from atelier2.ports.effects import (
     EffectAdapter,
@@ -145,6 +155,7 @@ from atelier2.ports.effects import (
     OpenEffectAdapterRegistry,
 )
 from atelier2.ports.project_verification import DeclaredProject
+from atelier2.ports.published_revisions import CatalogNameFound
 from atelier2.ports.runner_leases import RunnerLeaseWithdrawn
 
 _LOG = logging.getLogger("atelier2")
@@ -214,6 +225,18 @@ class DbosRuntimeSettings:
     runner_core_identity_directory: Path | None = None
     runner_accept_timeout_seconds: float | None = None
     runner_lease_source_commit: str | None = None
+    # The receipt gate (`#1013`): declared together or not at all, exactly
+    # like the Runner-lease group above and for the same reason -- a
+    # directory with no deployment identity to judge foreign evidence against
+    # is a half-armed gate, not a safer one. `None` for both is what every
+    # `DbosRuntimeSettings` outside `HostSettings.runtime_settings()` already
+    # passes; `is_startable` then keeps its unarmed, factory-and-capability
+    # answer exactly, since none of those registries model live provider
+    # evidence at all. `provider_probe_receipt_source_commit` is a third
+    # carrier of `HostSettings.source_commit`, beside `runner_lease_source_commit`
+    # above, for the same reason that one is its own field rather than reused.
+    provider_probe_receipt_directory: Path | None = None
+    provider_probe_receipt_source_commit: str | None = None
 
     def __post_init__(self) -> None:
         if not self.application_version.strip():
@@ -275,6 +298,24 @@ class DbosRuntimeSettings:
             raise ValueError(
                 "runner_lease_source_commit must be a full 40-character commit SHA"
             )
+        receipt_gate_fields = (
+            self.provider_probe_receipt_directory,
+            self.provider_probe_receipt_source_commit,
+        )
+        declared_receipt_gate = tuple(
+            field for field in receipt_gate_fields if field is not None
+        )
+        if declared_receipt_gate and len(declared_receipt_gate) != len(
+            receipt_gate_fields
+        ):
+            raise ValueError(
+                "a receipt gate needs its receipt directory and this "
+                "deployment's source commit declared together, not in part"
+            )
+        if self.provider_probe_receipt_source_commit is not None and not (
+            self.provider_probe_receipt_source_commit.strip()
+        ):
+            raise ValueError("provider_probe_receipt_source_commit must be nonempty")
 
     @property
     def runner_lease_declared(self) -> bool:
@@ -1358,6 +1399,92 @@ class _DbosProcessOwner:
 _PROCESS_OWNER = _DbosProcessOwner()
 
 
+@dataclass(frozen=True)
+class _FilesystemProviderProbeReceiptReads:
+    """Reads a live provider probe receipt by the configuration it proves.
+
+    `host/provider_canary.py` files each receipt under its own vector id, not
+    under the configuration hash a caller here asks about, so this scans the
+    small, fixed-size receipt directory instead of trusting a filename. An
+    unreadable directory, an unreadable file, or bytes that do not parse as a
+    receipt all answer "no receipt for this configuration" rather than
+    raising: absent or corrupt evidence is exactly what an armed gate already
+    refuses, and one bad file must not blind every other vector's own answer.
+    """
+
+    directory: Path
+
+    def receipt_for(
+        self, configuration_hash: AgentConfigurationRevisionHash
+    ) -> ProviderProbeReceipt | None:
+        try:
+            entries = tuple(self.directory.glob("*.json"))
+        except OSError:
+            return None
+        for entry in entries:
+            try:
+                document = entry.read_bytes()
+            except OSError:
+                continue
+            receipt = read_provider_probe_receipt(document)
+            if (
+                isinstance(receipt, ProviderProbeReceipt)
+                and receipt.configuration_hash == configuration_hash
+            ):
+                return receipt
+        return None
+
+
+# The three workflow documents `host/provider_canary.py`'s own
+# `_WORKFLOW_BY_EXECUTOR` names (`provider-canary-headless`,
+# `-workspace-tools`, `-atelier-doors`); mirrored here as catalog identifiers
+# rather than imported because `atelier2.host` imports this module -- the
+# other direction would close an import cycle. `_resolve_admitted_canary_revisions`
+# below reuses that module's own by-name resolution mechanism
+# (`DbosCatalogStore.resolve_name`, the same lookup `GET
+# /workflow-revisions/by-name/{name}` answers from), not a second one.
+_CANARY_WORKFLOW_NAMES = (
+    "provider-canary-headless",
+    "provider-canary-workspace-tools",
+    "provider-canary-atelier-doors",
+)
+
+
+def _resolve_admitted_canary_revisions(
+    engine: Engine,
+) -> frozenset[WorkflowRevisionHash]:
+    """The live-admitted head revision of every currently named canary workflow.
+
+    Asked fresh on every reprobe exemption check, not cached: an unresolved or
+    retired name simply contributes no hash, so a misconfigured or empty
+    catalog answers the empty set -- the exemption's own structural default,
+    not a special case handled here.
+    """
+
+    store = DbosCatalogStore(engine)
+    resolved: set[WorkflowRevisionHash] = set()
+    for name in _CANARY_WORKFLOW_NAMES:
+        found = store.resolve_name(
+            RevisionKind.WORKFLOW, CatalogLineageDisplayName(name), "head"
+        )
+        if isinstance(found, CatalogNameFound) and not found.retired:
+            resolved.add(WorkflowRevisionHash(found.revision_hash.value))
+    return frozenset(resolved)
+
+
+def _receipt_gate(settings: DbosRuntimeSettings) -> ProviderProbeReceiptGate | None:
+    if (
+        settings.provider_probe_receipt_directory is None
+        or settings.provider_probe_receipt_source_commit is None
+    ):
+        return None
+    return ProviderProbeReceiptGate(
+        _FilesystemProviderProbeReceiptReads(settings.provider_probe_receipt_directory),
+        settings.provider_probe_receipt_source_commit,
+        recorded_instant,
+    )
+
+
 class DbosRuntime:
     """One lease on the process-global DBOS runtime binding.
 
@@ -1374,7 +1501,11 @@ class DbosRuntime:
         ] = (),
     ) -> None:
         self._close_lock = threading.Lock()
-        registry = AgentExecutorRegistry(agent_executor_factories_v2)
+        registry = AgentExecutorRegistry(
+            agent_executor_factories_v2,
+            receipt_gate=_receipt_gate(settings),
+            reprobe_exempt_workflow_revisions=self._reprobe_exempt_workflow_revisions,
+        )
         effect_registry = (
             effect_adapter_factory
             if isinstance(effect_adapter_factory, EffectAdapterRegistry)
@@ -1398,6 +1529,18 @@ class DbosRuntime:
     @property
     def engine(self) -> Engine:
         return self._held().engine
+
+    def _reprobe_exempt_workflow_revisions(self) -> frozenset[WorkflowRevisionHash]:
+        """The registry's own exemption source, bound but not yet callable.
+
+        Passed into `AgentExecutorRegistry` before `self._bound` exists --
+        that registry is what `_PROCESS_OWNER.acquire` below needs to open the
+        binding in the first place. Safe anyway: nothing calls this bound
+        method until a real start reaches the exemption check, and by then
+        `self._bound` is set and `self.engine` answers.
+        """
+
+        return _resolve_admitted_canary_revisions(self.engine)
 
     @property
     def datasource(self) -> SQLAlchemyDatasource:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pytest
@@ -39,6 +40,7 @@ from atelier2.contracts.host_configuration import (
     ProviderModelCheck,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     BindingConstraint,
@@ -50,6 +52,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorRegistration,
     AgentExecutorRegistry,
     AgentExecutorV2,
+    ProviderProbeReceiptGate,
 )
 from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
@@ -138,21 +141,36 @@ def _configuration(
     )
 
 
-# `resolve_start_bindings` only threads its `workflow_hash` through this
-# slice; the reprobe exemption that reads it lands in a later slice, so every
-# scenario here names one hash it never inspects.
+# `resolve_start_bindings` reads `workflow_hash` for its reprobe exemption,
+# but every `_registry()` below carries no receipt gate, so `is_startable`
+# never refuses and the exemption is never reached (`and` short-circuits on
+# its first, always-true operand) -- this hash stays a genuine non-participant
+# across every scenario in this module. `test_reprobe_exemption_*` below owns
+# the scenarios where an armed registry actually consults it.
 _UNCONSULTED_WORKFLOW_HASH = WorkflowRevisionHash("0" * 64)
 
 
 def _registry(
-    *factories: FakeExecutorFactory, unavailable: bool = False
+    *factories: FakeExecutorFactory,
+    unavailable: bool = False,
+    receipt_gate: ProviderProbeReceiptGate | None = None,
+    reprobe_exempt_workflow_revisions: Callable[[], frozenset[WorkflowRevisionHash]]
+    | None = None,
 ) -> AgentExecutorRegistry:
     build = (
         AgentExecutorRegistration.unavailable
         if unavailable
         else AgentExecutorRegistration.startable
     )
-    return AgentExecutorRegistry(tuple(build(factory) for factory in factories))
+    return AgentExecutorRegistry(
+        tuple(build(factory) for factory in factories),
+        receipt_gate=receipt_gate,
+        reprobe_exempt_workflow_revisions=(
+            reprobe_exempt_workflow_revisions
+            if reprobe_exempt_workflow_revisions is not None
+            else (lambda: frozenset())
+        ),
+    )
 
 
 def _single_role_graph(role: str = "builder") -> WorkflowGraphV3:
@@ -969,6 +987,99 @@ def test_declared_but_unstartable_executor_refuses() -> None:
 
     result = resolve_start_bindings(
         _single_role_graph(), _UNCONSULTED_WORKFLOW_HASH, bindings, reads, registry
+    )
+
+    assert result == DurableAgentExecutorBindingUnavailable()
+
+
+class _NoReceipts:
+    """A receipt store that has never seen any evidence at all."""
+
+    def receipt_for(self, configuration_hash: AgentConfigurationRevisionHash) -> None:
+        return None
+
+
+def _armed_but_unproven_registry(
+    *, reprobe_exempt_workflow_revisions: Callable[[], frozenset[WorkflowRevisionHash]]
+) -> AgentExecutorRegistry:
+    """A structurally startable registry whose receipt gate proves nothing.
+
+    The factory is registered and declares the capability, so the only
+    question left for `resolve_start_bindings` to refuse or admit on is the
+    receipt gate -- exactly what the reprobe exemption exists to answer.
+    """
+
+    return _registry(
+        FakeExecutorFactory("exact"),
+        receipt_gate=ProviderProbeReceiptGate(
+            _NoReceipts(), "a" * 40, lambda: RecordedAt("2026-01-01T00:00:00Z")
+        ),
+        reprobe_exempt_workflow_revisions=reprobe_exempt_workflow_revisions,
+    )
+
+
+def test_reprobe_exemption_admits_a_start_with_no_receipt_for_an_admitted_canary_workflow() -> (
+    None
+):
+    """A fresh canary run of an admitted workflow needs no receipt yet."""
+    auth = _auth()
+    configuration = _configuration(auth)
+    bindings = AgentBindingSet(
+        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+    )
+    reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
+    canary_workflow_hash = WorkflowRevisionHash("1" * 64)
+    registry = _armed_but_unproven_registry(
+        reprobe_exempt_workflow_revisions=lambda: frozenset({canary_workflow_hash})
+    )
+
+    result = resolve_start_bindings(
+        _single_role_graph(), canary_workflow_hash, bindings, reads, registry
+    )
+
+    assert result == (ResolvedAgentBinding(AgentRole("builder"), configuration, auth),)
+
+
+def test_reprobe_exemption_refuses_a_workflow_the_admitted_set_does_not_name() -> None:
+    """A missing receipt still refuses when this start is not itself a canary."""
+    auth = _auth()
+    configuration = _configuration(auth)
+    bindings = AgentBindingSet(
+        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+    )
+    reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
+    admitted_canary_workflow_hash = WorkflowRevisionHash("1" * 64)
+    started_workflow_hash = WorkflowRevisionHash("2" * 64)
+    registry = _armed_but_unproven_registry(
+        reprobe_exempt_workflow_revisions=lambda: frozenset(
+            {admitted_canary_workflow_hash}
+        )
+    )
+
+    result = resolve_start_bindings(
+        _single_role_graph(), started_workflow_hash, bindings, reads, registry
+    )
+
+    assert result == DurableAgentExecutorBindingUnavailable()
+
+
+def test_an_empty_reprobe_exemption_set_refuses_every_workflow_including_the_canary() -> (
+    None
+):
+    """A misconfigured or unresolved admitted set exempts nothing -- not even
+    the workflow whose own run would have produced the missing evidence."""
+    auth = _auth()
+    configuration = _configuration(auth)
+    bindings = AgentBindingSet(
+        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+    )
+    reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
+    registry = _armed_but_unproven_registry(
+        reprobe_exempt_workflow_revisions=lambda: frozenset()
+    )
+
+    result = resolve_start_bindings(
+        _single_role_graph(), WorkflowRevisionHash("1" * 64), bindings, reads, registry
     )
 
     assert result == DurableAgentExecutorBindingUnavailable()

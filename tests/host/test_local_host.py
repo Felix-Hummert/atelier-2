@@ -9,6 +9,7 @@ import subprocess
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Never
 from urllib.error import HTTPError
@@ -77,8 +78,15 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.provider_probe_receipts import (
+    ProviderProbeReceipt,
+    ProviderProbeResult,
+    ProviderProbeVectorId,
+)
+from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.when import recorded_instant
 from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
@@ -337,6 +345,7 @@ def served_settings(
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS,
     project_id: ProjectId | None = None,
     project_root: Path | None = None,
+    provider_probe_receipt_directory: Path | None = None,
     **tuning: int,
 ) -> HostSettings:
     frontend = tmp_path / "frontend"
@@ -350,8 +359,16 @@ def served_settings(
         effect_adapter_revision="loopback-v1",
         effect_destination="local",
         application_version="composition-test",
-        source_commit="commit",
+        source_commit="c" * 40,
         source_tree="tree",
+        # Isolated per test, never the operator's real XDG state directory:
+        # a stray real receipt must never make an unrelated test's gate
+        # answer depend on what happens to sit on the machine running it.
+        provider_probe_receipt_directory=(
+            provider_probe_receipt_directory
+            if provider_probe_receipt_directory is not None
+            else tmp_path / "provider-probes"
+        ),
         frontend_dist=frontend,
         host=host,
         agent_scratch_root=(
@@ -997,10 +1014,16 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         assert runtime.agent_executor_registry.keys == frozenset(
             {CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, GROK_SUBSCRIPTION_EXECUTOR_KEY}
         )
+        # Claude's own declared start refusal (the version mismatch above)
+        # makes this executor's factory unavailable, so `is_startable` refuses
+        # on that structural ground alone -- it never reaches a receipt
+        # question for this hash, which is why the hash naming no real
+        # configuration is safe here rather than a gap in the proof.
+        never_published_configuration_hash = AgentConfigurationRevisionHash("0" * 64)
         assert not runtime.agent_executor_registry.is_startable(
             CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
             AgentExecutionCapability.HEADLESS,
-            AgentConfigurationRevisionHash("0" * 64),
+            never_published_configuration_hash,
         )
         catalog = DbosAgentConfigurationCatalog(
             runtime.engine, runtime.agent_executor_registry
@@ -1039,6 +1062,23 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         assert isinstance(
             catalog.publish_agent_configuration_revision(grok_configuration),
             AgentConfigurationRevisionCreated,
+        )
+        assert settings.provider_probe_receipt_directory is not None
+        settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC)
+        grok_receipt = ProviderProbeReceipt(
+            ProviderProbeVectorId("headless-grok-4"),
+            grok_configuration.revision_hash,
+            WorkflowRevisionHash("b" * 64),
+            settings.source_commit,
+            recorded_instant(now - timedelta(minutes=1)),
+            recorded_instant(now + timedelta(hours=1)),
+            ProviderProbeResult.SUCCEEDED,
+            RunId("provider-canary/grok-4-fixture"),
+            terminal_hash=Sha256Hash("d" * 64),
+        )
+        (settings.provider_probe_receipt_directory / "grok-4.json").write_bytes(
+            grok_receipt.canonical_bytes()
         )
         listed = catalog.list_agent_configuration_revisions(None, 50)
         assert isinstance(listed, AgentConfigurationRevisionPage)
