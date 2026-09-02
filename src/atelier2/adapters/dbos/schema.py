@@ -26,6 +26,18 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_DEFINITION_SOURCE_ACTOR_CHARACTERS,
+    MAXIMUM_DEFINITION_SOURCE_SELECTIONS,
+    MAXIMUM_GIT_OBJECT_NAME_CHARACTERS,
+    MAXIMUM_REPOSITORY_LOCATION_CHARACTERS,
+    MAXIMUM_REPOSITORY_PATH_CHARACTERS,
+    MAXIMUM_REPOSITORY_REF_CHARACTERS,
+    MAXIMUM_SELECTION_PATTERN_CHARACTERS,
+    MINIMUM_GIT_OBJECT_NAME_CHARACTERS,
+    DefinitionSourceAccess,
+    DefinitionSourceKind,
+)
 from atelier2.contracts.executions import WaitAnswerAttributionKind
 from atelier2.contracts.hashing import frame
 from atelier2.contracts.host_configuration import (
@@ -56,6 +68,7 @@ from atelier2.contracts.queue_projection import (
     QueueAutomationDisposition,
     QueueDecisionAuthority,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
@@ -78,9 +91,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 47 gives the queue item its last-observed tracker title, when it was
-# observed, and when import derived it retired (ADR 0016, 2026-09-01 amendment).
-_HOP_PREDECESSOR_VERSION = 47
+# Hop 48 registers the git definition sources the catalog takes content out of,
+# their configured selections, and the provenance of every path they deliver
+# (ADR 0007 decision 2, ADR 0018).
+_HOP_PREDECESSOR_VERSION = 48
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -122,6 +136,7 @@ _VERSION_FORTY_FIVE = 45
 _VERSION_FORTY_SIX = 46
 _VERSION_FORTY_SEVEN = 47
 _VERSION_FORTY_EIGHT = 48
+_VERSION_FORTY_NINE = 49
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -285,6 +300,11 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # dated observations, never core-asserted facts: a queue row keeps them NULL
 # until an import writes them, and none of the three participates in the
 # proposal or admission state machine.
+# V49 adds the three tables a definition source needs and moves none: the
+# registration and its ordered selections, and one provenance row per path a
+# source has delivered. `catalog_source_intakes` carries the revision kind
+# beside the hash because the published revision hash deliberately excludes the
+# kind, so only the pair names a publication.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -330,6 +350,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     46: "1428683e38b4cce26b866e02ef1afa974a2c3208e26606f8792d0d48f0b1a43b",
     47: "d7987152a11a2702808b5fb1b71c0891e1c6724519435e87ee840cc235c00e39",
     48: "ecf4b2aba21f7225f121a3afc128d76e9ce10801c83121a93712f39320704653",
+    49: "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -486,6 +507,10 @@ V46_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V47_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FORTY_SEVEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_SEVEN],
+)
+V48_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY_EIGHT,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_EIGHT],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1545,13 +1570,21 @@ wait_answers = sa.Table(
         "OR (state = 'APPLIED' AND state_version = 1)"
     ),
 )
-_PUBLISHED_REVISION_KIND_SQL = (
-    "kind IN ('workflow', 'schema', 'deterministic_operation', "
-    "'adapter_operation', 'context_source', 'read_operation', 'profile', "
-    "'skill', 'tool', 'policy', 'budget_policy', 'retry_policy', "
-    "'cancellation_policy', 'scorecard_policy', 'selection_policy', "
-    "'admission_policy', 'agent_definition')"
-)
+
+
+def _revision_kind_sql(column: str) -> str:
+    """The closed published-kind vocabulary, asserted of one named column.
+
+    Spelled from `RevisionKind` rather than beside it, because three tables now
+    constrain a kind column and a fourth vocabulary written by hand is how one
+    of them quietly stops admitting a kind the contract owns.
+    """
+
+    admitted = ", ".join(f"'{kind.value}'" for kind in RevisionKind)
+    return f"{column} IN ({admitted})"
+
+
+_PUBLISHED_REVISION_KIND_SQL = _revision_kind_sql("kind")
 published_revisions = sa.Table(
     "published_revisions",
     metadata,
@@ -2454,6 +2487,98 @@ host_project_source_connection_revisions = sa.Table(
     sa.CheckConstraint(_rfc3339_utc_or_null("connected_at")),
 )
 
+host_definition_source_revisions = sa.Table(
+    "host_definition_source_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("source_id", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.Column("source_kind", sa.Text, nullable=False),
+    sa.Column("repository_location", sa.Text, nullable=False),
+    sa.Column("repository_ref", sa.Text, nullable=False),
+    sa.Column("access", sa.Text, nullable=False),
+    sa.Column("connected_by", sa.Text, nullable=False),
+    sa.UniqueConstraint("source_id", "revision_number"),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(source_id) = 64 AND source_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
+    sa.CheckConstraint(f"source_kind IN ('{DefinitionSourceKind.GIT.value}')"),
+    sa.CheckConstraint(
+        "length(repository_location) BETWEEN 1 AND "
+        f"{MAXIMUM_REPOSITORY_LOCATION_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        f"length(repository_ref) BETWEEN 1 AND {MAXIMUM_REPOSITORY_REF_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"access IN ('{DefinitionSourceAccess.ANONYMOUS.value}')"),
+    sa.CheckConstraint(
+        "length(connected_by) BETWEEN 1 AND "
+        f"{MAXIMUM_DEFINITION_SOURCE_ACTOR_CHARACTERS}"
+    ),
+)
+host_definition_source_selections = sa.Table(
+    "host_definition_source_selections",
+    metadata,
+    sa.Column(
+        "revision_hash",
+        sa.Text,
+        sa.ForeignKey("host_definition_source_revisions.revision_hash"),
+        nullable=False,
+    ),
+    sa.Column("selection_ordinal", sa.Integer, nullable=False),
+    sa.Column("path_pattern", sa.Text, nullable=False),
+    sa.Column("revision_kind", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("revision_hash", "selection_ordinal"),
+    sa.UniqueConstraint("revision_hash", "path_pattern"),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"selection_ordinal BETWEEN 1 AND {MAXIMUM_DEFINITION_SOURCE_SELECTIONS}"
+    ),
+    sa.CheckConstraint(
+        f"length(path_pattern) BETWEEN 1 AND {MAXIMUM_SELECTION_PATTERN_CHARACTERS}"
+    ),
+    sa.CheckConstraint(_revision_kind_sql("revision_kind")),
+)
+catalog_source_intakes = sa.Table(
+    "catalog_source_intakes",
+    metadata,
+    sa.Column("source_id", sa.Text, nullable=False),
+    sa.Column("source_path", sa.Text, nullable=False),
+    sa.Column("intake_number", sa.Integer, nullable=False),
+    sa.Column("revision_kind", sa.Text, nullable=False),
+    sa.Column("revision_hash", sa.Text, nullable=False),
+    sa.Column("source_commit", sa.Text, nullable=False),
+    sa.Column("intaken_by", sa.Text, nullable=False),
+    sa.Column("intaken_at", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("source_id", "source_path", "intake_number"),
+    sa.ForeignKeyConstraint(
+        ("revision_kind", "revision_hash"),
+        ("published_revisions.kind", "published_revisions.revision_hash"),
+    ),
+    sa.CheckConstraint("length(source_id) = 64 AND source_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        f"length(source_path) BETWEEN 1 AND {MAXIMUM_REPOSITORY_PATH_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"intake_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
+    sa.CheckConstraint(_revision_kind_sql("revision_kind")),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(source_commit) BETWEEN {MINIMUM_GIT_OBJECT_NAME_CHARACTERS} AND "
+        f"{MAXIMUM_GIT_OBJECT_NAME_CHARACTERS} "
+        "AND source_commit NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(intaken_by) BETWEEN 1 AND {MAXIMUM_DEFINITION_SOURCE_ACTOR_CHARACTERS}"
+    ),
+    sa.CheckConstraint(_rfc3339_utc("intaken_at")),
+)
+
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
 
 _PRODUCT_TRIGGERS = {
@@ -3136,6 +3261,42 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'catalog lineage retirements are immutable');
         END
     """,
+    "host_definition_source_revisions_no_update": """
+        CREATE TRIGGER host_definition_source_revisions_no_update
+        BEFORE UPDATE ON host_definition_source_revisions BEGIN
+          SELECT RAISE(ABORT, 'definition source revisions are immutable');
+        END
+    """,
+    "host_definition_source_revisions_no_delete": """
+        CREATE TRIGGER host_definition_source_revisions_no_delete
+        BEFORE DELETE ON host_definition_source_revisions BEGIN
+          SELECT RAISE(ABORT, 'definition source revisions are immutable');
+        END
+    """,
+    "host_definition_source_selections_no_update": """
+        CREATE TRIGGER host_definition_source_selections_no_update
+        BEFORE UPDATE ON host_definition_source_selections BEGIN
+          SELECT RAISE(ABORT, 'definition source selections are immutable');
+        END
+    """,
+    "host_definition_source_selections_no_delete": """
+        CREATE TRIGGER host_definition_source_selections_no_delete
+        BEFORE DELETE ON host_definition_source_selections BEGIN
+          SELECT RAISE(ABORT, 'definition source selections are immutable');
+        END
+    """,
+    "catalog_source_intakes_no_update": """
+        CREATE TRIGGER catalog_source_intakes_no_update
+        BEFORE UPDATE ON catalog_source_intakes BEGIN
+          SELECT RAISE(ABORT, 'catalog source intakes are immutable');
+        END
+    """,
+    "catalog_source_intakes_no_delete": """
+        CREATE TRIGGER catalog_source_intakes_no_delete
+        BEFORE DELETE ON catalog_source_intakes BEGIN
+          SELECT RAISE(ABORT, 'catalog source intakes are immutable');
+        END
+    """,
     "catalog_intakes_no_update": """
         CREATE TRIGGER catalog_intakes_no_update
         BEFORE UPDATE ON catalog_intakes BEGIN
@@ -3604,7 +3765,13 @@ _V27_ACCESS_TRIGGER_NAMES = (
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
-    predecessor_product_tables = PRODUCT_TABLE_NAMES - {catalog_intakes.name}
+    definition_source_tables = {
+        host_definition_source_revisions.name,
+        host_definition_source_selections.name,
+        catalog_source_intakes.name,
+    }
+    before_definition_sources = PRODUCT_TABLE_NAMES - definition_source_tables
+    predecessor_product_tables = before_definition_sources - {catalog_intakes.name}
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
     occupancy = {"host_occupancy_revisions", "host_occupancy_bindings"}
@@ -3635,8 +3802,10 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    if version in {SCHEMA_VERSION, _VERSION_FORTY_SEVEN}:
+    if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version in {_VERSION_FORTY_EIGHT, _VERSION_FORTY_SEVEN}:
+        return before_definition_sources
     if version in {_VERSION_FORTY_SIX, _VERSION_FORTY_FIVE, _VERSION_FORTY_FOUR}:
         return predecessor_product_tables
     if version == _VERSION_FORTY_THREE:
@@ -5978,6 +6147,53 @@ def _apply_v47_to_v48(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FORTY_SEVEN, _VERSION_FORTY_EIGHT)
 
 
+_DEFINITION_SOURCE_TABLES = (
+    host_definition_source_revisions,
+    host_definition_source_selections,
+    catalog_source_intakes,
+)
+_DEFINITION_SOURCE_TRIGGERS = (
+    "host_definition_source_revisions_no_update",
+    "host_definition_source_revisions_no_delete",
+    "host_definition_source_selections_no_update",
+    "host_definition_source_selections_no_delete",
+    "catalog_source_intakes_no_update",
+    "catalog_source_intakes_no_delete",
+)
+
+
+def _apply_v48_to_v49(connection: sqlite3.Connection) -> None:
+    """Give the store the git definition sources the catalog takes content from.
+
+    Purely additive: three immutable tables and their triggers arrive, and not
+    one stored row or existing table is touched. A store that already carries
+    any of the three is refused whole rather than altered, because the rows in
+    it were written by something this hop did not put there.
+    """
+
+    for name in (
+        *(table.name for table in _DEFINITION_SOURCE_TABLES),
+        *_DEFINITION_SOURCE_TRIGGERS,
+    ):
+        if (
+            connection.execute(
+                "SELECT type FROM sqlite_master WHERE name=?", (name,)
+            ).fetchone()
+            is not None
+        ):
+            raise StoreMigrationRefused(
+                f"schema version {_VERSION_FORTY_EIGHT} already has {name}; "
+                "this command will not alter it"
+            )
+    for table in _DEFINITION_SOURCE_TABLES:
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger_name in _DEFINITION_SOURCE_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger_name])
+    _raise_declared_version(connection, _VERSION_FORTY_EIGHT, _VERSION_FORTY_NINE)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6153,6 +6369,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(_VERSION_FORTY_SIX, _VERSION_FORTY_SEVEN, _apply_v46_to_v47),
     _SchemaMigrationStep(_VERSION_FORTY_SEVEN, _VERSION_FORTY_EIGHT, _apply_v47_to_v48),
+    _SchemaMigrationStep(_VERSION_FORTY_EIGHT, _VERSION_FORTY_NINE, _apply_v48_to_v49),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

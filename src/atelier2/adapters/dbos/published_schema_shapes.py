@@ -57,6 +57,48 @@ CREATE TABLE host_project_source_connection_revisions (
 
 """
 
+_V48_QUEUE_ITEMS = """
+
+CREATE TABLE queue_items (
+	item_id TEXT NOT NULL,
+	project_id TEXT NOT NULL,
+	tracker_item_reference TEXT NOT NULL,
+	state TEXT NOT NULL,
+	state_version INTEGER NOT NULL,
+	workflow_lineage_id TEXT,
+	admission_rationale TEXT,
+	current_proposal_revision INTEGER,
+	decision_authority TEXT,
+	observed_title TEXT,
+	title_observed_at TEXT,
+	retired_at TEXT,
+	PRIMARY KEY (item_id),
+	UNIQUE (project_id, tracker_item_reference),
+	UNIQUE (item_id, project_id),
+	FOREIGN KEY(item_id, current_proposal_revision) REFERENCES queue_proposal_revisions (item_id, proposal_revision),
+	CHECK (length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(project_id) BETWEEN 1 AND 1024),
+	CHECK (length(tracker_item_reference) BETWEEN 1 AND 1024),
+	CHECK (state IN ('OBSERVED', 'PROPOSED', 'ADMITTED')),
+	CHECK (state_version >= 0),
+	CHECK ((state = 'ADMITTED' AND workflow_lineage_id IS NOT NULL AND length(workflow_lineage_id) = 64 AND workflow_lineage_id NOT GLOB '*[^0-9a-f]*' AND admission_rationale IS NOT NULL AND length(admission_rationale) BETWEEN 1 AND 4096 AND ((current_proposal_revision IS NULL AND decision_authority IS NULL) OR (current_proposal_revision IS NOT NULL AND current_proposal_revision >= 1 AND state_version = current_proposal_revision + 1 AND decision_authority IS NOT NULL AND decision_authority IN ('OPERATOR', 'AUTOMATION_RULE')))) OR (state = 'PROPOSED' AND current_proposal_revision IS NOT NULL AND current_proposal_revision >= 1 AND state_version = current_proposal_revision AND workflow_lineage_id IS NULL AND admission_rationale IS NULL AND decision_authority IS NULL) OR (state = 'OBSERVED' AND state_version = 0 AND workflow_lineage_id IS NULL AND admission_rationale IS NULL AND current_proposal_revision IS NULL AND decision_authority IS NULL)),
+	CHECK (observed_title IS NULL OR length(observed_title) BETWEEN 1 AND 256),
+	CHECK ((observed_title IS NULL) = (title_observed_at IS NULL)),
+	CHECK ((title_observed_at IS NULL OR (length(title_observed_at) = 20 AND title_observed_at LIKE '____-__-__T__:__:__Z'))),
+	CHECK ((retired_at IS NULL OR (length(retired_at) = 20 AND retired_at LIKE '____-__-__T__:__:__Z'))),
+	FOREIGN KEY(workflow_lineage_id) REFERENCES catalog_lineages (lineage_id)
+)
+
+
+"""
+"""The queue item table V48 published, with its observation columns.
+
+V49 adds three tables and moves none, so this text is the declaration as it
+stands today -- recorded anyway, because `_apply_v47_to_v48` materialises
+its own target and the declaration stops being that target the moment a
+later hop touches `queue_items`.
+"""
+
 _V44_QUEUE_ITEMS = """
 CREATE TABLE queue_items (
 	item_id TEXT NOT NULL,
@@ -678,6 +720,7 @@ PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     # No hop between V44 and V47 moved queue_items; V48 is the first to add a
     # column, so V47 published the same bytes V44 did.
     (47, "queue_items"): _V44_QUEUE_ITEMS,
+    (48, "queue_items"): _V48_QUEUE_ITEMS,
     (40, "effect_receipts"): _EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     (41, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
     (41, "effect_receipts"): _EFFECT_RECEIPTS_WITH_FORK_REFERENCE,

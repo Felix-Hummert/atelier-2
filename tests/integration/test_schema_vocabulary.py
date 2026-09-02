@@ -37,6 +37,15 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
     CatalogRetirementState,
 )
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_DEFINITION_SOURCE_ACTOR_CHARACTERS,
+    MAXIMUM_REPOSITORY_LOCATION_CHARACTERS,
+    MAXIMUM_REPOSITORY_PATH_CHARACTERS,
+    MAXIMUM_REPOSITORY_REF_CHARACTERS,
+    MAXIMUM_SELECTION_PATTERN_CHARACTERS,
+    DefinitionSourceAccess,
+    DefinitionSourceKind,
+)
 from atelier2.contracts.effects import (
     ConfirmationSource,
     EffectIntentState,
@@ -441,6 +450,10 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "host_project_source_connection_revisions.lifecycle": _values(
         ProjectSourceConnectionLifecycle
     ),
+    "host_definition_source_revisions.source_kind": _values(DefinitionSourceKind),
+    "host_definition_source_revisions.access": _values(DefinitionSourceAccess),
+    "host_definition_source_selections.revision_kind": _values(RevisionKind),
+    "catalog_source_intakes.revision_kind": _values(RevisionKind),
     "host_model_registry_entries.source": _values(ModelRegistryEntrySource),
     "host_model_registry_entries.provider_check": _values(ProviderModelCheck),
     "host_project_model_defaults.difficulty": frozenset({1, 2, 3}),
@@ -603,6 +616,14 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "queue_items.item_id",
         "queue_items.workflow_lineage_id",
         "queue_launch_bindings.workflow_revision_hash",
+        "host_definition_source_revisions.revision_hash",
+        "host_definition_source_revisions.source_id",
+        "host_definition_source_selections.revision_hash",
+        "catalog_source_intakes.revision_hash",
+        "catalog_source_intakes.source_id",
+        # A git object name is a digest too, and both formats git writes fit
+        # the same upper bound as an Atelier hash.
+        "catalog_source_intakes.source_commit",
     }
 )
 
@@ -672,6 +693,21 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "queue_items.observed_title": MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     "queue_items.title_observed_at": 20,
     "queue_items.retired_at": 20,
+    "host_definition_source_revisions.repository_location": (
+        MAXIMUM_REPOSITORY_LOCATION_CHARACTERS
+    ),
+    "host_definition_source_revisions.repository_ref": (
+        MAXIMUM_REPOSITORY_REF_CHARACTERS
+    ),
+    "host_definition_source_revisions.connected_by": (
+        MAXIMUM_DEFINITION_SOURCE_ACTOR_CHARACTERS
+    ),
+    "host_definition_source_selections.path_pattern": (
+        MAXIMUM_SELECTION_PATTERN_CHARACTERS
+    ),
+    "catalog_source_intakes.source_path": MAXIMUM_REPOSITORY_PATH_CHARACTERS,
+    "catalog_source_intakes.intaken_by": MAXIMUM_DEFINITION_SOURCE_ACTOR_CHARACTERS,
+    "catalog_source_intakes.intaken_at": 20,
     "queue_project_policy_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "queue_project_policy_revisions.automation_label": (
         MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS
