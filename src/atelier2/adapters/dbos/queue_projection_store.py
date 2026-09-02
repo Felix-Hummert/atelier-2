@@ -79,6 +79,25 @@ _UNSUCCESSFUL_TERMINAL_RUN_STATE_VALUES = frozenset(
     state.value for state in TERMINAL_RUN_STATES if state is not RunState.COMPLETED
 )
 
+# The SQL realization of `contracts.queue_projection.queue_start_order_key`: the
+# rank lives on `queue_proposal_revisions.priority_rank`, joined by the item's
+# current proposal revision, never a rank column on `queue_items` itself.
+_QUEUE_START_ORDER_JOIN = queue_items.outerjoin(
+    queue_proposal_revisions,
+    sa.and_(
+        queue_items.c.item_id == queue_proposal_revisions.c.item_id,
+        queue_items.c.current_proposal_revision
+        == queue_proposal_revisions.c.proposal_revision,
+    ),
+)
+_QUEUE_START_ORDER_UNRANKED = queue_items.c.current_proposal_revision.is_(None)
+_QUEUE_START_ORDER_RANK = sa.func.coalesce(queue_proposal_revisions.c.priority_rank, 0)
+_QUEUE_START_ORDER_COLUMNS = (
+    _QUEUE_START_ORDER_UNRANKED,
+    _QUEUE_START_ORDER_RANK,
+    queue_items.c.item_id,
+)
+
 
 def _snapshot_from_record(
     connection: Connection, record: Mapping[Any, Any]
@@ -777,14 +796,18 @@ class DbosQueueProjectionStore:
             )
         try:
             with self._engine.connect() as connection:
-                statement = sa.select(queue_items)
+                statement = sa.select(queue_items).select_from(_QUEUE_START_ORDER_JOIN)
                 if state is not None:
                     statement = statement.where(queue_items.c.state == state.value)
                 if after is not None:
-                    statement = statement.where(queue_items.c.item_id > after.value)
+                    after_key = self._queue_start_order_key(connection, after)
+                    statement = statement.where(
+                        sa.tuple_(*_QUEUE_START_ORDER_COLUMNS)
+                        > sa.tuple_(*(sa.literal(member) for member in after_key))
+                    )
                 records = (
                     connection.execute(
-                        statement.order_by(queue_items.c.item_id).limit(limit + 1)
+                        statement.order_by(*_QUEUE_START_ORDER_COLUMNS).limit(limit + 1)
                     )
                     .mappings()
                     .all()
@@ -804,6 +827,43 @@ class DbosQueueProjectionStore:
             return QueueReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
+
+    @staticmethod
+    def _queue_start_order_key(
+        connection: Connection, after: QueueItemId
+    ) -> tuple[bool, int, str]:
+        """The after-item's *current* start-order key, read fresh for this page.
+
+        The wire cursor is opaque and only ever comes back from a `next_after`
+        this store issued, so the item it names exists; the seek continues
+        behind this key triple rather than behind the bare `item_id`, which
+        would skip or repeat items whenever hash order disagrees with rank
+        order (#1051).
+
+        The guarantee holds exactly while the after-item's key is unchanged
+        between the page that served it and this one. It is not unchanged in
+        general: `QueueItemSnapshot.plan` lets an OBSERVED item (no proposal,
+        sorted last) gain a proposal and become PROPOSED (ranked, sorted by
+        `priority.rank`) at any time, which moves that item's key earlier.
+        Once a proposal is planned it cannot be re-planned or withdrawn (`plan`
+        refuses a second call for a PROPOSED or ADMITTED item), so this is the
+        only key change this codebase can produce, and it only ever moves an
+        item earlier. Read fresh here, an after-item that moved earlier since
+        its page seeks from its new, earlier position: an item that used to
+        sort between the old and new position is served again on the next
+        page (a repeat), never dropped (a skip) -- there is no production path
+        that moves an item later.
+        """
+
+        row = connection.execute(
+            sa.select(*_QUEUE_START_ORDER_COLUMNS)
+            .select_from(_QUEUE_START_ORDER_JOIN)
+            .where(queue_items.c.item_id == after.value)
+        ).one_or_none()
+        if row is None:
+            raise ValueError("the queue cursor names an item outside the projection")
+        unranked, rank, item_id = row
+        return bool(unranked), int(rank), str(item_id)
 
 
 def _policy_from_record(record: Mapping[Any, Any]) -> QueueProjectPolicyRevision:
