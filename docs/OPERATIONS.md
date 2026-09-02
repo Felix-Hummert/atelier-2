@@ -608,7 +608,8 @@ lose — a sweep that only ever found a stray container or network never
 claims a store was lost.
 
 **Auto-redeploy is the one deploy way: a landing on `main` reaches this
-installation without an operator hand.** A systemd user timer
+installation without an operator hand.** This describes the container
+installation above, not the loopback host below. A systemd user timer
 (`scripts/atelier2-auto-redeploy.timer`, a two-minute poll) runs
 `scripts/auto_redeploy.sh`, which fetches `origin/main` and reads the commit
 the serve itself reports on its health endpoint. Only when they differ does
@@ -640,6 +641,42 @@ to you (`systemctl --user status atelier2-auto-redeploy.service`,
 next poll fails the same visible way until you act. The watcher never runs
 `reconcile` or `update --fresh` itself: adopting or discarding the store
 stays your hand, through the paragraphs above.
+
+### Loopback host Serve hand update
+
+This section describes the loopback host installation, not the container
+installation above. The host-process installation runs as the systemd user unit
+`atelier2-serve.service`. From its clean `main` deploy checkout, one hand
+command fast-forwards, installs the locked Python and frontend dependencies,
+builds the frontend, stops the unit, backs up the live store, migrates it,
+starts the unit, and verifies that health serves the new commit:
+
+```bash
+bash scripts/serve_live_update.sh
+```
+
+The store lives under
+`${XDG_DATA_HOME:-$HOME/.local/share}/atelier2/live-store`. Every update copies
+`atelier.sqlite` and `external.sqlite`, plus the SQLite `-wal` and `-shm`
+sidecars when present, into a timestamped `backups/pre-redeploy-*` directory
+and verifies every copied size before migration. A migration refusal restores
+and rebuilds the previous commit, restarts the old Serve, and still exits
+nonzero. A `live serve is DOWN, operator action needed` line means that recovery
+itself failed; inspect `journalctl --user -u atelier2-serve.service -e` before
+acting.
+
+Install the clean-stop classification once beside the unit, as the same user:
+
+```bash
+mkdir -p ~/.config/systemd/user/atelier2-serve.service.d
+cp scripts/atelier2-serve.service.d/clean-stop.conf \
+  ~/.config/systemd/user/atelier2-serve.service.d/
+systemctl --user daemon-reload
+```
+
+The drop-in makes the launcher's SIGTERM exit code 143 a successful stop, so a
+deliberate update stop does not leave the unit failed. Installation does not
+start, restart, or enable the live service; those remain explicit host actions.
 
 ### Live provider canaries
 
