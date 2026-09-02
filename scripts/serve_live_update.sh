@@ -15,6 +15,8 @@ fail() {
   exit 1
 }
 
+requested_target_commit="${1:-}"
+
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 frontend="${repository}/frontend"
 root_package="${repository}/package.json"
@@ -125,6 +127,12 @@ read_served_health() {
   [[ -n "${served_status}" && -n "${served_commit}" ]]
 }
 
+read_deployed_commit_marker() {
+  [[ -f "${deployed_commit_marker}" ]] || return 1
+  IFS= read -r previous_commit <"${deployed_commit_marker}" || return 1
+  [[ "${previous_commit}" =~ ^[0-9a-f]{40}$ ]]
+}
+
 # Polls the same way container_live.sh's start_container waits for
 # container_is_healthy (scripts/container_live.sh:576-584): the unit is
 # Type=exec, so uvicorn is not yet listening the instant `systemctl start`
@@ -148,12 +156,32 @@ worktree_status="$(git -C "${repository}" status --porcelain -uall)" \
   || fail "the deploy checkout status is unreadable"
 [[ -z "${worktree_status}" ]] \
   || fail "the deploy checkout is not clean; refusing to touch operator work"
-previous_commit="$(git -C "${repository}" rev-parse HEAD)" \
-  || fail "the previous deploy commit is unreadable"
+git_admin_directory="$(git -C "${repository}" rev-parse --absolute-git-dir)" \
+  || fail "the deploy checkout Git admin directory is unreadable"
+deployed_commit_marker="${git_admin_directory}/serve-live.deployed"
 
-log "fast-forwarding main"
-git -C "${repository}" pull --ff-only --quiet "${deploy_remote}" "${deploy_branch}" \
-  || fail "main could not fast-forward from ${previous_commit}"
+if read_served_health; then
+  previous_commit="${served_commit}"
+elif read_deployed_commit_marker; then
+  log "live serve health is unavailable; using the last deployed commit marker"
+else
+  fail "live serve health and the last deployed commit marker provide no rollback target; refusing the update"
+fi
+
+if [[ -n "${requested_target_commit}" ]]; then
+  log "fetching ${deploy_remote}/${deploy_branch}"
+  git -C "${repository}" fetch --quiet "${deploy_remote}" "${deploy_branch}" \
+    || fail "could not fetch ${deploy_remote}/${deploy_branch}"
+  git -C "${repository}" merge-base --is-ancestor "${requested_target_commit}" FETCH_HEAD \
+    || fail "${requested_target_commit} is not reachable from ${deploy_remote}/${deploy_branch}"
+  log "fast-forwarding main to ${requested_target_commit}"
+  git -C "${repository}" merge --ff-only --quiet "${requested_target_commit}" \
+    || fail "main could not fast-forward to ${requested_target_commit}"
+else
+  log "fast-forwarding main"
+  git -C "${repository}" pull --ff-only --quiet "${deploy_remote}" "${deploy_branch}" \
+    || fail "main could not fast-forward from checkout HEAD"
+fi
 target_commit="$(git -C "${repository}" rev-parse HEAD)" \
   || fail "the fast-forwarded deploy commit is unreadable"
 
@@ -191,5 +219,7 @@ wait_for_served_health \
   || fail "live serve health reports ${served_status@Q}, not serving"
 [[ "${served_commit}" == "${target_commit}" ]] \
   || fail "live serve commit ${served_commit@Q} does not match the deployed commit ${target_commit}"
+printf '%s\n' "${target_commit}" >"${deployed_commit_marker}" \
+  || fail "the deployed commit marker could not be written"
 
 log "now serves ${target_commit}"

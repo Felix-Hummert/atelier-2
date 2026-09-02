@@ -138,6 +138,19 @@ version is live when it is cut, which the schema shapes owner names; the V43→V
 passage above records what this record decided and is not that floor. This
 amendment authorizes the hop; it does not design it.
 
+**2026-09-02 amendment (Operator-Ruling, #962-Journal, over ruled line 1 of
+[#962](https://github.com/FlexOr2/atelier-2/issues/962)): `QueueItemResource`
+serves the persisted observation and retirement, closing the gap the paragraph
+above opened between persisted state and the wire.** `title`, `title_observed_at`,
+and `retired_at` are required, nullable fields on `GET /queue-items`'s row — read
+straight from `QueueItemSnapshot.observation` and `.retired_at`, no filter, no
+re-derivation. `tracker_enrichment` stays `ENRICHMENT_UNAVAILABLE` regardless: a
+last-observed title is not enrichment succeeding, it is the import-time
+observation this record already ruled durable. A retired row is still served —
+the projection remains the operator's full view — but the start sheet that reads
+this projection does not offer it as pullable, since retirement means the item
+left the tracker's open set.
+
 ## Consequences
 
 - Proposal and confirmation are independently stale-safe and idempotent.

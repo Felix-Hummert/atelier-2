@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from itertools import repeat
@@ -58,6 +57,7 @@ from atelier2.ports.durable_runs import (
 )
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.api import permissive_projection_limit
+from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import (
     publish_pinned_revisions,
     publish_revision,
@@ -540,21 +540,7 @@ def test_initialized_runtime_can_execute_a_later_seeded_workflow(
     started = start(runtime, starter)
 
     runtime.launch()
-    deadline = time.monotonic() + 5
-    run_state = "STARTED"
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            run_state = str(
-                connection.scalar(
-                    sa.text("SELECT state FROM runs WHERE run_id=:id"),
-                    {"id": started.run_id.value},
-                )
-            )
-        if run_state == RunState.WAITING_INPUT.value:
-            break
-        time.sleep(0.025)
-
-    assert run_state == RunState.WAITING_INPUT.value
+    wait_for_run_state(runtime.engine, started.run_id, RunState.WAITING_INPUT)
     with runtime.engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT state FROM runs"))

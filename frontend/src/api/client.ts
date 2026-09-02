@@ -226,7 +226,7 @@ const publicSourceReference = z
   .string()
   .regex(/^source1\.[A-Za-z0-9_-]+$/)
   .max(56);
-const connectedAtStamp = z
+const recordedAtStamp = z
   .string()
   .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
 
@@ -236,7 +236,7 @@ export const projectSourceResourceSchema = z
     kind: z.string().min(1).max(64),
     address: z.string().min(1).max(1_024),
     scope: z.literal("issues").default("issues"),
-    connected_at: z.union([connectedAtStamp, z.null()]).default(null),
+    connected_at: z.union([recordedAtStamp, z.null()]).default(null),
     revision: positiveSafeInteger,
     auth_method: z.literal("personal-access-token"),
   })
@@ -504,12 +504,19 @@ export const agentConfigurationRevisionPageSchema = z
   .strict();
 
 /** An item a connected tracker has observed for the served project. */
+const queueObservationFields = {
+  title: z.string().min(1).nullable(),
+  title_observed_at: recordedAtStamp.nullable(),
+  retired_at: recordedAtStamp.nullable()
+} as const;
+
 export const observedQueueItemSchema = z
   .object({
     project_id: z.string().min(1),
     tracker_item_reference: z.string().min(1),
     item_id: sha256,
-    revision: nonnegativeSafeInteger
+    revision: nonnegativeSafeInteger,
+    ...queueObservationFields
   })
   .strict();
 
@@ -544,7 +551,7 @@ const queueLaunchBindingSchema = z
   })
   .strict();
 
-const queueItemSchema = z
+export const queueItemSchema = z
   .object({
     project_id: z.string().min(1),
     tracker_item_reference: z.string().min(1),
@@ -568,7 +575,7 @@ const queueItemSchema = z
       ])
     ),
     tracker_enrichment: z.literal("ENRICHMENT_UNAVAILABLE"),
-    title: z.null()
+    ...queueObservationFields
   })
   .strict();
 
@@ -899,9 +906,7 @@ const transcriptStepTextSchema = z.string().max(MAXIMUM_TRANSCRIPT_STEP_CHARACTE
 
 export const transcriptRecordedMomentSchema = z
   .object({
-    recorded_at: z
-      .string()
-      .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/),
+    recorded_at: recordedAtStamp,
     origin: z.literal("recorded"),
   })
   .strict();
@@ -2758,7 +2763,10 @@ export function createCockpitApi(
             project_id: item.project_id,
             tracker_item_reference: item.tracker_item_reference,
             item_id: item.item_id,
-            revision: item.revision
+            revision: item.revision,
+            title: item.title,
+            title_observed_at: item.title_observed_at,
+            retired_at: item.retired_at
           })),
         next_after: page.next_after
       })),

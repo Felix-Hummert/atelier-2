@@ -417,6 +417,29 @@ surface that claims this picture as its standard.
   import 1 by drop, 3 by button; cancel 3; connect a source 3 + one address;
   see the queue 1, admit an item +1.
   A surface exceeding its budget is a defect (REQ-UIQ-08).
+- **(2026-09-02 amendment, #1037)** The five `0003-ziel-ui-gates/` scripts
+  named above (`shoot-v8.mjs`, `measure-v8.mjs`, `rm-check.mjs`,
+  `measure-ear.mjs`, `count-restating.mjs`) are removed: each measured the
+  static mockup file against itself and had zero references from any workflow,
+  `package.json`, or `scripts/`. The enforcement of these required proofs
+  lives in three CI-run tests instead: `frontend/tests/app/uiQuality.test.ts`
+  (component-level: core surfaces render their owned display-copy strings,
+  never a hardcoded string, through Testing Library); `frontend/tests/e2e/ui-quality.spec.ts`
+  (e2e: axe-core accessibility violations, pseudo-locale copy survival, and
+  the Workbench control inventory at desktop and 390px); and
+  `frontend/tests/e2e/uiq-budget.spec.ts` (e2e, at 390 and 1280: send-a-message,
+  answer-a-decision, find-the-running-run and read-run-standing in the
+  Workbench/Run view; open-a-finished-run from History; open-node-log; find-by-
+  search, open-tile and reach-Start — Catalog + card until Start is in view,
+  not §07's 4-click start-by-hand / Start-run remainder — and import-via-
+  button in Catalog; connect-a-source in Settings). §07 budgets this spec does
+  not assert — start-by-hand's own remainder, import-by-drop, open-a-finished-
+  run from the Workbench (only History's path is asserted), cancel, and
+  see-the-queue / admit-an-item — join the same open question below. Whether
+  the removed scripts measured anything beyond what these three tests now
+  cover — contrast, tap-target size, one-moving-element, reduced motion, page
+  overflow, and the §07 budgets just named — is an open question tracked on
+  #435 (REQ-UIQ-05/08/13), not a gap filled by a new spec here.
 
 ## Out of scope and stop conditions
 
