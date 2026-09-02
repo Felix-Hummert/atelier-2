@@ -453,7 +453,7 @@ const agentConfigurationRevisionSchema = agentConfigurationInputSchema
   })
   .strict();
 
-const agentConfigurationRevisionListItemSchema =
+export const agentConfigurationRevisionListItemObjectSchema =
   agentConfigurationRevisionSchema
     .extend({
       startable: z.boolean(),
@@ -465,8 +465,11 @@ const agentConfigurationRevisionListItemSchema =
         ])
         .nullable(),
     })
-    .strict()
-    .superRefine((item, context) => {
+    .strict();
+
+const agentConfigurationRevisionListItemSchema =
+  agentConfigurationRevisionListItemObjectSchema.superRefine(
+    (item, context) => {
       if (item.startable && !item.structurally_startable) {
         context.addIssue({
           code: "custom",
@@ -485,7 +488,8 @@ const agentConfigurationRevisionListItemSchema =
           message: "agent configuration startability and reason disagree",
         });
       }
-    });
+    },
+  );
 
 /**
  * Listing adds the deployment's current startability decision. Publication
