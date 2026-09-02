@@ -11,7 +11,13 @@ revision of that same source rather than founding a second one
 
 Reading intakes is what a write-free scan needs and all it needs: the highest
 `intake_number` per path, which is what ADR 0007 calls the latest intake.
-Writing an intake is the intake operation's own act and lives with it.
+
+Recording intakes is the one write that reaches into the catalog, and it stays
+one transaction: publication, lineage membership and the provenance row of every
+selected path are written on a single connection, so a batch that stops at its
+last file leaves nothing of the ones before it. It composes the catalog's own
+connection-bound writes (`catalog_store`) rather than repeating them -- a second
+publication writer would be a second answer to what a published revision is.
 """
 
 from __future__ import annotations
@@ -24,12 +30,29 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.catalog_store import (
+    admit_member_in,
+    found_lineage_in,
+    persist_workflow_publication,
+    revision_owner,
+)
 from atelier2.adapters.dbos.schema import (
     catalog_source_intakes,
     host_definition_source_revisions,
     host_definition_source_selections,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogAdmissionExisting,
+    CatalogAdmissionNameHeld,
+    CatalogAdmissionRetired,
+    CatalogAdmissionRevisionOwned,
+    CatalogLineageFounded,
+    CatalogLineageId,
+    CatalogMemberAdmitted,
+)
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
     DefinitionSourceActor,
@@ -45,20 +68,32 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
     SourceIntake,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.ports.definition_sources import (
     DefinitionSourceFound,
     DefinitionSourceMissing,
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
+    PathAlreadyInCatalog,
+    PathIntaken,
     ReadDefinitionSourceResult,
     ReadSourceIntakesResult,
+    RecordedPath,
+    RecordSourceIntakesResult,
     RegisterDefinitionSourceResult,
+    SelectedIntake,
+    SourceIntakeRecorded,
+    SourceIntakeRefused,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 _FIRST_REVISION_NUMBER = 1
 _FIRST_SELECTION_ORDINAL = 1
+_FIRST_INTAKE_NUMBER = 1
 
 
 class DbosDefinitionSources:
@@ -108,6 +143,94 @@ class DbosDefinitionSources:
             return DurableWriteUnavailable()
         except (ValueError, TypeError, DatabaseError):
             return DurableStateCorrupt()
+
+    def record_intakes(
+        self,
+        source_id: DefinitionSourceId,
+        commit: SourceCommit,
+        selected: tuple[SelectedIntake, ...],
+        actor: CatalogActor,
+        intaken_at: CatalogActivatedAt,
+    ) -> RecordSourceIntakesResult:
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                standing = self._latest_intakes(connection, source_id)
+                recorded: list[RecordedPath] = []
+                for one in selected:
+                    entered = self._take_in(
+                        connection, source_id, commit, one, standing, actor, intaken_at
+                    )
+                    if isinstance(entered, SourceIntakeRefused):
+                        # One refused path makes the whole commit refused: the
+                        # operator was promised a pull that lands whole or not
+                        # at all, so the paths already written go back too.
+                        connection.rollback()
+                        return entered
+                    recorded.append(entered)
+                return SourceIntakeRecorded(tuple(recorded))
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, TypeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def _take_in(
+        self,
+        connection: Connection,
+        source_id: DefinitionSourceId,
+        commit: SourceCommit,
+        selected: SelectedIntake,
+        standing: Mapping[RepositoryPath, SourceIntake],
+        actor: CatalogActor,
+        intaken_at: CatalogActivatedAt,
+    ) -> RecordedPath | SourceIntakeRefused:
+        """Publish, admit and record one path on the batch's own transaction."""
+
+        published = PublishedRevision(RevisionKind.WORKFLOW, selected.revision.document)
+        persist_workflow_publication(connection, selected.revision)
+        previous = standing.get(selected.path)
+        admission = (
+            found_lineage_in(
+                connection, published, selected.display_name, actor, intaken_at
+            )
+            if previous is None
+            else admit_member_in(
+                connection,
+                _lineage_holding(connection, previous),
+                published,
+                selected.display_name,
+                actor,
+                intaken_at,
+            )
+        )
+        match admission:
+            case CatalogLineageFounded() | CatalogMemberAdmitted():
+                intake = SourceIntake(
+                    source_id,
+                    selected.path,
+                    _FIRST_INTAKE_NUMBER
+                    if previous is None
+                    else previous.intake_number + 1,
+                    RevisionKind.WORKFLOW,
+                    published.revision_hash,
+                    commit,
+                )
+                _insert_intake(connection, intake, actor, intaken_at)
+                return PathIntaken(intake)
+            case CatalogAdmissionExisting():
+                return PathAlreadyInCatalog(
+                    selected.path, RevisionKind.WORKFLOW, published.revision_hash
+                )
+            case (
+                CatalogAdmissionNameHeld()
+                | CatalogAdmissionRevisionOwned()
+                | CatalogAdmissionRetired()
+            ):
+                return SourceIntakeRefused(selected.path, admission)
+            case _:
+                raise ValueError(
+                    "the catalog refused a source intake for a reason no operator "
+                    f"can resolve: {admission}"
+                )
 
     def _newest(
         self, connection: Connection, source_id: DefinitionSourceId
@@ -238,4 +361,45 @@ def _intake_from_record(record: Mapping[Any, Any]) -> SourceIntake:
         RevisionKind(str(record["revision_kind"])),
         PublishedRevisionHash(str(record["revision_hash"])),
         SourceCommit(str(record["source_commit"])),
+    )
+
+
+def _lineage_holding(
+    connection: Connection, previous: SourceIntake
+) -> CatalogLineageId:
+    """The lineage this path already delivers into, read from its last revision.
+
+    Asked of the lineage members rather than of the intake row, because the
+    intake names a revision and a lineage is what holds one; from the second
+    intake on, the path's own history is a chain of revisions and only its
+    membership says where they belong.
+    """
+
+    owner = revision_owner(connection, previous.revision_kind, previous.revision_hash)
+    if owner is None:
+        raise ValueError(
+            "a recorded source intake names a revision no catalog lineage holds"
+        )
+    return owner
+
+
+def _insert_intake(
+    connection: Connection,
+    intake: SourceIntake,
+    actor: CatalogActor,
+    intaken_at: CatalogActivatedAt,
+) -> None:
+    """Record where one revision came from, on the batch's own transaction."""
+
+    connection.execute(
+        catalog_source_intakes.insert().values(
+            source_id=intake.source_id.value,
+            source_path=intake.path.value,
+            intake_number=intake.intake_number,
+            revision_kind=intake.revision_kind.value,
+            revision_hash=intake.revision_hash.value,
+            source_commit=intake.source_commit.value,
+            intaken_by=actor.value,
+            intaken_at=intaken_at.value,
+        )
     )
