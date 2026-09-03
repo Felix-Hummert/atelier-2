@@ -19,14 +19,27 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos import queries as queries_module
-from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.agent_attempt_store import (
+    DbosAgentAttemptStore,
+    compose_agent_node_job_for_attempt,
+)
+from atelier2.adapters.dbos.artifact_store import keep_artifact
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.queries import DbosQueries
-from atelier2.adapters.dbos.run_transitions import _insert_event, event_from_record
+from atelier2.adapters.dbos.run_transitions import (
+    _insert_event,
+    event_from_record,
+    run_from_record_with_bindings,
+)
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
     agent_attempts,
+    context_packages_v3,
     effect_intents,
     initialize_schema,
+    node_execution_requests_v3,
+    node_receipts_v3,
     reconcile_commands,
     run_agent_bindings,
     run_configuration_revisions,
@@ -43,6 +56,7 @@ from atelier2.api.stream import (
     PreparedEventStream,
     stream_server_events,
 )
+from atelier2.application.compose_node_job import NodeJobCompositionVersion
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -55,8 +69,11 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevisionHash,
     AgentExecutionRequestHash,
+    AgentExecutionRequestV2,
+    AgentExecutorOperationalIdentity,
     AgentRole,
 )
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import EffectIntentState, ReconcileCommandState
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -66,9 +83,11 @@ from atelier2.contracts.executions import (
     RunEventKind,
     logical_effect_key_for,
 )
-from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import RunInput, store_node_receipt_reason
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
+from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_projections import (
     RunPage,
 )
@@ -84,7 +103,12 @@ from atelier2.contracts.workflow_projections import (
     EnrichedPageBudget,
     WorkflowRevisionPage,
 )
+from atelier2.contracts.workflows_v3 import AgentNodeV3
 from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
     RunEventPage,
@@ -1470,6 +1494,444 @@ def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empt
     )
     for unordered_run_id in run_ids[1:]:
         assert projections[unordered_run_id].orders == ()
+
+
+TERMINAL_RESULT_TABLES = (
+    "agent_attempt_receipts_v3",
+    "agent_attempts",
+    "artifacts",
+    "node_receipts_v3",
+    "run_events",
+)
+"""Every table the terminal answer/refusal batching reads (#1045 REVISE C1)."""
+
+
+def _terminal_result_reads(engine: Engine) -> dict[str, int]:
+    """How many SELECTs each terminal-result table costs one `list_runs` page."""
+
+    counts: dict[str, int] = dict.fromkeys(TERMINAL_RESULT_TABLES, 0)
+
+    def capture(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: object,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if not statement.lstrip().upper().startswith("SELECT"):
+            return
+        named = re.search(r"FROM ([a-zA-Z_0-9]+)", statement)
+        table = named.group(1) if named is not None else None
+        if table in counts:
+            counts[table] += 1
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        page = durable_queries(engine).list_runs(None, 100)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert isinstance(page, RunPage)
+    return counts
+
+
+def _seed_plain_answered_runs(engine: Engine, run_ids: tuple[RunId, ...]) -> None:
+    """Ended V3 runs that each wrote a real answer -- the page's common row."""
+
+    revision = WorkflowRevision(_v3_workflow_document(f"plain-{len(run_ids)}"))
+    _seed_runs(engine, tuple((run_id, revision) for run_id in run_ids))
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id.in_(tuple(run_id.value for run_id in run_ids)))
+            .values(state=RunState.COMPLETED.value, terminal_hash=_digest("plain-end"))
+        )
+        for run_id in run_ids:
+            payload = f'{{"answer":"{run_id.value}"}}'.encode()
+            _insert_event(
+                connection,
+                RunEvent(
+                    run_id,
+                    revision.revision_hash,
+                    1,
+                    "agent",
+                    NodeExecutionId.for_node(run_id, revision.revision_hash, "agent"),
+                    RunEventKind.AGENT_COMPLETED,
+                    payload,
+                ),
+            )
+
+
+def _seed_receiptless_ended_run(engine: Engine, run_id: RunId) -> None:
+    """An ended V3 run whose node names neither a receipt nor an attempt.
+
+    Not a state a settled run reaches in production -- the terminal
+    `node-receipt/v3` write and the run's own FAILED transition land in the
+    same repair (see `_run_terminal_results`'s own docstring) -- but it is
+    the exact shape the batched `agent_attempts` fallback read has to answer
+    honestly with `None` rather than a query per row, so it is written
+    directly here the same way `_seed_runs` writes every other shape this
+    file measures.
+    """
+
+    revision = WorkflowRevision(_v3_workflow_document(f"receiptless-{run_id.value}"))
+    _seed_runs(engine, ((run_id, revision),))
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(
+                state=RunState.FAILED.value,
+                terminal_hash=_digest(f"receiptless-end-{run_id.value}"),
+            )
+        )
+
+
+def _seed_artifact_bearing_refusals(engine: Engine, run_ids: tuple[RunId, ...]) -> None:
+    """Ended V3 runs whose terminal `node-receipt/v3` names a kept artifact.
+
+    Written directly against the tables a real schema refusal populates
+    (`context_packages_v3`, `node_execution_requests_v3`, `node_receipts_v3`,
+    `artifacts`) rather than through a second independent production run per
+    row -- content addressing is the one fact `_run_terminal_results` depends
+    on, and every other column here is filler a real run would also carry,
+    just never read by that projection.
+    """
+
+    revision = WorkflowRevision(
+        _v3_workflow_document(f"artifact-refusal-{len(run_ids)}")
+    )
+    _seed_runs(engine, tuple((run_id, revision) for run_id in run_ids))
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id.in_(tuple(run_id.value for run_id in run_ids)))
+            .values(
+                state=RunState.FAILED.value,
+                terminal_hash=_digest(f"artifact-refusal-end-{len(run_ids)}"),
+            )
+        )
+        for run_id in run_ids:
+            configuration_hash = connection.scalar(
+                sa.select(runs.c.run_configuration_revision_hash).where(
+                    runs.c.run_id == run_id.value
+                )
+            )
+            execution_id = NodeExecutionId.for_node(
+                run_id, revision.revision_hash, "agent"
+            )
+            manifest = f"context-{run_id.value}".encode()
+            package_hash = Sha256Hash.of(manifest)
+            connection.execute(
+                context_packages_v3.insert().values(
+                    package_hash=package_hash.value, manifest=manifest
+                )
+            )
+            request_hash = _digest(f"request-{run_id.value}")
+            connection.execute(
+                node_execution_requests_v3.insert().values(
+                    request_hash=request_hash,
+                    node_execution_id=execution_id.value,
+                    run_configuration_revision_hash=configuration_hash,
+                    context_package_hash=package_hash.value,
+                    preimage=b"seeded request",
+                )
+            )
+            kept = keep_artifact(
+                connection, Artifact(f"refused by {run_id.value}".encode())
+            )
+            artifact = kept.artifact
+            stored_reason = store_node_receipt_reason(
+                "output-schema-refused: seeded for #1045 growth",
+                PublishedRevisionHash(_digest(f"schema-{run_id.value}")),
+                artifact.artifact_hash,
+            )
+            connection.execute(
+                node_receipts_v3.insert().values(
+                    node_execution_id=execution_id.value,
+                    disposition="failed",
+                    reason=stored_reason,
+                    request_hash=request_hash,
+                    context_package_hash=package_hash.value,
+                    receipt_hash=_digest(f"receipt-{run_id.value}"),
+                )
+            )
+
+
+_ATTEMPT_RECEIPT_REFUSAL_COLUMNS = (
+    "attempt_id",
+    "node_execution_id",
+    "request_hash",
+    "executor_operational_identity",
+    "run_id",
+    "workflow_revision_hash",
+    "node_id",
+    "attempt_ordinal",
+    "state",
+    "state_version",
+    "process_phase",
+    "process_owner_id",
+    "watchdog_generation_id",
+    "cancellation_command_id",
+    "cancellation_expected_state_version",
+    "replacement",
+    "redrive_state",
+    "cancellation_disposition",
+    "cancellation_workflow_id",
+    "failure_code",
+    "receipt_hash",
+    "runner_manifest_id",
+    "runner_generation_id",
+    "runner_invocation_id",
+    "runner_terminal_evidence_hash",
+    "runner_evidence_acceptance_phase",
+    "transcript_artifact_hash",
+)
+
+
+def _seed_attempt_receipt_refusal(
+    engine: Engine, run_id: RunId, *, mismatched_artifact: bool
+) -> None:
+    """An ended V3 run whose ordinal-one attempt names a real refusal receipt.
+
+    Written directly against `agent_attempts` and `agent_attempt_receipts_v3`
+    -- the receiptless fallback's own two tables -- but every identity column
+    is the one the real current-attempt projection independently recomputes
+    and cross-checks (`_current_attempt_projection`): the request hash and
+    attempt id are derived here through the same production functions that
+    projection uses, on the same empty orders and node outputs a freshly
+    seeded run actually has, rather than a placeholder that only this file's
+    own reader would accept. `mismatched_artifact` asks for the corrupt shape
+    `_run_terminal_results` now refuses loudly (#1045 REVISE, second delta,
+    second round): an `artifact_hash` that disagrees with the receipt's own
+    `value_hash`.
+    """
+
+    revision = WorkflowRevision(
+        _v3_workflow_document(f"attempt-refusal-{run_id.value}")
+    )
+    _seed_runs(engine, ((run_id, revision),))
+    # `_v3_workflow_document` pins `ANY_JSON_SCHEMA` on the node's one output;
+    # a real current-attempt projection (triggered below by a live
+    # `agent_attempts` row) resolves that pin, so it has to actually be
+    # published here -- idempotent, safe beside every other caller of it.
+    published = DbosCatalogStore(engine).publish_revision(ANY_JSON_SCHEMA)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
+
+    graph = queries_module.parse_workflow_document(revision.document)
+    node = graph.node("agent")
+    assert isinstance(node, AgentNodeV3)
+    execution_id = NodeExecutionId.for_node(run_id, revision.revision_hash, "agent")
+    with engine.connect() as connection:
+        record = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
+            .mappings()
+            .one()
+        )
+        run = run_from_record_with_bindings(connection, record)
+    assert isinstance(run, RunV3)
+    binding = run.agent_bindings[0]
+    job = compose_agent_node_job_for_attempt(
+        node,
+        (),
+        (),
+        base_composition_version=NodeJobCompositionVersion.CURRENT,
+        target_node_execution_id=execution_id,
+        target_attempt_ordinal=1,
+        prior_refusal_receipt=None,
+    )
+    request = AgentExecutionRequestV2(
+        execution_id,
+        run_id,
+        revision.revision_hash,
+        "agent",
+        binding,
+        AgentExecutorOperationalIdentity("exact-operation"),
+        job,
+    )
+    attempt_id = AgentAttemptId.for_execution(execution_id, request.request_hash, 1)
+
+    attempt_values = dict.fromkeys(_ATTEMPT_RECEIPT_REFUSAL_COLUMNS)
+    attempt_values.update(
+        {
+            "attempt_id": attempt_id.value,
+            "node_execution_id": execution_id.value,
+            "request_hash": request.request_hash.value,
+            "executor_operational_identity": "exact-operation",
+            "run_id": run_id.value,
+            "workflow_revision_hash": revision.revision_hash.value,
+            "node_id": "agent",
+            "attempt_ordinal": 1,
+            "state": "FAILED",
+            "state_version": 2,
+            "process_phase": "NONE",
+            "failure_code": "OUTPUT_SCHEMA_REFUSED",
+            "runner_evidence_acceptance_phase": "NONE",
+        }
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(
+                state=RunState.FAILED.value,
+                terminal_hash=_digest(f"attempt-refusal-end-{run_id.value}"),
+            )
+        )
+        connection.execute(agent_attempts.insert().values(**attempt_values))
+        kept = keep_artifact(
+            connection, Artifact(f"attempt refusal {run_id.value}".encode())
+        )
+        artifact = kept.artifact
+        stored_value_hash = (
+            _digest(f"mismatched-{run_id.value}")
+            if mismatched_artifact
+            else artifact.artifact_hash.value
+        )
+        connection.execute(
+            agent_attempt_receipts_v3.insert().values(
+                attempt_id=attempt_id.value,
+                reason="output-schema-refused: seeded for #1045 corruption check",
+                schema_revision_hash=_digest(f"schema-{run_id.value}"),
+                value_hash=stored_value_hash,
+                artifact_hash=artifact.artifact_hash.value,
+                receipt_hash=_digest(f"receipt-{run_id.value}"),
+            )
+        )
+
+
+def test_terminal_results_cost_a_constant_number_of_statements_across_a_mixed_ended_page(
+    engine: Engine,
+) -> None:
+    """#1045 REVISE C1 (second delta, second round): every path an ended
+    run's terminal answer or refusal can resolve through -- a real answer, a
+    receipted refusal with a kept artifact, and an ended run whose node
+    names neither a receipt nor an attempt -- reads its own table once for
+    the whole page, not once per row.
+
+    The artifact-bearing refusals grow with the page too (2 vs 5): a
+    restored per-refusal `artifacts` read would show up as that count
+    growing, not just as the plain/receiptless counts staying put. Growing
+    every shape at once and asserting the five counts stay exactly equal
+    (`fewer == more`) is what a fixed-count refusal could not catch.
+    """
+
+    _seed_artifact_bearing_refusals(
+        engine, tuple(RunId(f"artifact-fixed-{index}") for index in range(2))
+    )
+    _seed_receiptless_ended_run(engine, RunId("receiptless-fixed"))
+    _seed_plain_answered_runs(engine, (RunId("plain-fixed-0"), RunId("plain-fixed-1")))
+
+    fewer = _terminal_result_reads(engine)
+
+    _seed_artifact_bearing_refusals(
+        engine, tuple(RunId(f"artifact-grown-{index}") for index in range(5))
+    )
+    _seed_plain_answered_runs(
+        engine, tuple(RunId(f"plain-grown-{index}") for index in range(8))
+    )
+    _seed_receiptless_ended_run(engine, RunId("receiptless-grown"))
+
+    more = _terminal_result_reads(engine)
+
+    assert fewer == more
+    assert fewer == {
+        "agent_attempt_receipts_v3": 0,
+        "agent_attempts": 2,
+        "artifacts": 1,
+        "node_receipts_v3": 1,
+        "run_events": 1,
+    }
+
+
+def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrupt(
+    engine: Engine,
+) -> None:
+    """#1045 REVISE C1 (second delta): a duplicate answer-bearing event used
+    to be caught by `_node_answer`'s own `.one_or_none()`; the batched read
+    keeps the same refusal rather than a dict silently keeping the last one
+    seen. Two different answer-bearing kinds on one execution is the shape
+    that reaches this: the store's own unique index already refuses two rows
+    of the *same* kind on one execution.
+    """
+
+    revision = WorkflowRevision(_v3_workflow_document())
+    run_id = RunId("duplicate-answer")
+    _seed_runs(engine, ((run_id, revision),))
+    execution_id = NodeExecutionId.for_node(run_id, revision.revision_hash, "agent")
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(state=RunState.COMPLETED.value, terminal_hash=_digest("dup-end"))
+        )
+        _insert_event(
+            connection,
+            RunEvent(
+                run_id,
+                revision.revision_hash,
+                1,
+                "agent",
+                execution_id,
+                RunEventKind.AGENT_COMPLETED,
+                b'{"answer":"first"}',
+            ),
+        )
+        _insert_event(
+            connection,
+            RunEvent(
+                run_id,
+                revision.revision_hash,
+                2,
+                "agent",
+                execution_id,
+                RunEventKind.SUBWORKFLOW_COMPLETED,
+                b'{"answer":"second"}',
+            ),
+        )
+
+    result = durable_queries(engine).list_runs(None, 100)
+
+    assert isinstance(result, QueryDurableStateCorrupt)
+
+
+def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_durable_state_corrupt(
+    engine: Engine,
+) -> None:
+    """#1045 REVISE (second delta, second round): the batched attempt-receipt
+    fallback dropped `load_output_schema_refusal_receipt`'s own check that an
+    attempt's named artifact is the same hash its receipt judged
+    (`agent_attempt_store.py`). Restored in `_run_terminal_results`: a
+    mismatch is the store disagreeing with itself, never a value this
+    projection shows.
+    """
+
+    _seed_attempt_receipt_refusal(
+        engine, RunId("mismatched-artifact"), mismatched_artifact=True
+    )
+
+    result = durable_queries(engine).list_runs(None, 100)
+
+    assert isinstance(result, QueryDurableStateCorrupt)
+
+
+def test_an_attempt_receipt_whose_artifact_matches_its_value_hash_reads_the_refusal(
+    engine: Engine,
+) -> None:
+    """The honest counterpart to the corruption test right above: a genuine
+    attempt-receipt refusal, artifact and value hash agreeing, still reads.
+    """
+
+    _seed_attempt_receipt_refusal(
+        engine, RunId("matched-artifact"), mismatched_artifact=False
+    )
+
+    page = durable_queries(engine).list_runs(None, 100)
+
+    assert isinstance(page, RunPage)
+    assert len(page.runs) == 1
 
 
 def test_run_page_batches_waiting_reconciliation_and_projects_command_owner_state(

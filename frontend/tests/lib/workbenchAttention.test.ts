@@ -12,6 +12,7 @@ function waitingRun(changes: Partial<RunV3> = {}): RunV3 {
   return {
     workflow_format_version: 3,
     run_id: "v3/decide",
+    workflow_name: "decide",
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
     agent_binding_set_hash: "b".repeat(64),

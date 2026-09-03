@@ -20,7 +20,6 @@ export const historyPageCopy = {
   looking: readStateCopy.looking,
   retry: "Retry",
   listUnavailable: "History unavailable",
-  listIncomplete: "History incomplete",
   emptyTitle: "No finished runs yet",
   emptyDescription: "Runs land here once they finish — start one from the Catalog.",
   emptyNext: "Open the Catalog",
@@ -37,14 +36,14 @@ export const historyPageCopy = {
   workItemPlaceholder: "—",
   /**
    * A V1/V2 row (or a V3 row with neither stamp) in When/Duration, and a
-   * completed row whose node extras settled with no readable sentence.
+   * completed row with no readable result sentence.
    */
   notRecorded: "Not recorded",
   /**
-   * Completed Result when the node extra could not be loaded. Distinct from
-   * `notRecorded`, which is a successful load with nothing readable to say.
+   * A completed row whose own answer the list omitted for size (#1045) --
+   * never `notRecorded`, which reads as a run that wrote nothing at all.
    */
-  couldNotLoad: "Could not load",
+  answerTooLarge: "Too large to show",
   /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):
    * names why such a row still shows under a period chip that cannot measure
@@ -68,6 +67,16 @@ export const historyPageCopy = {
 
 export function periodChipLabel(days: number): string {
   return `${days} days`;
+}
+
+/**
+ * Names where a partial read stopped, beside the pages it already showed
+ * (#1042 review, A2). A partial answer always beats none: this never
+ * replaces the rows above it, only names the cursor the next page would
+ * have started from and offers the one honest next move, Retry.
+ */
+export function readingStoppedAt(cursor: string): string {
+  return `Reading stopped at ${cursor} — showing what already loaded.`;
 }
 
 export function historyFindingsHighest(count: number, severity: string): string {

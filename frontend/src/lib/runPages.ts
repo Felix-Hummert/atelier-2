@@ -30,11 +30,16 @@ import { runListRowReference } from "./runList";
  */
 export type RunReading =
   | { complete: true; runs: RunListRow[] }
-  | { complete: false; runs: RunListRow[]; unreadable: string };
+  | { complete: false; runs: RunListRow[]; unreadable: string; cursor: string };
 
 export type RevisionReading =
   | { complete: true; revisions: WorkflowRevisionSummary[] }
-  | { complete: false; revisions: WorkflowRevisionSummary[]; unreadable: string };
+  | {
+      complete: false;
+      revisions: WorkflowRevisionSummary[];
+      unreadable: string;
+      cursor: string;
+    };
 
 export type AgentConfigurationReading =
   | { complete: true; configurations: AgentConfigurationRevisionListItem[] }
@@ -42,11 +47,12 @@ export type AgentConfigurationReading =
       complete: false;
       configurations: AgentConfigurationRevisionListItem[];
       unreadable: string;
+      cursor: string;
     };
 
 export type AuthProfileReading =
   | { complete: true; profiles: AuthProfileRevision[] }
-  | { complete: false; profiles: AuthProfileRevision[]; unreadable: string };
+  | { complete: false; profiles: AuthProfileRevision[]; unreadable: string; cursor: string };
 
 export async function readEveryRun(
   listRuns: (after?: string) => Promise<RunPage>
@@ -60,7 +66,7 @@ export async function readEveryRun(
   );
   return read.complete
     ? { complete: true, runs: read.items }
-    : { complete: false, runs: read.items, unreadable: read.unreadable };
+    : { complete: false, runs: read.items, unreadable: read.unreadable, cursor: read.cursor };
 }
 
 /** The saved workflows a picker may offer, read the same way and for the same reason. */
@@ -76,7 +82,12 @@ export async function readEveryRevision(
   );
   return read.complete
     ? { complete: true, revisions: read.items }
-    : { complete: false, revisions: read.items, unreadable: read.unreadable };
+    : {
+        complete: false,
+        revisions: read.items,
+        unreadable: read.unreadable,
+        cursor: read.cursor
+      };
 }
 
 /** The published agent configurations a binding picker may offer. */
@@ -92,7 +103,12 @@ export async function readEveryAgentConfiguration(
   );
   return read.complete
     ? { complete: true, configurations: read.items }
-    : { complete: false, configurations: read.items, unreadable: read.unreadable };
+    : {
+        complete: false,
+        configurations: read.items,
+        unreadable: read.unreadable,
+        cursor: read.cursor
+      };
 }
 
 /** Every published account identity a model picker names beside its exact model. */
@@ -108,12 +124,17 @@ export async function readEveryAuthProfile(
   );
   return read.complete
     ? { complete: true, profiles: read.items }
-    : { complete: false, profiles: read.items, unreadable: read.unreadable };
+    : {
+        complete: false,
+        profiles: read.items,
+        unreadable: read.unreadable,
+        cursor: read.cursor
+      };
 }
 
 type PageReading<Item> =
   | { complete: true; items: Item[] }
-  | { complete: false; items: Item[]; unreadable: string };
+  | { complete: false; items: Item[]; unreadable: string; cursor: string };
 
 async function readEveryPage<Item>(
   readPage: (after?: string) => Promise<{ items: readonly Item[]; next: string | null }>,
@@ -131,7 +152,7 @@ async function readEveryPage<Item>(
       if (after === undefined) {
         throw error;
       }
-      return { complete: false, items, unreadable: failureText(error) };
+      return { complete: false, items, unreadable: failureText(error), cursor: after };
     }
     for (const item of page.items) {
       const identity = identityOf(item);
@@ -147,7 +168,8 @@ async function readEveryPage<Item>(
       return {
         complete: false,
         items,
-        unreadable: "the durable list answered with a cursor it had already given"
+        unreadable: "the durable list answered with a cursor it had already given",
+        cursor: page.next
       };
     }
     followed.add(page.next);

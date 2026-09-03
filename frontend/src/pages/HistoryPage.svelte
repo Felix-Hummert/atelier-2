@@ -1,28 +1,23 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { CockpitApi, DefectiveRunRow, NodeDetail, RunV3 } from "../api/client";
+  import type { CockpitApi, DefectiveRunRow, RunV3 } from "../api/client";
   import DefectiveRunRowItem from "../components/DefectiveRunRow.svelte";
   import LoadingState from "../components/LoadingState.svelte";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { shortPublicRunReference } from "../lib/fingerprint";
   import {
     HISTORY_PERIOD_DAYS,
     hasTimestamplessRows,
-    historyResultNodeId,
     historyWhenLabel,
     historyWorkItemLabel,
     projectHistoryRows,
     withinHistoryPeriod,
     type HistoryRow,
-    type HistoryRowExtras,
-    type HistoryWhenDay,
-    type HistoryWorkItem
+    type HistoryWhenDay
   } from "../lib/historyRows";
-  import { historyOutcome } from "../lib/historyOutcome";
-  import { historyPageCopy, periodChipLabel } from "../lib/historyPageCopy";
+  import { historyPageCopy, periodChipLabel, readingStoppedAt } from "../lib/historyPageCopy";
   import {
     beginRead,
     confirmRead,
@@ -32,13 +27,9 @@
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
   import { standingWords } from "../lib/runState";
-  import { splitRunListRows, workflowNamesOf } from "../lib/runList";
+  import { splitRunListRows } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
-  import {
-    trackerItemHref,
-    workItemReferenceFromJob,
-    type TrackerSourceConnection
-  } from "../lib/trackerItem";
+  import type { TrackerSourceConnection } from "../lib/trackerItem";
   import { ageLabel, exactLocal } from "../lib/when";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
@@ -52,23 +43,20 @@
     runs: RunV3[];
     /** Runs whose own projection failed (#1042): read apart, shown apart. */
     defective: DefectiveRunRow[];
-    workflowNames: ReadonlyMap<string, string>;
+    /**
+     * The cursor a page read stopped at, once per list that could not finish
+     * (#1042 review, A2): a partial answer always beats none, so a read that
+     * stopped early names where rather than discarding every page it already
+     * loaded.
+     */
+    stoppedAtCursors: string[];
   }
 
-  type HistoryReadFailure =
-    | { kind: "unavailable"; title: string }
-    | { kind: "incomplete"; title: string };
-
-  type ExtrasLoad =
-    | { status: "loading" }
-    | { status: "settled"; extras: HistoryRowExtras }
-    | { status: "unavailable" };
+  type HistoryReadFailure = { kind: "unavailable"; title: string };
 
   let history: RetainedRead<HistorySnapshot, HistoryReadFailure> =
     retainedRead<HistorySnapshot, HistoryReadFailure>();
   const now = new Date();
-  let extrasLoadByReference: Map<string, ExtrasLoad> = new Map();
-  let extrasToken = 0;
   let sourceConnection: TrackerSourceConnection | null = null;
 
   onMount(() => {
@@ -78,6 +66,15 @@
     return onConnectionRecovered(() => { void load(); });
   });
 
+  /**
+   * Every page History could read, shown as such (#1042 review, A2).
+   *
+   * `readEveryRun` already keeps every page it collected before a later page
+   * failed, so a read that stops partway is not the whole page's failure --
+   * the pages that arrived render, and the cursor the stopped read names is
+   * the one honest line about what did not. Only an exception before the
+   * first page of either list ever answers nothing at all.
+   */
   async function load(): Promise<void> {
     const begun = beginRead(history);
     history = begun.read;
@@ -87,29 +84,17 @@
         readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED")),
         readEveryRun((after) => cockpitApi.listRuns(after, "FAILED"))
       ]);
-      if (!completed.complete || !failed.complete) {
-        history = failRead(history, begun.generation, {
-          kind: "incomplete",
-          title: historyPageCopy.listIncomplete
-        });
-        return;
-      }
       // A run whose own projection failed (#1042) is told apart from the
       // runs History can read, the same shape and copy the Workbench already
       // shows it in (DefectiveRunRow.svelte) -- never claimed as a run that
       // finished cleanly, and never folded into an empty list.
       const { runs, defective } = splitRunListRows([...completed.runs, ...failed.runs]);
-      const workflowNames = await workflowNamesOf(runs, (hash) =>
-        cockpitApi.getWorkflowRevision(hash)
+      const stoppedAtCursors = [completed, failed].flatMap((reading) =>
+        reading.complete ? [] : [reading.cursor]
       );
       sourceConnection = await sourcePromise;
       if (history.generation !== begun.generation) return;
-      history = confirmRead(history, begun.generation, { runs, defective, workflowNames });
-      if (history.generation !== begun.generation) return;
-      const visible = projectHistoryRows(runs, workflowNames).filter((row) =>
-        withinHistoryPeriod(row, now)
-      );
-      void settleExtras(visible);
+      history = confirmRead(history, begun.generation, { runs, defective, stoppedAtCursors });
     } catch {
       history = failRead(history, begun.generation, {
         kind: "unavailable",
@@ -133,89 +118,14 @@
     }
   }
 
-  async function settleExtras(rows: HistoryRow[]): Promise<void> {
-    const token = ++extrasToken;
-    extrasLoadByReference = new Map(
-      rows.map((row) => [row.run.public_run_reference, { status: "loading" as const }])
-    );
-    const loads = await Promise.all(
-      rows.map(async (row) => {
-        const load = await extrasForRow(row);
-        return [row.run.public_run_reference, load] as const;
-      })
-    );
-    if (token !== extrasToken) return;
-    extrasLoadByReference = new Map(loads);
-  }
-
-  async function extrasForRow(
-    row: HistoryRow
-  ): Promise<{ status: "settled"; extras: HistoryRowExtras } | { status: "unavailable" }> {
-    try {
-      const detail = await cockpitApi.getNodeDetail(
-        row.run.public_run_reference,
-        historyResultNodeId(row.run)
-      );
-      return {
-        status: "settled",
-        extras: {
-          workItem: workItemFromDetail(detail),
-          resultSentence: resultSentenceFromDetail(row.workflowName, row.result.kind, detail)
-        }
-      };
-    } catch {
-      return { status: "unavailable" };
-    }
-  }
-
-  function workItemFromDetail(detail: NodeDetail | null | undefined): HistoryWorkItem | null {
-    if (detail == null || detail.job_base64 == null || detail.job_base64.length === 0) {
-      return null;
-    }
-    const job = decodeUtf8Base64(detail.job_base64);
-    if (job == null) return null;
-    const reference = workItemReferenceFromJob(job);
-    if (reference === null) return null;
-    return {
-      reference,
-      title: null,
-      href: trackerItemHref(reference, sourceConnection)
-    };
-  }
-
-  function resultSentenceFromDetail(
-    workflowName: string,
-    kind: HistoryRow["result"]["kind"],
-    detail: NodeDetail | null | undefined
-  ): string | null {
-    if (detail == null) return null;
-    const encoded =
-      kind === "failed" ? detail.refusal_output?.value_base64 : detail.answer?.value_base64;
-    if (encoded == null || encoded.length === 0) return null;
-    const decoded = decodeUtf8Base64(encoded);
-    if (decoded == null || decoded.length === 0) return null;
-    return historyOutcome(workflowName, decoded);
-  }
-
-  function settledExtrasByReference(
-    loads: ReadonlyMap<string, ExtrasLoad>
-  ): ReadonlyMap<string, HistoryRowExtras> {
-    return new Map(
-      [...loads].flatMap(([reference, load]) =>
-        load.status === "settled" ? [[reference, load.extras] as const] : []
-      )
-    );
-  }
-
   function whenDayText(day: HistoryWhenDay): string {
     if (day.kind === "today") return wrapDisplayCopy(historyPageCopy.today);
     if (day.kind === "yesterday") return wrapDisplayCopy(historyPageCopy.yesterday);
     return day.weekday;
   }
 
-  function failedResultCopy(nodeId: string, sentence: string | null, settled: boolean): string {
+  function failedResultCopy(nodeId: string, sentence: string | null): string {
     const standing = wrapDisplayCopy(standingWords.failed);
-    if (!settled) return standing;
     if (sentence !== null) return `${standing} — ${wrapDisplayCopy(sentence)}`;
     return `${standing} · ${nodeId}`;
   }
@@ -231,14 +141,14 @@
     return `${row.workflowName} ${shortPublicRunReference(row.run.public_run_reference)}`;
   }
 
-  $: extrasByReference = settledExtrasByReference(extrasLoadByReference);
   $: rows = history.confirmed === null
     ? []
-    : projectHistoryRows(history.confirmed.runs, history.confirmed.workflowNames, extrasByReference);
+    : projectHistoryRows(history.confirmed.runs, sourceConnection);
   $: visibleRows = rows.filter((row) => withinHistoryPeriod(row, now));
   $: showTimestamplessHint = hasTimestamplessRows(visibleRows);
   $: hasWorkItem = visibleRows.some((row) => row.workItem !== null);
   $: defectiveRows = history.confirmed?.defective ?? [];
+  $: stoppedAtCursors = history.confirmed?.stoppedAtCursors ?? [];
 </script>
 
 <section class="history-page surface" aria-labelledby="history-title">
@@ -263,7 +173,7 @@
   {/if}
 
   {#if history.confirmed !== null}
-    {#if visibleRows.length === 0 && defectiveRows.length === 0}
+    {#if visibleRows.length === 0 && defectiveRows.length === 0 && stoppedAtCursors.length === 0}
       <div class="history-empty card empty-state">
         <h2>{wrapDisplayCopy(historyPageCopy.emptyTitle)}</h2>
         <p>{wrapDisplayCopy(historyPageCopy.emptyDescription)}</p>
@@ -288,7 +198,6 @@
       </div>
       <ul class="history-rows">
         {#each visibleRows as row (row.run.public_run_reference)}
-          {@const extras = extrasLoadByReference.get(row.run.public_run_reference)}
           <li>
             <div
               class="history-row history-row-{row.result.kind}"
@@ -336,17 +245,13 @@
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
-                  {failedResultCopy(row.result.nodeId, row.result.sentence, extras?.status === "settled")}
-                {:else if extras?.status === "unavailable"}
-                  {wrapDisplayCopy(historyPageCopy.couldNotLoad)}
-                {:else if extras?.status === "settled"}
-                  {#if row.result.sentence !== null}
-                    {wrapDisplayCopy(row.result.sentence)}
-                  {:else}
-                    {wrapDisplayCopy(historyPageCopy.notRecorded)}
-                  {/if}
+                  {failedResultCopy(row.result.nodeId, row.result.sentence)}
+                {:else if row.result.kind === "omitted"}
+                  {wrapDisplayCopy(historyPageCopy.answerTooLarge)}
+                {:else if row.result.sentence !== null}
+                  {wrapDisplayCopy(row.result.sentence)}
                 {:else}
-                  <LoadingState label={wrapDisplayCopy(historyPageCopy.looking)} compact />
+                  {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
               <span class="row-duration">
@@ -373,6 +278,16 @@
         {/each}
       </ul>
     {/if}
+    <!-- A partial answer always beats none (operator ruling, #1042 review
+         A2): every page that arrived already rendered above, and this line
+         names exactly where a stopped read left off rather than silently
+         truncating the list. -->
+    {#each stoppedAtCursors as cursor (cursor)}
+      <p class="reading-stopped" role="status">
+        {wrapDisplayCopy(readingStoppedAt(cursor))}
+        <button type="button" onclick={() => { void load(); }}>{wrapDisplayCopy(historyPageCopy.retry)}</button>
+      </p>
+    {/each}
     {/if}
   {/if}
 </section>
@@ -586,6 +501,16 @@
   }
 
   .timestampless-hint {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+  }
+
+  .reading-stopped {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
     margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
