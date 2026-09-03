@@ -38,23 +38,24 @@ import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.names import (
-    CANCELLATION_WORKFLOW_NAME,
-    NODE_WORKFLOW_NAME,
-    RUNNER_LEASE_WORKFLOW_NAME,
-)
+from atelier2.adapters.dbos.names import RUNNER_LEASE_WORKFLOW_NAME
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
     runner_lease_cancellation_command_id,
 )
-from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
+from atelier2.adapters.dbos.schema import agent_attempts, run_events
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow_ids import runner_lease_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import (
+    cancellation_workflow_id_for,
+    node_workflow_id_for,
+    replacement_workflow_id_for,
+    runner_lease_workflow_id_for,
+)
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerExecutorFactory,
@@ -127,7 +128,10 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     publish_checked_model_registry,
 )
-from tests.scenarios.run_waiting import wait_for_run_state
+from tests.scenarios.run_waiting import (
+    wait_for_run_state,
+    wait_for_workflow_completion,
+)
 from tests.scenarios.runners import (
     RunnerSessionAdvancerLike,
     drive_free_runner_session_to_released,
@@ -139,7 +143,6 @@ from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 _AGENT_NODE = "execute"
 _ACCEPT_TIMEOUT_SECONDS = 5.0
 _WAIT_SECONDS = 16.0
-_POLL_SECONDS = 0.025
 _LOCAL_PROCESS_OUTPUT = b'"local process result"'
 _LEASE_OUTPUT = b'"runner lease result"'
 _FREE_RUNNER_AUTH_PROFILE = AuthProfileRevision(
@@ -252,6 +255,15 @@ class _DriveTracking:
     # scenario polls: a drive hands its arrival over the moment it has it, so a
     # scenario waits on the drive itself instead of on a clock.
     arrivals: queue.Queue[tuple[str, str]] = field(default_factory=queue.Queue)
+    # The drives that have returned, published by `left` for the reason
+    # `arrivals` is published by `entered`: a scenario that needs a drive to
+    # have returned takes the drive's own handoff rather than reading the list
+    # it appends to on a clock.
+    departures: queue.Queue[str] = field(default_factory=queue.Queue)
+    # The Attempts a scripted session durably armed before it stopped at
+    # STARTED -- the exact shape a crash scenario asks about, handed over by
+    # the session that reached it.
+    armed_at_started: queue.Queue[str] = field(default_factory=queue.Queue)
     driven_run_ids: list[str] = field(default_factory=list)
     # A drive records its overlap, then holds here until released. Set by
     # default so every test but the three slot proofs runs straight through;
@@ -275,6 +287,7 @@ class _DriveTracking:
         with self.lock:
             self.active -= 1
             self.completed_attempt_ids.append(attempt_id)
+        self.departures.put(attempt_id)
 
 
 @dataclass
@@ -287,11 +300,16 @@ class _ScriptedTransport:
     handoff the way a launcher's journal does, and then holds. What the
     restarted Serve reads back is therefore a real record of a real session,
     not a fixture written beside one.
+
+    It hands that Attempt over on `armed_at_started` the instant the arming is
+    durable, so a scenario waits on the session that armed it rather than on a
+    clock reading the store behind its back.
     """
 
     output_bytes: bytes
     manifest: RunnerManifestV1
     auth_reference: str
+    tracking: _DriveTracking
     stop_at_started: threading.Event | None = None
     lease_root: Path | None = None
     attempt_id: str = ""
@@ -318,7 +336,11 @@ class _ScriptedTransport:
                 self.auth_reference,
             )
             self._retain_the_runners_own_record(binding, invocation_id)
-            self.stop_at_started.wait(timeout=_WAIT_SECONDS)
+            self.tracking.armed_at_started.put(self.attempt_id)
+            if not self.stop_at_started.wait(timeout=_WAIT_SECONDS):
+                raise AssertionError(
+                    "the scenario never ended the session it held at STARTED"
+                )
             raise _AbandonedScenarioDrive(self.attempt_id)
         drive_free_runner_session_to_released(
             session,
@@ -447,9 +469,13 @@ class _ScriptedLeaseDriver:
             execution.request.run_id.value, execution.attempt_id.value
         )
         try:
-            self.tracking.released.wait(timeout=_WAIT_SECONDS)
+            released = self.tracking.released.wait(timeout=_WAIT_SECONDS)
             if self.tracking.abandoned.is_set():
                 raise _AbandonedScenarioDrive(execution.attempt_id.value)
+            if not released:
+                raise AssertionError(
+                    "the scenario never released the drive holding the runner slot"
+                )
             outcome = execute_agent_attempt_on_runner(
                 execution,
                 self.store,
@@ -459,6 +485,7 @@ class _ScriptedLeaseDriver:
                     _LEASE_OUTPUT,
                     manifest,
                     auth_reference,
+                    self.tracking,
                     self.stop_at_started,
                     self.attempt_root.parent,
                     execution.attempt_id.value,
@@ -636,39 +663,20 @@ def _publish_and_start(
     return WorkflowRevisionHash(workflow.revision_hash.value)
 
 
-def wait_for_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> None:
-    deadline = time.monotonic() + _WAIT_SECONDS
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
-                )
-            )
-        if observed == state.value:
-            return
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError(
-        f"run {run_id.value!r} stayed {observed!r}, expected {state.value!r}"
-    )
-
-
 def wait_for_drives(tracking: _DriveTracking, count: int) -> None:
     """The durable run reaching a terminal state races this test's own
     `_ScriptedLeaseDriver.drive()` returning: the driver's durable commit
     lands mid-session, before the remaining ACK/RELEASED frames finish, so a
-    caller that wants the drive itself to have returned waits for it here
-    rather than for the run alone."""
+    caller that wants the drive itself to have returned takes `count` of the
+    handoffs each drive makes as it leaves, rather than watching the run."""
 
-    deadline = time.monotonic() + _WAIT_SECONDS
-    while time.monotonic() < deadline:
-        if len(tracking.completed_attempt_ids) >= count:
-            return
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError(
-        f"only {len(tracking.completed_attempt_ids)} drive(s) returned, expected {count}"
-    )
+    for returned in range(count):
+        try:
+            tracking.departures.get(timeout=_WAIT_SECONDS)
+        except queue.Empty:
+            raise AssertionError(
+                f"only {returned} drive(s) returned, expected {count}"
+            ) from None
 
 
 def _count_workflows(runtime: DbosRuntime, name: str, *, enqueued: bool) -> int:
@@ -690,26 +698,27 @@ def _count_workflows(runtime: DbosRuntime, name: str, *, enqueued: bool) -> int:
         )
 
 
-def wait_for_waiting_lease_attempts(runtime: DbosRuntime, count: int) -> None:
-    """Wait until `count` Runner-lease attempts are waiting their turn durably.
+def one_lease_attempt_waits_after(
+    runtime: DbosRuntime, handover_workflow_id: str, awaited: str
+) -> None:
+    """Await one handover to the lease queue, then read who is waiting there.
 
-    A waiting attempt is an `ENQUEUED` row on the lease queue -- the proof the
-    single lease slot, not a chance of DBOS running the node workflows one at a
-    time, is what serializes the drives, and the proof it serializes them without
-    holding a worker each.
+    A workflow that hands an Attempt to the slot -- a node workflow, or a
+    replacement's -- ends the moment it has enqueued that Attempt, so its
+    completion is the event after which the queue row is certain. What follows is
+    an assertion rather than a second wait: a waiting attempt is an `ENQUEUED` row
+    on the lease queue -- the proof the single lease slot, not a chance of DBOS
+    running the node workflows one at a time, is what serializes the drives, and
+    the proof it serializes them without holding a worker each.
     """
 
-    deadline = time.monotonic() + _WAIT_SECONDS
-    waiting = 0
-    while time.monotonic() < deadline:
-        waiting = _count_workflows(runtime, RUNNER_LEASE_WORKFLOW_NAME, enqueued=True)
-        if waiting >= count:
-            return
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError(
-        f"only {waiting} runner-lease attempt(s) waited on the lease queue, "
-        f"expected {count}"
-    )
+    wait_for_workflow_completion(handover_workflow_id, awaited)
+    waiting = _count_workflows(runtime, RUNNER_LEASE_WORKFLOW_NAME, enqueued=True)
+    if waiting < 1:
+        raise AssertionError(
+            f"{waiting} runner-lease attempt(s) waited on the lease queue after "
+            f"{awaited}, expected at least one"
+        )
 
 
 def await_a_drive(tracking: _DriveTracking) -> tuple[RunId, AgentAttemptId]:
@@ -726,6 +735,22 @@ def await_a_drive(tracking: _DriveTracking) -> tuple[RunId, AgentAttemptId]:
     except queue.Empty:
         raise AssertionError("no runner-lease drive ever reached the slot") from None
     return RunId(run_id), AgentAttemptId(attempt_id)
+
+
+def await_an_armed_attempt(tracking: _DriveTracking) -> AgentAttemptId:
+    """Block until a scripted session has armed its Attempt to a claimed lease.
+
+    Armed is what makes a cancellation a *claimed*-lease cancellation: the
+    launcher has the lease, Core has bound this invocation, and the withdraw a
+    cancel would try can no longer win. The session hands the Attempt over the
+    moment that arming is durable, so a scenario waits on the session rather
+    than on a clock reading the store behind it.
+    """
+
+    try:
+        return AgentAttemptId(tracking.armed_at_started.get(timeout=_WAIT_SECONDS))
+    except queue.Empty:
+        raise AssertionError("no runner attempt ever armed its claimed lease") from None
 
 
 def slot_admission_order(runtime: DbosRuntime) -> list[str]:
@@ -812,26 +837,6 @@ def terminal_events_of(runtime: DbosRuntime, attempt_id: AgentAttemptId) -> int:
             )
             or 0
         )
-
-
-def wait_for_started_nodes(runtime: DbosRuntime, count: int) -> None:
-    """Wait until DBOS has handed `count` node workflows to a worker.
-
-    A run still `ENQUEUED` on the run queue has neither parked a worker nor
-    reached the lease queue, so a scenario that counts workers has to wait for
-    this before it can conclude anything from what the pool has left.
-    """
-
-    deadline = time.monotonic() + _WAIT_SECONDS
-    started = 0
-    while time.monotonic() < deadline:
-        started = _count_workflows(runtime, NODE_WORKFLOW_NAME, enqueued=False)
-        if started >= count:
-            return
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError(
-        f"only {started} node workflow(s) left the run queue, expected {count}"
-    )
 
 
 def test_a_fake_free_node_completes_over_the_lease_path_touching_no_process_supervisor(
@@ -925,7 +930,7 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
         # has to create one instead of asking the test to invent it.
         occupying, first_attempt = await_a_drive(tracking)
         assert occupying == run_a
-        _publish_and_start(
+        revision_b = _publish_and_start(
             runtime,
             run_b,
             "runner",
@@ -937,7 +942,13 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
         # both drives run at once, so nothing ever waits and this fails --
         # `peak <= 1` alone would pass vacuously if DBOS happened to run the two
         # node workflows serially.
-        wait_for_waiting_lease_attempts(runtime, 1)
+        one_lease_attempt_waits_after(
+            runtime,
+            node_workflow_id_for(
+                NodeExecutionId.for_node(run_b, revision_b, _AGENT_NODE)
+            ),
+            "the second run's node workflow handing its attempt to the slot",
+        )
         admission_order = slot_admission_order(runtime)
         tracking.released.set()
         wait_for_run_state(runtime.engine, run_a, RunState.COMPLETED)
@@ -968,23 +979,19 @@ def _the_replacement_of(
     with whatever it happened to compute.
     """
 
-    deadline = time.monotonic() + _WAIT_SECONDS
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            found = connection.scalar(
-                sa.select(agent_attempts.c.attempt_id).where(
-                    agent_attempts.c.node_execution_id
-                    == sa.select(agent_attempts.c.node_execution_id)
-                    .where(agent_attempts.c.attempt_id == attempt_id.value)
-                    .scalar_subquery(),
-                    agent_attempts.c.attempt_ordinal
-                    == REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
-                )
+    with runtime.engine.connect() as connection:
+        found = connection.scalar(
+            sa.select(agent_attempts.c.attempt_id).where(
+                agent_attempts.c.node_execution_id
+                == sa.select(agent_attempts.c.node_execution_id)
+                .where(agent_attempts.c.attempt_id == attempt_id.value)
+                .scalar_subquery(),
+                agent_attempts.c.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
             )
-        if found is not None:
-            return AgentAttemptId(str(found))
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError("the cancellation never minted its replacement attempt")
+        )
+    if found is None:
+        raise AssertionError("the cancellation never minted its replacement attempt")
+    return AgentAttemptId(str(found))
 
 
 def test_a_replacement_attempt_waits_its_turn_in_the_same_slot(
@@ -1026,29 +1033,38 @@ def test_a_replacement_attempt_waits_its_turn_in_the_same_slot(
         store = DbosAgentAttemptStore(
             runtime.engine, runtime.settings.application_version
         )
-        accepted = store.request_cancellation(
-            CancelAgentAttemptRequest(
-                run_id,
-                first_attempt,
-                "operator-cancel:replace",
-                store.load(first_attempt).state_version,
-                AgentAttemptReplacement.ONE,
-            )
+        cancellation = CancelAgentAttemptRequest(
+            run_id,
+            first_attempt,
+            "operator-cancel:replace",
+            store.load(first_attempt).state_version,
+            AgentAttemptReplacement.ONE,
         )
+        accepted = store.request_cancellation(cancellation)
         assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
 
+        # The cancellation mints the replacement as it attests its cleanup, so
+        # its ending is the event after which the store has one to name.
+        wait_for_workflow_completion(
+            cancellation_workflow_id_for(cancellation),
+            "the cancellation minting its replacement attempt",
+        )
+        replacement = _the_replacement_of(runtime, first_attempt)
         # The replacement reaches the slot's queue while the Attempt it replaces
         # still holds the slot: one waiting, one in flight.
-        wait_for_waiting_lease_attempts(runtime, 1)
+        one_lease_attempt_waits_after(
+            runtime,
+            replacement_workflow_id_for(replacement),
+            "the replacement workflow handing its attempt to the slot",
+        )
         admission_order = slot_admission_order(runtime)
-        replacement = _the_replacement_of(runtime, first_attempt)
         assert admission_order == [
             slot_workflow_id_of(first_attempt, runtime),
             slot_workflow_id_of(replacement, runtime),
         ]
 
         tracking.released.set()
-        wait_for_state(runtime, run_id, RunState.COMPLETED)
+        wait_for_run_state(runtime.engine, run_id, RunState.COMPLETED)
         wait_for_drives(tracking, 2)
         assert tracking.peak <= 1
         assert tracking.completed_attempt_ids[-1] == replacement.value
@@ -1056,70 +1072,6 @@ def test_a_replacement_attempt_waits_its_turn_in_the_same_slot(
     finally:
         tracking.released.set()
         runtime.close()
-
-
-def wait_for_attempt_state(
-    runtime: DbosRuntime, attempt_id: AgentAttemptId, state: AgentAttemptState
-) -> None:
-    deadline = time.monotonic() + _WAIT_SECONDS
-    observed = attempt_state(runtime, attempt_id)
-    while time.monotonic() < deadline:
-        observed = attempt_state(runtime, attempt_id)
-        if observed is state:
-            return
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError(
-        f"attempt {attempt_id.value!r} stayed {observed.value!r}, expected {state.value!r}"
-    )
-
-
-def wait_for_a_finished_cancellation(runtime: DbosRuntime) -> None:
-    """Wait until the cancellation workflow has run and owes the Attempt nothing.
-
-    A cancel of a claimed lease hands the ending back to the session rather than
-    writing one, so its own workflow reaches SUCCESS while the Attempt is still
-    `CANCEL_REQUESTED`. Until that has happened the cancellation is itself a live
-    driver, and a restart would find it rather than the slot.
-    """
-
-    deadline = time.monotonic() + _WAIT_SECONDS
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            finished = connection.scalar(
-                sa.select(sa.func.count())
-                .select_from(_workflow_status)
-                .where(
-                    _workflow_status.c.name == CANCELLATION_WORKFLOW_NAME,
-                    _workflow_status.c.status == "SUCCESS",
-                )
-            )
-        if finished:
-            return
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError("the cancellation workflow never finished handing back")
-
-
-def wait_for_an_armed_attempt(runtime: DbosRuntime) -> AgentAttemptId:
-    """Wait until a Runner Attempt is durably armed to a claimed lease.
-
-    Armed is what makes a cancellation a *claimed*-lease cancellation: the
-    launcher has the lease, Core has bound this invocation, and the withdraw a
-    cancel would try can no longer win.
-    """
-
-    deadline = time.monotonic() + _WAIT_SECONDS
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            found = connection.scalar(
-                sa.select(agent_attempts.c.attempt_id).where(
-                    agent_attempts.c.runner_manifest_id.is_not(None),
-                    agent_attempts.c.state == AgentAttemptState.LAUNCH_ARMED.value,
-                )
-            )
-        if found is not None:
-            return AgentAttemptId(str(found))
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError("no runner attempt ever armed its claimed lease")
 
 
 @pytest.mark.parametrize(
@@ -1154,9 +1106,8 @@ def test_a_claimed_cancellation_ends_on_the_runners_own_evidence_after_a_restart
     run_id = RunId("lease-dispatch/claimed-cancel")
     mixed = (_lease_registration(True), _local_process_registration(True))
     crashed = threading.Event()
-    first = _build_runtime(
-        tmp_path, monkeypatch, _DriveTracking(), mixed, stop_at_started=crashed
-    )
+    held = _DriveTracking()
+    first = _build_runtime(tmp_path, monkeypatch, held, mixed, stop_at_started=crashed)
     try:
         _publish_catalog(first)
         first.launch()
@@ -1167,41 +1118,49 @@ def test_a_claimed_cancellation_ends_on_the_runners_own_evidence_after_a_restart
             _FREE_RUNNER_CONFIGURATION,
             _free_runner_document("claimed"),
         )
-        attempt_id = wait_for_an_armed_attempt(first)
+        attempt_id = await_an_armed_attempt(held)
         store = DbosAgentAttemptStore(first.engine, first.settings.application_version)
-        accepted = store.request_cancellation(
-            CancelAgentAttemptRequest(
-                run_id,
-                attempt_id,
-                "operator-cancel:claimed-lease",
-                store.load(attempt_id).state_version,
-                AgentAttemptReplacement.NONE,
-            )
+        cancellation = CancelAgentAttemptRequest(
+            run_id,
+            attempt_id,
+            "operator-cancel:claimed-lease",
+            store.load(attempt_id).state_version,
+            AgentAttemptReplacement.NONE,
         )
+        accepted = store.request_cancellation(cancellation)
         assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
         assert not accepted.terminal
         # The cancellation workflow has to have run and handed the ending back
         # before the crash, or it -- not the slot -- would be the live driver a
-        # restart finds, and this would prove nothing about the slot.
-        wait_for_a_finished_cancellation(first)
+        # restart finds, and this would prove nothing about the slot. It ends
+        # without writing one: a claimed lease's cancel leaves the ending to
+        # whatever drives the session.
+        wait_for_workflow_completion(
+            cancellation_workflow_id_for(cancellation),
+            "the cancellation handing the ending back to the session",
+        )
         assert attempt_state(first, attempt_id) is AgentAttemptState.CANCEL_REQUESTED
     finally:
         # The process is taken mid-session, with the Runner's own record already
-        # in its handoff and the ending still owed.
+        # in its handoff and the ending still owed. The session it held belongs
+        # to a process that is now gone, so it is woken to abandon its drive
+        # rather than sit out its own bound.
         first.close()
+        crashed.set()
 
+    resumed_hold = threading.Event()
     restarted = _build_runtime(
         tmp_path,
         monkeypatch,
         _DriveTracking(),
         mixed,
         application_version=restart_version,
-        stop_at_started=crashed,
+        stop_at_started=resumed_hold,
     )
     try:
+        # The restart's sweep runs inside `launch()`, so whatever it converges
+        # is durable by the time that returns.
         restarted.launch()
-        if converges:
-            wait_for_attempt_state(restarted, attempt_id, AgentAttemptState.SUCCEEDED)
         assert attempt_state(restarted, attempt_id) is (
             AgentAttemptState.SUCCEEDED
             if converges
@@ -1212,7 +1171,7 @@ def test_a_claimed_cancellation_ends_on_the_runners_own_evidence_after_a_restart
         )
         assert terminal_events_of(restarted, attempt_id) == (1 if converges else 0)
     finally:
-        crashed.set()
+        resumed_hold.set()
         restarted.close()
 
 
@@ -1242,15 +1201,29 @@ def test_waiting_lease_attempts_stall_no_independent_workflow(
     try:
         _publish_catalog(runtime)
         runtime.launch()
+        handovers = []
         for ordinal in range(workers):
-            _publish_and_start(
+            waiting = RunId(f"lease-dispatch/waiting-{ordinal}")
+            revision = _publish_and_start(
                 runtime,
-                RunId(f"lease-dispatch/waiting-{ordinal}"),
+                waiting,
                 "runner",
                 _FREE_RUNNER_CONFIGURATION,
                 _free_runner_document(f"waiting {ordinal}"),
             )
-        wait_for_started_nodes(runtime, workers)
+            handovers.append(
+                node_workflow_id_for(
+                    NodeExecutionId.for_node(waiting, revision, _AGENT_NODE)
+                )
+            )
+        # A run still on the run queue has neither parked a worker nor reached
+        # the lease queue, so what the pool has left says nothing until every
+        # lease-carried run has handed its attempt over.
+        for ordinal, handover in enumerate(handovers):
+            wait_for_workflow_completion(
+                handover,
+                f"lease-carried run {ordinal} handing its attempt to the slot",
+            )
         independent = RunId("lease-dispatch/independent")
         _publish_and_start(
             runtime,
@@ -1312,7 +1285,7 @@ def test_a_restart_finishes_an_attempt_the_runner_slot_was_still_driving(
     restarted = _build_runtime(tmp_path, monkeypatch, resumed, mixed)
     try:
         restarted.launch()
-        wait_for_state(restarted, run_id, RunState.COMPLETED)
+        wait_for_run_state(restarted.engine, run_id, RunState.COMPLETED)
         wait_for_drives(resumed, 1)
         assert attempt_state(restarted, attempt_id) is AgentAttemptState.SUCCEEDED
         assert resumed.completed_attempt_ids == [attempt_id.value]
