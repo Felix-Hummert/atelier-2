@@ -31,9 +31,13 @@ import { cockpitApiStub } from "../support/cockpitApi";
 /** Live 2026-08-27 Settings payloads from GET http://127.0.0.1:8422, copied verbatim. */
 // `structurally_startable` added by hand (#1013): the capture predates that
 // field, and both configurations were healthy, so a re-capture today would
-// carry the same `true` this fixture now states explicitly.
+// carry the same `true` this fixture now states explicitly. `provider_probe_
+// problem_code` and `provider_probe_observed_at` added by hand the same way
+// (#1103): both configurations already carried a valid receipt, so a
+// re-capture today would carry the same `null` pair this fixture now states
+// explicitly.
 const LIVE_AGENT_CONFIGURATION_REVISIONS =
-  '{"items":[{"model":"claude-opus-4-6","auth_profile_revision_hash":"294db7c5313a29d936efc3684dbce0e85710bb22afb8aeace087310bd75732e8","executor_revision":"claude-atelier-doors/v1","provider_id":"anthropic","auth_mode":"subscription","requested_capability":"headless_with_tools","agent_configuration_revision_hash":"1a9498d43ace23b3cb9e56d374734b0a17648a5e092205b52497535a1749dfff","startable":true,"structurally_startable":true,"not_startable_reason":null},{"model":"grok-4.6","auth_profile_revision_hash":"dc5b676d2f6dca42984f6d5ceaefad58455b748a15cc85a08b1a476308f23616","executor_revision":"grok-subscription/v1","provider_id":"xai","auth_mode":"subscription","requested_capability":"headless","agent_configuration_revision_hash":"6ee1d546804f5f18eb6da493905e6eefce27d12a4f6af82b804ee2359b9ba7e0","startable":true,"structurally_startable":true,"not_startable_reason":null}],"next_after_revision_hash":null}';
+  '{"items":[{"model":"claude-opus-4-6","auth_profile_revision_hash":"294db7c5313a29d936efc3684dbce0e85710bb22afb8aeace087310bd75732e8","executor_revision":"claude-atelier-doors/v1","provider_id":"anthropic","auth_mode":"subscription","requested_capability":"headless_with_tools","agent_configuration_revision_hash":"1a9498d43ace23b3cb9e56d374734b0a17648a5e092205b52497535a1749dfff","startable":true,"structurally_startable":true,"not_startable_reason":null,"provider_probe_problem_code":null,"provider_probe_observed_at":null},{"model":"grok-4.6","auth_profile_revision_hash":"dc5b676d2f6dca42984f6d5ceaefad58455b748a15cc85a08b1a476308f23616","executor_revision":"grok-subscription/v1","provider_id":"xai","auth_mode":"subscription","requested_capability":"headless","agent_configuration_revision_hash":"6ee1d546804f5f18eb6da493905e6eefce27d12a4f6af82b804ee2359b9ba7e0","startable":true,"structurally_startable":true,"not_startable_reason":null,"provider_probe_problem_code":null,"provider_probe_observed_at":null}],"next_after_revision_hash":null}';
 const LIVE_AUTH_PROFILE_REVISIONS =
   '{"items":[{"profile_id":"operator-anthropic-subscription","revision_number":1,"provider_id":"anthropic","auth_mode":"subscription","auth_profile_revision_hash":"294db7c5313a29d936efc3684dbce0e85710bb22afb8aeace087310bd75732e8"},{"profile_id":"grok-felix","revision_number":1,"provider_id":"xai","auth_mode":"subscription","auth_profile_revision_hash":"dc5b676d2f6dca42984f6d5ceaefad58455b748a15cc85a08b1a476308f23616"}],"next_after_revision_hash":null}';
 const LIVE_HEALTH = JSON.stringify({
@@ -94,7 +98,9 @@ const configuration: AgentConfigurationRevisionListItem = {
   agent_configuration_revision_hash: configurationHash,
   startable: true,
   structurally_startable: true,
-  not_startable_reason: null
+  not_startable_reason: null,
+  provider_probe_problem_code: null,
+  provider_probe_observed_at: null
 };
 
 const profile: AuthProfileRevision = {
