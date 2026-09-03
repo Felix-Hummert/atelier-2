@@ -452,9 +452,23 @@ if [[ -z "${green_ancestor_commit}" ]]; then
   refuse_tick "GitHub checks are red" "no green commit within the last ${green_ancestor_search_depth} first-parent commits from ${newest_commit}"
 fi
 
-if git -C "${repository}" merge-base --is-ancestor "${green_ancestor_commit}" "${served_commit}"; then
+# merge-base --is-ancestor exits 0 (ancestor), 1 (not an ancestor), or >1 on
+# a read failure such as an unreadable object -- that last case must never
+# read as "not an ancestor, deploy it", or a served commit git could not even
+# inspect gets silently treated as safe to skip past.
+is_ancestor_status=0
+git -C "${repository}" merge-base --is-ancestor "${green_ancestor_commit}" "${served_commit}" \
+  || is_ancestor_status=$?
+if ((is_ancestor_status > 1)); then
+  refuse_tick "ancestry check is unreadable" "cannot determine whether ${green_ancestor_commit} is an ancestor of served commit ${served_commit} (git merge-base --is-ancestor exited ${is_ancestor_status})"
+fi
+if ((is_ancestor_status == 0)); then
   reset_counters
-  log_debug "newest green ancestor ${green_ancestor_commit} is already served; nothing to deploy"
+  if [[ "${green_ancestor_commit}" != "${newest_commit}" ]]; then
+    log_warning "HEAD ${newest_commit} is still waiting or red, and its newest green ancestor ${green_ancestor_commit} is already served; nothing to deploy"
+  else
+    log_debug "newest green ancestor ${green_ancestor_commit} is already served; nothing to deploy"
+  fi
   exit 0
 fi
 target_commit="${green_ancestor_commit}"

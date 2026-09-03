@@ -682,9 +682,8 @@ watcher requires a clean `main` checkout, checks for running runs, then walks
 `green_ancestor_search_depth` commits) for the newest commit with green
 GitHub checks, so continuous merges landing faster than CI never starve live
 delivery behind a HEAD that is always still checking; a commit older than
-what is already served, or found only because nothing newer is green yet, is
-never deployed. It checks for running runs again immediately before the
-update, then hands the verified commit to
+what is already served is never deployed. It checks for running runs again
+immediately before the update, then hands the verified commit to
 `scripts/serve_live_update.sh`. That script owns the fast-forward to the
 verified commit and remains the one owner of build, backup, migration,
 restart, and post-update health verification; the watcher never moves the
@@ -698,8 +697,9 @@ materialised file never shows up as an untracked file in `git status` and can
 never itself cause the watcher's own clean-checkout preflight to refuse a
 deploy.
 
-Queued or running GitHub checks wait for another tick. No reported checks wait
-for up to 30 minutes after the commit; after that they count as red. A run in
+Queued or running GitHub checks wait for another tick, unless an older commit
+in the window is already green. No reported checks wait for up to 30 minutes
+after the commit; after that they count as red. A run in
 `STARTED` also waits without failing the unit; a run parked on a person --
 `WAITING_INPUT`, `WAITING_RECONCILIATION` -- does not, because its answer is
 taken under whichever `--application-version` the serve carries when the person

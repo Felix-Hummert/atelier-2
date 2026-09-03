@@ -708,7 +708,7 @@ def test_the_newest_green_ancestor_already_served_is_a_no_op(tmp_path: Path) -> 
     initial_commit = run_git(harness.deploy, "rev-parse", "HEAD")
     served_commit = harness.commit("v2\n")
     harness.seed_served_commit(served_commit)
-    harness.commit("v3\n")  # newest, still red or pending; never deployed
+    head_commit = harness.commit("v3\n")  # newest, still red or pending; never deployed
 
     completed = harness.run(ATELIER2_TEST_CHECKS_SEQUENCE="failure,green")
 
@@ -717,9 +717,33 @@ def test_the_newest_green_ancestor_already_served_is_a_no_op(tmp_path: Path) -> 
     assert harness.invocations("serve_live_update") == []
     assert harness.state("auto-redeploy.failures") == 0
     assert (
-        f"newest green ancestor {served_commit} is already served; nothing to deploy"
-        in harness.journal()
-    )
+        f"HEAD {head_commit} is still waiting or red, and its newest green "
+        f"ancestor {served_commit} is already served; nothing to deploy"
+    ) in harness.journal("user.warning")
+
+
+def test_an_unreadable_ancestry_check_refuses_the_tick_instead_of_deploying(
+    tmp_path: Path,
+) -> None:
+    # merge-base --is-ancestor exits >1 (not just the ordinary 0/1) when it
+    # cannot even read one of the objects, such as a served commit the local
+    # clone never fetched -- that must never be read as "not an ancestor,
+    # deploy the green ancestor anyway".
+    harness = AutoRedeployHarness.create(tmp_path)
+    unreadable_served_commit = "f" * 40
+    harness.seed_served_commit(unreadable_served_commit)
+    head_commit = harness.commit("v2\n")
+
+    completed = harness.run(ATELIER2_TEST_CHECKS="green")
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.invocations("serve_live_update") == []
+    assert harness.state("auto-redeploy.failures") == 1
+    assert (
+        f"cannot determine whether {head_commit} is an ancestor of served "
+        f"commit {unreadable_served_commit} (git merge-base --is-ancestor "
+        "exited 128)"
+    ) in harness.journal()
 
 
 def test_neutral_and_skipped_check_runs_are_not_red(tmp_path: Path) -> None:
