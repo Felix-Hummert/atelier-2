@@ -1,10 +1,14 @@
-"""A definition source registered in a real store, and scanned out of a real repository.
+"""A definition source registered, scanned and taken in, against a real store.
 
 The dogfood is this repository's own `workflows/*.yaml`: one connect claims the
-whole directory, and one scan reports every file in it. That is the sentence the
-operator was promised -- a source delivers many pieces in one act, not one piece
-per act -- proved against real documents rather than a fixture that only ever
-says yes.
+whole directory, one scan reports every file in it, and one intake takes every
+one of them into the catalog. That is the sentence the operator was promised --
+a source delivers many pieces in one act, not one piece per act -- proved
+against real documents rather than a fixture that only ever says yes.
+
+The intake scenarios author their own workflows where the assertion is about a
+name: this repository's authored names are its own, and a test that needed one
+of them to collide would break the moment a workflow here is renamed.
 """
 
 from __future__ import annotations
@@ -20,14 +24,23 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.definition_source_store import DbosDefinitionSources
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
+    catalog_lineage_aliases,
+    catalog_lineage_members,
     catalog_source_intakes,
     host_definition_source_revisions,
     host_definition_source_selections,
     initialize_schema,
     published_revisions,
+)
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogLineageDisplayName,
+    CatalogLineageFounded,
 )
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
@@ -44,6 +57,7 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
 from atelier2.host import main
 from atelier2.ports.definition_sources import (
@@ -52,6 +66,7 @@ from atelier2.ports.definition_sources import (
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
 )
+from tests.scenarios.workflows import declared_output
 
 MAIN = "refs/heads/main"
 WORKFLOW_SELECTION = "workflows/*.yaml"
@@ -579,3 +594,309 @@ def test_the_command_refuses_a_source_id_nobody_registered(
 
     assert exit_code == 1
     assert "no definition source is registered" in capsys.readouterr().err
+
+
+def connect(database: Path, repository: Path) -> str:
+    """The source id of a repository this scenario just connected."""
+
+    assert (
+        main(
+            [
+                "definition-source",
+                "connect",
+                "--database",
+                str(database),
+                "--location",
+                str(repository),
+                "--ref",
+                MAIN,
+                "--select",
+                f"{WORKFLOW_SELECTION}=workflow",
+                "--actor",
+                "felix",
+            ]
+        )
+        == 0
+    )
+    return registration(location=str(repository)).source_id.value
+
+
+def intake(database: Path, source_id: str, *at_position: str) -> int:
+    return main(
+        [
+            "definition-source",
+            "intake",
+            "--database",
+            str(database),
+            "--source-id",
+            source_id,
+            "--actor",
+            "felix",
+            *(("--source-position", *at_position) if at_position else ()),
+        ]
+    )
+
+
+def recorded_intakes(engine: Engine) -> list[tuple[str, str, int, str, str]]:
+    with engine.connect() as connection:
+        return [
+            (
+                str(record["source_id"]),
+                str(record["source_path"]),
+                int(record["intake_number"]),
+                str(record["revision_hash"]),
+                str(record["source_commit"]),
+            )
+            for record in connection.execute(
+                sa.select(catalog_source_intakes).order_by(
+                    catalog_source_intakes.c.source_path,
+                    catalog_source_intakes.c.intake_number,
+                )
+            ).mappings()
+        ]
+
+
+def lineage_members(engine: Engine, name: str) -> list[str]:
+    """Every revision of the lineage holding one authored name, oldest first."""
+
+    with engine.connect() as connection:
+        return [
+            str(record["revision_hash"])
+            for record in connection.execute(
+                sa.select(catalog_lineage_members)
+                .select_from(
+                    catalog_lineage_members.join(
+                        catalog_lineage_aliases,
+                        catalog_lineage_aliases.c.lineage_id
+                        == catalog_lineage_members.c.lineage_id,
+                    )
+                )
+                .where(catalog_lineage_aliases.c.name == name)
+                .order_by(catalog_lineage_members.c.revision_number)
+                .distinct()
+            ).mappings()
+        ]
+
+
+def workflow_named(name: str) -> bytes:
+    """One workflow this scenario authors, under a name it chooses."""
+
+    return f"""format_version: 3
+name: {name}
+nodes:
+  - id: only
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this workflow is for.
+{declared_output().decode("utf-8")}""".encode()
+
+
+def test_one_intake_takes_every_authored_workflow_in_with_its_provenance(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The dogfood: this repository's own workflows, in one act, with their source."""
+
+    authored = authored_workflows()
+    repository = tmp_path / "definitions.git"
+    commit = bare_repository_of(repository, {**authored, "README.md": b"not selected"})
+    source_id = connect(database, repository)
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    reported = capsys.readouterr().out
+    assert commit in reported
+    assert [line.split() for line in reported.splitlines()[1:]] == [
+        ["published", "workflow", path] for path in sorted(authored)
+    ]
+    assert recorded_intakes(engine) == [
+        (
+            source_id,
+            path,
+            1,
+            PublishedRevisionHash.of(document).value,
+            commit,
+        )
+        for path, document in sorted(authored.items())
+    ]
+    assert set(_published_workflow_hashes(engine)) == {
+        PublishedRevisionHash.of(document).value for document in authored.values()
+    }
+
+
+def _published_workflow_hashes(engine: Engine) -> list[str]:
+    with engine.connect() as connection:
+        return [
+            str(record)
+            for record in connection.execute(
+                sa.select(published_revisions.c.revision_hash).where(
+                    published_revisions.c.kind == RevisionKind.WORKFLOW.value
+                )
+            ).scalars()
+        ]
+
+
+def test_the_same_commit_taken_in_again_writes_nothing_and_says_so(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"workflows/build.yaml": workflow_named("build")})
+    source_id = connect(database, repository)
+    assert intake(database, source_id) == 0
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 0
+
+    assert [line.split() for line in capsys.readouterr().out.splitlines()[1:]] == [
+        ["present", "workflow", "workflows/build.yaml"]
+    ]
+    assert logical_dump(database) == settled
+
+
+def test_a_moved_ref_takes_the_new_revision_in_and_keeps_the_one_before_it(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`#660` ruled line 7: what came in stays what it was."""
+
+    repository = tmp_path / "definitions.git"
+    first_document = workflow_named("build")
+    first = bare_repository_of(repository, {"workflows/build.yaml": first_document})
+    source_id = connect(database, repository)
+    assert intake(database, source_id) == 0
+    second_document = first_document + b"\n"
+    second = commit_to(repository, {"workflows/build.yaml": second_document})
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    assert [line.split() for line in capsys.readouterr().out.splitlines()[1:]] == [
+        ["published", "workflow", "workflows/build.yaml"]
+    ]
+    assert recorded_intakes(engine) == [
+        (
+            source_id,
+            "workflows/build.yaml",
+            1,
+            PublishedRevisionHash.of(first_document).value,
+            first,
+        ),
+        (
+            source_id,
+            "workflows/build.yaml",
+            2,
+            PublishedRevisionHash.of(second_document).value,
+            second,
+        ),
+    ]
+    assert lineage_members(engine, "build") == [
+        PublishedRevisionHash.of(first_document).value,
+        PublishedRevisionHash.of(second_document).value,
+    ]
+
+
+def test_an_intake_refused_at_its_last_file_leaves_the_store_byte_identical(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A batch is one act: the files admitted before the refusal go back too."""
+
+    held = tmp_path / "held.git"
+    bare_repository_of(held, {"workflows/build.yaml": workflow_named("build")})
+    assert intake(database, connect(database, held)) == 0
+    colliding = tmp_path / "colliding.git"
+    bare_repository_of(
+        colliding,
+        {
+            "workflows/a-first.yaml": workflow_named("ship"),
+            "workflows/z-last.yaml": workflow_named("build") + b"\n",
+        },
+    )
+    source_id = connect(database, colliding)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/z-last.yaml")
+    assert "'build'" in refused
+    assert logical_dump(database) == settled
+
+
+def test_a_name_the_catalog_cannot_hold_refuses_before_anything_is_written(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(
+        repository,
+        {
+            "workflows/build.yaml": workflow_named("build"),
+            "workflows/shout.yaml": workflow_named("SHOUT"),
+        },
+    )
+    source_id = connect(database, repository)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/shout.yaml")
+    assert "'SHOUT'" in refused
+    assert logical_dump(database) == settled
+
+
+def test_an_intake_refuses_a_commit_the_ref_has_moved_away_from(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The operator takes in the commit a scan showed them, not whatever is there now."""
+
+    repository = tmp_path / "definitions.git"
+    document = workflow_named("build")
+    scanned = bare_repository_of(repository, {"workflows/build.yaml": document})
+    source_id = connect(database, repository)
+    moved = commit_to(repository, {"workflows/build.yaml": document + b"\n"})
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id, scanned) == 1
+
+    refused = capsys.readouterr().err
+    assert scanned in refused and moved in refused
+    assert logical_dump(database) == settled
+
+
+def test_bytes_the_catalog_holds_under_another_name_refuse_the_whole_batch(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Identical bytes under a foreign name are somebody else's entry, not a delivery."""
+
+    elsewhere = workflow_named("alpha")
+    assert isinstance(
+        DbosCatalogStore(engine).add_workflow(
+            WorkflowRevision(elsewhere),
+            CatalogLineageDisplayName("elsewhere"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-03T08:00:00Z"),
+        ),
+        CatalogLineageFounded,
+    )
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(
+        repository,
+        {
+            "workflows/a-first.yaml": workflow_named("ship"),
+            "workflows/z-last.yaml": elsewhere,
+        },
+    )
+    source_id = connect(database, repository)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/z-last.yaml")
+    assert "already belong to lineage" in refused
+    assert logical_dump(database) == settled

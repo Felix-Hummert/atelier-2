@@ -12,6 +12,12 @@ Reading refuses in the source's own closed vocabulary
 a transaction is opened. What a *document* is refused for is not this port's
 word: the publication door already owns that sentence, and a scan passes it on
 unchanged.
+
+Taking content in is the registrar's second door, and it is one act: every
+selected file is published, admitted and recorded together, or none of them is.
+That is why it takes the whole batch rather than one file at a time -- a door
+called once per file cannot answer for the batch, and half a taken-in source is
+exactly what the operator was promised never to meet (`#660` ruled line 10).
 """
 
 from __future__ import annotations
@@ -20,6 +26,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogAdmissionNameHeld,
+    CatalogAdmissionRetired,
+    CatalogAdmissionRevisionOwned,
+    CatalogLineageDisplayName,
+)
 from atelier2.contracts.definition_sources import (
     DefinitionSourceConfiguration,
     DefinitionSourceId,
@@ -30,6 +44,8 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
     SourceIntake,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.runs import WorkflowRevision
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 
@@ -116,6 +132,79 @@ type ReadSourceIntakesResult = (
 )
 
 
+@dataclass(frozen=True)
+class SelectedIntake:
+    """One selected path, its exact bytes, and the name they are admitted under.
+
+    A workflow revision rather than any published revision, because the workflow
+    door is the only reader this build has; a second kind widens this contract
+    rather than hiding behind a kind token nothing can honour.
+    """
+
+    path: RepositoryPath
+    revision: WorkflowRevision
+    display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class PathIntaken:
+    """One path whose bytes entered the catalog under this intake."""
+
+    intake: SourceIntake
+
+
+@dataclass(frozen=True)
+class PathAlreadyInCatalog:
+    """One path whose exact bytes the catalog already held.
+
+    No intake is recorded for it: the revision the catalog holds is the one the
+    source carries, so a second provenance row would record a delivery that
+    never happened.
+    """
+
+    path: RepositoryPath
+    kind: RevisionKind
+    revision_hash: PublishedRevisionHash
+
+
+type RecordedPath = PathIntaken | PathAlreadyInCatalog
+
+
+@dataclass(frozen=True)
+class SourceIntakeRecorded:
+    """One whole intake, path by path in the order it was handed over."""
+
+    paths: tuple[RecordedPath, ...]
+
+
+type SourceIntakeConflict = (
+    CatalogAdmissionNameHeld | CatalogAdmissionRevisionOwned | CatalogAdmissionRetired
+)
+"""The catalog answers an intake can meet and only the operator can resolve.
+
+Every other admission answer would mean the store disagrees with itself -- a
+lineage that vanished between two statements of one transaction, bytes that are
+unpublished a line after being published -- and is raised rather than returned,
+because no operator action would make it right.
+"""
+
+
+@dataclass(frozen=True)
+class SourceIntakeRefused:
+    """The catalog would not admit one path, so no path of the batch was written."""
+
+    path: RepositoryPath
+    conflict: SourceIntakeConflict
+
+
+type RecordSourceIntakesResult = (
+    SourceIntakeRecorded
+    | SourceIntakeRefused
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
+
+
 class DefinitionSourceRegistry(Protocol):
     """What is registered and what it has delivered. Nothing here writes."""
 
@@ -138,5 +227,21 @@ class DefinitionSourceRegistrar(DefinitionSourceRegistry, Protocol):
 
         The number is this owner's to give: it is the count of what already
         stands under that source id, which no caller can know.
+        """
+        ...
+
+    def record_intakes(
+        self,
+        source_id: DefinitionSourceId,
+        commit: SourceCommit,
+        selected: tuple[SelectedIntake, ...],
+        actor: CatalogActor,
+        intaken_at: CatalogActivatedAt,
+    ) -> RecordSourceIntakesResult:
+        """Publish, admit and record every selected path, or write none of them.
+
+        `intake_number` is this owner's to give, for the reason a revision
+        number is. The instant is the caller's: a store that read a clock would
+        be a second source of when something happened.
         """
         ...
