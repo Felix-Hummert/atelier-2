@@ -684,10 +684,14 @@ immediately before the update, then hands the verified commit to
 verified commit and remains the one owner of build, backup, migration,
 restart, and post-update health verification; the watcher never moves the
 checkout itself. The watcher runs the **target commit's own**
-`serve_live_update.sh` (materialised via `git show` into a temporary file
-inside the checkout, then removed), never the copy already on disk, because
-Git replaces a tracked file by unlink-and-create and a shell that already
-opened the old file would otherwise keep reading it for the rest of the run.
+`serve_live_update.sh` (materialised via `git show` into the checkout's Git
+admin directory, then removed), never the copy already on disk, because Git
+replaces a tracked file by unlink-and-create and a shell that already opened
+the old file would otherwise keep reading it for the rest of the run. Staging
+it under the Git admin directory, rather than the tracked checkout, means the
+materialised file never shows up as an untracked file in `git status` and can
+never itself cause the watcher's own clean-checkout preflight to refuse a
+deploy.
 
 Queued or running GitHub checks wait for another tick. No reported checks wait
 for up to 30 minutes after the commit; after that they count as red. A busy run

@@ -70,6 +70,21 @@ if os.environ.get("ATELIER2_TEST_UPDATE_FAILS") == "1":
 
 target_commit = sys.argv[1]
 repository = Path(__file__).resolve().parent.parent
+# Mirrors production serve_live_update.sh's own clean-checkout preflight: if
+# the watcher ever staged the materialised script somewhere `git status`
+# can see, this refusal is what would have caught it.
+worktree_status = subprocess.run(
+    ["git", "-C", str(repository), "status", "--porcelain"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout
+if worktree_status:
+    print(
+        "serve live update: the deploy checkout is not clean; refusing to touch operator work",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 current_head = subprocess.run(
     ["git", "-C", str(repository), "rev-parse", "HEAD"],
     check=True,
@@ -373,6 +388,13 @@ class AutoRedeployHarness:
     def git_admin_directory(self) -> Path:
         return Path(run_git(self.deploy, "rev-parse", "--absolute-git-dir"))
 
+    @property
+    def staged_serve_live_update(self) -> Path:
+        return self.git_admin_directory / "serve_live_update.sh"
+
+    def checkout_status(self) -> str:
+        return run_git(self.deploy, "status", "--porcelain")
+
     def state(self, name: str) -> int:
         path = self.git_admin_directory / name
         return int(path.read_text(encoding="utf-8")) if path.exists() else 0
@@ -447,6 +469,11 @@ def test_the_target_commits_own_serve_live_update_script_runs_not_the_stale_chec
     assert marker_file.read_text(encoding="utf-8") == "new script ran"
     assert run_git(harness.deploy, "rev-parse", "HEAD") == target_commit
     assert harness.served_commit_file.read_text(encoding="utf-8") == target_commit
+    # The materialised script is staged under .git/, so it is never a reason
+    # the checkout looks dirty (see the stub's own preflight above), and the
+    # EXIT trap removes it once the tick finishes.
+    assert not harness.staged_serve_live_update.exists()
+    assert harness.checkout_status() == ""
 
 
 def test_busy_checks_cover_every_run_state_before_and_after_the_github_checks(
@@ -715,6 +742,15 @@ def test_a_failed_loopback_update_counts_without_calling_a_container_command(
     )
     assert "container_live" not in AUTO_REDEPLOY.read_text(encoding="utf-8")
     assert "deployed.sha" not in AUTO_REDEPLOY.read_text(encoding="utf-8")
+    # The EXIT trap's staged-file cleanup must never mask the tick's real
+    # exit code: three ticks in a row still fail the unit on the third, the
+    # same threshold test_only_the_third_failure_and_hourly_repeats_fail_the_unit
+    # pins for a red GitHub check.
+    assert harness.run(ATELIER2_TEST_UPDATE_FAILS="1").returncode == 0
+    assert harness.run(ATELIER2_TEST_UPDATE_FAILS="1").returncode == 1
+    assert harness.state("auto-redeploy.failures") == 3
+    assert not harness.staged_serve_live_update.exists()
+    assert harness.checkout_status() == ""
 
 
 def test_a_refused_workflow_intake_is_a_warning_not_a_failure_tick(
@@ -732,6 +768,8 @@ def test_a_refused_workflow_intake_is_a_warning_not_a_failure_tick(
     ]
     assert harness.served_commit_file.read_text(encoding="utf-8") == target_commit
     assert harness.state("auto-redeploy.failures") == 0
+    assert not harness.staged_serve_live_update.exists()
+    assert harness.checkout_status() == ""
     assert "user.warning" in harness.priorities()
     assert any(
         f"main now served at {target_commit}; workflow intake refused"

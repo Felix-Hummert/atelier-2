@@ -26,9 +26,9 @@ repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # opened scripts/serve_live_update.sh keeps reading the OLD bytes for the
 # rest of its run — a checkout that fast-forwards under a running deploy
 # would silently execute stale deploy logic. staged_serve_live_update holds
-# the path of the target commit's own script once materialised, so the
-# logic that becomes live is the logic that runs; cleanup_staged_serve_live_update
-# removes it on every exit path.
+# the path of the target commit's own script once materialised (see below
+# for where and why), so the logic that becomes live is the logic that
+# runs; cleanup_staged_serve_live_update removes it on every exit path.
 staged_serve_live_update=""
 cleanup_staged_serve_live_update() {
   # An `&&`-guarded rm would make this trap's own exit status the falsy
@@ -381,12 +381,14 @@ if ((active_runs > 0)); then
   exit 0
 fi
 
-# Staged inside scripts/ (not /tmp) so the target script's own
-# repository self-location (dirname "$BASH_SOURCE"/..) still resolves to
-# this checkout.
-if ! staged_serve_live_update="$(mktemp "${repository}/scripts/.serve_live_update.XXXXXX")"; then
-  refuse_tick "target deploy script could not be staged" "mktemp failed while staging ${target_commit}'s serve_live_update.sh"
-fi
+# Staged at <git-dir>/serve_live_update.sh (not scripts/, not /tmp): the
+# repository's git directory is one level below the repository root, so the
+# target script's own self-location (dirname "$BASH_SOURCE"/..) still
+# resolves to this checkout, while nothing under .git/ ever appears in
+# `git status` — a real deploy's clean-checkout preflight cannot be tripped
+# by the staged file, and a killed tick leaves no dirt behind for the next
+# one to trip on either.
+staged_serve_live_update="${git_admin_directory}/serve_live_update.sh"
 if ! show_error="$(git -C "${repository}" show "${target_commit}:scripts/serve_live_update.sh" 2>&1 >"${staged_serve_live_update}")"; then
   refuse_tick "target deploy script could not be read" "cannot read scripts/serve_live_update.sh from ${target_commit}: ${show_error}"
 fi
