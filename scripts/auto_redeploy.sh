@@ -10,8 +10,10 @@ readonly health_url="http://127.0.0.1:8422/atelier/api/v1/health"
 readonly runs_url="http://127.0.0.1:8422/atelier/api/v1/runs"
 readonly log_tag="atelier2-autodeploy"
 readonly failure_alert_threshold=3
-readonly busy_alert_threshold=30
+readonly busy_alert_threshold=10
 readonly alert_repeat_seconds=3600
+readonly blocking_run_state="STARTED"
+readonly blocking_run_page_limit=5
 readonly check_run_lookup_timeout_seconds=60
 readonly check_run_appearance_grace_seconds=1800
 readonly github_repository="repos/FlexOr2/atelier-2"
@@ -70,7 +72,8 @@ fi
 readonly git_admin_directory
 readonly failure_count_file="${git_admin_directory}/auto-redeploy.failures"
 readonly busy_count_file="${git_admin_directory}/auto-redeploy.busy"
-readonly last_alert_file="${git_admin_directory}/auto-redeploy.last-alert"
+readonly failure_alert_file="${git_admin_directory}/auto-redeploy.last-alert"
+readonly busy_alert_file="${git_admin_directory}/auto-redeploy.last-busy-alert"
 readonly lock_file="${git_admin_directory}/auto-redeploy.lock"
 
 read_number() {
@@ -92,24 +95,28 @@ read_number() {
 reset_counters() {
   printf '0' >"${failure_count_file}"
   printf '0' >"${busy_count_file}"
-  rm -f "${last_alert_file}"
+  rm -f "${failure_alert_file}" "${busy_alert_file}"
 }
 
 now_seconds() {
   date +%s
 }
 
-failure_escalation_due() {
-  local failure_count="$1"
+# Loud once when a streak first reaches its threshold, then at most hourly, so
+# a standing problem keeps saying itself without filling the journal.
+escalation_due() {
+  local streak="$1"
+  local threshold="$2"
+  local alert_file="$3"
   local now last_alert
-  ((failure_count >= failure_alert_threshold)) || return 1
+  ((streak >= threshold)) || return 1
   now="$(now_seconds)"
   [[ "${now}" =~ ^[0-9]+$ ]] || return 0
-  last_alert="$(read_number "${last_alert_file}")"
-  if ((failure_count != failure_alert_threshold && now - last_alert < alert_repeat_seconds)); then
+  last_alert="$(read_number "${alert_file}")"
+  if ((streak != threshold && now - last_alert < alert_repeat_seconds)); then
     return 1
   fi
-  printf '%s' "${now}" >"${last_alert_file}"
+  printf '%s' "${now}" >"${alert_file}"
 }
 
 record_failure() {
@@ -119,7 +126,8 @@ record_failure() {
   failure_count=$((failure_count + 1))
   printf '%s' "${failure_count}" >"${failure_count_file}"
   log_debug "failure count now ${failure_count} (this tick: ${reason})"
-  failure_escalation_due "${failure_count}" || return 1
+  escalation_due "${failure_count}" "${failure_alert_threshold}" \
+    "${failure_alert_file}" || return 1
   log_error "ALERT: ${failure_count} ticks in a row failed, reason: ${reason}; auto-redeploy needs operator attention"
 }
 
@@ -139,15 +147,15 @@ refuse_tick() {
 }
 
 record_busy_deferral() {
-  local active_run_count="$1"
+  local deferring_runs="$1"
   local busy_count
   busy_count="$(read_number "${busy_count_file}")"
   busy_count=$((busy_count + 1))
   printf '%s' "${busy_count}" >"${busy_count_file}"
-  log_debug "busy count now ${busy_count} (${active_run_count} active runs)"
-  if ((busy_count == busy_alert_threshold)); then
-    log_warning "deploy deferred on ${busy_count} ticks in a row; ${active_run_count} runs are still active"
-  fi
+  log_debug "busy count now ${busy_count}; waiting for ${deferring_runs}"
+  escalation_due "${busy_count}" "${busy_alert_threshold}" \
+    "${busy_alert_file}" || return 0
+  log_warning "ALERT: deploy deferred on ${busy_count} ticks in a row, waiting for ${deferring_runs}"
 }
 
 served_status=""
@@ -175,33 +183,51 @@ print(f"{status}\t{commit}")
   IFS=$'\t' read -r served_status served_commit <<<"${parsed}"
 }
 
-active_run_count() {
-  local state body items_count
-  local total=0
-  for state in STARTED WAITING_INPUT WAITING_RECONCILIATION; do
-    if ! body="$(curl -fsS --max-time 5 "${runs_url}?state=${state}&limit=1" 2>&1)"; then
-      printf 'cannot read %s runs: %s' "${state}" "${body}"
-      return 1
-    fi
-    if ! items_count="$(python3 -c '
+# A run only blocks a deploy while it is running. A run parked on a person --
+# WAITING_INPUT, WAITING_RECONCILIATION -- keeps its answer across a restart's
+# new --application-version, because the answer door enqueues the continuation
+# under the version taking the answer, not the one that parked the wait
+# (tests/integration/test_wait_survives_version_change.py).
+blocking_runs() {
+  local body description
+  if ! body="$(curl -fsS --max-time 5 \
+    "${runs_url}?state=${blocking_run_state}&limit=${blocking_run_page_limit}" 2>&1)"; then
+    printf 'cannot read %s runs: %s' "${blocking_run_state}" "${body}"
+    return 1
+  fi
+  if ! description="$(python3 -c '
 import json
 import sys
 
 try:
     payload = json.load(sys.stdin)
     items = payload["items"]
+    next_page = payload["next_after"]
 except (json.JSONDecodeError, KeyError, TypeError):
     raise SystemExit(1)
 if not isinstance(items, list):
     raise SystemExit(1)
-print(len(items))
+described = []
+for item in items:
+    if not isinstance(item, dict):
+        raise SystemExit(1)
+    reference = item.get("public_run_reference")
+    state = item.get("state")
+    started_at = item.get("started_at")
+    if not isinstance(reference, str) or not isinstance(state, str):
+        raise SystemExit(1)
+    if started_at is not None and not isinstance(started_at, str):
+        raise SystemExit(1)
+    since = "an unrecorded time" if started_at is None else started_at
+    described.append(f"{reference} {state} since {since}")
+if described and next_page is not None:
+    described.append("and further runs")
+print(", ".join(described))
 ' <<<"${body}" 2>/dev/null)"; then
-      printf 'cannot parse %s runs' "${state}"
-      return 1
-    fi
-    total=$((total + items_count))
-  done
-  printf '%s' "${total}"
+    printf 'cannot parse %s runs' "${blocking_run_state}"
+    return 1
+  fi
+  printf '%s' "${description}"
 }
 
 remote_check_status() {
@@ -341,11 +367,11 @@ if [[ -n "${worktree_status}" ]]; then
   refuse_tick "checkout is dirty" "deploy checkout is dirty; leaving operator work untouched"
 fi
 
-if ! active_runs="$(active_run_count)"; then
-  refuse_tick "run state is unreadable before checking GitHub checks" "cannot establish whether runs are active before checking GitHub checks: ${active_runs}"
+if ! deferring_runs="$(blocking_runs)"; then
+  refuse_tick "run state is unreadable before checking GitHub checks" "cannot establish whether runs are active before checking GitHub checks: ${deferring_runs}"
 fi
-if ((active_runs > 0)); then
-  record_busy_deferral "${active_runs}"
+if [[ -n "${deferring_runs}" ]]; then
+  record_busy_deferral "${deferring_runs}"
   exit 0
 fi
 
@@ -373,11 +399,11 @@ case "${check_status}" in
     ;;
 esac
 
-if ! active_runs="$(active_run_count)"; then
-  refuse_tick "run state is unreadable before update" "cannot establish whether runs are active immediately before update: ${active_runs}"
+if ! deferring_runs="$(blocking_runs)"; then
+  refuse_tick "run state is unreadable before update" "cannot establish whether runs are active immediately before update: ${deferring_runs}"
 fi
-if ((active_runs > 0)); then
-  record_busy_deferral "${active_runs}"
+if [[ -n "${deferring_runs}" ]]; then
+  record_busy_deferral "${deferring_runs}"
   exit 0
 fi
 
