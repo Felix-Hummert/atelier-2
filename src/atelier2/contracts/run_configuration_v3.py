@@ -23,7 +23,21 @@ type ReferenceChain = tuple[VersionedReference, ...]
 
 @dataclass(frozen=True, slots=True)
 class ReferenceSite:
-    """Where one versioned reference sits, in the words the author wrote it in."""
+    """Where one versioned reference sits, in the words the author wrote it in.
+
+    `field` almost always names the exact field the author wrote. One
+    exception stands: when a V3 node pins two tool grants together (#1101),
+    `evaluate_executability.py::resolve_document_references` renames the
+    resolved site of the second, effect-shaped one from the authored `tools`
+    to the synthesized `EFFECT_SHAPED_TOOL_RESOLUTION_FIELD` token, at the one
+    place its capability is already read. This keeps the durable node-execution
+    binding (`bind_node_execution.py`) reading resolved references as pure
+    data -- it still finds at most one entry under `tools`, so the
+    already-hashed one-grant case is untouched -- rather than adding a second
+    schema to the frozen `run-configuration-revision/v1` preimage this type
+    feeds (`_framed_reference`), which `run_fork_store.py` reconstructs field
+    by field from exactly those bytes and nothing else.
+    """
 
     field: str
     node: str | None = None

@@ -197,6 +197,9 @@ nodes:
     type: action
     operation: {{ref: open-pr, revision: {OPEN_PR_OPERATION.revision_hash.value}}}
     depends_on: [agent]
+    inputs:
+      - name: body
+        from: {{node: agent, output: request}}
   - id: wait
     type: wait
     prompt: Accept the executed effect, or name what is wrong with it.

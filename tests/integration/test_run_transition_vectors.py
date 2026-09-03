@@ -69,6 +69,9 @@ nodes:
     type: action
     operation: {ref: open-pr, revision: schema-operation}
     depends_on: [agent]
+    inputs:
+      - name: body
+        from: {node: agent, output: draft}
   - id: waiting
     type: wait
     prompt: Approve what the action opened.
