@@ -215,7 +215,11 @@ def resolve_document_references(
                         )
                         if conflict is not None:
                             return DocumentNotExecutable(conflict)
-                        pinning_node = graph.node(declared.site.node)
+                        pinning_node = (
+                            None
+                            if declared.site.node is None
+                            else graph.node(declared.site.node)
+                        )
                         if redeems_as_platform_effect(grant.capability) and (
                             isinstance(pinning_node, AgentNodeV3)
                             and len(pinning_node.tools) > 1
