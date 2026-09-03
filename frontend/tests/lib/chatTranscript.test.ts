@@ -9,12 +9,12 @@ describe("one turn of the conversation", () => {
 
     expect(transcript.map((message) => [message.speaker, message.text])).toEqual([
       ["you", "Finish the preview door"],
-      ["house", workbenchPageCopy.conductorAbsent]
+      ["house", workbenchPageCopy.conductorConnectionUnknown]
     ]);
   });
 
   it("names no board or issue number in the reply, only what is true for the operator", () => {
-    expect(workbenchPageCopy.conductorAbsent).not.toMatch(/#\d/);
+    expect(workbenchPageCopy.conductorConnectionUnknown).not.toMatch(/#\d/);
   });
 
   it("keeps every line distinguishable across turns", () => {
@@ -24,9 +24,9 @@ describe("one turn of the conversation", () => {
     expect(new Set(second.map((message) => message.id)).size).toBe(second.length);
     expect(second.map((message) => message.text)).toEqual([
       "one",
-      workbenchPageCopy.conductorAbsent,
+      workbenchPageCopy.conductorConnectionUnknown,
       "two",
-      workbenchPageCopy.conductorAbsent
+      workbenchPageCopy.conductorConnectionUnknown
     ]);
   });
 

@@ -491,8 +491,11 @@ export const agentConfigurationRevisionListItemObjectSchema =
           "agent-executor-binding-unavailable",
           "model-not-registered",
           "provider-probe-receipt-missing",
+          "provider-probe-failed",
         ])
         .nullable(),
+      provider_probe_problem_code: z.string().min(1).nullable(),
+      provider_probe_observed_at: recordedAtStamp.nullable(),
     })
     .strict();
 
@@ -530,6 +533,25 @@ const agentConfigurationRevisionListItemSchema =
           code: "custom",
           message:
             "a structurally startable configuration cannot carry the executor-unavailable reason",
+        });
+      }
+      const carriesProbeFailureEvidence =
+        item.provider_probe_problem_code !== null ||
+        item.provider_probe_observed_at !== null;
+      if ((item.not_startable_reason === "provider-probe-failed") !== carriesProbeFailureEvidence) {
+        context.addIssue({
+          code: "custom",
+          message: "provider probe failure evidence and its reason must agree",
+        });
+      }
+      if (
+        carriesProbeFailureEvidence &&
+        (item.provider_probe_problem_code === null || item.provider_probe_observed_at === null)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "a provider probe failure names both its problem code and when it was observed",
         });
       }
     },

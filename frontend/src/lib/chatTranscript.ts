@@ -11,15 +11,19 @@ export type ChatMessage = {
 };
 
 /**
- * One turn of the conversation while NO conductor is connected: what was said,
- * and the honest standing answer.
+ * One turn of the conversation while the conductor's own connection read
+ * itself failed ("unreadable") -- the only state left that reaches here: the
+ * composer is locked before this function is ever called for "absent",
+ * "unbound" and "not-startable" (#1103), each of which carries a real
+ * reason, and for "reading" (#1114), where the answer is simply not known
+ * yet. What was said, and the honest standing answer.
  *
  * Pure and total, so the page holds no branching of its own. Blank input is
  * not a turn — an empty message would put an empty bubble in the transcript
  * and pull a reply out of the house for nothing.
  *
- * The house answer is the same sentence every time on purpose: no conductor
- * reads these messages, and a varying reply would suggest something is
+ * The house answer is the same sentence every time on purpose: nothing reads
+ * these messages yet, and a varying reply would suggest something is
  * listening.
  */
 export function sendChatMessage(
@@ -32,7 +36,7 @@ export function sendChatMessage(
   return [
     ...transcript,
     { id: `you-${turn}`, speaker: "you", text },
-    { id: `house-${turn}`, speaker: "house", text: workbenchPageCopy.conductorAbsent }
+    { id: `house-${turn}`, speaker: "house", text: workbenchPageCopy.conductorConnectionUnknown }
   ];
 }
 

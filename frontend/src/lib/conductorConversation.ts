@@ -39,6 +39,10 @@ const CONDUCTOR_MESSAGE_IS_STRING_SCHEMA = true;
 export const conductorConversationCopy = {
   emptyDescription: "The conductor is ready for the first message.",
   composerHint: "The conductor is listening. Your next message begins the conversation.",
+  /** Shown once at least one round has actually landed in the transcript: the
+   * "begins" wording above only holds for the conversation's own first
+   * message, before anything has been exchanged. */
+  composerHintOngoing: "The conductor is listening. Your next message continues this conversation.",
   /** Shown once a run ended without completing (failed or cancelled): the
    * composer stays open, but a new message starts a new conversation rather
    * than continuing the one that ended. */

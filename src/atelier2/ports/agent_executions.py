@@ -583,6 +583,20 @@ class AgentExecutorRegistry:
             return True
         return self._receipt_gate.is_proven(configuration_hash)
 
+    def latest_receipt(
+        self, configuration_hash: AgentConfigurationRevisionHash
+    ) -> ProviderProbeReceipt | None:
+        """The most recent live evidence recorded for this exact configuration.
+
+        Reads straight through the same receipt gate `has_valid_receipt`
+        already consults -- no separate store, no new boundary. A registry
+        built without a receipt gate has no evidence to read and answers
+        `None`, matching `has_valid_receipt`'s own unarmed fallback.
+        """
+        if self._receipt_gate is None:
+            return None
+        return self._receipt_gate.reads.receipt_for(configuration_hash)
+
     def reprobe_exempt(self, workflow_hash: WorkflowRevisionHash) -> bool:
         """Whether starting this exact workflow needs no receipt evidence yet.
 
