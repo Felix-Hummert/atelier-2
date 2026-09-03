@@ -12,7 +12,6 @@
     WorkflowRevisionDetail
   } from "../api/client";
   import {
-    matchesSearchTerm,
     observedSourceHeading,
     observedWorkItemLabel,
     pinnedModelLine,
@@ -41,6 +40,7 @@
   } from "../lib/orderSchema";
   import { readEveryAgentConfiguration, readEveryAuthProfile } from "../lib/runPages";
   import { agentRolesOf } from "../lib/savedWorkflows";
+  import { matchesSearchTerm } from "../lib/searchTerm";
 
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
@@ -523,8 +523,10 @@
 
   function openWorkItemPicker(orderName: string, preferEnd = false): void {
     workItemFilter = "";
+    // Reachable only from the combobox button, which this template renders
+    // solely once offerableQueueItems is non-empty, so the freshly-cleared
+    // filter always yields at least one item here.
     const items = flattenedObservedItems();
-    if (items.length === 0) return;
     const selected = orders.find((order) => order.name === orderName)?.values.work_item ?? "";
     const selectedItem = items.find((item) => item.tracker_item_reference === selected);
     openWorkItemOrder = orderName;
@@ -782,12 +784,8 @@
                   class="picker-field"
                   role="combobox"
                   aria-haspopup="listbox"
-                  aria-autocomplete="none"
                   aria-expanded={openWorkItemOrder === order.name}
                   aria-controls={`work-item-list-${order.name}`}
-                  aria-activedescendant={openWorkItemOrder === order.name && activeWorkItemId !== null
-                    ? workItemOptionId(order.name, activeWorkItemId)
-                    : undefined}
                   aria-label={workItemListName(order.name)}
                   disabled={starting}
                   onclick={() => toggleWorkItemPicker(order.name)}
@@ -801,6 +799,13 @@
                     <input
                       type="search"
                       class="picker-filter"
+                      role="combobox"
+                      aria-expanded="true"
+                      aria-controls={`work-item-list-${order.name}`}
+                      aria-activedescendant={activeWorkItemId !== null
+                        ? workItemOptionId(order.name, activeWorkItemId)
+                        : undefined}
+                      aria-autocomplete="list"
                       placeholder={workflowStartCopy.filterWorkItemsPlaceholder}
                       aria-label={workflowStartCopy.filterWorkItemsLabel}
                       value={workItemFilter}

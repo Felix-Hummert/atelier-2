@@ -46,16 +46,20 @@ async function pickWorkItem(sheet: Locator, optionLabel: string): Promise<void> 
   await picker.press("ArrowDown");
   const listbox = sheet.getByRole("listbox", { name: workItemPickerName });
   await expect(listbox).toBeVisible();
+  // Once open, real focus and the combobox's `aria-activedescendant` both
+  // move to the filter field (REQ-UIQ-05) -- the button keeps its own
+  // combobox role for the closed state, but the field is now the live one.
+  const filterField = sheet.getByLabel(workflowStartCopy.filterWorkItemsLabel);
   const option = sheet.getByRole("option", { name: optionLabel, exact: true });
   await expect(option).toBeVisible();
   const optionId = await option.getAttribute("id");
   expect(optionId).toBeTruthy();
-  while ((await picker.getAttribute("aria-activedescendant")) !== optionId) {
-    const before = await picker.getAttribute("aria-activedescendant");
-    await picker.press("ArrowDown");
-    expect(await picker.getAttribute("aria-activedescendant")).not.toBe(before);
+  while ((await filterField.getAttribute("aria-activedescendant")) !== optionId) {
+    const before = await filterField.getAttribute("aria-activedescendant");
+    await filterField.press("ArrowDown");
+    expect(await filterField.getAttribute("aria-activedescendant")).not.toBe(before);
   }
-  await picker.press("Enter");
+  await filterField.press("Enter");
   await expect(listbox).toHaveCount(0);
   await expect(picker).toContainText(optionLabel);
 }
@@ -164,7 +168,7 @@ async function publishStartableConfiguration(page: Page, token: string): Promise
   };
 }
 
-test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catalog workflow with its observed work item at 390 and 1280", async ({ page }, testInfo) => {
+test("proves(a-v3-workflow-is-started-from-the-picker) proves(the-work-item-picker-filters-by-number-and-title-and-says-when-nothing-matches): starts an admitted Catalog workflow with its observed work item at 390 and 1280", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);

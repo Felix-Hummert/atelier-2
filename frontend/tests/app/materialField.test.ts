@@ -374,21 +374,21 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     const first = screen.getByRole("option", { name: "#450 Preview door" });
     const second = screen.getByRole("option", { name: "#446" });
     const third = screen.getByRole("option", { name: "!13 Deploy runner" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(first.id);
-    // REQ-UIQ-05: opening lands real keyboard focus in the filter field, the
-    // one place ArrowUp/ArrowDown/Enter/Escape actually reach as a keyboard
-    // user tabs or types through the picker -- not the still-labelled but
-    // now-unfocused combobox button.
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel))
-    );
+    // REQ-UIQ-05: opening lands both real keyboard focus and the combobox
+    // contract's `aria-activedescendant` in the filter field, the one place
+    // ArrowUp/ArrowDown/Enter/Escape actually reach as a keyboard user tabs
+    // or types through the picker -- not the still-labelled but now-inert
+    // combobox button, which keeps only the closed-state contract.
+    let filterField = screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(first.id);
+    await waitFor(() => expect(document.activeElement).toBe(filterField));
 
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(second.id);
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(third.id);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(third.id);
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(second.id);
 
     await fireEvent.keyDown(picker, { key: "Escape" });
     expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
@@ -398,7 +398,8 @@ describe("the schema-generated fields on the catalog start sheet", () => {
 
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
     expect(screen.getByRole("listbox", { name: workItemFor("work") })).toBeTruthy();
-    expect(picker.getAttribute("aria-activedescendant")).toBe(
+    filterField = screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(
       screen.getByRole("option", { name: "!13 Deploy runner" }).id
     );
     await fireEvent.keyDown(picker, { key: " " });
@@ -407,11 +408,12 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect(document.activeElement).toBe(picker);
 
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(
+    filterField = screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(
       screen.getByRole("option", { name: "!13 Deploy runner" }).id
     );
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(
       screen.getByRole("option", { name: "#446" }).id
     );
     await fireEvent.keyDown(picker, { key: "Enter" });

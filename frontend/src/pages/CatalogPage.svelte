@@ -7,7 +7,7 @@
   import ReadState from "../components/ReadState.svelte";
   import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR, handCatalogDocumentIn } from "../lib/catalogAdmission";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
-  import { catalogPageCopy, matchesSearchTerm } from "../lib/catalogPageCopy";
+  import { catalogPageCopy } from "../lib/catalogPageCopy";
   import {
     catalogAgentRows,
     catalogRowFacts,
@@ -28,6 +28,7 @@
   } from "../lib/readResource";
   import { workflowPath } from "../lib/route";
   import { readEveryRevision } from "../lib/runPages";
+  import { matchesSearchTerm } from "../lib/searchTerm";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;

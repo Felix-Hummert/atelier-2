@@ -165,7 +165,7 @@ afterEach(() => {
 });
 
 describe("work-item picker filter", () => {
-  it("narrows the grouped list by number, dropping an emptied group's heading", async () => {
+  it("proves(the-work-item-picker-filters-by-number-and-title-and-says-when-nothing-matches): narrows the grouped list by number, dropping an emptied group's heading", async () => {
     const cockpitApi = api({ listObservedQueueItems: vi.fn(async () => groupedQueueItems) });
     await openStart(cockpitApi);
     await openPicker();
@@ -190,7 +190,7 @@ describe("work-item picker filter", () => {
     expect(screen.queryByRole("option", { name: "#446 Loopback refusal" })).toBeNull();
   });
 
-  it("narrows by a title word, case-insensitively", async () => {
+  it("proves(the-work-item-picker-filters-by-number-and-title-and-says-when-nothing-matches): narrows by a title word, case-insensitively", async () => {
     const cockpitApi = api({ listObservedQueueItems: vi.fn(async () => groupedQueueItems) });
     await openStart(cockpitApi);
     await openPicker();
@@ -201,7 +201,7 @@ describe("work-item picker filter", () => {
     expect(screen.queryByRole("option", { name: "#450 Preview door" })).toBeNull();
   });
 
-  it("says when nothing matches instead of an empty or silently-closed list", async () => {
+  it("proves(the-work-item-picker-filters-by-number-and-title-and-says-when-nothing-matches): says when nothing matches instead of an empty or silently-closed list", async () => {
     const cockpitApi = api({ listObservedQueueItems: vi.fn(async () => groupedQueueItems) });
     await openStart(cockpitApi);
     await openPicker();
@@ -226,18 +226,20 @@ describe("work-item picker filter", () => {
   it("keeps ArrowDown within the filtered set, not the full one", async () => {
     const cockpitApi = api({ listObservedQueueItems: vi.fn(async () => groupedQueueItems) });
     await openStart(cockpitApi);
-    const picker = await openPicker();
+    await openPicker();
 
     // A keyboard user's ArrowDown reaches the filter field, not the
     // combobox button underneath it (REQ-UIQ-05) -- the state a real user
-    // produces once the picker is open.
+    // produces once the picker is open. Real focus and the combobox's
+    // `aria-activedescendant` both live on that field while it is open, so
+    // this is where a screen reader announces the active option too.
     const filter = filterField();
     await fireEvent.input(filter, { target: { value: "#45" } });
     const only = screen.getByRole("option", { name: "#450 Preview door" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(only.id);
+    expect(filter.getAttribute("aria-activedescendant")).toBe(only.id);
 
     await fireEvent.keyDown(filter, { key: "ArrowDown" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(only.id);
+    expect(filter.getAttribute("aria-activedescendant")).toBe(only.id);
   });
 
   it("focuses the filter field when the picker opens, and lets Tab from the combobox reach it (REQ-UIQ-05)", async () => {
@@ -277,7 +279,7 @@ describe("work-item picker filter", () => {
     expect(screen.getByRole("option", { name: "!13 Deploy runner" })).toBeTruthy();
   });
 
-  it("proves(picker-open-has-no-unnamed-axe-violations): the open, filtered picker has no WCAG 2.1/2.2 AA violation axe can catch in jsdom (REQ-UIQ-05)", async () => {
+  it("the open, filtered picker has no WCAG 2.1/2.2 AA violation axe can catch in jsdom", async () => {
     const cockpitApi = api({ listObservedQueueItems: vi.fn(async () => groupedQueueItems) });
     await openStart(cockpitApi);
     await openPicker();
