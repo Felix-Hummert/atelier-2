@@ -3,6 +3,9 @@
   import type { CockpitRoute } from "../lib/route";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { railCopy } from "../lib/railCopy";
+  import { exactLocal } from "../lib/when";
+  import { reloadPage } from "../lib/pageReload";
+  import { loadedVersion, newVersionAvailable } from "../lib/versionState";
   import {
     WORKSHOP_DESTINATION,
     WORKSHOP_ROOMS,
@@ -19,6 +22,9 @@
   }
 
   const settings = WORKSHOP_DESTINATION.settings;
+  // Short enough to sit quietly on one line; the full hash still lives in
+  // the line's own `title` for the one time someone wants to check it.
+  const SHORT_COMMIT_LENGTH = 8;
 
   $: active = activeWorkshopDestination(route);
 </script>
@@ -69,6 +75,20 @@
       <span class="nav-destination-label">{wrapDisplayCopy(settings.label)}</span>
       <span class="rail-project">{THE_ONE_PROJECT}</span>
     </a>
+
+    <!-- Provenance on the back (HEART): who is running, never in the way. -->
+    {#if $newVersionAvailable}
+      <p class="serve-footer new-version" role="status">
+        <span>{wrapDisplayCopy(railCopy.newVersionAvailable)}</span>
+        <button type="button" class="quiet" onclick={reloadPage}>
+          {wrapDisplayCopy(railCopy.reload)}
+        </button>
+      </p>
+    {:else if $loadedVersion}
+      <p class="serve-footer" title={$loadedVersion.commit}>
+        {$loadedVersion.commit.slice(0, SHORT_COMMIT_LENGTH)} · {exactLocal($loadedVersion.deployedAt)}
+      </p>
+    {/if}
   </nav>
 
   <main bind:this={stage} class="workshop-stage" tabindex="-1">
@@ -87,5 +107,30 @@
     color: var(--signal-ink);
     font-size: var(--text-2xs);
     font-weight: var(--weight-heavy);
+  }
+
+  /* Provenance on the back (HEART): a hairline, small and uncoloured, so it
+     reads as a signature rather than a status. */
+  .serve-footer {
+    margin: var(--space-2) 0 0;
+    padding-top: var(--space-3);
+    border-top: var(--edge) solid var(--line);
+    color: var(--ink-dim);
+    font-size: var(--text-2xs);
+  }
+
+  /* The one state that does earn a control: an operator confirms the
+     reload instead of the page taking the decision for them (REQ-UIQ-10). */
+  .serve-footer.new-version {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .serve-footer button {
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+    text-decoration: underline;
   }
 </style>

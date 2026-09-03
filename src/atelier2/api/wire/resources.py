@@ -95,6 +95,11 @@ class HealthResource(ApiModel):
     status: Literal["serving"]
     source_commit: str
     source_tree: str
+    serve_started_at: str = Field(
+        pattern=RECORDED_AT_PATTERN,
+        description="When this serve process started, so a client can tell a "
+        "redeploy from the commit it loaded with.",
+    )
 
 
 class ArtifactResource(ApiModel):

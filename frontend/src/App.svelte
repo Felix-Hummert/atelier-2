@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import { createCockpitApi, type CockpitApi } from "./api/client";
-  import { watchConnectionRecovery } from "./lib/connectionState";
+  import { createCockpitApi, type CockpitApi, type HealthResource } from "./api/client";
+  import { onConnectionRecovered, watchConnectionRecovery } from "./lib/connectionState";
   import { MutationJournal, createRunId as makeRunId } from "./lib/mutationJournal";
   import { PRODUCT_NAME } from "./lib/productName";
   import { cockpitRoute } from "./lib/route";
+  import { noteObservedVersion, recordLoadedVersion } from "./lib/versionState";
   import { WORKSHOP_DESTINATION } from "./lib/workshop";
   import ConnectionNotice from "./components/ConnectionNotice.svelte";
   import WorkshopShell from "./components/WorkshopShell.svelte";
@@ -24,6 +25,10 @@
   let workshopShell: WorkshopShell;
   let inAppFromPath: string | null = null;
 
+  function servedVersion(health: HealthResource) {
+    return { commit: health.source_commit, deployedAt: health.serve_started_at };
+  }
+
   onMount(() => {
     const readRoute = () => {
       // Origin is for navigate() clicks only; a history-stack run uses its own state.
@@ -31,12 +36,22 @@
       route = cockpitRoute(window.location.pathname + window.location.search);
     };
     window.addEventListener("popstate", readRoute);
+    // The footer's baseline (#1100): a failed read leaves it quiet rather
+    // than breaking the page over decorative provenance.
+    void cockpitApi.health().then((health) => recordLoadedVersion(servedVersion(health)), () => {});
     // The bounded recovery probe for whichever page holds no open stream of
     // its own (#700) -- one loop for the whole app, torn down with it.
     const stopWatchingRecovery = watchConnectionRecovery((signal) => cockpitApi.health(signal));
+    // A redeploy the operator lived through (#1100): read health once on the
+    // same edge every other room already reloads its own data on, and let
+    // the footer say so instead of reloading on its own (REQ-UIQ-10).
+    const stopWatchingVersion = onConnectionRecovered(() => {
+      void cockpitApi.health().then((health) => noteObservedVersion(servedVersion(health)), () => {});
+    });
     return () => {
       window.removeEventListener("popstate", readRoute);
       stopWatchingRecovery();
+      stopWatchingVersion();
     };
   });
 

@@ -128,6 +128,7 @@ class FakeHttp:
                     status="serving",
                     source_commit=self.health_source_commit,
                     source_tree="d" * 40,
+                    serve_started_at="2026-08-31T08:00:00Z",
                 )
                 .model_dump_json()
                 .encode()
@@ -1012,7 +1013,10 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
         method = request.method
         if full_url.endswith("/health"):
             answer = HealthResource(
-                status="serving", source_commit=SOURCE_COMMIT, source_tree="d" * 40
+                status="serving",
+                source_commit=SOURCE_COMMIT,
+                source_tree="d" * 40,
+                serve_started_at="2026-08-31T08:00:00Z",
             ).model_dump_json()
         elif "/agent-configuration-revisions?" in full_url:
             answer = encoded(
@@ -1095,7 +1099,10 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
         if full_url.endswith("/health"):
             answer = (
                 HealthResource(
-                    status="serving", source_commit=SOURCE_COMMIT, source_tree="d" * 40
+                    status="serving",
+                    source_commit=SOURCE_COMMIT,
+                    source_tree="d" * 40,
+                    serve_started_at="2026-08-31T08:00:00Z",
                 )
                 .model_dump_json()
                 .encode()

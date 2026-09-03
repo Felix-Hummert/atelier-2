@@ -494,11 +494,13 @@ def create_app(
     lifespan: Lifespan[FastAPI] | None = None,
     source_id_generator: Callable[[], ProjectSourceId] = new_project_source_id,
     connection_clock: Callable[[], RecordedAt] = recorded_instant,
+    boot_clock: Callable[[], RecordedAt] = recorded_instant,
 ) -> FastAPI:
     if not source_commit:
         raise ValueError("source_commit must be injected at application construction")
     if not source_tree:
         raise ValueError("source_tree must be injected at application construction")
+    serve_started_at = boot_clock()
     openapi_document_path = API_PREFIX + "/openapi.json"
     app = FastAPI(
         title="Atelier 2 durable workflow API",
@@ -525,6 +527,7 @@ def create_app(
         ApiContext(
             source_commit=source_commit,
             source_tree=source_tree,
+            serve_started_at=serve_started_at,
             use_cases=bound_use_cases(
                 ports,
                 workflow_projection_limit,

@@ -133,6 +133,7 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.artifacts import ArtifactPublisher
@@ -391,6 +392,7 @@ class ApiContext:
 
     source_commit: str
     source_tree: str
+    serve_started_at: RecordedAt
     use_cases: ApiUseCases
     ports: ApiPorts
     limits: ApiLimits
