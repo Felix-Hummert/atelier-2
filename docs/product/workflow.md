@@ -124,11 +124,17 @@ declared starts when its predecessor completes. A linear Action node pins a publ
 adapter-operation revision; the runtime dispatches each durable intent by its persisted
 operation and exact adapter binding, and its closed registry performs `open-pr` and
 `push-atelier-commit`. An Agent reaches the push only through a tool grant that pins
-that exact published operation revision.
+that exact published operation revision; a node may pin at most one exec-shaped grant,
+redeemed inside its own attempt, and at most one effect-shaped grant, redeemed after it
+succeeds -- two pins of the same shape are refused once their published capabilities
+say so.
 `POST /adapter-operation-revisions` is the publication door (bytes in, hash out,
 idempotent), and a start whose `operation.revision` is that hash gets past the
-reference that used to refuse as unpublished. A project-bound open-PR request carries
-the predecessor Agent's output as its body and the run's derived work-item branch; a
+reference that used to refuse as unpublished. A project-bound open-PR Action declares
+one `body` input read from a builder Agent's own output through the dependency
+closure that already orders them, so review and a Wait may stand between the two; the
+request carries that output and the run's derived work-item branch, and the same
+Agent owns the confirmed push receipt the branch is read against. A
 documentation-release Action instead binds its declared candidate and independently
 approved verdict orders into ADR 0010's closed draft-release request. That is a
 separate operator-authorized work-item run: the candidate digest covers the

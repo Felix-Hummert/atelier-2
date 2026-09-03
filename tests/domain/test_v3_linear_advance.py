@@ -64,6 +64,9 @@ _ACTION_LINE = (
     type: action
     operation: {{ref: open-pr, revision: "{_ANY_JSON_REVISION}"}}
     depends_on: [implement]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
 """.encode()
 )
 

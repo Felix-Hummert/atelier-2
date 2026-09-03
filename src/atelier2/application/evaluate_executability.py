@@ -37,6 +37,7 @@ from atelier2.contracts.run_configuration_v3 import (
 )
 from atelier2.contracts.tool_grants_v3 import (
     ToolGrantAccepted,
+    ToolGrantCapability,
     read_tool_grant_document,
     redeems_as_platform_effect,
 )
@@ -164,6 +165,26 @@ def _looped_platform_effect_grant_refusal(
     return None
 
 
+EFFECT_SHAPED_TOOL_RESOLUTION_FIELD = "tools:effect-shaped"
+"""The site field a *second* `tools` resolution carries when it is effect-shaped.
+
+A node's `tools` are declared under the one authored field `tools`
+(`run_configuration_v3.py`), and up to one of each shape resolves from there.
+`bind_node_execution.py`'s durable request still binds exactly one `tools` id
+per node (#1101 plan review: "no schema hop") -- the exec-shaped grant, read
+inside the attempt's own lease. Where a node pins only its historical one
+grant, effect-shaped or not, that grant keeps the authored field name exactly
+as it always did. Only where a node pins two -- the new shape this record
+adds -- is the effect-shaped one's *resolved* site renamed to this token, at
+the one place its capability is already read, so `bind_node_execution.py`
+keeps reading resolved references as pure data and still finds at most one
+under the authored field name. The effect-shaped grant stays frozen in
+`RunConfigurationRevision.resolutions` under this name for the run's own
+record, and is read back directly from the immutable workflow revision when
+its effect is prepared (`agent_effect_grants.py`).
+"""
+
+
 def resolve_document_references(
     graph: WorkflowGraphV3,
     resolver: PublishedRevisionResolver,
@@ -179,13 +200,50 @@ def resolve_document_references(
     """
     cache: ReferenceSettlementCache = {} if settlements is None else settlements
     resolutions: list[ResolvedReference] = []
+    redeemed_grant_shapes: set[tuple[str, bool]] = set()
     for declared in declared_through(graph, SubworkflowBinding()):
         resolution, revision = _settled_resolution(declared, resolver, cache)
         match resolution:
             case ResolvedReference():
-                resolutions.append(resolution)
-                if revision is not None and declared.kind is RevisionKind.TOOL:
+                if revision is None or declared.kind is not RevisionKind.TOOL:
+                    resolutions.append(resolution)
+                else:
                     grant = read_tool_grant_document(revision.document)
+                    if isinstance(grant, ToolGrantAccepted):
+                        conflict = _second_grant_of_one_shape(
+                            redeemed_grant_shapes, declared.site.node, grant.capability
+                        )
+                        if conflict is not None:
+                            return DocumentNotExecutable(conflict)
+                        pinning_node = (
+                            None
+                            if declared.site.node is None
+                            else graph.node(declared.site.node)
+                        )
+                        if redeems_as_platform_effect(grant.capability) and (
+                            isinstance(pinning_node, AgentNodeV3)
+                            and len(pinning_node.tools) > 1
+                        ):
+                            # The durable node-execution binding still binds one
+                            # `tools` id, the exec-shaped one, where a node now
+                            # pins two (#1101 plan review: "no schema hop") -- an
+                            # effect-shaped grant needs no `project_source` and is
+                            # read straight from the immutable workflow revision
+                            # when its effect is prepared (`agent_effect_grants.py`).
+                            # A lone effect-shaped grant is unaffected: it stays the
+                            # one `tools` id, exactly as before this node could pin
+                            # a second. Marking it here, the one place its
+                            # capability is already read, is what lets
+                            # `bind_node_execution.py` keep reading resolved
+                            # references as pure data.
+                            resolution = dataclasses.replace(
+                                resolution,
+                                site=dataclasses.replace(
+                                    resolution.site,
+                                    field=EFFECT_SHAPED_TOOL_RESOLUTION_FIELD,
+                                ),
+                            )
+                    resolutions.append(resolution)
                     if (
                         isinstance(grant, ToolGrantAccepted)
                         and grant.operation is not None
@@ -220,6 +278,31 @@ def resolve_document_references(
             case _ as unreachable:
                 assert_never(unreachable)
     return ExecutableDocument(tuple(resolutions))
+
+
+def _second_grant_of_one_shape(
+    redeemed_grant_shapes: set[tuple[str, bool]],
+    node: str | None,
+    capability: ToolGrantCapability,
+) -> str | None:
+    """Name the conflict when a node's grant repeats a shape it already resolved.
+
+    A node may pin at most one exec-shaped and at most one effect-shaped grant;
+    which shape a pin is is only known once its published bytes are read, so
+    this is the start-level twin of the binding-time invariant
+    `agent_effect_grants.py` enforces again once a run redeems the grant. `node`
+    is always set for a tool reference -- only a document-level reference (no
+    node) reaches here with `None`, and no document-level reference is a tool.
+    """
+    if node is None:
+        return None
+    platform_effect = redeems_as_platform_effect(capability)
+    key = (node, platform_effect)
+    if key in redeemed_grant_shapes:
+        shape = "effect-shaped" if platform_effect else "exec-shaped"
+        return f"node {node!r} pins more than one {shape} grant"
+    redeemed_grant_shapes.add(key)
+    return None
 
 
 def _settled_resolution(
