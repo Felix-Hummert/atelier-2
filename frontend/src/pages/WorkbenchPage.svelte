@@ -443,13 +443,18 @@
 
   /**
    * A connected conductor starts one loop run for the first message, then
-   * turns every later message into its current wait answer. "unreadable" and
-   * "reading" keep the standing honest local refusal, where nothing was
-   * started is still the whole truth. "absent", "unbound" and "not-startable"
-   * (#1103) are a different kind of state: a real reason the composer is
-   * locked for, so nothing is sent at all rather than accepted and swallowed.
+   * turns every later message into its current wait answer. "unreadable"
+   * keeps the standing honest local refusal, where nothing was started is
+   * still the whole truth. "absent", "unbound", "not-startable" and
+   * "reading" (#1103, #1114) are a different kind of state: a real reason —
+   * or, for "reading", a real unknown still in flight — the composer is
+   * locked for, so nothing is sent at all rather than accepted and
+   * swallowed. A message sent while "reading" would otherwise fall into the
+   * "unreadable"/local-chat branch below and be answered locally, and the
+   * moment the read resolves to "connected" that locally-answered turn has
+   * nothing to do with the real conversation the operator meant to start.
    *
-   * A lost connection (#700), or one of those three locked states, keeps the
+   * A lost connection (#700), or one of those four locked states, keeps the
    * message in the box instead: the send button is disabled the same moment,
    * so this guard only catches the keyboard's Enter shortcut racing that
    * disable.
@@ -567,13 +572,18 @@
       ? ageLabel(conductorLink.providerProbeObservedAt, new Date(), "ago")
       : null;
   // The composer is visibly locked, not merely quiet, whenever the server
-  // named a real reason nothing can be sent (#1103): the one flag both the
-  // button's `disabled` attribute and the Enter-key guard in `send` read, so
-  // the two can never drift apart.
+  // named a real reason nothing can be sent (#1103), or whenever whether a
+  // conductor is even there is still unknown ("reading", #1114): sending
+  // then would silently fall into the local-chat branch and be answered as
+  // if no conductor existed, and the operator's words would part ways with
+  // the conversation the moment the read resolves. This is the one flag both
+  // the button's `disabled` attribute and the Enter-key guard in `send`
+  // read, so the two can never drift apart.
   $: composerLocked =
     conductorLink.kind === "absent" ||
     conductorLink.kind === "unbound" ||
-    conductorLink.kind === "not-startable";
+    conductorLink.kind === "not-startable" ||
+    conductorLink.kind === "reading";
   $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
     expandedPinReference = pins[0]?.run.public_run_reference ?? null;
   }
@@ -777,6 +787,8 @@
       <p class="composer-hint">{wrapDisplayCopy(restartNoticeCopy)}</p>
     {:else if conductorLink.kind === "connected"}
       <p class="composer-hint">{wrapDisplayCopy(connectedComposerHint)}</p>
+    {:else if conductorLink.kind === "reading"}
+      <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHintReading)}</p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
     {:else if conductorLink.kind === "unbound" && conversationTranscript.length > 0}
@@ -789,8 +801,9 @@
       <!-- The empty room's own card already names this exact reason (below,
            `emptyDescriptionNotStartable`) whenever the conversation is empty;
            this hint only repeats it when that card is not on screen -- a
-           not-startable conductor reached after "reading"/"unreadable" had
-           already taken a locally-answered turn (#1103). -->
+           not-startable conductor reached after "unreadable" had already
+           taken a locally-answered turn, then the connection recovered and
+           resolved to a real reason (#700, #1103). -->
       <p class="composer-hint">
         {wrapDisplayCopy(
           workbenchPageCopy.composerHintNotStartable(

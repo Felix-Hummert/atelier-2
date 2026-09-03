@@ -11,11 +11,12 @@ export type ChatMessage = {
 };
 
 /**
- * One turn of the conversation while whether a conductor is connected could
- * not yet be told one way or the other -- the composer is not locked here
- * the way it is for "absent", "unbound" and "not-startable" (#1103), each of
- * which carries a real reason and refuses the message before this function
- * is ever called: what was said, and the honest standing answer.
+ * One turn of the conversation while the conductor's own connection read
+ * itself failed ("unreadable") -- the only state left that reaches here: the
+ * composer is locked before this function is ever called for "absent",
+ * "unbound" and "not-startable" (#1103), each of which carries a real
+ * reason, and for "reading" (#1114), where the answer is simply not known
+ * yet. What was said, and the honest standing answer.
  *
  * Pure and total, so the page holds no branching of its own. Blank input is
  * not a turn — an empty message would put an empty bubble in the transcript

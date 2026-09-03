@@ -60,23 +60,28 @@ export const workbenchPageCopy = {
   composerLabel: "Message",
   send: "Send",
   /**
+   * The composer's own reminder while whether a conductor is even there is
+   * still being read (#1103, #1114): Send is locked for the same reason a
+   * lost connection locks it, so the hint says this is a passing moment, not
+   * a standing refusal -- distinct from `composerHint` below, which is the
+   * settled "no conductor" answer.
+   */
+  composerHintReading: "Checking whether a conductor is connected…",
+  /**
    * The one honest sentence the ear carries while no conductor exists at all
    * (HEART, "The ear"): Send is visibly locked for this state (#1103), so the
    * sentence names that instead of promising a kept-but-unsent word.
    */
   composerHint: "No conductor is connected yet, so Send stays locked. Start work from the Catalog instead.",
   /**
-   * The reply every sent message gets while the conductor's own connection
-   * could not yet be read one way or the other -- "reading" (the read is
-   * still in flight) or "unreadable" (the read itself failed). Those are the
-   * only two states this can still reach: "absent", "unbound" and
-   * "not-startable" (#1103) each carry a real reason and lock the composer
-   * before a message can be sent at all, so this sentence stays deliberately
-   * reason-agnostic rather than claiming "no conductor is connected" -- for
-   * "reading" that would be a guess, and for "unreadable" it would be a fact
-   * this room does not actually hold. "Until you reload" is the
-   * conversation's real boundary: it survives in-app rail navigation (the
-   * module that owns it outlives the page component) but not a reload.
+   * The reply a sent message gets when the conductor's own connection read
+   * itself failed ("unreadable"): the only state left where a message can
+   * still reach the local-chat fallback and be answered as if no conductor
+   * existed -- "reading" locks the composer instead (#1114), and "absent",
+   * "unbound" and "not-startable" (#1103) each carry a real reason and lock
+   * it too. "Until you reload" is the conversation's real boundary: it
+   * survives in-app rail navigation (the module that owns it outlives the
+   * page component) but not a reload.
    */
   conductorConnectionUnknown:
     "Nothing was started. Your message is kept in this conversation until you reload the page.",

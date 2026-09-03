@@ -169,6 +169,11 @@ async function resetAndSeedConductor(page: Page): Promise<{ workflow_revision_ha
  */
 async function startConversationOverUi(page: Page, message: string, workflowRevisionHash: string): Promise<Locator> {
   await page.goto("/atelier/chat");
+  // The connection read spans several round trips (`resolveConductorConnection`,
+  // conductorEpisode.ts); Send stays locked until it resolves (#1103, #1114),
+  // so this waits for the connected hint -- proof the room is done reading,
+  // not merely that the button happens to look clickable.
+  await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible();
   await page.getByLabel(workbenchPageCopy.composerLabel).fill(message);
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
   await waitForFreshConductorRound(page, workflowRevisionHash);

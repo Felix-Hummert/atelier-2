@@ -416,6 +416,45 @@ describe("the workbench conductor conversation", () => {
     };
   }
 
+  // The Send guard race (#1103, #1114 investigation): whether a conductor is
+  // even there is read over several round trips (`resolveConductorConnection`,
+  // conductorEpisode.ts). A click landing in that window used to fall into
+  // the no-conductor branch and start nothing at all -- the button looked
+  // ready before the room actually knew.
+  it("keeps Send disabled and names the passing read while a conductor's connection is still being read, then enables it once connected", async () => {
+    let letTheReadFinish = (): void => {};
+    const readFinished = new Promise<void>((resolve) => {
+      letTheReadFinish = resolve;
+    });
+    openChat({
+      ...conductorConnectionOverrides(),
+      getWorkflowRevision: vi.fn(async () => {
+        await readFinished;
+        return conductorRevisionDetail();
+      }),
+      listRuns: listRunsForConductor(null)
+    });
+    const { screen, waitFor } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+
+    expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+      "disabled",
+      true
+    );
+    expect(screen.getByText(workbenchPageCopy.composerHintReading).isConnected).toBe(true);
+
+    letTheReadFinish();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        false
+      )
+    );
+    await screen.findByText(conductorConversationCopy.composerHint);
+    expect(screen.queryByText(workbenchPageCopy.composerHintReading)).toBeNull();
+  });
+
   it("carries one link back to the conversation's own run, however many rounds it holds", async () => {
     const feed = new FakeRunEventFeed();
     const run = conductorRunFixture();
