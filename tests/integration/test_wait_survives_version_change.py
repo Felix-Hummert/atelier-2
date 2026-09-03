@@ -10,25 +10,43 @@ answer door enqueues the continuation itself, under the answering runtime's own
 version (`DbosWaitAnswerer`). This test is the proof that the two facts add up --
 without it the watcher's rule rests on an assumption nobody drove.
 
-The run keeps no bound agent: a Wait-only document parks on a person with no
-executor alive, so nothing but the version change can explain a stranded answer.
+Two Waits rather than one, because a run that merely ends after its answer
+cannot show where the *continuation* was attributed. The second Wait's own node
+workflow is that continuation, and this test reads the version DBOS recorded for
+every workflow the run minted: it fails if anything after the redeploy were
+carried under the version that parked the first Wait.
+
+The run keeps no bound agent: a document of Waits alone parks on a person with
+no executor alive, so nothing but the version change can explain a stranded
+answer.
 """
 
 from __future__ import annotations
 
 import base64
 import time
+from collections import Counter
 from pathlib import Path
 
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from atelier2.adapters.dbos.names import (
+    ANSWER_WORKFLOW_NAME,
+    NODE_WORKFLOW_NAME,
+    WORKFLOW_NAME,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import runs
 from atelier2.api.references import encode_public_run_reference
 from atelier2.contracts.executions import NodeExecutionId
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.durable_state import (
@@ -40,19 +58,51 @@ from tests.scenarios.runs import (
     publish_pinned_revisions,
     start_published_v3_run,
 )
-from tests.scenarios.workflows import (
-    ANY_JSON_SCHEMA,
-    V3_WAIT_LINE_DOCUMENT,
-    V3_WAIT_LINE_NODE_ID,
-)
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("wait/survives-a-version-change")
-WORKFLOW = WorkflowRevision(V3_WAIT_LINE_DOCUMENT)
+PARKED_NODE = "approve"
+CONTINUATION_NODE = "confirm"
+
+TWO_WAITS_DOCUMENT = (
+    b"""format_version: 3
+name: A person answers twice, and a redeploy happens in between
+nodes:
+  - id: """
+    + PARKED_NODE.encode()
+    + b"""
+    type: wait
+    prompt: Approve this line.
+"""
+    + declared_output(ANY_JSON_SCHEMA, "approval")
+    + b"""  - id: """
+    + CONTINUATION_NODE.encode()
+    + b"""
+    type: wait
+    prompt: Confirm what you approved.
+    depends_on: ["""
+    + PARKED_NODE.encode()
+    + b"""]
+"""
+    + declared_output(ANY_JSON_SCHEMA, "confirmation")
+)
+"""The smallest document with a node *after* the Wait a redeploy interrupts."""
+
+WORKFLOW = WorkflowRevision(TWO_WAITS_DOCUMENT)
 ANSWER = b'"approved after the redeploy"'
 VERSION_THAT_PARKED_THE_WAIT = "executor-A"
 VERSION_THAT_TAKES_THE_ANSWER = "executor-B"
 STATE_TIMEOUT_SECONDS = 12.0
 STATE_POLL_SECONDS = 0.025
+
+# DBOS owns this table and the version it stamps on every workflow it mints;
+# `atelier2.adapters.dbos.uncontinuable_runs` is the production reader that
+# scopes recovery by exactly this column.
+dbos_workflow_status = sa.table(
+    "workflow_status",
+    sa.column("name"),
+    sa.column("application_version"),
+)
 
 
 def runtime_over(root: Path, application_version: str) -> DbosRuntime:
@@ -64,31 +114,45 @@ def runtime_over(root: Path, application_version: str) -> DbosRuntime:
     )
 
 
-def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
-    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
-                )
+def run_state(runtime: DbosRuntime) -> tuple[str, str]:
+    with runtime.engine.connect() as connection:
+        record = connection.execute(
+            sa.select(runs.c.state, runs.c.current_node_id).where(
+                runs.c.run_id == RUN.value
             )
-        if observed == state.value:
+        ).one()
+    return str(record.state), str(record.current_node_id)
+
+
+def wait_until_run_stands_at(runtime: DbosRuntime, expected: tuple[str, str]) -> None:
+    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+    observed = ("", "")
+    while time.monotonic() < deadline:
+        observed = run_state(runtime)
+        if observed == expected:
             return
         time.sleep(STATE_POLL_SECONDS)
-    raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
+    raise AssertionError(f"run stayed {observed!r}, expected {expected!r}")
 
 
-def answer_through_the_public_door(client: TestClient) -> Response:
+def minted_workflow_versions(runtime: DbosRuntime) -> Counter[tuple[str, str]]:
+    """How many workflows of each name DBOS minted under each application version."""
+    with runtime.engine.connect() as connection:
+        return Counter(
+            (str(record.name), str(record.application_version))
+            for record in connection.execute(sa.select(dbos_workflow_status))
+        )
+
+
+def answer_through_the_public_door(client: TestClient, node_id: str) -> Response:
     execution_id = NodeExecutionId.for_node(
-        RUN, WORKFLOW.revision_hash, V3_WAIT_LINE_NODE_ID, 1
+        RUN, WORKFLOW.revision_hash, node_id, FIRST_ROUND_ORDINAL
     )
     return client.post(
         f"/atelier/api/v1/runs/{encode_public_run_reference(RUN)}/answers",
         json={
             "workflow_revision_hash": WORKFLOW.revision_hash.value,
-            "node_id": V3_WAIT_LINE_NODE_ID,
+            "node_id": node_id,
             "expected_node_execution_id": execution_id.value,
             "actor": "operator",
             "answer_base64": base64.b64encode(ANSWER).decode("ascii"),
@@ -107,7 +171,7 @@ def test_a_parked_wait_takes_its_answer_under_a_later_application_version(
             parked.engine, parked.settings, RUN, WORKFLOW, NO_AGENT_EXECUTORS, roles=()
         )
         parked.launch()
-        wait_for_state(parked, RunState.WAITING_INPUT)
+        wait_until_run_stands_at(parked, (RunState.WAITING_INPUT.value, PARKED_NODE))
     finally:
         parked.close()
 
@@ -124,14 +188,38 @@ def test_a_parked_wait_takes_its_answer_under_a_later_application_version(
         assert read_back.status_code == 200, read_back.text
         assert read_back.json()["state"] == RunState.WAITING_INPUT.value
 
-        accepted = answer_through_the_public_door(client)
+        accepted = answer_through_the_public_door(client, PARKED_NODE)
         assert accepted.status_code == 202, accepted.text
 
-        wait_for_state(redeployed, RunState.COMPLETED)
+        # The successor Wait pausing is the continuation running: the answer
+        # moved the run on rather than merely ending it.
+        wait_until_run_stands_at(
+            redeployed, (RunState.WAITING_INPUT.value, CONTINUATION_NODE)
+        )
+        confirmed = answer_through_the_public_door(client, CONTINUATION_NODE)
+        assert confirmed.status_code == 202, confirmed.text
+
+        wait_until_run_stands_at(
+            redeployed, (RunState.COMPLETED.value, CONTINUATION_NODE)
+        )
         proceeded = client.get(
             f"/atelier/api/v1/runs/{encode_public_run_reference(RUN)}"
         )
         assert proceeded.status_code == 200, proceeded.text
         assert proceeded.json()["state"] == RunState.COMPLETED.value
+
+        # Everything before the redeploy is attributed to the version that
+        # parked the Wait; every workflow after it -- both answers and the
+        # continuation node -- to the version that took the answer. A
+        # continuation attributed to the retired version is the stranding this
+        # file exists to rule out, and it would fail exactly here.
+        assert minted_workflow_versions(redeployed) == Counter(
+            {
+                (WORKFLOW_NAME, VERSION_THAT_PARKED_THE_WAIT): 1,
+                (NODE_WORKFLOW_NAME, VERSION_THAT_PARKED_THE_WAIT): 1,
+                (ANSWER_WORKFLOW_NAME, VERSION_THAT_TAKES_THE_ANSWER): 2,
+                (NODE_WORKFLOW_NAME, VERSION_THAT_TAKES_THE_ANSWER): 1,
+            }
+        )
     finally:
         redeployed.close()
