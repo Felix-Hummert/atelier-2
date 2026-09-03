@@ -62,6 +62,18 @@ approval_sha256 = "28b643ac1a3951cc87ca2c7e0c57719325ea899abec54ef39631235508f91
 
 [[approval]]
 requirement = "REQ-UIQ-11"
+scope_sha256 = "1dc0a7232aa2cf4a87ab1fb384e8d31fba841a38ccecdec47397577f2bbfe434"
+approval_comment_id = 5525044774
+approval_sha256 = "41eed3e05edcf25fada5518f452c662f51daf4194f5e03f752e410a31703dded"
+
+[[approval]]
+requirement = "REQ-UIQ-11"
+scope_sha256 = "7a9300793ae177e0437f4b1998dc46b69a5c07175bae3c6be812c34d41a6105c"
+approval_comment_id = 5528310001
+approval_sha256 = "eb62cce6dc999299145b0a038f976714df259940b80e406cfa9ff6a032cd3390"
+
+[[approval]]
+requirement = "REQ-UIQ-11"
 scope_sha256 = "e0e98e87ba10ff59947bbbd6cda57a1d183a0079531190681d0280c6bab9c984"
 approval_comment_id = 5528860474
 approval_sha256 = "5642a7eeba51d4bcbae4aed609cb89e1824bdd6f8a149a2e6f5894a7a0b43c64"
@@ -74,12 +86,42 @@ approval_sha256 = "ca601e5a59291c4175665a7d30ab68532baa8adf3477a7882808667d5984d
 
 [[approval]]
 requirement = "REQ-UIQ-11"
+scope_sha256 = "c95b2be2dd99014d99017cc92427bc2f697e4e1ed99ae2ec2a7d2a1853965333"
+approval_comment_id = 5529908926
+approval_sha256 = "c0825269cb5303b43f7af1aadb0461774d9542c0b6e51aa48b09e382f1565889"
+
+[[approval]]
+requirement = "REQ-UIQ-11"
 scope_sha256 = "46918fa73c2362bfd71e0403ad9728154086efaae9af987b50d969e3d4684638"
 approval_comment_id = 5529987018
 approval_sha256 = "960bea7cf41ad5a7632a0c7d869d5960cf624e2fb11311fb079c42022db07fb6"
 
 [[approval]]
 requirement = "REQ-UIQ-11"
+<<<<<<< HEAD
 scope_sha256 = "617b5c13e9cbc8efa844d951eedab796d2b71457d97a55b7f0e8d1c71f8b6843"
 approval_comment_id = 5531876648
 approval_sha256 = "8cca847cba5a8488bdf3099cb6263d05cff5c118f6a347b6ebb23179e7983906"
+=======
+scope_sha256 = "d13f3549e90daa338d30b3708b02638988c1b623392c14ceb45832cdc10620f1"
+approval_comment_id = 5530655958
+approval_sha256 = "a3b80b21f24554e1e717d9d133a23fde7dcfcfefb283be70be721b31bb9aa4cb"
+
+[[approval]]
+requirement = "REQ-UIQ-11"
+scope_sha256 = "a6f7e8810cc01993c172e7374c7067d0c4c3096e599204d3813ee2e82354e12d"
+approval_comment_id = 5530880852
+approval_sha256 = "814851a070c57410627537473ac7a1ce2e690560431b3bdc61b87e4dd57080d5"
+
+[[approval]]
+requirement = "REQ-UIQ-11"
+scope_sha256 = "c98361621f068f7de6e39a51f8dd44af528c3f8d51455ba07a6fbe1a757e160a"
+approval_comment_id = 5531243157
+approval_sha256 = "3de07cdecc893a7389e98fab0b8d9780230e731a1ff99e88ea7be7b8a15f2592"
+>>>>>>> origin/claude/issue-1091-raw-string-inputs
+
+[[approval]]
+requirement = "REQ-UIQ-11"
+scope_sha256 = ""
+approval_comment_id = 5531881101
+approval_sha256 = "3b56dcc1b7429d76541522eef71eae805e33de6bd28dc219a60cbf2e172aa134"
