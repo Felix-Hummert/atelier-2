@@ -11,7 +11,10 @@
   and
   [reusable workflow input](https://github.com/FlexOr2/atelier-2/issues/6#issuecomment-5356916897),
   and amended 2026-08-25 ([#658](https://github.com/FlexOr2/atelier-2/issues/658))
-  on a loop repeating a `wait` node
+  on a loop repeating a `wait` node, and amended 2026-09-03
+  ([#976](https://github.com/FlexOr2/atelier-2/issues/976)): the composed
+  preview this record described does not exist, per the amendment beside "The
+  conductor is a client, and one composed preview is the truth"
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
@@ -838,6 +841,24 @@ loses nothing by this: the authoring surface stays fully editable, and what the
 operator edits on a bound preview is a successor they can see rather than a snapshot
 they silently rewrote.
 
+**2026-09-03 amendment (operator delegation to the head as product owner, issue
+[#976](https://github.com/FlexOr2/atelier-2/issues/976)): no composed preview
+exists.** [#450](https://github.com/FlexOr2/atelier-2/issues/450)/[#977](https://github.com/FlexOr2/atelier-2/issues/977)
+tore down the island this section describes: `application/compose_preview.py`,
+`contracts/composed_preview_v3.py` and `contracts/capabilities_v3.py` reached no
+entry point of the build, lived only through domain tests since #83, and were
+deleted rather than wired. `docs/product/workflow.md` now reads, after a run
+configuration revision is frozen, "[b]ehind that binding, nothing: the
+registries are ports a caller supplies" — no route, rendering or stored shape
+derives a preview from it. The Dirigent still publishes and starts as an
+ordinary client under the same attributed commands and publish gate; what does
+not survive is everything from "the object that shows it is named" onward — the
+composed object itself, its per-surface equal-projection guarantee, and its
+proposed/bound editing rule. **The first surface that draws a revision before it
+runs owns that guarantee afresh**, built from the living publish and start
+owners rather than from this section's assumption that a preview is already
+there to extend.
+
 ### Refusals
 
 Refused at parse, capability-independent: unknown field or node kind; a field the
@@ -1213,6 +1234,14 @@ capabilities and proofs exist today; this list does not restate that inventory.
   and editable in each while the configuration is proposed. Editing a **bound**
   preview yields a new proposed revision and leaves the run's snapshot, its
   receipts and its composed preview hash unchanged.
+  **2026-09-03 amendment (operator delegation to the head as product owner, issue
+  [#976](https://github.com/FlexOr2/atelier-2/issues/976)): retired.** The
+  composed preview this bullet proves reached no entry point of the build and was
+  deleted rather than wired
+  ([#450](https://github.com/FlexOr2/atelier-2/issues/450)/[#977](https://github.com/FlexOr2/atelier-2/issues/977));
+  its former proof, `tests/domain/test_composed_preview_v3.py`, is retired with
+  it. See the amendment on "The conductor is a client, and one composed preview
+  is the truth" above for where today's truth lives.
 - A V3 run against a store without the V3 record schema is refused whole, with
   nothing written in the old shape.
 
