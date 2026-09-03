@@ -215,10 +215,9 @@ workflow, start, and run resources remain their own closed families", and that
 "the preexisting V1 raw JSON and named OpenAPI components are byte-frozen".
 Both are withdrawn.
 
-The operator ruled on 30.08.2026: *"Bis das Atelier ein Produkt ist, brauchen
-wir kein Fallback und keine Backwards-Compatibility — wir schmeißen alte Sachen
-raus."* #901 measured what that costs: 239 live runs at
-`workflow_format_version` 3, all 26 stored workflow documents at
+[docs/PRODUCT.md](../PRODUCT.md) § Stage: prototype owns why no fallback and no
+backwards compatibility are owed here. #901 measured what that costs: 239 live
+runs at `workflow_format_version` 3, all 26 stored workflow documents at
 `format_version: 3`. No run or document of format 1 or 2 has ever existed, so
 the frozen components described shapes nothing could produce.
 
