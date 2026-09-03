@@ -504,12 +504,12 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.20 · 29.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.21 · 03.09.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
-  <p class="note"><b>Changelog v8.19</b> · The Import sheet asks what the handed-in file is. Kind chips are the person's declaration; the found rows are recognition's report; the two never share a shape. An uncertain recognition leaves those chips instead of a Close-only refusal. A mistake is brick on the sheet, and nothing is in the catalog.</p>
   <p class="note"><b>Changelog v8.20</b> · The Log tab shows where the time went. Elapsed between events leads; the recorded clock sits dim on the event. A long wait is a taller band. Events from before moments existed say so and invent no time.</p>
   <p class="note"><b>03.09.2026 · #962 Scheibe 8</b> · A search field in the start sheet's work item picker narrows the grouped list by number or title, live; "no match" and "all retired" speak in the chooser instead of opening nothing. Vorschlag zur Segnung.</p>
+  <p class="note"><b>Changelog v8.21</b> · 03.09.2026 · #914 · A poisoned mutation journal gets its own frame: one honest sentence, one door — never called "Discard" — and the retire card's three answers (Disappears / Stays / Permanent), plus the line that a wait answer already sent stays sent. Vorschlag nach Ruling.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -716,6 +716,28 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div><dt>A written answer</dt><dd>"It wants words, not a button?" — the same stage with a field in place of the buttons; one "Answer" button. Free text lives here, not in the ear, because the ear speaks to the conductor.</dd></div>
   <div><dt>Three answers</dt><dd>"More than yes or no?" — one button per honest answer, the expected one filled; never a dropdown for a choice you make once.</dd></div>
   <div><dt>An uncertain send</dt><dd>"Did it arrive?" — the stamp stays, the sentence says what is unknown, "Send again" is the one move. No "Discard": an answer once given is not taken back here.</dd></div>
+</dl>
+
+<h3 class="frame-title">Journal poisoned <small>— the browser's own memory of pending sendings cannot be read</small></h3>
+<div class="frame sheeted" id="v8-21-journal-poisoned">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4>Workbench</h4></div>
+    <p class="nothing error">Your remembered sendings can't be read.<a href="#">Forget them</a></p>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Confirm forgetting the remembered sendings">
+    <h5>Forget everything remembered here?</h5>
+    <div class="fact"><b>Disappears</b><span>Every pending cancel, wait answer and retry this browser remembers</span></div>
+    <div class="fact"><b>Stays</b><span>A wait answer already sent — the run keeps it; only your local copy of it is gone</span></div>
+    <div class="fact"><b>Permanent</b><span>There is no way back.</span></div>
+    <div class="foot"><span class="btn danger">Forget them</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+<dl class="uq">
+  <div><dt>One sentence, one door</dt><dd>"What happened, and what can I do?" — the same brick as any error state (REQ-UIQ-10), read wherever a pending sending would show — the run view or the Workbench. The door is never called "Discard": that word already belongs to leaving a single uncertain send unresolved (above).</dd></div>
+  <div><dt>Confirmation reuses the retire card</dt><dd>"What changes, and what does not?" — the same three facts as retiring a catalog entry (<code>#v8-16-retire-confirmation</code>): what disappears, what stays, and that it is permanent.</dd></div>
+  <div><dt>A sent answer stays sent</dt><dd>"Did forgetting take back what I already answered?" — no: forgetting clears only this browser's memory of pending sendings; a wait answer already on the wire keeps standing, because the run's own state on the server is the truth, not this journal.</dd></div>
 </dl>
 
 <h3 class="frame-title">Many open <small>— six questions: one large, the rest compact, the stack scrolls after four</small></h3>
