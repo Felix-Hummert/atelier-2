@@ -129,10 +129,14 @@ function scenarioName(stem: string, testInfo: TestInfo): string {
   return `${stem}-${testInfo.repeatEachIndex}-${testInfo.retry}-${Date.now()}`;
 }
 
-async function retireFromTechnical(page: Page, name: string): Promise<void> {
+async function openTechnicalFold(page: Page, name: string): Promise<void> {
   await page.getByRole("link", { name }).click();
   await expect(page.getByRole("heading", { name })).toBeVisible();
   await page.locator("summary", { hasText: workflowDetailCopy.technical }).click();
+}
+
+async function retireFromTechnical(page: Page, name: string): Promise<void> {
+  await openTechnicalFold(page, name);
   await page.getByRole("button", { name: workflowDetailCopy.retire }).click();
   const sheet = page.getByRole("dialog", { name: workflowDetailCopy.retireTitle(name) });
   await expect(sheet.getByText(workflowDetailCopy.retireDisappearsFact)).toBeVisible();
@@ -167,6 +171,22 @@ test("proves(a-catalog-entry-can-be-taken-off-the-shelf): retiring a workflow le
   await historyRow.click();
   await expect(page).toHaveURL(new RegExp(`/atelier/runs/${runReference}`));
   await expect(page.getByText(name, { exact: true })).toBeVisible();
+});
+
+test("proves(a-workflow-detail-names-its-revision-and-format-in-the-technical-fold): a catalog revision's Technical fold shows revision and format, no source row for a file-imported revision", async ({ page }, testInfo) => {
+  const name = scenarioName("technical-fold", testInfo);
+  const schemaHash = await anyJsonSchema(page);
+  await admitWorkflow(page, name, schemaHash);
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/atelier/catalog");
+  await expect(catalogEntry(page, name)).toBeVisible();
+  await openTechnicalFold(page, name);
+
+  await expect(page.getByRole("group", { name: workflowDetailCopy.workflowRevision })).toBeVisible();
+  await expect(page.getByText(workflowDetailCopy.format)).toBeVisible();
+  await expect(page.getByText(workflowDetailCopy.formatVersion(3))).toBeVisible();
+  await expect(page.getByText(workflowDetailCopy.source)).toHaveCount(0);
 });
 
 test("proves(an-unwanted-catalog-addition-can-be-taken-back): a workflow added by mistake can leave the shelf", async ({ page }, testInfo) => {

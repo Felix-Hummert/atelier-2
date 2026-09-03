@@ -245,9 +245,53 @@ describe("the catalog room", () => {
     expect(technical?.open).toBe(true);
     expect(revision.textContent).toContain(shortFingerprint(WORKFLOW_HASH));
     expect(revision.textContent).toContain(workflowDetailCopy.sealsWorkflowRevision);
+    expect((await screen.findByText(workflowDetailCopy.formatVersion(3))).isConnected).toBe(true);
+    expect(screen.queryByText(workflowDetailCopy.source)).toBeNull();
     expect((await screen.findByRole("heading", { name: workflowDetailCopy.orders })).isConnected).toBe(true);
     expect(screen.getByText(/portions-schema/).isConnected).toBe(true);
     expect(screen.getByText(/portions · integer · required/).isConnected).toBe(true);
+  });
+
+  it("proves(a-revision-detail-names-its-source-as-commit-and-path): a revision with a connected source shows its commit and path in the Technical fold, never the opaque source reference", async () => {
+    const sourceCommit = "b8cfa0d5".repeat(5);
+    const sourcePath = "workflows/iterate-code.yaml";
+    openCatalog({
+      ...listing([workflowSummary()]),
+      ...admittedName(),
+      getWorkflowRevision: vi.fn(async () => ({
+        workflow_revision_hash: WORKFLOW_HASH,
+        document_base64: "YQ==",
+        provenance: {
+          source: "source1.leonardo-atelier-kit",
+          source_commit: sourceCommit,
+          source_path: sourcePath,
+          intaken_at: "2026-08-29T00:00:00Z"
+        },
+        graph: {
+          workflow_format_version: 3 as const,
+          executable: true,
+          not_executable_reason: null,
+          node_count: 1,
+          agent_roles: [],
+          orders: [],
+          wait_answer_schemas: [],
+          node_previews: [],
+          loops: [],
+          name: WORKFLOW_NAME,
+          description: null
+        }
+      }))
+    });
+
+    await screen.findByText(WORKFLOW_NAME);
+    await fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
+    await fireEvent.click(await screen.findByText(workflowDetailCopy.technical, { selector: "summary" }));
+
+    const source = await screen.findByText(workflowDetailCopy.source);
+    const sourceRow = source.closest("div");
+    expect(sourceRow?.textContent).toContain(`${shortFingerprint(sourceCommit)} · ${sourcePath}`);
+    expect(screen.queryByText(/source1\./)).toBeNull();
+    expect((await screen.findByText(workflowDetailCopy.formatVersion(3))).isConnected).toBe(true);
   });
 
   it("counts the workflow tiles after collapsing a real-shaped library listing", async () => {

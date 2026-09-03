@@ -12,6 +12,7 @@
   import type { MutationJournal } from "../lib/mutationJournal";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { shortFingerprint } from "../lib/fingerprint";
   import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
   import {
     beginRead,
@@ -72,6 +73,24 @@
   $: graph = found?.detail.graph ?? null;
   $: orders = found?.orders ?? [];
   $: revisionHash = found?.detail.workflow_revision_hash ?? "";
+  /**
+   * The Technical fold's two facts beyond the revision anchor (mockup v8
+   * :1528): the format the document itself declares, and -- only when a
+   * connected source delivered these bytes -- where they came from. A
+   * file-imported revision carries `provenance: null`, so this row is
+   * absent rather than a placeholder (#1077).
+   */
+  $: technicalFormat =
+    graph !== null && graph.workflow_format_version === 3
+      ? workflowDetailCopy.formatVersion(graph.workflow_format_version)
+      : null;
+  $: technicalSource =
+    found?.detail.provenance != null
+      ? workflowDetailCopy.sourceFact(
+          shortFingerprint(found.detail.provenance.source_commit),
+          found.detail.provenance.source_path
+        )
+      : null;
   $: retired = found?.catalogState.kind === "retired";
   $: admitted = found?.catalogState.kind === "admitted";
   $: catalogNote = catalogStateNote(found?.catalogState);
@@ -270,6 +289,22 @@
           seals={workflowDetailCopy.sealsWorkflowRevision}
           value={revisionHash}
         />
+        {#if technicalFormat !== null || technicalSource !== null}
+          <dl class="detail-technical-facts">
+            {#if technicalFormat !== null}
+              <div>
+                <dt>{workflowDetailCopy.format}</dt>
+                <dd>{technicalFormat}</dd>
+              </div>
+            {/if}
+            {#if technicalSource !== null}
+              <div>
+                <dt>{workflowDetailCopy.source}</dt>
+                <dd>{technicalSource}</dd>
+              </div>
+            {/if}
+          </dl>
+        {/if}
       </div>
       {#if admitted && !retired}
         <div class="technical-action">
@@ -356,6 +391,23 @@
     padding: var(--space-3);
     border-left: var(--edge-mark) solid var(--ink-dim);
     background: color-mix(in srgb, currentColor 4%, transparent);
+  }
+
+  .detail-technical-facts {
+    display: grid;
+    gap: var(--space-2);
+    margin: var(--space-3) 0 0;
+  }
+
+  .detail-technical-facts dt {
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-strong);
+  }
+
+  .detail-technical-facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
   }
 
   .technical-action {
