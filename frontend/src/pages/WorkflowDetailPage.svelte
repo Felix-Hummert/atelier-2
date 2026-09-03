@@ -35,6 +35,9 @@
 
   const catalog = WORKSHOP_DESTINATION.catalog;
 
+  /** Git's own short-hash convention (`git rev-parse --short`). */
+  const GIT_SHORT_COMMIT_LENGTH = 8;
+
   type ReadFailure =
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
@@ -72,6 +75,29 @@
   $: graph = found?.detail.graph ?? null;
   $: orders = found?.orders ?? [];
   $: revisionHash = found?.detail.workflow_revision_hash ?? "";
+  $: provenance = found?.detail.provenance ?? null;
+  /**
+   * The Technical fold's two facts beyond the revision anchor (mockup v8
+   * :1528): the format the document itself declares, and -- only when a
+   * connected source delivered these bytes -- where they came from. A
+   * file-imported revision carries `provenance: null`, so this row is
+   * absent rather than a placeholder (#1077). The commit shown is git's own
+   * short-hash prefix, with the full hash still reachable on the row's
+   * `title` -- the fold's one other proof affordance, `ProofAnchor`, already
+   * owns copy-to-clipboard for the revision hash, so this reuses a plain
+   * hover reveal rather than a second copy control for the same purpose.
+   */
+  $: technicalFormat =
+    graph !== null && graph.workflow_format_version === 3
+      ? workflowDetailCopy.formatVersion(graph.workflow_format_version)
+      : null;
+  $: technicalSource =
+    provenance !== null
+      ? workflowDetailCopy.sourceFact(
+          provenance.source_commit.slice(0, GIT_SHORT_COMMIT_LENGTH),
+          provenance.source_path
+        )
+      : null;
   $: retired = found?.catalogState.kind === "retired";
   $: admitted = found?.catalogState.kind === "admitted";
   $: catalogNote = catalogStateNote(found?.catalogState);
@@ -270,6 +296,22 @@
           seals={workflowDetailCopy.sealsWorkflowRevision}
           value={revisionHash}
         />
+        {#if technicalFormat !== null || technicalSource !== null}
+          <dl class="detail-technical-facts">
+            {#if technicalSource !== null}
+              <div>
+                <dt>{workflowDetailCopy.source}</dt>
+                <dd title={provenance?.source_commit}>{technicalSource}</dd>
+              </div>
+            {/if}
+            {#if technicalFormat !== null}
+              <div>
+                <dt>{workflowDetailCopy.format}</dt>
+                <dd>{technicalFormat}</dd>
+              </div>
+            {/if}
+          </dl>
+        {/if}
       </div>
       {#if admitted && !retired}
         <div class="technical-action">
@@ -356,6 +398,23 @@
     padding: var(--space-3);
     border-left: var(--edge-mark) solid var(--ink-dim);
     background: color-mix(in srgb, currentColor 4%, transparent);
+  }
+
+  .detail-technical-facts {
+    display: grid;
+    gap: var(--space-2);
+    margin: var(--space-3) 0 0;
+  }
+
+  .detail-technical-facts dt {
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-strong);
+  }
+
+  .detail-technical-facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
   }
 
   .technical-action {

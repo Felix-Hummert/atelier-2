@@ -1,0 +1,10 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/1077"
+
+[[sentence]]
+id = "a-revision-detail-names-its-source-as-commit-and-path"
+text = "A workflow revision with a connected source shows that source's commit and path (never the opaque source reference) in the Technical fold; a revision with no provenance shows no such row."
+
+[[sentence]]
+id = "a-workflow-detail-names-its-revision-and-format-in-the-technical-fold"
+text = "A catalog revision's Technical fold shows its revision and declared format; a file-imported revision (no provenance) shows no source row there."
