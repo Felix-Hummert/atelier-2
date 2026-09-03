@@ -79,6 +79,7 @@ from atelier2.application.read_agent_definition_revisions import (
     GetAgentDefinitionRevisionResult,
     ListAgentDefinitionRevisionsResult,
 )
+from atelier2.application.read_artifact import ReadArtifactResult
 from atelier2.application.read_attention_events import ReadAttentionEventsResult
 from atelier2.application.read_projects import (
     GetProjectResult,
@@ -115,6 +116,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AuthProfileRevisionHash,
 )
+from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.catalog_intakes import CatalogIntakeId, CatalogIntakeKind
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
@@ -136,7 +138,7 @@ from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
-from atelier2.ports.artifacts import ArtifactPublisher
+from atelier2.ports.artifacts import ArtifactPublisher, ArtifactReader
 from atelier2.ports.catalog_intakes import (
     CatalogIntakes,
 )
@@ -204,6 +206,7 @@ class ApiPorts:
     published_revision_resolver_sessions: PublishedRevisionResolverWithSession
     published_revision_listing: PublishedRevisionListing
     artifact_publisher: ArtifactPublisher
+    artifact_reader: ArtifactReader
     host_configuration_channel: HostConfigurationChannel
     project_source_connection_channel: ProjectSourceConnectionChannel
     project_source_connector: ProjectSourceConnector
@@ -248,6 +251,7 @@ class ApiUseCases:
     ]
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
     publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
+    read_artifact: Callable[[ArtifactHash], ReadArtifactResult]
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
     get_schema_revision: Callable[[PublishedRevisionHash], GetSchemaRevisionResult]
     publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]

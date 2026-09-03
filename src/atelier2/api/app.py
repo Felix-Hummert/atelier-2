@@ -107,6 +107,7 @@ from atelier2.application.read_agent_definition_revisions import (
     get_agent_definition_revision,
     list_agent_definition_revisions,
 )
+from atelier2.application.read_artifact import read_artifact
 from atelier2.application.read_attention_events import read_attention_events
 from atelier2.application.read_projects import get_project, list_projects
 from atelier2.application.read_run_events import read_run_events
@@ -227,6 +228,9 @@ def bound_use_cases(
         ),
         publish_artifact=lambda content: publish_artifact(
             content, ports.artifact_publisher
+        ),
+        read_artifact=lambda artifact_hash: read_artifact(
+            artifact_hash, ports.artifact_reader
         ),
         publish_schema_revision=lambda document: publish_schema_revision(
             document, ports.published_revision_registry

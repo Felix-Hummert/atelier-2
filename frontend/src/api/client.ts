@@ -1393,6 +1393,8 @@ export const problemDefinitions = {
   },
   "artifact-empty": { status: 422, title: "Artifact refused" },
   "artifact-too-large": { status: 422, title: "Artifact refused" },
+  "invalid-artifact-hash": { status: 400, title: "Invalid artifact hash" },
+  "artifact-not-found": { status: 404, title: "Artifact not found" },
   "adapter-operation-document-too-large": {
     status: 422,
     title: "Invalid adapter operation document",
@@ -1870,6 +1872,11 @@ export const problemSchema = z.discriminatedUnion("type", [
     "artifact-too-large",
     problemDefinitions["artifact-too-large"],
   ),
+  problemVariant(
+    "invalid-artifact-hash",
+    problemDefinitions["invalid-artifact-hash"],
+  ),
+  problemVariant("artifact-not-found", problemDefinitions["artifact-not-found"]),
   problemVariant(
     "adapter-operation-document-too-large",
     problemDefinitions["adapter-operation-document-too-large"],
