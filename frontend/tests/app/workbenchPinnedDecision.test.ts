@@ -35,6 +35,7 @@ function waitingRun(overrides: Partial<RunV3> = {}): RunV3 {
     run_id: "v3/decide",
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
+    workflow_name: "decide",
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
