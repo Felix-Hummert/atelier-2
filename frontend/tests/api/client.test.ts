@@ -97,6 +97,7 @@ function v3RevisionWithLoop() {
   return {
     workflow_revision_hash: digest,
     document_base64: "YQ==",
+    provenance: null,
     graph: {
       workflow_format_version: 3 as const,
       executable: true as const,
@@ -516,7 +517,8 @@ function servingRevisionsByView() {
           executable: false,
           not_executable_reason: "agent forms nothing binds yet: outputs",
           name: "Nightly regression sweep",
-          description: "Runs the sweep and files what it finds."
+          description: "Runs the sweep and files what it finds.",
+          provenance: null
         }
       : { workflow_revision_hash: digest };
     return new Response(
@@ -540,7 +542,8 @@ describe("the saved-workflow listing the cockpit asks for", () => {
         executable: false,
         not_executable_reason: "agent forms nothing binds yet: outputs",
         name: "Nightly regression sweep",
-        description: "Runs the sweep and files what it finds."
+        description: "Runs the sweep and files what it finds.",
+        provenance: null
       }
     ]);
   });

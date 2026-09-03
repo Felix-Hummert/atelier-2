@@ -34,6 +34,7 @@ function v3Revision() {
   return {
     workflow_revision_hash: digest,
     document_base64: "YQ==",
+    provenance: null,
     graph: {
       workflow_format_version: 3 as const,
       executable: true as const,

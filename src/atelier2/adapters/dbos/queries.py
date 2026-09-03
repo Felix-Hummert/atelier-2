@@ -49,6 +49,7 @@ from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
     attempt_instants,
+    catalog_source_intakes,
     effect_intents,
     effect_receipts,
     event_instants,
@@ -91,6 +92,13 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.artifacts import ArtifactHash
+from atelier2.contracts.catalog_v3 import CatalogActivatedAt
+from atelier2.contracts.definition_sources import (
+    DefinitionSourceId,
+    RepositoryPath,
+    RevisionProvenance,
+    SourceCommit,
+)
 from atelier2.contracts.effects import (
     EffectIntentState,
     ReconcileCommandId,
@@ -113,7 +121,7 @@ from atelier2.contracts.node_records_v3 import (
     read_stored_node_receipt_reason,
 )
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -152,6 +160,7 @@ from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
+    ListedWorkflowRevision,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
@@ -296,6 +305,96 @@ _RECEIPT_FIELD_COLUMNS = frozenset(
 _RUN_FORK_FIELD_COLUMNS = frozenset(
     ("origin_run_id", "successor_run_id", "restart_from_node_id")
 )
+
+_FIRST_INTAKE_OF_ITS_REVISION = 1
+_INTAKE_RANK = "intake_rank"
+
+
+def _revision_provenance_rows() -> sa.Subquery:
+    """Exactly one origin row per published revision, ready to be joined 1:1.
+
+    A revision's origin is its *first* intake -- earliest instant, then source
+    and path to settle a tie -- so a later delivery of bytes the catalog
+    already holds never rewrites where they came from. Ranked rather than
+    joined plainly: the intake table is keyed by source, path and intake
+    number, so one revision may carry several rows, and a plain join would
+    repeat that revision's whole document once per row, spend the page budget
+    on duplicates and break the `limit + 1` a page counts with.
+
+    Nothing but that row is read. Where the source stands today is
+    configuration a later connect may change, and joining it here would answer
+    an old delivery with a repository that never carried it.
+    """
+
+    ranked = sa.select(
+        catalog_source_intakes.c.revision_kind,
+        catalog_source_intakes.c.revision_hash,
+        catalog_source_intakes.c.source_id,
+        catalog_source_intakes.c.source_path,
+        catalog_source_intakes.c.source_commit,
+        catalog_source_intakes.c.intaken_at,
+        sa.func.row_number()
+        .over(
+            partition_by=(
+                catalog_source_intakes.c.revision_kind,
+                catalog_source_intakes.c.revision_hash,
+            ),
+            order_by=(
+                catalog_source_intakes.c.intaken_at,
+                catalog_source_intakes.c.source_id,
+                catalog_source_intakes.c.source_path,
+            ),
+        )
+        .label(_INTAKE_RANK),
+    ).subquery()
+    return (
+        sa.select(
+            ranked.c.revision_kind,
+            ranked.c.revision_hash,
+            ranked.c.source_id,
+            ranked.c.source_path,
+            ranked.c.source_commit,
+            ranked.c.intaken_at,
+        )
+        .where(ranked.c[_INTAKE_RANK] == _FIRST_INTAKE_OF_ITS_REVISION)
+        .subquery()
+    )
+
+
+_REVISION_PROVENANCE = _revision_provenance_rows()
+_REVISION_PROVENANCE_COLUMNS = (
+    _REVISION_PROVENANCE.c.source_id,
+    _REVISION_PROVENANCE.c.source_commit,
+    _REVISION_PROVENANCE.c.source_path,
+    _REVISION_PROVENANCE.c.intaken_at,
+)
+
+
+def _workflow_revisions_with_provenance() -> sa.Join:
+    """Workflow revisions and, where a source delivered them, their origin.
+
+    Outer, because a document published through the catalog's own door has no
+    origin to name and is still a revision this catalog lists.
+    """
+
+    return workflow_revisions.outerjoin(
+        _REVISION_PROVENANCE,
+        sa.and_(
+            _REVISION_PROVENANCE.c.revision_hash == workflow_revisions.c.revision_hash,
+            _REVISION_PROVENANCE.c.revision_kind == RevisionKind.WORKFLOW.value,
+        ),
+    )
+
+
+def _revision_provenance(record: Mapping[Any, Any]) -> RevisionProvenance | None:
+    if record["source_id"] is None:
+        return None
+    return RevisionProvenance(
+        DefinitionSourceId(str(record["source_id"])),
+        SourceCommit(str(record["source_commit"])),
+        RepositoryPath(str(record["source_path"])),
+        CatalogActivatedAt(str(record["intaken_at"])),
+    )
 
 
 def _bounded_projection_select(
@@ -1274,7 +1373,10 @@ class DbosQueries:
                             workflow_revisions,
                             self._projection_limit,
                             document_columns=_REVISION_DOCUMENT_COLUMNS,
-                        ).where(
+                        )
+                        .add_columns(*_REVISION_PROVENANCE_COLUMNS)
+                        .select_from(_workflow_revisions_with_provenance())
+                        .where(
                             workflow_revisions.c.revision_hash == revision_hash.value
                         )
                     )
@@ -1296,7 +1398,8 @@ class DbosQueries:
                 graph = _parsed_workflow_revision(revision)
                 self._projection_limit.validate_graph(graph)
                 return WorkflowRevisionFound(
-                    WorkflowRevisionProjection(revision, graph)
+                    WorkflowRevisionProjection(revision, graph),
+                    _revision_provenance(record),
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()
@@ -1357,8 +1460,10 @@ class DbosQueries:
         try:
             with self._connection() as connection:
                 statement = sa.select(
-                    workflow_revisions.c.revision_hash, workflow_revisions.c.document
-                )
+                    workflow_revisions.c.revision_hash,
+                    workflow_revisions.c.document,
+                    *_REVISION_PROVENANCE_COLUMNS,
+                ).select_from(_workflow_revisions_with_provenance())
                 if after is not None:
                     statement = statement.where(
                         workflow_revisions.c.revision_hash > after.value
@@ -1368,7 +1473,7 @@ class DbosQueries:
                         limit + 1
                     )
                 )
-                items: list[WorkflowRevisionProjection] = []
+                items: list[ListedWorkflowRevision] = []
                 spent_nodes = 0
                 spent_bytes = 0
                 exhausted = False
@@ -1391,13 +1496,20 @@ class DbosQueries:
                     if items and spent_nodes + len(graph.nodes) > budget.maximum_nodes:
                         exhausted = True
                         break
-                    items.append(WorkflowRevisionProjection(revision, graph))
+                    items.append(
+                        ListedWorkflowRevision(
+                            WorkflowRevisionProjection(revision, graph),
+                            _revision_provenance(record),
+                        )
+                    )
                     spent_bytes += len(document)
                     spent_nodes += len(graph.nodes)
                 streamed.close()
                 return DescribedWorkflowRevisionPage(
                     tuple(items),
-                    items[-1].revision.revision_hash if exhausted and items else None,
+                    items[-1].projection.revision.revision_hash
+                    if exhausted and items
+                    else None,
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()
