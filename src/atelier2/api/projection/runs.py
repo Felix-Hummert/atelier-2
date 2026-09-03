@@ -7,6 +7,7 @@ from typing import Literal, assert_never, cast
 
 from atelier2.api.projection.workflows import UnservedWorkflowFormat
 from atelier2.api.references import (
+    MAXIMUM_RUN_TERMINAL_ANSWER_BYTES,
     encode_canonical_base64,
     encode_event_cursor,
     encode_public_run_reference,
@@ -30,6 +31,9 @@ from atelier2.api.wire.resources import (
     RunNotCancellableReasonName,
     RunOrderResource,
     RunResourceV3,
+    RunTerminalAnswerOmissionReasonName,
+    RunTerminalAnswerOmittedResource,
+    RunTerminalAnswerValueResource,
     ToolCalledEventResource,
     ToolReturnedEventResource,
     TranscriptBeforeMomentsOrigin,
@@ -61,12 +65,17 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_projections import (
+    NodeAnswer,
     NodeDetail,
     PublicAgentAttemptState,
     RunCancellationRefusal,
     RunProjection,
 )
 from atelier2.contracts.runs import RunState
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    read_work_item_order_document,
+)
 from atelier2.contracts.workflows_v3 import AgentNodeV3
 
 _LIVE_ATTEMPT_STATES = frozenset(
@@ -117,6 +126,80 @@ def run_order_resource(order: RunInput) -> RunOrderResource:
         name=order.name,
         bytes=len(order.value),
         schema_revision_hash=order.schema_revision.value,
+    )
+
+
+class WorkItemOrderDurableStateCorrupt(ValueError):
+    """A run's own order pins the work-item schema but is not that document.
+
+    A `ValueError` because that is what corrupt durable state already raises
+    as, here and at `UnservedWorkflowFormat` beside it: `WORK_ITEM_ORDER_SCHEMA_REVISION`
+    is the store's own admission gate (a start refuses any other schema under
+    it, `contracts.work_items`), so an order that names it and still fails
+    `read_work_item_order_document` is the store disagreeing with itself, not
+    a caller's mistake this reader may quietly fold into `None`.
+    """
+
+
+def run_work_item_reference(orders: Sequence[RunInput]) -> str | None:
+    """The tracker reference one of this run's own orders names, or none (#1045).
+
+    An order counts only when it pins `WORK_ITEM_ORDER_SCHEMA_REVISION` --
+    the exact pin a start already refuses to admit any other schema under
+    (`contracts.work_items`) -- and its bytes are read through
+    `read_work_item_order_document`, the one owner that already wrote them,
+    never a second guess parsed from a node's composed job text. The first
+    such order wins; a workflow that starts more than one names the same run
+    purpose either way.
+    """
+    for order in orders:
+        if order.schema_revision != WORK_ITEM_ORDER_SCHEMA_REVISION:
+            continue
+        document = read_work_item_order_document(order.value)
+        if document is None:
+            raise WorkItemOrderDurableStateCorrupt(
+                "a work-item-schema order's bytes are not a work-item order document"
+            )
+        return document.reference.value
+    return None
+
+
+def run_terminal_answer_resource(
+    answer: NodeAnswer | None,
+) -> RunTerminalAnswerValueResource | RunTerminalAnswerOmittedResource | None:
+    """The terminal node's accepted answer, bounded for a listed run row (#1045).
+
+    `None` only where the run named no answer at all. A value larger than
+    `MAXIMUM_RUN_TERMINAL_ANSWER_BYTES` allows on a list row is a different
+    fact -- the node did write one, this row just does not carry it -- so it
+    answers `RunTerminalAnswerOmittedResource` naming the bound, never a bare
+    `None` a reader could mistake for absence. The run's own node detail
+    route still reads the value in full, never omitting it.
+    """
+    if answer is None:
+        return None
+    if len(answer.value) > MAXIMUM_RUN_TERMINAL_ANSWER_BYTES:
+        return RunTerminalAnswerOmittedResource(
+            kind="omitted",
+            reason=RunTerminalAnswerOmissionReasonName.TOO_LARGE,
+            maximum_bytes=MAXIMUM_RUN_TERMINAL_ANSWER_BYTES,
+        )
+    return RunTerminalAnswerValueResource(
+        kind="value",
+        value_base64=encode_canonical_base64(answer.value),
+        value_hash=answer.value_hash.value,
+    )
+
+
+def run_terminal_refusal_output_resource(
+    refusal_output: NodeAnswer | None,
+) -> NodeRefusalOutputResource | None:
+    """The terminal node's already-redacted schema refusal (#1045, #664)."""
+    if refusal_output is None:
+        return None
+    return NodeRefusalOutputResource(
+        value_base64=encode_canonical_base64(refusal_output.value),
+        value_hash=refusal_output.value_hash.value,
     )
 
 
@@ -197,6 +280,7 @@ def run_resource(projection: RunProjection) -> RunResourceV3:
         run_id=run.run_id.value,
         public_run_reference=encode_public_run_reference(run.run_id),
         workflow_revision_hash=run.revision_hash.value,
+        workflow_name=projection.graph.name,
         agent_binding_set_hash=run.binding_set_hash.value,
         run_configuration_revision_hash=run.run_configuration_revision_hash.value,
         agent_bindings=tuple(
@@ -216,6 +300,7 @@ def run_resource(projection: RunProjection) -> RunResourceV3:
             for binding in run.agent_bindings
         ),
         orders=tuple(run_order_resource(order) for order in projection.orders),
+        work_item_reference=run_work_item_reference(projection.orders),
         fork_origin=(
             None
             if projection.fork_origin is None
@@ -238,6 +323,8 @@ def run_resource(projection: RunProjection) -> RunResourceV3:
             )
             for successor in projection.fork_successors
         ),
+        answer=run_terminal_answer_resource(projection.answer),
+        refusal_output=run_terminal_refusal_output_resource(projection.refusal_output),
         state_version=run.state_version,
         state=cast(
             Literal[
