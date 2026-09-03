@@ -380,7 +380,7 @@ def _append_member(
     return revision_number
 
 
-def _persist_workflow_publication(
+def persist_workflow_publication(
     connection: sa.Connection, revision: WorkflowRevision
 ) -> None:
     """Write one workflow document where the publication door writes it.
@@ -390,6 +390,13 @@ def _persist_workflow_publication(
     transaction. Bytes already there are left alone; whether what is stored
     agrees with what was handed in is `_record_publication`'s check, and it runs
     on this connection right after.
+
+    Public with `found_lineage_in`, `admit_member_in` and `revision_owner`: they
+    are the catalog's writes as a caller that already owns a transaction sees
+    them, so a second door into the catalog -- a source intake admitting many
+    files at once -- composes them instead of writing publication rows of its
+    own. The store methods below are the same three writes for a caller that
+    owns no transaction and wants one per call.
     """
     connection.execute(
         workflow_revisions.insert()
@@ -401,13 +408,15 @@ def _persist_workflow_publication(
     )
 
 
-def _found_lineage(
+def found_lineage_in(
     connection: sa.Connection,
     revision: PublishedRevision,
     display_name: CatalogLineageDisplayName,
     actor: CatalogActor,
     activated_at: CatalogActivatedAt,
 ) -> FoundCatalogLineageResult:
+    """Start a lineage at this revision, on a transaction the caller owns."""
+
     lineage = CatalogLineage(revision.kind, revision.revision_hash)
     if _record_publication(connection, revision) is None:
         return CatalogAdmissionUnpublished(revision.revision_hash)
@@ -448,7 +457,7 @@ def _found_lineage(
     return CatalogLineageFounded(lineage, revision, display_name)
 
 
-def _admit_member(
+def admit_member_in(
     connection: sa.Connection,
     lineage_id: CatalogLineageId,
     revision: PublishedRevision,
@@ -456,6 +465,8 @@ def _admit_member(
     actor: CatalogActor,
     activated_at: CatalogActivatedAt,
 ) -> AdmitCatalogMemberResult:
+    """Join this revision to a standing lineage, on the caller's transaction."""
+
     record = _lineage_record(connection, lineage_id)
     if record is None:
         return CatalogAdmissionLineageMissing(lineage_id)
@@ -848,7 +859,7 @@ class DbosCatalogStore:
             return CatalogLineageIdMismatch(claimed_lineage_id, lineage.lineage_id)
         try:
             with canonical_write_transaction(self._engine) as connection:
-                return _found_lineage(
+                return found_lineage_in(
                     connection, revision, display_name, actor, activated_at
                 )
         except (OperationalError, PoolTimeoutError):
@@ -866,7 +877,7 @@ class DbosCatalogStore:
     ) -> AdmitCatalogMemberResult:
         try:
             with canonical_write_transaction(self._engine) as connection:
-                return _admit_member(
+                return admit_member_in(
                     connection, lineage_id, revision, display_name, actor, activated_at
                 )
         except (OperationalError, PoolTimeoutError):
@@ -884,14 +895,14 @@ class DbosCatalogStore:
         published = PublishedRevision(RevisionKind.WORKFLOW, revision.document)
         try:
             with canonical_write_transaction(self._engine) as connection:
-                _persist_workflow_publication(connection, revision)
+                persist_workflow_publication(connection, revision)
                 holder = _name_holder(connection, RevisionKind.WORKFLOW, display_name)
                 admission = (
-                    _found_lineage(
+                    found_lineage_in(
                         connection, published, display_name, actor, activated_at
                     )
                     if holder is None
-                    else _admit_member(
+                    else admit_member_in(
                         connection,
                         holder,
                         published,

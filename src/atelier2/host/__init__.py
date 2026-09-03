@@ -70,6 +70,10 @@ from atelier2.contracts.host_configuration import (
     SourceReference,
 )
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
+from atelier2.host.definition_source_command import (
+    add_definition_source_parser,
+    execute_definition_source,
+)
 from atelier2.host.mcp_command import execute_mcp
 from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.provider_canary import (
@@ -259,6 +263,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _migrate(parsed)
     if parsed.command == "connect":
         return _connect(parsed)
+    if parsed.command == "definition-source":
+        return execute_definition_source(parsed)
     if parsed.command == "mcp":
         return execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer)
     if parsed.command == "provider-canary":
@@ -1008,6 +1014,7 @@ def _argument_parser() -> argparse.ArgumentParser:
         required=True,
         help="the operator accountable for this connect",
     )
+    add_definition_source_parser(commands)
     resolve_parser = commands.add_parser(
         "resolve",
         help="ask a served Atelier which revision a workflow name holds",
