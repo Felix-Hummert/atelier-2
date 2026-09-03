@@ -130,6 +130,7 @@ function startedRun(): RunV3 {
     run_id: "run-order",
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
+    workflow_name: "order material",
     agent_binding_set_hash: "c".repeat(64),
     run_configuration_revision_hash: "d".repeat(64),
     agent_bindings: [{

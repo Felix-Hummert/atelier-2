@@ -302,6 +302,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
       run_id: runId,
       public_run_reference: publicRunReference,
       workflow_revision_hash: workflowRevisionHash,
+      workflow_name: workflowName,
       agent_binding_set_hash: responseHash,
       run_configuration_revision_hash: responseHash,
       agent_bindings: [{
@@ -906,6 +907,7 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
       run_id: runId,
       public_run_reference: publicRunReference,
       workflow_revision_hash: workflowRevisionHash,
+      workflow_name: workflowName,
       agent_binding_set_hash: responseHash,
       run_configuration_revision_hash: responseHash,
       agent_bindings: [{

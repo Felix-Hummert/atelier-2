@@ -26,6 +26,7 @@ from atelier2.api.references import (
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
+    MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS,
     PROVIDER_PROBE_PROBLEM_CODE_PATTERN,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
@@ -1361,6 +1362,47 @@ class RunForkSuccessorResource(ApiModel):
     fork_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class RunTerminalAnswerValueResource(ApiModel):
+    """The terminal node's own accepted answer, bounded for a listed run row.
+
+    Not `NodeAnswerResource`: that one stays unbounded because a single node
+    detail read has no byte bound shared across every answer-bearing node
+    kind (#238). This resource is served on every listed and read V3 run
+    instead (#1045).
+    """
+
+    kind: Literal["value"]
+    value_base64: str = Field(max_length=MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS)
+    value_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class RunTerminalAnswerOmissionReasonName(StrEnum):
+    """Why a run's own terminal answer is not the value this row carries."""
+
+    TOO_LARGE = "too_large"
+
+
+class RunTerminalAnswerOmittedResource(ApiModel):
+    """A terminal node did write an answer, but not the value on this row (#1045).
+
+    A bare `null` here would read the same as a node that wrote nothing at
+    all -- two different facts a reader could not tell apart. `reason` names
+    which rule omitted it; `maximum_bytes` is the bound that rule enforced,
+    so a reader is told the ceiling rather than left to guess it. The run's
+    own node detail route still reads the value in full, never omitting it.
+    """
+
+    kind: Literal["omitted"]
+    reason: Literal[RunTerminalAnswerOmissionReasonName.TOO_LARGE]
+    maximum_bytes: int = Field(ge=0, le=MAX_SIGNED_INT64)
+
+
+RunTerminalAnswer = Annotated[
+    RunTerminalAnswerValueResource | RunTerminalAnswerOmittedResource,
+    Field(discriminator="kind"),
+]
+
+
 class RunResourceV3(ApiModel):
     """One run as it reads back, ended on the sink its author declared.
 
@@ -1388,16 +1430,21 @@ class RunResourceV3(ApiModel):
     run_id: str = Field(min_length=1)
     public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    workflow_name: str = Field(min_length=1)
+    """The published document's own name (#1045) -- always present.
+
+    A format-3 document always declares a name (`WorkflowGraphV3.name`), so a
+    reader who lists runs learns each row's purpose without a second request
+    per distinct revision hash: History used to ask `getWorkflowRevision`
+    once per hash it had not yet seen (REQ-UIQ-08), and this is that same
+    fact carried on the row that already needs it.
+    """
     agent_binding_set_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     run_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
     orders: tuple[RunOrderResource, ...] = Field(max_length=MAXIMUM_RUN_ORDERS)
-    fork_origin: RunForkOriginResource | None = None
-    fork_successors: tuple[RunForkSuccessorResource, ...] = Field(
-        default=(), max_length=MAXIMUM_RUN_FORK_SUCCESSORS
-    )
     """Every order this run was started with, in the order the store returns them.
 
     A run's purpose is what these were, not a guess parsed back out of one
@@ -1407,6 +1454,38 @@ class RunResourceV3(ApiModel):
     order's own bytes ever reaching this resource (review 25.08.: RunResourceV3
     is served on every listed run, and an order can be a secret or up to an
     artifact's own size).
+    """
+    work_item_reference: str | None = Field(
+        default=None, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    )
+    """The tracker reference one of this run's own orders names (#1045).
+
+    Read from `orders` against the published `work_item` order schema
+    (`WORK_ITEM_ORDER_SCHEMA_REVISION`) -- the same document `orders` above
+    already carries the shape of, never a guess parsed back out of a node's
+    composed job text. `None` where no order satisfies that schema, the
+    honest common case for a run no tracker item started.
+    """
+    fork_origin: RunForkOriginResource | None = None
+    fork_successors: tuple[RunForkSuccessorResource, ...] = Field(
+        default=(), max_length=MAXIMUM_RUN_FORK_SUCCESSORS
+    )
+    answer: RunTerminalAnswer | None = None
+    refusal_output: NodeRefusalOutputResource | None = None
+    """What the terminal node wrote or refused, mutually exclusive (#1045).
+
+    Both are read from `current_node_id` at `current_node_execution_id` --
+    the node this run ended on -- and both are `None` on a run that has not
+    ended, exactly where `terminal_hash` is also `None`. `answer` is `None`
+    only where the node wrote no answer at all; a node that did write one but
+    whose value is over the list row's own bound answers
+    `RunTerminalAnswerOmittedResource` instead of a bare `None` -- an
+    omission is a different fact from an absence, and the two must not read
+    the same. `refusal_output` is the already-redacted schema refusal
+    `NodeDetail` itself carries (#664), served here unbounded-in-name only
+    because its own field bound already proves every value fits. History
+    used to ask `getNodeDetail` once per row for exactly these two facts
+    (REQ-UIQ-08); this is that fact carried on the row instead.
     """
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal[
@@ -1433,6 +1512,12 @@ class RunResourceV3(ApiModel):
             self.terminal_hash is not None
         ):
             raise ValueError("V3 run state and terminal hash disagree")
+        if self.terminal_hash is None and (
+            self.answer is not None or self.refusal_output is not None
+        ):
+            raise ValueError("a run names a terminal answer or refusal only once ended")
+        if self.answer is not None and self.refusal_output is not None:
+            raise ValueError("a run names a terminal answer or refusal, never both")
         return self
 
 

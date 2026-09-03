@@ -350,6 +350,7 @@ describe("the workbench conductor conversation", () => {
     return {
       workflow_format_version: 3,
       run_id: "workbench/conductor-conversation",
+      workflow_name: "conductor conversation",
       public_run_reference: conductorPublicRunReference,
       workflow_revision_hash: conductorRevisionHash,
       agent_binding_set_hash: "5".repeat(64),
@@ -964,6 +965,7 @@ describe("the workbench is the room the workshop opens on", () => {
       run_id: "v3/decide",
       public_run_reference: "run1.YQ",
       workflow_revision_hash: waitingDecisionRevisionHash,
+      workflow_name: "decide",
       agent_binding_set_hash: "b".repeat(64),
       run_configuration_revision_hash: "c".repeat(64),
       agent_bindings: [],

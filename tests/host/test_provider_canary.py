@@ -225,6 +225,7 @@ def run_resource(run_id: str, workflow_hash: str, state: str) -> RunResourceV3:
             "run_id": run_id,
             "public_run_reference": PUBLIC_RUN_REFERENCE,
             "workflow_revision_hash": workflow_hash,
+            "workflow_name": "provider canary probe",
             "agent_binding_set_hash": "1" * 64,
             "run_configuration_revision_hash": "2" * 64,
             "agent_bindings": (),
