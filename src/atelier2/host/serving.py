@@ -1237,7 +1237,13 @@ def _close_runtime_at_shutdown(
                 async with inner(app):
                     yield
         finally:
-            await asyncio.to_thread(runtime.close)
+            try:
+                await asyncio.to_thread(runtime.close)
+            except BaseException:
+                logging.getLogger("atelier2").exception(
+                    "atelier2 serve runtime failed to close"
+                )
+                raise
             logging.getLogger("atelier2").info("atelier2 serve runtime closed")
 
     return lifespan
@@ -1377,11 +1383,12 @@ def compose_application(
 # docs/OPERATIONS.md's serve/redeploy section) before SIGKILL (issue #1117).
 # This is the grace an open connection gets before uvicorn drops its sockets
 # anyway, kept well under TimeoutStopSec so a stop always finishes on its own.
-# The e2e harness owns a sibling constant for the same shape of problem
-# (`RESTART_CONNECTION_GRACE_SECONDS` in tests/e2e/serve_cockpit.py) but not
-# the same value: that one only has to outrun one test assertion, this one
-# has to outrun a redeploy an operator is watching, so the two stay
-# separately owned.
+# 10s is also long enough for the longest legitimate in-flight request this
+# process serves: the project-source connect POST, which reaches out to a
+# remote (GitHub) before it can answer. Cutting that connect mid-flight is
+# acceptable because the redeploy that triggers this grace already checked
+# for running runs before it started, and a cut connect is simply retried by
+# the operator.
 SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS = 10
 
 
@@ -1411,4 +1418,10 @@ def serve(settings: HostSettings) -> None:
         # default disposition restored (`capture_signals()` in
         # `uvicorn.server`), which ends this process before any of *this*
         # function's own code past `.run()` executes.
-        runtime.close()
+        try:
+            runtime.close()
+        except BaseException:
+            logging.getLogger("atelier2").exception(
+                "atelier2 serve runtime failed to close"
+            )
+            raise

@@ -675,7 +675,11 @@ Workbench tab's event stream to `SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS`
 (`src/atelier2/host/serving.py`, 10 seconds), comfortably under that default so
 a stop always finishes clean and runs `runtime.close()` regardless of how many
 tabs are open. An operator who ever sets `TimeoutStopSec` on the unit must keep
-it above that grace.
+it above that grace. 10 seconds is also long enough to let the longest
+legitimate in-flight request -- the project-source connect POST reaching out
+to a remote such as GitHub -- finish; cutting it mid-flight is acceptable
+because the redeploy that triggers this grace already checked for running
+runs before it started, and a cut connect is simply retried by the operator.
 
 ### Auto-redeploy watcher
 
