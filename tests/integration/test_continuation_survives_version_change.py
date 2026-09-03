@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 import sqlalchemy as sa
@@ -94,10 +95,6 @@ WAIT_NODE = "approve"
 ANSWER = b'"accepted"'
 TIMEOUT_SECONDS = 12
 POLL_SECONDS = 0.025
-_EXECUTE_WORKFLOW_BY_ID_ATTR = "execute_workflow_by_id"
-"""Named in a variable, not a literal, so neither ruff nor pyright folds the
-`getattr`/`setattr` monkeypatch of this DBOS-internal name back into a static
-attribute access -- see `hold_pending_continuation`."""
 
 WAIT_DOCUMENT = b"""format_version: 3
 name: An accepted wait completes
@@ -212,6 +209,9 @@ def stage_in_child(
     return process
 
 
+_EXECUTE_WORKFLOW_BY_ID_TARGET = "dbos._queue.execute_workflow_by_id"
+
+
 def hold_pending_continuation(
     root: Path, workflow_id: str, marker: Path, launch: Callable[[], None]
 ) -> None:
@@ -220,18 +220,16 @@ def hold_pending_continuation(
     `dbos._queue` binds `execute_workflow_by_id` into its own module namespace
     from `dbos._core` at import time; that binding, not the defining module, is
     what the queue's dequeue path calls, so the barrier must patch it there.
-    Neither module declares the name in `__all__` -- it is DBOS-internal, not a
-    contract this repository owns -- so the patch reaches it through the
-    dynamic-attribute-name form of `getattr`/`setattr` (the name lives in a
-    variable, not a literal) rather than a static attribute access that both a
-    type checker and a linter would read as a claim on public API.
+    `unittest.mock.patch` takes that dotted path as a string and resolves it
+    itself, so the barrier never writes a static attribute expression on the
+    private `dbos._queue` module for a linter or type checker to read as a
+    claim on public API.
     """
 
-    from dbos import _queue
-
-    execute_workflow_by_id: Callable[[DBOS, str, bool, bool], WorkflowHandle[Any]] = (
-        getattr(_queue, _EXECUTE_WORKFLOW_BY_ID_ATTR)
-    )
+    execute_workflow_by_id: Callable[[DBOS, str, bool, bool], WorkflowHandle[Any]]
+    execute_workflow_by_id, _ = mock.patch(
+        _EXECUTE_WORKFLOW_BY_ID_TARGET
+    ).get_original()
 
     def held(
         dbos: DBOS,
@@ -249,7 +247,7 @@ def hold_pending_continuation(
         while True:
             time.sleep(1)
 
-    setattr(_queue, _EXECUTE_WORKFLOW_BY_ID_ATTR, held)
+    mock.patch(_EXECUTE_WORKFLOW_BY_ID_TARGET, held).start()
     launch()
     while True:
         time.sleep(1)
@@ -299,6 +297,64 @@ def stage_answer(root: Path, barrier: str, marker: Path) -> None:
         marker=marker,
         launch=lease.launch,
     )
+
+
+def duplicate_workflow_status_row(
+    engine: sa.Engine, source_workflow_id: str, target_workflow_id: str
+) -> None:
+    """Clone a real `workflow_status` row under a new id for decoy scenario data.
+
+    DBOS owns that table's full column set; cloning a genuinely-enqueued row
+    rather than hand-building one keeps every DBOS-owned field it also wrote
+    (executor id, class name, and the rest) internally consistent.
+    """
+
+    workflow_status = sa.Table("workflow_status", sa.MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        source = dict(
+            connection.execute(
+                sa.select(workflow_status).where(
+                    workflow_status.c.workflow_uuid == source_workflow_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        source.update(workflow_uuid=target_workflow_id)
+        connection.execute(workflow_status.insert().values(**source))
+
+
+def add_noncurrent_answer_decoy(engine: sa.Engine, real_answer_workflow_id: str) -> str:
+    """Scenario data for a stale node's answer; it must not retag current work.
+
+    `DbosWaitAnswerer.submit_result` refuses an answer for any node but the
+    run's real current one, so this decoy -- unlike the reconciliation decoy
+    below -- has no real door to walk through; it is built directly to prove
+    `_retag_stranded_answer`'s own node-identity guard, not the answer door's.
+    """
+
+    decoy_node_execution = NodeExecutionId.for_node(
+        RUN, WorkflowRevision(WAIT_DOCUMENT).revision_hash, "non-current-node"
+    )
+    decoy_workflow_id = answer_workflow_id_for(decoy_node_execution)
+    duplicate_workflow_status_row(engine, real_answer_workflow_id, decoy_workflow_id)
+    with engine.begin() as connection:
+        source = dict(
+            connection.execute(
+                sa.select(wait_answers).where(
+                    wait_answers.c.answer_workflow_id == real_answer_workflow_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        source.update(
+            node_id="non-current-node",
+            node_execution_id=decoy_node_execution.value,
+            answer_workflow_id=decoy_workflow_id,
+        )
+        connection.execute(wait_answers.insert().values(**source))
+    return decoy_workflow_id
 
 
 def reconciliation_command(intent: EffectIntent, command_id: str) -> ReconcileCommand:
@@ -413,11 +469,21 @@ def test_an_accepted_answer_continues_once_after_a_version_change(
     staged = stage_in_child(tmp_path, "answer", barrier)
     stop_child(staged)
     workflow_id = answer_workflow_id_for(answer_request().expected_node_execution_id)
+    decoy_runtime = wait_runtime(tmp_path, VERSION_X)
+    try:
+        decoy_workflow_id = add_noncurrent_answer_decoy(
+            decoy_runtime.engine, workflow_id
+        )
+    finally:
+        decoy_runtime.close()
     second = wait_runtime(tmp_path, VERSION_Y)
     try:
         second.launch()
         _wait_for_run(second, RunState.COMPLETED)
         wait_for_status_row(tmp_path, workflow_id, ("SUCCESS", VERSION_Y))
+        decoy_status, decoy_version = status_row(tmp_path, decoy_workflow_id)
+        assert decoy_version == VERSION_X
+        assert decoy_status in {"ENQUEUED", "PENDING"}
         with second.engine.connect() as connection:
             assert (
                 connection.scalar(
@@ -439,7 +505,14 @@ def test_an_accepted_answer_continues_once_after_a_version_change(
                 )
                 == 1
             )
-            assert connection.scalar(sa.select(wait_answers.c.state)) == "APPLIED"
+            assert (
+                connection.scalar(
+                    sa.select(wait_answers.c.state).where(
+                        wait_answers.c.answer_workflow_id == workflow_id
+                    )
+                )
+                == "APPLIED"
+            )
         replay = submit_answer(
             answer_request(), DbosWaitAnswerer(second.engine, VERSION_Y)
         )

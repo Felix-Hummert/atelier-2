@@ -10,6 +10,7 @@ enqueued it.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -62,6 +63,8 @@ from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
+_LOG = logging.getLogger("atelier2")
+
 _UNCONTINUABLE_ATTEMPT_STATES = (
     AgentAttemptState.FAILED,
     AgentAttemptState.INTERRUPTED,
@@ -103,9 +106,14 @@ def retag_stranded_continuations(engine: Engine, application_version: str) -> No
     ownership is repeated under that candidate's canonical write transaction,
     where the version compare-and-swap is the sole write to DBOS state.
 
-    The deployment/caller has already stopped the old runtime: this guard can
-    refuse a row current launch already owns, but DBOS keeps another process's
-    active set in memory and this store cannot observe it.
+    Whether the retiring version's own process is still live is not observable
+    here: DBOS keeps its active workflow set in that process's memory, and
+    `workflow_status` names only a version, never a process. Liveness of the
+    retiring version is therefore a precondition this sweep depends on rather
+    than checks: `scripts/serve_live_update.sh` stops `atelier2-serve.service`
+    synchronously, and only then runs the launch that calls here, before
+    starting the new one -- the invariant `docs/decisions/0001-durable-runtime.md`
+    names.
     """
 
     if not sa.inspect(engine).has_table("workflow_status"):
@@ -119,10 +127,44 @@ def retag_stranded_continuations(engine: Engine, application_version: str) -> No
         )
     for workflow_id in answer_candidates:
         with canonical_write_transaction(engine) as connection:
-            _retag_stranded_answer(connection, workflow_id, application_version)
-    for workflow_id in reconciliation_candidates:
+            retagged_from = _retag_stranded_answer(
+                connection, workflow_id, application_version
+            )
+        _log_retagged_continuation(
+            "answer", workflow_id, retagged_from, application_version
+        )
+    for workflow_id, command_id in reconciliation_candidates:
         with canonical_write_transaction(engine) as connection:
-            _retag_stranded_reconciliation(connection, workflow_id, application_version)
+            retagged_from = _retag_stranded_reconciliation(
+                connection, workflow_id, command_id, application_version
+            )
+        _log_retagged_continuation(
+            "reconciliation", workflow_id, retagged_from, application_version
+        )
+
+
+def _log_retagged_continuation(
+    family: str,
+    workflow_id: str,
+    retagged_from: str | None,
+    application_version: str,
+) -> None:
+    if retagged_from is None:
+        return
+    _LOG.info(
+        "Retagged stranded %s continuation %s from application version %s to %s.",
+        family,
+        workflow_id,
+        retagged_from,
+        application_version,
+        extra={
+            "event": "stranded_continuation_retagged",
+            "family": family,
+            "workflow_id": workflow_id,
+            "old_application_version": retagged_from,
+            "new_application_version": application_version,
+        },
+    )
 
 
 def _stranded_answer_workflow_ids(
@@ -150,7 +192,7 @@ def _stranded_answer_workflow_ids(
 
 def _stranded_reconciliation_workflow_ids(
     connection: Connection, application_version: str
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ReconcileCommandId], ...]:
     rows = connection.execute(
         sa.select(reconcile_commands.c.command_id)
         .select_from(
@@ -165,9 +207,10 @@ def _stranded_reconciliation_workflow_ids(
             reconcile_commands.c.state == ReconcileCommandState.PENDING.value,
         )
     )
-    candidates: list[str] = []
+    candidates: list[tuple[str, ReconcileCommandId]] = []
     for (command_id,) in rows:
-        workflow_id = reconcile_workflow_id_for(ReconcileCommandId(str(command_id)))
+        typed_command_id = ReconcileCommandId(str(command_id))
+        workflow_id = reconcile_workflow_id_for(typed_command_id)
         status = connection.execute(
             sa.select(
                 _dbos_workflow_status.c.application_version,
@@ -179,13 +222,13 @@ def _stranded_reconciliation_workflow_ids(
             and str(status.application_version) != application_version
             and str(status.status) in _RETAGGABLE_WORKFLOW_STATUSES
         ):
-            candidates.append(workflow_id)
+            candidates.append((workflow_id, typed_command_id))
     return tuple(candidates)
 
 
 def _retag_stranded_answer(
     connection: Connection, workflow_id: str, application_version: str
-) -> bool:
+) -> str | None:
     record = (
         connection.execute(
             sa.select(
@@ -212,7 +255,7 @@ def _retag_stranded_answer(
         .one_or_none()
     )
     if record is None or str(record["state"]) != RunState.WAITING_INPUT.value:
-        return False
+        return None
     run_id = RunId(str(record["run_id"]))
     revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
     execution = NodeExecutionId.for_node(
@@ -232,14 +275,17 @@ def _retag_stranded_answer(
         or str(record["answer_workflow_id"]) != workflow_id
         or answer_workflow_id_for(execution) != workflow_id
     ):
-        return False
+        return None
     return _retag_workflow_status(connection, workflow_id, application_version)
 
 
 def _retag_stranded_reconciliation(
-    connection: Connection, workflow_id: str, application_version: str
-) -> bool:
-    record = (
+    connection: Connection,
+    workflow_id: str,
+    command_id: ReconcileCommandId,
+    application_version: str,
+) -> str | None:
+    candidate = (
         connection.execute(
             sa.select(
                 runs.c.run_id,
@@ -253,7 +299,6 @@ def _retag_stranded_reconciliation(
                 effect_intents.c.state.label("intent_state"),
                 effect_intents.c.state_version.label("intent_state_version"),
                 effect_intents.c.reconciliation_owner_command_id,
-                reconcile_commands.c.command_id,
                 reconcile_commands.c.logical_key.label("command_logical_key"),
                 reconcile_commands.c.expected_intent_version,
                 reconcile_commands.c.state.label("command_state"),
@@ -267,49 +312,54 @@ def _retag_stranded_reconciliation(
                     == effect_intents.c.reconciliation_owner_command_id,
                 )
             )
-            .where(
-                reconcile_commands.c.command_id
-                == effect_intents.c.reconciliation_owner_command_id
-            )
+            .where(reconcile_commands.c.command_id == command_id.value)
         )
         .mappings()
-        .all()
+        .one_or_none()
     )
-    for candidate in record:
-        command_id = ReconcileCommandId(str(candidate["command_id"]))
-        if reconcile_workflow_id_for(command_id) != workflow_id:
-            continue
-        if str(candidate["state"]) != RunState.WAITING_RECONCILIATION.value:
-            continue
-        run_id = RunId(str(candidate["run_id"]))
-        revision_hash = WorkflowRevisionHash(str(candidate["revision_hash"]))
-        logical_key = logical_effect_key_for_node(
-            run_id,
-            revision_hash,
-            str(candidate["current_node_id"]),
-            int(candidate["current_round_ordinal"]),
-        )
-        if (
-            str(candidate["logical_key"]) != logical_key.value
-            or str(candidate["intent_run_id"]) != run_id.value
-            or str(candidate["intent_revision_hash"]) != revision_hash.value
-            or str(candidate["intent_state"]) != EffectIntentState.RECONCILING.value
-            or int(candidate["intent_state_version"])
-            != EFFECT_INTENT_VERSION_RECONCILING.value
-            or str(candidate["reconciliation_owner_command_id"]) != command_id.value
-            or str(candidate["command_logical_key"]) != logical_key.value
-            or int(candidate["expected_intent_version"])
-            != EFFECT_INTENT_VERSION_WAITING.value
-            or str(candidate["command_state"]) != ReconcileCommandState.PENDING.value
-        ):
-            continue
-        return _retag_workflow_status(connection, workflow_id, application_version)
-    return False
+    if candidate is None or reconcile_workflow_id_for(command_id) != workflow_id:
+        return None
+    if str(candidate["state"]) != RunState.WAITING_RECONCILIATION.value:
+        return None
+    run_id = RunId(str(candidate["run_id"]))
+    revision_hash = WorkflowRevisionHash(str(candidate["revision_hash"]))
+    logical_key = logical_effect_key_for_node(
+        run_id,
+        revision_hash,
+        str(candidate["current_node_id"]),
+        int(candidate["current_round_ordinal"]),
+    )
+    if (
+        str(candidate["logical_key"]) != logical_key.value
+        or str(candidate["intent_run_id"]) != run_id.value
+        or str(candidate["intent_revision_hash"]) != revision_hash.value
+        or str(candidate["intent_state"]) != EffectIntentState.RECONCILING.value
+        or int(candidate["intent_state_version"])
+        != EFFECT_INTENT_VERSION_RECONCILING.value
+        or str(candidate["reconciliation_owner_command_id"]) != command_id.value
+        or str(candidate["command_logical_key"]) != logical_key.value
+        or int(candidate["expected_intent_version"])
+        != EFFECT_INTENT_VERSION_WAITING.value
+        or str(candidate["command_state"]) != ReconcileCommandState.PENDING.value
+    ):
+        return None
+    return _retag_workflow_status(connection, workflow_id, application_version)
 
 
 def _retag_workflow_status(
     connection: Connection, workflow_id: str, application_version: str
-) -> bool:
+) -> str | None:
+    """Conditionally move one row's `application_version`, or refuse and say why.
+
+    Liveness of the row's own retiring version is not checked here: DBOS's
+    active workflow set lives in the process that enqueued the row, and
+    `workflow_status` only ever names a version, never a process, so a query
+    filtered on the *launching* version's `application_version` can never
+    match a row still tagged with a *different*, retiring one -- it would
+    always read empty and only look like a guard. That liveness is instead an
+    external precondition this sweep depends on, documented on
+    `retag_stranded_continuations`.
+    """
     workflow_status = (
         connection.execute(
             sa.select(
@@ -324,9 +374,8 @@ def _retag_workflow_status(
         workflow_status is None
         or str(workflow_status["application_version"]) == application_version
         or str(workflow_status["status"]) not in _RETAGGABLE_WORKFLOW_STATUSES
-        or live_driver_workflow_ids(connection, (workflow_id,), application_version)
     ):
-        return False
+        return None
     observed_version = str(workflow_status["application_version"])
     observed_status = str(workflow_status["status"])
     updated = connection.execute(
@@ -339,7 +388,7 @@ def _retag_workflow_status(
         )
         .values(application_version=application_version)
     )
-    return updated.rowcount == 1
+    return observed_version if updated.rowcount == 1 else None
 
 
 def live_driver_workflow_ids(

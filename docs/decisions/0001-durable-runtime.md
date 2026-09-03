@@ -68,6 +68,16 @@ already use, never a blind rewrite. This is why a continuation's payload must
 stay readable across `application_version`s: the row a later version resumes
 was minted, and partly executed, by an earlier one.
 
+Whether the retiring version's own process is still driving a workflow it
+still owes a step to is not observable from `workflow_status`, which names
+only a version, never a live process; the retag therefore does not attempt to
+check it. The invariant it depends on instead is that **the retiring runtime
+is stopped before the new one launches**: `scripts/serve_live_update.sh`
+stops `atelier2-serve.service` synchronously, and only that stopped state
+makes the retag's version compare-and-swap safe, because DBOS's own active
+workflow set otherwise lives only in that stopped process's memory, where
+this store cannot see it.
+
 The format-version-1 Agent execution path — an injected exact-output executor
 whose successful result committed one immutable `AgentReceipt`, the
 `AGENT_COMPLETED` event, and the configured successor transition in one
