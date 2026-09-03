@@ -81,6 +81,9 @@ Path(os.environ["ATELIER2_TEST_SERVED_COMMIT_FILE"]).write_text(
     target_commit, encoding="utf-8"
 )
 print(f"serve live update: now serves {target_commit}")
+if os.environ.get("ATELIER2_TEST_UPDATE_INTAKE_REFUSED") == "1":
+    print("serve live update: WORKFLOW INTAKE REFUSED", file=sys.stderr)
+    raise SystemExit(3)
 """,
     )
 
@@ -663,6 +666,29 @@ def test_a_failed_loopback_update_counts_without_calling_a_container_command(
     )
     assert "container_live" not in AUTO_REDEPLOY.read_text(encoding="utf-8")
     assert "deployed.sha" not in AUTO_REDEPLOY.read_text(encoding="utf-8")
+
+
+def test_a_refused_workflow_intake_is_a_warning_not_a_failure_tick(
+    tmp_path: Path,
+) -> None:
+    harness, _, target_commit = prepare_pending_deploy(tmp_path)
+    admin = harness.git_admin_directory
+    (admin / "auto-redeploy.failures").write_text("2", encoding="utf-8")
+
+    completed = harness.run(ATELIER2_TEST_UPDATE_INTAKE_REFUSED="1")
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", target_commit]
+    ]
+    assert harness.served_commit_file.read_text(encoding="utf-8") == target_commit
+    assert harness.state("auto-redeploy.failures") == 0
+    assert "user.warning" in harness.priorities()
+    assert any(
+        f"main now served at {target_commit}; workflow intake refused"
+        in " ".join(invocation)
+        for invocation in harness.invocations("logger")
+    )
 
 
 def test_lock_contention_skips_the_tick_before_fetching_or_polling(
