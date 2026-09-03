@@ -840,7 +840,7 @@ def test_openapi_offers_the_capability_and_demands_it_back() -> None:
         assert echoed["additionalProperties"] is False
 
 
-def test_openapi_list_item_names_the_closed_startability_pair() -> None:
+def test_openapi_list_item_names_the_closed_startability_reasons() -> None:
     schema = served_app().openapi()
     listing = schema["paths"][API_PREFIX + "/agent-configuration-revisions"]["get"]
     page = _referenced_schema(schema, listing["responses"]["200"]["content"])
@@ -866,6 +866,7 @@ def test_openapi_list_item_names_the_closed_startability_pair() -> None:
             "type": "string",
             "enum": [
                 "agent-executor-binding-unavailable",
+                "model-not-registered",
                 "provider-probe-receipt-missing",
             ],
         },
