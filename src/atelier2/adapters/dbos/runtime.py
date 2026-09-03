@@ -45,6 +45,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.uncontinuable_runs import (
     DbosUncontinuableRunStore,
     live_driver_workflow_ids,
+    retag_stranded_continuations,
 )
 from atelier2.adapters.dbos.workflow import (
     AgentExecutorMap,
@@ -1248,7 +1249,7 @@ class _DbosProcessOwner:
         with self._lock:
             if bound.launched:
                 return
-            self._start(bound)
+            self._start(bound, retag_continuations=True)
             bound.launched = True
             self._converge_driverless_attempts(bound)
             self._converge_driverless_effect_intents(bound)
@@ -1387,12 +1388,16 @@ class _DbosProcessOwner:
         with self._lock:
             if bound.storage_ready:
                 return
-            self._start(bound)
+            self._start(bound, retag_continuations=False)
             DBOS.destroy()
 
     @staticmethod
-    def _start(bound: _BoundRuntime) -> None:
+    def _start(bound: _BoundRuntime, *, retag_continuations: bool) -> None:
         DBOS(config=_dbos_config(bound.settings, bound.engine))
+        if retag_continuations:
+            retag_stranded_continuations(
+                bound.engine, bound.settings.application_version
+            )
         DBOS.launch()
         _register_queues()
         bound.storage_ready = True
