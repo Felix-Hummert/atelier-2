@@ -1,11 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import type { RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import type { RunV3 } from "../../src/api/client";
 import {
   newestActivityFirst,
   newestReadOfEachRun,
-  runActivityAt,
-  workflowNamesOf
+  runActivityAt
 } from "../../src/lib/runList";
 import {
   notCancellableBlock,
@@ -18,6 +17,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
   return {
     workflow_format_version: 3,
     run_id: "v3/two-agents",
+    workflow_name: "Two agents in a line",
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
     agent_binding_set_hash: "b".repeat(64),
@@ -35,37 +35,6 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     ended_at: null,
     ...changes,
     current_node_execution_id: changes.current_node_execution_id ?? revisionHash
-  };
-}
-
-function v3Revision(
-  name: string,
-  hash: string = revisionHash
-): WorkflowRevisionDetail {
-  return {
-    workflow_revision_hash: hash,
-    document_base64: "YQ==",
-    graph: {
-      workflow_format_version: 3,
-      executable: true,
-      not_executable_reason: null,
-      node_count: 1,
-      agent_roles: ["builder"],
-      orders: [],
-      wait_answer_schemas: [],
-      node_previews: [
-        {
-          id: "review",
-          kind: "agent",
-          role: "builder",
-          instruction_start: "Do the one thing.",
-          depends_on: []
-        }
-      ],
-      loops: [],
-      name,
-      description: null
-    }
   };
 }
 
@@ -137,81 +106,6 @@ describe("the project run list ranks by last known activity", () => {
     expect(
       newestActivityFirst([firstUntimed, dated, secondUntimed]).map((run) => run.run_id)
     ).toEqual(["dated", "first", "second"]);
-  });
-});
-
-describe("the project run list reads published workflow names", () => {
-  it("maps a V3 revision hash to the name the published graph already answers", async () => {
-    const readRevision = vi.fn(async () => v3Revision("Two agents in a line"));
-    const names = await workflowNamesOf(
-      [
-        v3Run(),
-        v3Run({ run_id: "same revision", public_run_reference: "run1.c2FtZQ" })
-      ],
-      readRevision
-    );
-
-    expect(names.get(revisionHash)).toBe("Two agents in a line");
-    expect(readRevision).toHaveBeenCalledTimes(1);
-  });
-
-  it("refuses the whole name set when one of several revisions cannot be read", async () => {
-    const missingHash = "d".repeat(64);
-    const readRevision = vi.fn(async (hash: string) => {
-      if (hash === missingHash) throw new Error("revision missing");
-      return v3Revision("Two agents in a line", hash);
-    });
-
-    await expect(
-      workflowNamesOf(
-        [
-          v3Run(),
-          v3Run({
-            run_id: "missing revision",
-            public_run_reference: "run1.bWlzc2luZw",
-            workflow_revision_hash: missingHash
-          })
-        ],
-        readRevision
-      )
-    ).rejects.toThrow("revision missing");
-
-    expect(readRevision).toHaveBeenCalledTimes(2);
-  });
-
-  it("refuses a non-V3 revision as the name of a V3 run", async () => {
-    // No document may declare a retired format anymore (#901 slice 5), but the
-    // durable layer could still theoretically answer a corrupted row; the
-    // cast stands in for that -- the type system itself now refuses this shape.
-    const nonV3Revision = {
-      workflow_revision_hash: revisionHash,
-      document_base64: "",
-      graph: {
-        workflow_format_version: 1,
-        start_node_id: "final",
-        nodes: [
-          {
-            type: "subworkflow",
-            node_id: "final",
-            operation: "add",
-            operands: [2, 3],
-            next_node_id: null
-          }
-        ]
-      }
-    } as unknown as WorkflowRevisionDetail;
-    await expect(
-      workflowNamesOf([v3Run()], async () => nonV3Revision)
-    ).rejects.toThrow("a V3 run referenced a workflow revision of another format");
-  });
-
-  it("refuses to file a different revision under the hash a run named", async () => {
-    await expect(
-      workflowNamesOf(
-        [v3Run()],
-        async () => v3Revision("Different revision", "e".repeat(64))
-      )
-    ).rejects.toThrow("a V3 run received a different workflow revision");
   });
 });
 

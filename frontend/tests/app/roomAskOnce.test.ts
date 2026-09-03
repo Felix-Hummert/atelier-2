@@ -5,9 +5,7 @@ import App from "../../src/App.svelte";
 import {
   encodePublicRunReference,
   type CockpitApi,
-  type NodeDetail,
   type RunV3,
-  type WorkflowRevisionDetail,
   type WorkflowRevisionSummary
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
@@ -34,15 +32,17 @@ import { revisionHash, startedRun } from "../support/runV3";
  * sheet, and a createElement overlay are outside what this open
  * counts.
  *
- * Today's History asks getNodeDetail once per row; Catalog asks
- * getRevisionByName once per workflow tile. The sentence names them
- * and does not prove they ask once.
+ * History reads its workflow, work item and terminal result off the
+ * listed run itself (#1045) -- no per-row node detail, no per-hash
+ * revision read. Catalog still asks getRevisionByName once per
+ * workflow tile; the sentence names that and does not prove it asks
+ * once.
  */
 
 const FEWER_ROWS = 2;
 const MORE_ROWS = 5;
 
-const NAMED_RESIDUAL_SURFACES = ["Catalog", "History"] as const;
+const NAMED_RESIDUAL_SURFACES = ["Catalog"] as const;
 
 type Room = "Workbench" | "Catalog" | "History";
 
@@ -129,11 +129,18 @@ function historyRun(index: number): RunV3 {
     workflow_format_version: 3,
     run_id: runId,
     public_run_reference: encodePublicRunReference(runId),
-    workflow_revision_hash: revisionHash,
+    // Each row names its own revision hash (#1045 REVISE O1): a reintroduced
+    // per-hash getWorkflowRevision would then scale with the row count and
+    // this suite's own growth assertions would catch it again.
+    workflow_revision_hash: hexId(index, "1"),
+    workflow_name: "Two agents in a line",
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
     orders: [],
+    work_item_reference: null,
+    answer: { kind: "value", value_base64: btoa('{"answer":"ok"}'), value_hash: "f".repeat(64) },
+    refusal_output: null,
     state_version: 1,
     state: "COMPLETED",
     current_node_id: "final",
@@ -144,44 +151,6 @@ function historyRun(index: number): RunV3 {
     started_at: minutesAgo(38 + index),
     ended_at: minutesAgo(index),
     current_node_execution_id: revisionHash
-  };
-}
-
-function historyRevision(): WorkflowRevisionDetail {
-  return {
-    workflow_revision_hash: revisionHash,
-    document_base64: "",
-    provenance: null,
-    graph: {
-      workflow_format_version: 3,
-      executable: true,
-      not_executable_reason: null,
-      node_count: 1,
-      agent_roles: ["builder"],
-      orders: [],
-      wait_answer_schemas: [],
-      node_previews: [
-        { id: "final", kind: "agent", role: "builder", instruction_start: "Do the one thing.", depends_on: [] }
-      ],
-      loops: [],
-      name: "Two agents in a line",
-      description: null
-    }
-  };
-}
-
-function historyNodeDetail(run: RunV3): NodeDetail {
-  return {
-    run_id: run.run_id,
-    public_run_reference: run.public_run_reference,
-    node_id: "final",
-    state: "succeeded",
-    job_base64: btoa("job"),
-    job_hash: "e".repeat(64),
-    answer: { value_base64: btoa('{"answer":"ok"}'), value_hash: "f".repeat(64) },
-    provenance: null,
-    refusal: null,
-    refusal_output: null
   };
 }
 
@@ -199,18 +168,11 @@ function catalogRevision(index: number): WorkflowRevisionSummary {
 
 function historyApi(rows: number): Partial<CockpitApi> {
   const runs = Array.from({ length: rows }, (_, index) => historyRun(index));
-  const byReference = new Map(runs.map((run) => [run.public_run_reference, run]));
   return {
     listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
       items: state === "COMPLETED" ? runs : [],
       next_after: null
-    })),
-    getWorkflowRevision: vi.fn(async () => historyRevision()),
-    getNodeDetail: vi.fn(async (publicReference: string) => {
-      const run = byReference.get(publicReference);
-      if (run === undefined) throw new Error(`no history run ${publicReference}`);
-      return historyNodeDetail(run);
-    })
+    }))
   };
 }
 
@@ -301,12 +263,11 @@ describe("a surface asks once for what it shows", () => {
     ).toBeNull();
   });
 
-  it("falls on History, which asks a node detail once per row", async () => {
+  it("stays green on History rows, which read their workflow, work item and result off the row itself", async () => {
     const fewer = await measureOpen("History", FEWER_ROWS);
     const more = await measureOpen("History", MORE_ROWS);
-    expect(growthLine(fewer, more)).toBe(
-      `History: ${FEWER_ROWS} rows → ${fewer.requests} requests; ${MORE_ROWS} rows → ${more.requests} requests`
-    );
+    expect(more.requests).toBe(fewer.requests);
+    expect(growthLine(fewer, more)).toBeNull();
   });
 
   it("stays green on Workbench living-shelf rows, which ask the same number twice", async () => {

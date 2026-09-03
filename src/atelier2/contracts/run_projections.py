@@ -227,6 +227,21 @@ class RunProjection:
     fork_origin: RunForkOriginProjection | None = None
     fork_successors: tuple[RunForkSuccessorProjection, ...] = ()
     reused_nodes: tuple[ReusedNodeProjection, ...] = ()
+    answer: NodeAnswer | None = None
+    refusal_output: NodeAnswer | None = None
+    """The terminal node's own accepted answer and schema refusal (#1045).
+
+    Named for `current_node_id` at `current_round_ordinal` -- the same
+    execution `current_node_execution_id` already identifies on the wire --
+    and read only for an ended run (`run.terminal_hash is not None`, #194
+    H1b's own rule for when a run has one at all). A live run carries both
+    `None`: it stands on a node this projection cannot yet call terminal.
+    `answer` is the value that node wrote when it stood still there;
+    `refusal_output` is the schema-refused presentation #664 already
+    redacts. Mutually exclusive by the same disposition `NodeDetail` already
+    reads them from -- `run_resource`'s own reader, not a rule this
+    dataclass enforces.
+    """
 
     @property
     def current_agent_attempt(self) -> AgentAttemptProjection | None:
