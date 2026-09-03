@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { CockpitApi, DefectiveRunRow, RunV3 } from "../api/client";
+  import type { CockpitApi, RunListRow } from "../api/client";
   import DefectiveRunRowItem from "../components/DefectiveRunRow.svelte";
   import LoadingState from "../components/LoadingState.svelte";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
@@ -23,12 +23,13 @@
     confirmRead,
     failRead,
     retainedRead,
+    updateConfirmed,
     type RetainedRead
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
   import { standingWords } from "../lib/runState";
   import { splitRunListRows } from "../lib/runList";
-  import { readEveryRun } from "../lib/runPages";
+  import { readEveryRun, type RunReading } from "../lib/runPages";
   import type { TrackerSourceConnection } from "../lib/trackerItem";
   import { ageLabel, exactLocal } from "../lib/when";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
@@ -39,17 +40,22 @@
 
   const catalogPath = WORKSHOP_DESTINATION.catalog.path;
 
-  interface HistorySnapshot {
-    runs: RunV3[];
-    /** Runs whose own projection failed (#1042): read apart, shown apart. */
-    defective: DefectiveRunRow[];
+  /** History's two durable lists, COMPLETED and FAILED, read and retried apart. */
+  type HistoryList = "completed" | "failed";
+
+  interface HistoryListState {
+    rows: RunListRow[];
     /**
-     * The cursor a page read stopped at, once per list that could not finish
-     * (#1042 review, A2): a partial answer always beats none, so a read that
-     * stopped early names where rather than discarding every page it already
-     * loaded.
+     * Set only while this list's own read stopped partway (#1042 review, A2;
+     * #1109 delta MEDIUM): Retry resumes from here, on this list alone,
+     * instead of discarding both lists' confirmed rows to start over.
      */
-    stoppedAtCursors: string[];
+    stoppedAtCursor: string | null;
+  }
+
+  interface HistorySnapshot {
+    completed: HistoryListState;
+    failed: HistoryListState;
   }
 
   type HistoryReadFailure = { kind: "unavailable"; title: string };
@@ -66,6 +72,17 @@
     return onConnectionRecovered(() => { void load(); });
   });
 
+  function listOf(list: HistoryList): (after?: string) => ReturnType<CockpitApi["listRuns"]> {
+    return (after) => cockpitApi.listRuns(after, list === "completed" ? "COMPLETED" : "FAILED");
+  }
+
+  function listState(reading: RunReading): HistoryListState {
+    return {
+      rows: reading.runs,
+      stoppedAtCursor: reading.complete ? null : reading.cursor
+    };
+  }
+
   /**
    * Every page History could read, shown as such (#1042 review, A2).
    *
@@ -81,26 +98,39 @@
     try {
       const sourcePromise = loadSource();
       const [completed, failed] = await Promise.all([
-        readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED")),
-        readEveryRun((after) => cockpitApi.listRuns(after, "FAILED"))
+        readEveryRun(listOf("completed")),
+        readEveryRun(listOf("failed"))
       ]);
-      // A run whose own projection failed (#1042) is told apart from the
-      // runs History can read, the same shape and copy the Workbench already
-      // shows it in (DefectiveRunRow.svelte) -- never claimed as a run that
-      // finished cleanly, and never folded into an empty list.
-      const { runs, defective } = splitRunListRows([...completed.runs, ...failed.runs]);
-      const stoppedAtCursors = [completed, failed].flatMap((reading) =>
-        reading.complete ? [] : [reading.cursor]
-      );
       sourceConnection = await sourcePromise;
       if (history.generation !== begun.generation) return;
-      history = confirmRead(history, begun.generation, { runs, defective, stoppedAtCursors });
+      history = confirmRead(history, begun.generation, {
+        completed: listState(completed),
+        failed: listState(failed)
+      });
     } catch {
       history = failRead(history, begun.generation, {
         kind: "unavailable",
         title: historyPageCopy.listUnavailable
       });
     }
+  }
+
+  /**
+   * Resumes exactly the one list Retry was pressed for, from where it
+   * stopped (#1109 delta MEDIUM): the other list's confirmed rows, and this
+   * list's own rows already shown, are kept rather than re-read.
+   */
+  async function retryList(list: HistoryList): Promise<void> {
+    const confirmed = history.confirmed;
+    if (confirmed === null) return;
+    const state = confirmed[list];
+    if (state.stoppedAtCursor === null) return;
+    const reading = await readEveryRun(listOf(list), state.stoppedAtCursor);
+    const resumed: HistoryListState = {
+      rows: [...state.rows, ...reading.runs],
+      stoppedAtCursor: reading.complete ? null : reading.cursor
+    };
+    history = updateConfirmed(history, { ...confirmed, [list]: resumed });
   }
 
   async function loadSource(): Promise<TrackerSourceConnection | null> {
@@ -141,14 +171,27 @@
     return `${row.workflowName} ${shortPublicRunReference(row.run.public_run_reference)}`;
   }
 
-  $: rows = history.confirmed === null
-    ? []
-    : projectHistoryRows(history.confirmed.runs, sourceConnection);
+  // A run whose own projection failed (#1042) is told apart from the runs
+  // History can read, the same shape and copy the Workbench already shows it
+  // in (DefectiveRunRow.svelte) -- never claimed as a run that finished
+  // cleanly, and never folded into an empty list.
+  $: split = history.confirmed === null
+    ? { runs: [], defective: [] }
+    : splitRunListRows([...history.confirmed.completed.rows, ...history.confirmed.failed.rows]);
+  $: rows = projectHistoryRows(split.runs, sourceConnection);
   $: visibleRows = rows.filter((row) => withinHistoryPeriod(row, now));
   $: showTimestamplessHint = hasTimestamplessRows(visibleRows);
   $: hasWorkItem = visibleRows.some((row) => row.workItem !== null);
-  $: defectiveRows = history.confirmed?.defective ?? [];
-  $: stoppedAtCursors = history.confirmed?.stoppedAtCursors ?? [];
+  $: defectiveRows = split.defective;
+  /**
+   * One stopped-list entry per list that could not finish (#1042 review, A2;
+   * #1109 delta MEDIUM): each names the list its own Retry resumes, instead
+   * of one undifferentiated cursor line per list with two identical buttons.
+   */
+  $: stoppedLists = (["completed", "failed"] as const).flatMap((list) => {
+    const cursor = history.confirmed?.[list].stoppedAtCursor ?? null;
+    return cursor === null ? [] : [{ list, cursor }];
+  });
 </script>
 
 <section class="history-page surface" aria-labelledby="history-title">
@@ -173,7 +216,7 @@
   {/if}
 
   {#if history.confirmed !== null}
-    {#if visibleRows.length === 0 && defectiveRows.length === 0 && stoppedAtCursors.length === 0}
+    {#if visibleRows.length === 0 && defectiveRows.length === 0 && stoppedLists.length === 0}
       <div class="history-empty card empty-state">
         <h2>{wrapDisplayCopy(historyPageCopy.emptyTitle)}</h2>
         <p>{wrapDisplayCopy(historyPageCopy.emptyDescription)}</p>
@@ -281,11 +324,12 @@
     <!-- A partial answer always beats none (operator ruling, #1042 review
          A2): every page that arrived already rendered above, and this line
          names exactly where a stopped read left off rather than silently
-         truncating the list. -->
-    {#each stoppedAtCursors as cursor (cursor)}
+         truncating the list. Each list's own Retry resumes only that list
+         (#1109 delta MEDIUM), never the other one's already-confirmed rows. -->
+    {#each stoppedLists as { list, cursor } (list)}
       <p class="reading-stopped" role="status">
         {wrapDisplayCopy(readingStoppedAt(cursor))}
-        <button type="button" onclick={() => { void load(); }}>{wrapDisplayCopy(historyPageCopy.retry)}</button>
+        <button type="button" onclick={() => { void retryList(list); }}>{wrapDisplayCopy(historyPageCopy.retryList[list])}</button>
       </p>
     {/each}
     {/if}

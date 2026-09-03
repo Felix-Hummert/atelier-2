@@ -621,8 +621,8 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByText(historyPageCopy.emptyTitle)).toBeNull();
   });
 
-  it("repeats exactly the stopped read when its own Retry is pressed (#1042 review, A3)", async () => {
-    const secondPage = { items: [], next_after: null };
+  it("resumes only the stopped list from its own cursor when its Retry is pressed, never re-reading the other list (#1109 delta MEDIUM)", async () => {
+    const stoppedCursor = "run1.cmV2aWV3LTM3MGZpeC0wMDUzMDQ";
     const listRuns = vi
       .fn()
       .mockImplementation(async (after: string | undefined, state?: RunV3["state"]) => {
@@ -630,31 +630,37 @@ describe("History shows only what has finished", () => {
         if (after === undefined) {
           return {
             items: [runRow(v3Run({ run_id: "first-page", public_run_reference: "run1.YQ" }))],
-            next_after: "run1.cmV2aWV3LTM3MGZpeC0wMDUzMDQ"
+            next_after: stoppedCursor
           };
         }
         throw new Error("second page unreadable");
       });
     openHistory({}, { listRuns });
     await screen.findByText(/Reading stopped at/);
+    // The page already loaded before the stop still shows -- Retry must not
+    // discard it to resume.
+    expect((await findHistoryCard(/Two agents in a line/)).isConnected).toBe(true);
     const callsBeforeRetry = listRuns.mock.calls.length;
 
     listRuns.mockImplementation(async (after: string | undefined, state?: RunV3["state"]) => {
-      if (state === "FAILED") return secondPage;
-      if (after === undefined) {
-        return {
-          items: [runRow(v3Run({ run_id: "first-page", public_run_reference: "run1.YQ" }))],
-          next_after: "run1.cmV2aWV3LTM3MGZpeC0wMDUzMDQ"
-        };
-      }
-      return secondPage;
+      if (state === "FAILED") throw new Error("the failed list was not stopped; Retry must not re-read it");
+      if (after === stoppedCursor) return { items: [], next_after: null };
+      throw new Error(`unexpected completed-list call with after=${String(after)}`);
     });
-    await fireEvent.click(screen.getByRole("button", { name: historyPageCopy.retry }));
+    await fireEvent.click(
+      screen.getByRole("button", { name: historyPageCopy.retryList.completed })
+    );
 
-    expect(listRuns.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
     await waitFor(() => {
       expect(screen.queryByText(/Reading stopped at/)).toBeNull();
     });
+    // Retry made exactly one new call, resuming the completed list from the
+    // cursor it stopped at -- never a new call from the start, and never a
+    // call for the failed list, which never stopped.
+    const callsAfterRetry = listRuns.mock.calls.slice(callsBeforeRetry);
+    expect(callsAfterRetry).toEqual([[stoppedCursor, "COMPLETED"]]);
+    // The page shown before Retry is still shown after it.
+    expect(historyCardByRun("run1.YQ").isConnected).toBe(true);
   });
 });
 

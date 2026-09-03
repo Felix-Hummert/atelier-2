@@ -17,6 +17,7 @@ from fastapi.sse import ServerSentEvent
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 
 from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import (
@@ -1864,7 +1865,7 @@ def _assert_run_page_carries_one_defective_row(result: object, run_id: RunId) ->
     assert row.problem_code is RunProjectionProblemCode.DURABLE_STATE_CORRUPT
 
 
-def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrupt(
+def test_a_node_execution_with_two_answer_bearing_events_is_a_defective_row(
     engine: Engine,
 ) -> None:
     """#1045 REVISE C1 (second delta): a duplicate answer-bearing event used
@@ -1918,7 +1919,7 @@ def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrup
     _assert_run_page_carries_one_defective_row(result, run_id)
 
 
-def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_durable_state_corrupt(
+def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_a_defective_row(
     engine: Engine,
 ) -> None:
     """#1045 REVISE (second delta, second round): the batched attempt-receipt
@@ -1955,6 +1956,32 @@ def test_an_attempt_receipt_whose_artifact_matches_its_value_hash_reads_the_refu
 
     assert isinstance(page, RunPage)
     assert len(page.runs) == 1
+
+
+def test_a_locked_database_during_row_projection_is_read_unavailable_not_defective(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`OperationalError` is a `DatabaseError` subclass (#1109 delta HIGH): if
+    `_run_rows`' `except ... DatabaseError` clauses caught it before the
+    `OperationalError` re-raise, a locked or unavailable SQLite would turn
+    every row into a `DefectiveRunProjection` and the page would still answer
+    200 — a lie. Both the batch and the per-row retry re-raise
+    `OperationalError` ahead of `DatabaseError` so `list_runs`'s own
+    `except (OperationalError, PoolTimeoutError): return ReadUnavailable()`
+    keeps owning it.
+    """
+
+    revision = WorkflowRevision(_v3_workflow_document())
+    _seed_runs(engine, ((RunId("locked-during-projection"), revision),))
+
+    def locked_projections(*_args: object, **_kwargs: object) -> object:
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(DbosQueries, "_run_projections", locked_projections)
+
+    result = durable_queries(engine).list_runs(None, 100)
+
+    assert isinstance(result, ReadUnavailable)
 
 
 def test_run_page_batches_waiting_reconciliation_and_projects_command_owner_state(

@@ -34,12 +34,7 @@ export type RunReading =
 
 export type RevisionReading =
   | { complete: true; revisions: WorkflowRevisionSummary[] }
-  | {
-      complete: false;
-      revisions: WorkflowRevisionSummary[];
-      unreadable: string;
-      cursor: string;
-    };
+  | { complete: false; revisions: WorkflowRevisionSummary[]; unreadable: string };
 
 export type AgentConfigurationReading =
   | { complete: true; configurations: AgentConfigurationRevisionListItem[] }
@@ -47,22 +42,29 @@ export type AgentConfigurationReading =
       complete: false;
       configurations: AgentConfigurationRevisionListItem[];
       unreadable: string;
-      cursor: string;
     };
 
 export type AuthProfileReading =
   | { complete: true; profiles: AuthProfileRevision[] }
-  | { complete: false; profiles: AuthProfileRevision[]; unreadable: string; cursor: string };
+  | { complete: false; profiles: AuthProfileRevision[]; unreadable: string };
 
+/**
+ * `after` resumes a stopped read instead of restarting from its first page
+ * (#1109 delta MEDIUM): History's Retry passes the cursor a stopped read
+ * named, so a retried list reads only what it is still missing rather than
+ * discarding the pages it already confirmed.
+ */
 export async function readEveryRun(
-  listRuns: (after?: string) => Promise<RunPage>
+  listRuns: (after?: string) => Promise<RunPage>,
+  after?: string
 ): Promise<RunReading> {
   const read = await readEveryPage(
-    async (after) => {
-      const page = await listRuns(after);
+    async (nextAfter) => {
+      const page = await listRuns(nextAfter);
       return { items: page.items, next: page.next_after };
     },
-    runListRowReference
+    runListRowReference,
+    after
   );
   return read.complete
     ? { complete: true, runs: read.items }
@@ -82,12 +84,7 @@ export async function readEveryRevision(
   );
   return read.complete
     ? { complete: true, revisions: read.items }
-    : {
-        complete: false,
-        revisions: read.items,
-        unreadable: read.unreadable,
-        cursor: read.cursor
-      };
+    : { complete: false, revisions: read.items, unreadable: read.unreadable };
 }
 
 /** The published agent configurations a binding picker may offer. */
@@ -103,12 +100,7 @@ export async function readEveryAgentConfiguration(
   );
   return read.complete
     ? { complete: true, configurations: read.items }
-    : {
-        complete: false,
-        configurations: read.items,
-        unreadable: read.unreadable,
-        cursor: read.cursor
-      };
+    : { complete: false, configurations: read.items, unreadable: read.unreadable };
 }
 
 /** Every published account identity a model picker names beside its exact model. */
@@ -124,12 +116,7 @@ export async function readEveryAuthProfile(
   );
   return read.complete
     ? { complete: true, profiles: read.items }
-    : {
-        complete: false,
-        profiles: read.items,
-        unreadable: read.unreadable,
-        cursor: read.cursor
-      };
+    : { complete: false, profiles: read.items, unreadable: read.unreadable };
 }
 
 type PageReading<Item> =
@@ -138,12 +125,13 @@ type PageReading<Item> =
 
 async function readEveryPage<Item>(
   readPage: (after?: string) => Promise<{ items: readonly Item[]; next: string | null }>,
-  identityOf: (item: Item) => string
+  identityOf: (item: Item) => string,
+  startingAfter?: string
 ): Promise<PageReading<Item>> {
   const items: Item[] = [];
   const collected = new Set<string>();
   const followed = new Set<string>();
-  let after: string | undefined;
+  let after: string | undefined = startingAfter;
   for (;;) {
     let page: { items: readonly Item[]; next: string | null };
     try {

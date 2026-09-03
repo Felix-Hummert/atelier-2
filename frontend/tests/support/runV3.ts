@@ -164,7 +164,10 @@ export function defectiveRunRow(changes: Partial<DefectiveRunRow> = {}): Defecti
     kind: "defective",
     public_run_reference: publicReference,
     problem_code: "durable-state-corrupt",
-    detail: "run current node is absent from its workflow graph",
+    // The production bound (`bounded_run_row_defect_detail`) can only ever
+    // narrow a defective row's detail to an exception class name, never a
+    // sentence -- the default here stays honest to that shape.
+    detail: "RunTransitionConflict",
     ...changes
   };
 }

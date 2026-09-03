@@ -1116,9 +1116,9 @@ export const nodeDetailSchema = z
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 
 /**
- * `MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS` (`api/references.py`), mirrored
- * here as a plain number the way every other server-owned wire bound already
- * is on this side.
+ * `MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS` (`contracts/run_projections.py`),
+ * mirrored here as a plain number the way every other server-owned wire bound
+ * already is on this side.
  */
 export const MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512;
 

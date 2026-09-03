@@ -19,6 +19,16 @@ export const historyPageCopy = {
   title: "History",
   looking: readStateCopy.looking,
   retry: "Retry",
+  /**
+   * Completed and failed runs are read as two separate durable lists
+   * (#1109 delta MEDIUM): when one stops partway, its own Retry names which
+   * list it resumes, rather than two identical "Retry" buttons that both
+   * happen to restart everything.
+   */
+  retryList: {
+    completed: "Retry completed runs",
+    failed: "Retry failed runs"
+  },
   listUnavailable: "History unavailable",
   emptyTitle: "No finished runs yet",
   emptyDescription: "Runs land here once they finish — start one from the Catalog.",

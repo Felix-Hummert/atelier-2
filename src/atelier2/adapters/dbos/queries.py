@@ -2033,7 +2033,7 @@ class DbosQueries:
             return ()
         try:
             return self._run_projections(connection, records)
-        except ProjectionLimitExceeded:
+        except (ProjectionLimitExceeded, OperationalError, PoolTimeoutError):
             raise
         except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError) as error:
             _LOG.error(
@@ -2047,7 +2047,7 @@ class DbosQueries:
             run_id = RunId(str(record["run_id"]))
             try:
                 rows.append(self._run_projections(connection, (record,))[0])
-            except ProjectionLimitExceeded:
+            except (ProjectionLimitExceeded, OperationalError, PoolTimeoutError):
                 raise
             except (
                 UnicodeEncodeError,
