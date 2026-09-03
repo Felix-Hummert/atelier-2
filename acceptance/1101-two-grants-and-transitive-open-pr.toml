@@ -1,0 +1,18 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/1101"
+
+# Runtime delta 1: an Agent node may bind an exec-shaped and an effect-shaped
+# tool grant together; two of the same shape are refused once their published
+# capabilities are known. Runtime delta 2: a V3 open-pr Action reads its whole
+# request body from a builder Agent's own output, ordered by the dependency
+# closure rather than by an immediate `depends_on` edge, so review and a Wait
+# may stand between the two; the retired rule that an Action's predecessor
+# must itself be an immediate Agent is removed, not kept beside the new one.
+
+[[sentence]]
+id = "a-node-binds-one-exec-shaped-and-one-effect-shaped-grant-together"
+text = "An Agent node pins at most one exec-shaped and at most one effect-shaped tool grant together and both resolve from the run's durable binding; two grants of the same shape on one node are refused by name once their published capabilities are read, before the run exists."
+
+[[sentence]]
+id = "an-open-pr-action-reads-the-builders-output-through-review-and-a-wait"
+text = "A V3 open-pr Action declares its whole request as a single body input read from a builder Agent's own output through the dependency closure that orders them, so a review and a Wait may stand between the two, and the run opens exactly one pull request carrying that output; the retired rule that an Action's predecessor must itself be an immediate Agent is removed rather than kept beside it."

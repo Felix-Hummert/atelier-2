@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
+import logging
 import signal
 import socket
 import subprocess
@@ -38,7 +40,13 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
 )
-from atelier2.adapters.dbos.schema import agent_attempts, initialize_schema, runs
+from atelier2.adapters.dbos.schema import (
+    agent_attempts,
+    initialize_schema,
+    run_configuration_revisions,
+    runs,
+    workflow_revisions,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -915,6 +923,93 @@ def test_a_record_composed_start_refuses_a_legacy_agent_completion_without_recei
 
     with pytest.raises(LegacyAgentOpenPrCompletionWithoutReceipt, match=run.value):
         compose_application(settings)
+
+
+def test_a_retired_shape_revision_is_named_and_skipped_so_serve_still_boots(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A revision persisted before a later format tightening retired its shape
+    # (#1101: a bare open-pr Action with no bound input) can no longer be
+    # parsed at all by this build. The legacy-completion sweep above reads
+    # every V3 run's revision up front, so one retired-shape revision must not
+    # abort the whole sweep with the parser's own refusal and take live
+    # serving down with it -- it is named retired-shape and skipped instead.
+    settings = _github_connected_settings(tmp_path, "gho_a_test_scenario_token")
+    run = RunId("v3/retired-shape-revision")
+    retired_document = b"""format_version: 3
+name: A retired bare open-pr action
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Draft the pull request this chain opens.
+    outputs:
+      - name: result
+        schema: {ref: any-json, revision: "%s"}
+  - id: publish
+    type: action
+    operation: {ref: open-pr, revision: "%s"}
+    depends_on: [implement]
+""" % (b"e" * 64, b"e" * 64)
+    revision = WorkflowRevision(retired_document)
+    configuration_hash = hashlib.sha256(
+        f"configuration-{run.value}".encode()
+    ).hexdigest()
+    seeded = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "durable.sqlite",
+            "retired-shape-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "effects.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("local"),
+        ),
+    )
+    seeded.initialize_storage()
+    try:
+        with seeded.engine.begin() as connection:
+            connection.execute(
+                workflow_revisions.insert().values(
+                    revision_hash=revision.revision_hash.value,
+                    document=revision.document,
+                )
+            )
+            connection.execute(
+                run_configuration_revisions.insert().values(
+                    revision_hash=configuration_hash,
+                    preimage=b"seeded retired-shape run configuration",
+                )
+            )
+            connection.execute(
+                runs.insert().values(
+                    run_id=run.value,
+                    bootstrap_workflow_id=f"bootstrap-{run.value}",
+                    revision_hash=revision.revision_hash.value,
+                    workflow_format_version=3,
+                    run_configuration_revision_hash=configuration_hash,
+                    agent_binding_set_hash=None,
+                    current_node_id="implement",
+                    current_round_ordinal=1,
+                    state="COMPLETED",
+                    state_version=0,
+                    last_event_sequence=0,
+                    terminal_hash="c" * 64,
+                )
+            )
+    finally:
+        seeded.close()
+
+    with caplog.at_level(logging.WARNING, logger="atelier2"):
+        application, runtime = compose_application(settings)
+    runtime.close()
+
+    assert "retired-shape" in caplog.text
+    assert run.value in caplog.text
+    assert revision.revision_hash.value in caplog.text
+    assert application is not None
 
 
 def test_an_unconformant_claude_executable_does_not_kill_serve(

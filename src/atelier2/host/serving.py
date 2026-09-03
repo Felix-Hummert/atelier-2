@@ -1301,6 +1301,7 @@ def compose_application(
             lifespan = None
         if close_runtime_at_shutdown:
             lifespan = _close_runtime_at_shutdown(runtime, lifespan)
+        artifact_store = DbosArtifactStore(runtime.engine)
         app = create_app(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,
@@ -1339,7 +1340,8 @@ def compose_application(
                 published_revision_registry=DbosCatalogStore(runtime.engine),
                 published_revision_resolver_sessions=DbosCatalogStore(runtime.engine),
                 published_revision_listing=DbosCatalogStore(runtime.engine),
-                artifact_publisher=DbosArtifactStore(runtime.engine),
+                artifact_publisher=artifact_store,
+                artifact_reader=artifact_store,
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
                 project_source_connection_channel=DbosHostConfigurationChannel(
                     runtime.engine
