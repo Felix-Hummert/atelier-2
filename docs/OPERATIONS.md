@@ -704,7 +704,11 @@ same pinned interpreter and lock path that `serve-live.sh` uses. It asks that
 running instance for its currently startable agent configurations, runs the
 matching headless, workspace-tools, or atelier-doors workflow once with each
 exact configuration hash, and refuses an admitted workflow whose hash differs
-from the deploy checkout. Discovery is capped at four configuration pages, 50
+from the deploy checkout. Because the post-Serve-start drop-in fires this run
+at process start rather than once it can answer, the run first polls `/health`
+for up to 60 seconds until it answers `serving` -- failing loud with the last
+health answer, and trying no vector, if it never does -- before any other
+discovery step begins. Discovery is capped at four configuration pages, 50
 known startable vectors, and 300 seconds. All distinct admitted workflow names
 resolve before any vector starts. Each run then has a 300-second terminal
 deadline, while the complete process has a 15,300-second deadline enforced by
