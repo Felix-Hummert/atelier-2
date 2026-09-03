@@ -289,6 +289,7 @@ def run_resource(
         run_id="unread-by-the-command",
         public_run_reference=PUBLIC_RUN_REFERENCE,
         workflow_revision_hash=REVISION_HASH,
+        workflow_name=WORKFLOW_NAME,
         agent_binding_set_hash=BINDING_SET_HASH,
         run_configuration_revision_hash=RUN_CONFIGURATION_HASH,
         agent_bindings=(),
