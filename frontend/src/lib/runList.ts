@@ -1,4 +1,4 @@
-import type { RunV3, WorkflowRevisionDetail } from "../api/client";
+import type { RunV3 } from "../api/client";
 import { parseUtc } from "./when";
 
 /**
@@ -66,32 +66,4 @@ export function resolveWorkflowName(
   workflowNames: ReadonlyMap<string, string | null> | null
 ): string {
   return workflowNames?.get(run.workflow_revision_hash) ?? run.run_id;
-}
-
-/** Published V3 titles keyed by the revision hash the run already carries. */
-export async function workflowNamesOf(
-  runs: readonly RunV3[],
-  readRevision: (hash: string) => Promise<WorkflowRevisionDetail>
-): Promise<ReadonlyMap<string, string>> {
-  const hashes = [...new Set(runs.map((run) => run.workflow_revision_hash))];
-  const names = new Map<string, string>();
-  const revisions = await Promise.all(
-    hashes.map(async (hash) => {
-      const revision = await readRevision(hash);
-      return { hash, revision };
-    })
-  );
-  for (const { hash, revision } of revisions) {
-    if (revision.workflow_revision_hash !== hash) {
-      throw new Error("a V3 run received a different workflow revision");
-    }
-    // The wire type admits only format 3, so this guards corrupt durable state
-    // alone -- a V1/V2 row the server should never serve again (#901 slice 5)
-    // -- and stays the one remaining defense of its kind.
-    if (revision.graph.workflow_format_version !== 3) {
-      throw new Error("a V3 run referenced a workflow revision of another format");
-    }
-    names.set(hash, revision.graph.name);
-  }
-  return names;
 }

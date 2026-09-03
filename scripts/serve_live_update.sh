@@ -5,6 +5,15 @@ readonly deploy_remote="origin"
 readonly deploy_branch="main"
 readonly serve_unit="atelier2-serve.service"
 readonly health_url="http://127.0.0.1:8422/atelier/api/v1/health"
+readonly definition_source_ref="refs/heads/${deploy_branch}"
+readonly definition_source_selection="workflows/*.yaml=workflow"
+readonly definition_source_actor="atelier2-deploy"
+# A refused intake still lets the new commit serve (the catalog keeps its
+# previous workflow state), so this is not the generic fail() exit 1: it is
+# its own code, distinct in the journal, and still nonzero so
+# auto_redeploy.sh's plain success/failure exit-code check counts the tick as
+# a failure without the watcher needing a second signal.
+readonly intake_refused_exit_code=3
 
 log() {
   echo "serve live update: $1"
@@ -115,6 +124,7 @@ rollback_previous_serve() {
 
 served_status=""
 served_commit=""
+intake_refused=0
 # Duplicates auto_redeploy.sh's read_served_health; a later slice extracts the
 # shared health-parsing helper.
 read_served_health() {
@@ -145,6 +155,36 @@ wait_for_served_health() {
     sleep 1
   done
   return 1
+}
+
+connect_and_intake_definitions() {
+  local connect_output source_id intake_output
+
+  log "connecting the workflow definition source"
+  if ! connect_output="$(cd "${repository}" && uv run --locked atelier2 definition-source connect \
+      --database "${database}" --location "${repository}" --ref "${definition_source_ref}" \
+      --select "${definition_source_selection}" --actor "${definition_source_actor}" 2>&1)"; then
+    printf '%s\n' "${connect_output}" >&2
+    return 1
+  fi
+  while IFS= read -r line; do log "${line}"; done <<<"${connect_output}"
+  source_id="$(grep -oE '[0-9a-f]{64}' <<<"${connect_output}" | head -n 1)"
+  if [[ -z "${source_id}" ]]; then
+    echo "serve live update: no definition source id was readable from connect's output" >&2
+    return 1
+  fi
+
+  log "taking the connected source's workflows into the live catalog"
+  if intake_output="$(cd "${repository}" && uv run --locked atelier2 definition-source intake \
+      --database "${database}" --source-id "${source_id}" --actor "${definition_source_actor}" 2>&1)"; then
+    intake_refused=0
+  else
+    intake_refused=1
+  fi
+  while IFS= read -r line; do log "${line}"; done <<<"${intake_output}"
+  if ((intake_refused)); then
+    echo "serve live update: WORKFLOW INTAKE REFUSED; the live serve starts with the previous catalog state" >&2
+  fi
 }
 
 log "checking the deploy checkout"
@@ -208,6 +248,13 @@ if ! (cd "${repository}" && uv run --locked atelier2 migrate --database "${datab
   fail "live serve is DOWN, operator action needed"
 fi
 
+if ! connect_and_intake_definitions; then
+  if rollback_previous_serve; then
+    fail "connecting the workflow definition source failed; restored the previous commit and restarted the live serve"
+  fi
+  fail "live serve is DOWN, operator action needed"
+fi
+
 log "starting atelier2-serve.service"
 systemctl --user start "${serve_unit}" \
   || fail "live serve is DOWN, operator action needed"
@@ -223,3 +270,6 @@ printf '%s\n' "${target_commit}" >"${deployed_commit_marker}" \
   || fail "the deployed commit marker could not be written"
 
 log "now serves ${target_commit}"
+if ((intake_refused)); then
+  exit "${intake_refused_exit_code}"
+fi

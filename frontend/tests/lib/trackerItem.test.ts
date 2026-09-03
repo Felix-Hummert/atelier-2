@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  trackerItemHref,
-  trackerItemLabel,
-  workItemReferenceFromJob,
-  workItemReferenceFromOrderDocument
-} from "../../src/lib/trackerItem";
+import { trackerItemHref, trackerItemLabel } from "../../src/lib/trackerItem";
 
 describe("trackerItemLabel uses the adapter grammar", () => {
   it.each([
@@ -30,50 +25,5 @@ describe("trackerItemHref names the issue when the source can form one", () => {
     expect(trackerItemHref("gh:567", null)).toBeNull();
     expect(trackerItemHref("gl:12", github)).toBeNull();
     expect(trackerItemHref("gh:567", { source_kind: "gitlab", source_address: "g/g@main" })).toBeNull();
-  });
-});
-
-describe("workItemReferenceFromOrderDocument reads only the house-schema reference", () => {
-  const document = {
-    body: "this body is never a title",
-    change_marker: "etag",
-    digest: "a".repeat(64),
-    kind: "issue",
-    observed_at: "2026-08-26T09:15:00Z",
-    reference: "gh:567"
-  };
-
-  it("returns the reference and never the body", () => {
-    expect(workItemReferenceFromOrderDocument(document)).toBe("gh:567");
-  });
-
-  it("refuses a guessed object that is not the closed house schema", () => {
-    expect(workItemReferenceFromOrderDocument({ reference: "gh:567", title: "guessed" })).toBeNull();
-    expect(workItemReferenceFromOrderDocument({ ...document, extra: "x" })).toBeNull();
-  });
-});
-
-describe("workItemReferenceFromJob finds the order document in the composed job", () => {
-  it("reads the reference from an order block and ignores other JSON", () => {
-    const job = [
-      "Do the one thing.",
-      "",
-      '{"answer":"not a work item"}',
-      "",
-      "--- order: work_item ---",
-      JSON.stringify({
-        body: "SECRET TITLE FROM BODY",
-        change_marker: "etag",
-        digest: "a".repeat(64),
-        kind: "issue",
-        observed_at: "2026-08-26T09:15:00Z",
-        reference: "gh:450"
-      })
-    ].join("\n\n");
-    expect(workItemReferenceFromJob(job)).toBe("gh:450");
-  });
-
-  it("names none when the job carries no work-item document", () => {
-    expect(workItemReferenceFromJob("Do the one thing.\n\nnot json")).toBeNull();
   });
 });

@@ -17,9 +17,31 @@ readonly blocking_run_page_limit=5
 readonly check_run_lookup_timeout_seconds=60
 readonly check_run_appearance_grace_seconds=1800
 readonly github_repository="repos/FlexOr2/atelier-2"
+# Must match serve_live_update.sh's own intake_refused_exit_code: the deploy
+# still succeeded (the new commit is served), only a workflow intake was
+# refused, so this is not an ordinary failure tick.
+readonly intake_refused_exit_code=3
 
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-serve_live_update="${repository}/scripts/serve_live_update.sh"
+
+# Git replaces a tracked file by unlink-then-create, so a shell that already
+# opened scripts/serve_live_update.sh keeps reading the OLD bytes for the
+# rest of its run — a checkout that fast-forwards under a running deploy
+# would silently execute stale deploy logic. staged_serve_live_update holds
+# the path of the target commit's own script once materialised (see below
+# for where and why), so the logic that becomes live is the logic that
+# runs; cleanup_staged_serve_live_update removes it on every exit path.
+staged_serve_live_update=""
+cleanup_staged_serve_live_update() {
+  # An `&&`-guarded rm would make this trap's own exit status the falsy
+  # short-circuit result when nothing is staged, and bash keeps that as the
+  # script's exit code — always resolve the `if` so cleanup never rewrites
+  # the tick's real outcome.
+  if [[ -n "${staged_serve_live_update}" ]]; then
+    rm -f -- "${staged_serve_live_update}"
+  fi
+}
+trap cleanup_staged_serve_live_update EXIT
 
 log() {
   local priority="$1"
@@ -385,11 +407,29 @@ if [[ -n "${deferring_runs}" ]]; then
   exit 0
 fi
 
-if "${serve_live_update}" "${target_commit}"; then
+# Staged at <git-dir>/serve_live_update.sh (not scripts/, not /tmp): the
+# repository's git directory is one level below the repository root, so the
+# target script's own self-location (dirname "$BASH_SOURCE"/..) still
+# resolves to this checkout, while nothing under .git/ ever appears in
+# `git status` — a real deploy's clean-checkout preflight cannot be tripped
+# by the staged file, and a killed tick leaves no dirt behind for the next
+# one to trip on either.
+staged_serve_live_update="${git_admin_directory}/serve_live_update.sh"
+if ! show_error="$(git -C "${repository}" show "${target_commit}:scripts/serve_live_update.sh" 2>&1 >"${staged_serve_live_update}")"; then
+  refuse_tick "target deploy script could not be read" "cannot read scripts/serve_live_update.sh from ${target_commit}: ${show_error}"
+fi
+chmod +x "${staged_serve_live_update}"
+
+if "${staged_serve_live_update}" "${target_commit}"; then
   reset_counters
   log_info "auto redeploy: main now served at ${target_commit}"
   exit 0
 else
   update_exit=$?
+fi
+if ((update_exit == intake_refused_exit_code)); then
+  reset_counters
+  log_warning "main now served at ${target_commit}; workflow intake refused (see serve_live_update journal)"
+  exit 0
 fi
 refuse_tick "loopback update failed" "serve_live_update.sh failed for ${target_commit} (exit ${update_exit})"
