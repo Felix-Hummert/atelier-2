@@ -356,7 +356,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect(request.orders).toEqual([{ name: "work", work_item: "gh:450" }]);
   });
 
-  it("walks the work-item picker by keyboard, keeps focus on the combobox, and names the listbox", async () => {
+  it("walks the work-item picker by keyboard, focuses the filter field while open, returns focus to the combobox once closed, and names the listbox", async () => {
     const cockpitApi = api({
       getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
       getSchemaRevision: vi.fn(async () => workItemSchema),
@@ -374,15 +374,21 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     const first = screen.getByRole("option", { name: "#450 Preview door" });
     const second = screen.getByRole("option", { name: "#446" });
     const third = screen.getByRole("option", { name: "!13 Deploy runner" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(first.id);
-    expect(document.activeElement).toBe(picker);
+    // REQ-UIQ-05: opening lands both real keyboard focus and the combobox
+    // contract's `aria-activedescendant` in the filter field, the one place
+    // ArrowUp/ArrowDown/Enter/Escape actually reach as a keyboard user tabs
+    // or types through the picker -- not the still-labelled but now-inert
+    // combobox button, which keeps only the closed-state contract.
+    let filterField = screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(first.id);
+    await waitFor(() => expect(document.activeElement).toBe(filterField));
 
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(second.id);
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(third.id);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(third.id);
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(second.id);
 
     await fireEvent.keyDown(picker, { key: "Escape" });
     expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
@@ -392,7 +398,8 @@ describe("the schema-generated fields on the catalog start sheet", () => {
 
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
     expect(screen.getByRole("listbox", { name: workItemFor("work") })).toBeTruthy();
-    expect(picker.getAttribute("aria-activedescendant")).toBe(
+    filterField = screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(
       screen.getByRole("option", { name: "!13 Deploy runner" }).id
     );
     await fireEvent.keyDown(picker, { key: " " });
@@ -401,11 +408,12 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect(document.activeElement).toBe(picker);
 
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(
+    filterField = screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel);
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(
       screen.getByRole("option", { name: "!13 Deploy runner" }).id
     );
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
-    expect(picker.getAttribute("aria-activedescendant")).toBe(
+    expect(filterField.getAttribute("aria-activedescendant")).toBe(
       screen.getByRole("option", { name: "#446" }).id
     );
     await fireEvent.keyDown(picker, { key: "Enter" });
@@ -433,7 +441,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
   });
 
-  it("does not claim a connected source is missing when every observed item from it is retired", async () => {
+  it("shows the honest all-retired state, not a Choose that opens nothing, when every observed item from a connected source is retired", async () => {
     const cockpitApi = api({
       getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
       getSchemaRevision: vi.fn(async () => workItemSchema),
@@ -456,16 +464,14 @@ describe("the schema-generated fields on the catalog start sheet", () => {
 
     expect(screen.queryByText(workflowStartCopy.noSource)).toBeNull();
     expect(screen.queryByRole("button", { name: workflowStartCopy.connectSource })).toBeNull();
+    expect(screen.getByText(workflowStartCopy.allRetired)).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: workItemFor("work") })).toBeNull();
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
     const startRun = screen.getByRole("button", { name: workflowStartCopy.startRun }) as HTMLButtonElement;
     expect(startRun.disabled).toBe(true);
     expect(startRun.title).toBe(workflowStartCopy.startNeedsWorkItem);
-    const picker = screen.getByRole("combobox", { name: workItemFor("work") });
-    await fireEvent.click(picker);
-    expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
-    expect(screen.queryByRole("option", { name: "#450 Preview door" })).toBeNull();
   });
 
   it("refuses a work-item lookalike before it can enable Start", async () => {
