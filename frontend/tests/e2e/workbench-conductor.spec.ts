@@ -2,11 +2,12 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { conductorConversationCopy } from "../../src/lib/conductorConversation";
-import { decodePublicRunReference } from "../../src/api/client";
+import { decodePublicRunReference, type RunListRow, type RunV3 } from "../../src/api/client";
 import { humanProblemDetail } from "../../src/lib/humanRefusal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
+import { healthyRunListItems } from "../support/runListRows";
 
 /**
  * The chat wire, driven as the operator drives it (#7): one served instance
@@ -28,12 +29,6 @@ const widths = [
 
 const themes = ["light", "dark"] as const;
 
-type ReconciliationFixtureRun = {
-  public_run_reference: string;
-  workflow_revision_hash: string;
-  state: string;
-};
-
 type InputFixtureRun = {
   public_run_reference: string;
   workflow_revision_hash: string;
@@ -46,9 +41,8 @@ type InputFixtureRun = {
 async function retireReconciliationFixtures(page: Page): Promise<void> {
   const listed = await page.request.get("/atelier/api/v1/runs?state=WAITING_RECONCILIATION&limit=50");
   expect(listed.status()).toBe(200);
-  const { items } = (await listed.json()) as {
-    items: ReconciliationFixtureRun[];
-  };
+  const { items: rows } = (await listed.json()) as { items: RunListRow[] };
+  const items: RunV3[] = healthyRunListItems(rows);
   expect(items).toHaveLength(2);
 
   for (const run of items) {
@@ -281,10 +275,10 @@ async function waitForFreshConductorRound(
   await expect(async () => {
     const waiting = await page.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
     expect(waiting.status()).toBe(200);
-    const { items } = (await waiting.json()) as {
-      items: Array<{ public_run_reference: string; workflow_revision_hash: string }>;
-    };
-    const matches = items.filter((run) => run.workflow_revision_hash === workflowRevisionHash);
+    const { items: rows } = (await waiting.json()) as { items: RunListRow[] };
+    const matches = healthyRunListItems(rows).filter(
+      (run) => run.workflow_revision_hash === workflowRevisionHash
+    );
     expect(
       matches,
       `revision ${workflowRevisionHash}: expected exactly one run waiting for input, found ${matches.length}`
@@ -418,9 +412,11 @@ test("the composer stays honestly locked without a conductor, then starts one co
 
   const waitingConversations = await page.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
   expect(waitingConversations.status()).toBe(200);
+  const waitingConversationRows = (await waitingConversations.json()) as { items: RunListRow[] };
   expect(
-    ((await waitingConversations.json()) as { items: Array<{ workflow_revision_hash: string }> }).items
-      .filter((run) => run.workflow_revision_hash === seededConductor.workflow_revision_hash)
+    healthyRunListItems(waitingConversationRows.items).filter(
+      (run) => run.workflow_revision_hash === seededConductor.workflow_revision_hash
+    )
   ).toHaveLength(1);
   await photograph(page, "workbench-conductor-reply");
 
@@ -923,9 +919,10 @@ test("a second tab reconstructs the same open conversation and starts nothing si
     // waiting run for this conductor revision.
     const waiting = await secondPage.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
     expect(waiting.status()).toBe(200);
-    const stillOneRun = (
-      (await waiting.json()) as { items: Array<{ workflow_revision_hash: string }> }
-    ).items.filter((item) => item.workflow_revision_hash === seededConductor.workflow_revision_hash);
+    const waitingRows = (await waiting.json()) as { items: RunListRow[] };
+    const stillOneRun = healthyRunListItems(waitingRows.items).filter(
+      (run) => run.workflow_revision_hash === seededConductor.workflow_revision_hash
+    );
     expect(stillOneRun).toHaveLength(1);
   } finally {
     await secondContext.close();
