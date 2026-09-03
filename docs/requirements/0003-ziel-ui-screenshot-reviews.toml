@@ -101,6 +101,9 @@ requirement = "REQ-UIQ-11"
 scope_sha256 = "617b5c13e9cbc8efa844d951eedab796d2b71457d97a55b7f0e8d1c71f8b6843"
 approval_comment_id = 5531876648
 approval_sha256 = "8cca847cba5a8488bdf3099cb6263d05cff5c118f6a347b6ebb23179e7983906"
+
+[[approval]]
+requirement = "REQ-UIQ-11"
 scope_sha256 = "d13f3549e90daa338d30b3708b02638988c1b623392c14ceb45832cdc10620f1"
 approval_comment_id = 5530655958
 approval_sha256 = "a3b80b21f24554e1e717d9d133a23fde7dcfcfefb283be70be721b31bb9aa4cb"
@@ -119,6 +122,6 @@ approval_sha256 = "3de07cdecc893a7389e98fab0b8d9780230e731a1ff99e88ea7be7b8a15f2
 
 [[approval]]
 requirement = "REQ-UIQ-11"
-scope_sha256 = ""
-approval_comment_id = 5531881101
-approval_sha256 = "3b56dcc1b7429d76541522eef71eae805e33de6bd28dc219a60cbf2e172aa134"
+scope_sha256 = "9b25a1c9d560e6eded5d2bf27fc4ecc4f6912a81897a3fa34326dc7f8c24698a"
+approval_comment_id = 5531795598
+approval_sha256 = "2139cc9fef32adb05bed68e6856925bb32f5668d7a6cb8e8e94f91097dc92cac"
