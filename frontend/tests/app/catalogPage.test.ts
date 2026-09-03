@@ -55,6 +55,7 @@ function workflowSummary(
     not_executable_reason: null,
     name: WORKFLOW_NAME,
     description: "build, then review",
+    provenance: null,
     ...overrides
   };
 }
@@ -175,6 +176,7 @@ describe("the catalog room", () => {
       getWorkflowRevision: vi.fn(async () => ({
         workflow_revision_hash: WORKFLOW_HASH,
         document_base64: "YQ==",
+        provenance: null,
         graph: {
           workflow_format_version: 3 as const,
           executable: true,
@@ -207,6 +209,7 @@ describe("the catalog room", () => {
       getWorkflowRevision: vi.fn(async () => ({
         workflow_revision_hash: WORKFLOW_HASH,
         document_base64: "YQ==",
+        provenance: null,
         graph: {
           workflow_format_version: 3 as const,
           executable: true,
@@ -378,6 +381,7 @@ describe("the catalog room", () => {
       getWorkflowRevision: vi.fn(async () => ({
         workflow_revision_hash: WORKFLOW_HASH,
         document_base64: "YQ==",
+        provenance: null,
         graph: {
           workflow_format_version: 3 as const,
           executable: true,
@@ -485,6 +489,7 @@ describe("the catalog room", () => {
       value: {
         workflow_revision_hash: WORKFLOW_HASH,
         document_base64: "YQ==",
+        provenance: null,
         graph: {
           workflow_format_version: 3 as const,
           executable: true,
