@@ -228,32 +228,38 @@ def tool_definitions() -> tuple[dict[str, Any], ...]:
                 "exceeds that bound is refused before anything is sent. No caller "
                 "authentication exists; do not invent one."
             ),
-            "inputSchema": _object_schema(
-                {
-                    ARTIFACT_CONTENT_BASE64_FIELD: {
-                        "type": "string",
-                        "maxLength": MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS,
-                        "description": (
-                            "Standard Base64 of the exact bytes to POST as "
-                            "application/octet-stream, up to "
-                            f"{MAXIMUM_MCP_ARTIFACT_BYTES} decoded bytes "
-                            f"({MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS} "
-                            "characters)."
-                        ),
-                    },
-                    ARTIFACT_PATH_FIELD: {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": (
-                            "Absolute path of a regular file on the machine this "
-                            "child runs on, at most "
-                            f"{MAXIMUM_ARTIFACT_BYTES} bytes. Its exact bytes are "
-                            "read here and POSTed unchanged; a symbolic link is "
-                            "read through to the file it names."
-                        ),
-                    },
-                }
-            ),
+            "inputSchema": {
+                **_object_schema(
+                    {
+                        ARTIFACT_CONTENT_BASE64_FIELD: {
+                            "type": "string",
+                            "maxLength": MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS,
+                            "description": (
+                                "Standard Base64 of the exact bytes to POST as "
+                                "application/octet-stream, up to "
+                                f"{MAXIMUM_MCP_ARTIFACT_BYTES} decoded bytes "
+                                f"({MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS} "
+                                "characters)."
+                            ),
+                        },
+                        ARTIFACT_PATH_FIELD: {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": (
+                                "Absolute path of a regular file on the machine this "
+                                "child runs on, at most "
+                                f"{MAXIMUM_ARTIFACT_BYTES} bytes. Its exact bytes are "
+                                "read here and POSTed unchanged; a symbolic link is "
+                                "read through to the file it names."
+                            ),
+                        },
+                    }
+                ),
+                "oneOf": [
+                    {"required": [ARTIFACT_CONTENT_BASE64_FIELD]},
+                    {"required": [ARTIFACT_PATH_FIELD]},
+                ],
+            },
         },
         {
             "name": McpToolName.READ_ARTIFACT.value,

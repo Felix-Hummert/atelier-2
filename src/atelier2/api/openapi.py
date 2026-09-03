@@ -154,6 +154,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (ARTIFACT_PATH, "get"): (
         "invalid-artifact-hash",
         "artifact-not-found",
+        "durable-state-corrupt",
         "internal-error",
     ),
     (API_PREFIX + "/schema-revisions", "post"): (

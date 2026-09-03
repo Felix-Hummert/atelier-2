@@ -33,6 +33,7 @@ class ArtifactExisting:
 type PublishArtifactResult = (
     ArtifactCreated | ArtifactExisting | DurableWriteUnavailable | DurableStateCorrupt
 )
+type ReadArtifactResult = Artifact | DurableStateCorrupt | None
 
 
 class ArtifactPublisher(Protocol):
@@ -47,4 +48,4 @@ class ArtifactReader(Protocol):
     that only reads should not be handed the write.
     """
 
-    def read_artifact(self, artifact_hash: ArtifactHash) -> Artifact | None: ...
+    def read_artifact(self, artifact_hash: ArtifactHash) -> ReadArtifactResult: ...

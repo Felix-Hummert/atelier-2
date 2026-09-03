@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -540,37 +541,46 @@ def _artifact_file_bytes(raw: object) -> bytes:
             McpRefusal.ARTIFACT_PATH_NOT_ABSOLUTE,
             f"{ARTIFACT_PATH_FIELD} must be a nonempty absolute path",
         )
-    named = Path(raw)
-    if not named.is_absolute():
-        raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_ABSOLUTE, raw)
     try:
-        described = named.stat()
+        named = Path(raw)
+        if not named.is_absolute():
+            raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_ABSOLUTE, raw)
+        descriptor = os.open(named, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            described = os.fstat(descriptor)
+            if not S_ISREG(described.st_mode):
+                raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_A_REGULAR_FILE, raw)
+            if described.st_size > MAXIMUM_ARTIFACT_BYTES:
+                raise McpLocalRefusal(
+                    McpRefusal.ARTIFACT_PATH_TOO_LARGE,
+                    f"{described.st_size} bytes exceeds {MAXIMUM_ARTIFACT_BYTES}",
+                )
+            content = _bounded_artifact_file_read(descriptor)
+        finally:
+            os.close(descriptor)
     except FileNotFoundError as missing:
         raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_FOUND, raw) from missing
-    except OSError as unreadable:
+    except (OSError, ValueError) as unreadable:
         raise McpLocalRefusal(
-            McpRefusal.ARTIFACT_PATH_UNREADABLE, f"{raw}: {unreadable.strerror}"
+            McpRefusal.ARTIFACT_PATH_UNREADABLE, f"{raw}: {unreadable}"
         ) from unreadable
-    if not S_ISREG(described.st_mode):
-        raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_A_REGULAR_FILE, raw)
-    if described.st_size > MAXIMUM_ARTIFACT_BYTES:
-        raise McpLocalRefusal(
-            McpRefusal.ARTIFACT_PATH_TOO_LARGE,
-            f"{described.st_size} bytes exceeds {MAXIMUM_ARTIFACT_BYTES}",
-        )
-    try:
-        content = named.read_bytes()
-    except OSError as unreadable:
-        raise McpLocalRefusal(
-            McpRefusal.ARTIFACT_PATH_UNREADABLE, f"{raw}: {unreadable.strerror}"
-        ) from unreadable
-    # The file may have grown between the bound it was measured against and now.
     if len(content) > MAXIMUM_ARTIFACT_BYTES:
         raise McpLocalRefusal(
             McpRefusal.ARTIFACT_PATH_TOO_LARGE,
             f"{len(content)} bytes exceeds {MAXIMUM_ARTIFACT_BYTES}",
         )
     return content
+
+
+def _bounded_artifact_file_read(descriptor: int) -> bytes:
+    content = bytearray()
+    maximum_read = MAXIMUM_ARTIFACT_BYTES + 1
+    while len(content) < maximum_read:
+        chunk = os.read(descriptor, maximum_read - len(content))
+        if not chunk:
+            break
+        content.extend(chunk)
+    return bytes(content)
 
 
 def _required_text(arguments: Mapping[str, Any], field: str) -> str:

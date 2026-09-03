@@ -113,5 +113,7 @@ async def read_artifact_route(
             return ArtifactBytesResponse(artifact.content)
         case ArtifactNotFound():
             raise ApiProblem("artifact-not-found")
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)

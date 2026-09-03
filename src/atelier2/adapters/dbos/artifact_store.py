@@ -12,8 +12,13 @@ from atelier2.ports.artifacts import (
     ArtifactCreated,
     ArtifactExisting,
     PublishArtifactResult,
+    ReadArtifactResult,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
+
+
+class _StoredArtifactAddressMismatch(RuntimeError):
+    pass
 
 
 def read_stored_artifact(
@@ -35,7 +40,7 @@ def read_stored_artifact(
         return None
     stored = Artifact(bytes(content))
     if stored.artifact_hash != artifact_hash:
-        raise RuntimeError(
+        raise _StoredArtifactAddressMismatch(
             f"stored artifact {artifact_hash.value} does not hash to its address"
         )
     return stored
@@ -74,15 +79,18 @@ class DbosArtifactStore:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
-    def read_artifact(self, artifact_hash: ArtifactHash) -> Artifact | None:
+    def read_artifact(self, artifact_hash: ArtifactHash) -> ReadArtifactResult:
         """The material one address names, on a connection of its own.
 
         A caller holding only an address decides nothing else at the same time,
         so this read opens its own connection instead of joining the serialized
         transaction publication needs.
         """
-        with self._engine.connect() as connection:
-            return read_stored_artifact(connection, artifact_hash)
+        try:
+            with self._engine.connect() as connection:
+                return read_stored_artifact(connection, artifact_hash)
+        except _StoredArtifactAddressMismatch:
+            return DurableStateCorrupt()
 
     def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
         try:

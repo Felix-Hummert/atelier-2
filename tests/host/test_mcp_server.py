@@ -37,7 +37,7 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, Artifact
 from atelier2.contracts.run_projections import NodeState
-from atelier2.host import main
+from atelier2.host import main, mcp_command
 from atelier2.host.mcp_command import (
     JSONRPC_METHOD_NOT_FOUND,
     JSONRPC_PARSE_ERROR,
@@ -526,6 +526,10 @@ def test_publish_artifact_text_says_which_source_a_caller_should_name() -> None:
     assert "Absolute path of a regular file" in named_path["description"]
     assert str(MAXIMUM_ARTIFACT_BYTES) in named_path["description"]
     assert "required" not in publish["inputSchema"]
+    assert publish["inputSchema"]["oneOf"] == [
+        {"required": [ARTIFACT_CONTENT_BASE64_FIELD]},
+        {"required": [ARTIFACT_PATH_FIELD]},
+    ]
 
 
 def test_read_artifact_asks_for_the_address_the_publication_answered() -> None:
@@ -1135,6 +1139,77 @@ def test_publish_artifact_needs_exactly_one_source_and_asks_before_http(
 
     assert is_error
     assert str(payload["error"]).startswith(McpRefusal.ARTIFACT_SOURCE_AMBIGUOUS.value)
+    assert service.calls == []
+
+
+def test_publish_artifact_opens_a_fifo_without_blocking(
+    session: tuple[ScriptedService, StdioMcpSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, client = session
+    named = tmp_path / "material.pipe"
+    os.mkfifo(named)
+    opened_with: list[int] = []
+    open_file = os.open
+
+    def recording_open(path: str | os.PathLike[str], flags: int) -> int:
+        opened_with.append(flags)
+        return open_file(path, flags)
+
+    monkeypatch.setattr(mcp_command.os, "open", recording_open)
+
+    payload, is_error = client.call_tool(
+        McpToolName.PUBLISH_ARTIFACT.value, {ARTIFACT_PATH_FIELD: str(named)}
+    )
+
+    assert is_error
+    assert str(payload["error"]).startswith(
+        McpRefusal.ARTIFACT_PATH_NOT_A_REGULAR_FILE.value
+    )
+    assert opened_with == [os.O_RDONLY | os.O_NONBLOCK]
+    assert service.calls == []
+
+
+def test_publish_artifact_bounds_the_read_when_an_open_file_grows(
+    session: tuple[ScriptedService, StdioMcpSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, client = session
+    named = tmp_path / "growing.patch"
+    named.write_bytes(b"x")
+    original_fstat = os.fstat
+    original_read = os.read
+    file_grew = False
+    bytes_read = 0
+
+    def grow_after_fstat(descriptor: int) -> os.stat_result:
+        nonlocal file_grew
+        described = original_fstat(descriptor)
+        if not file_grew:
+            with named.open("ab") as growing:
+                growing.write(b"x" * (MAXIMUM_ARTIFACT_BYTES + 1))
+            file_grew = True
+        return described
+
+    def counting_read(descriptor: int, maximum_bytes: int) -> bytes:
+        nonlocal bytes_read
+        chunk = original_read(descriptor, maximum_bytes)
+        bytes_read += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(mcp_command.os, "fstat", grow_after_fstat)
+    monkeypatch.setattr(mcp_command.os, "read", counting_read)
+
+    payload, is_error = client.call_tool(
+        McpToolName.PUBLISH_ARTIFACT.value, {ARTIFACT_PATH_FIELD: str(named)}
+    )
+
+    assert is_error
+    assert str(payload["error"]).startswith(McpRefusal.ARTIFACT_PATH_TOO_LARGE.value)
+    assert bytes_read <= MAXIMUM_ARTIFACT_BYTES + 1
+    assert bytes_read < named.stat().st_size
     assert service.calls == []
 
 

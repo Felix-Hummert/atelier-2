@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
+from atelier2.adapters.dbos.runtime import create_canonical_engine
+from atelier2.adapters.dbos.schema import artifacts, initialize_schema
 from atelier2.api.app import create_app
-from atelier2.api.openapi import ARTIFACTS_PATH
+from atelier2.api.openapi import API_PREFIX, ARTIFACT_PATH, ARTIFACTS_PATH
 from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.routes.artifacts import ARTIFACT_MEDIA_TYPE
 from atelier2.contracts.artifacts import Artifact, ArtifactHash
@@ -38,10 +42,12 @@ class KeptArtifacts:
         return self._kept.get(artifact_hash.value)
 
 
-def artifact_client() -> TestClient:
+def artifact_client(
+    store: KeptArtifacts | DbosArtifactStore | None = None,
+) -> TestClient:
     """The composed HTTP boundary in front of one artifact store and nothing else."""
 
-    kept = KeptArtifacts()
+    kept = KeptArtifacts() if store is None else store
     return TestClient(
         create_app(
             source_commit="commit",
@@ -92,3 +98,34 @@ def test_an_address_this_store_cannot_answer_is_refused_by_name(
     assert read.status_code == status
     assert read.headers["content-type"] == "application/problem+json"
     assert read.json()["type"] == PROBLEM_TYPE_PREFIX + code
+
+
+def test_stored_bytes_that_do_not_match_their_address_are_durable_corruption(
+    tmp_path: Path,
+) -> None:
+    engine = create_canonical_engine(tmp_path / "corrupted-artifact.sqlite")
+    initialize_schema(engine)
+    address = ArtifactHash.of(PUBLISHED_MATERIAL)
+    with engine.begin() as connection:
+        connection.execute(
+            artifacts.insert().values(
+                artifact_hash=address.value,
+                content=b"different material",
+            )
+        )
+    client = artifact_client(DbosArtifactStore(engine))
+
+    try:
+        read = client.get(f"{ARTIFACTS_PATH}/{address.value}")
+        document = client.get(API_PREFIX + "/openapi.json").json()
+        responses = document["paths"][ARTIFACT_PATH]["get"]["responses"]
+    finally:
+        client.close()
+        engine.dispose()
+
+    assert read.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert read.headers["content-type"] == "application/problem+json"
+    assert read.json()["type"] == PROBLEM_TYPE_PREFIX + "durable-state-corrupt"
+    assert {"$ref": "#/components/schemas/ProblemDurableStateCorrupt"} in responses[
+        "500"
+    ]["content"]["application/problem+json"]["schema"]["oneOf"]
