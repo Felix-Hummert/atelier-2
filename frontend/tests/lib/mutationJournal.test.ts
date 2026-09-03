@@ -251,6 +251,31 @@ describe("MutationJournal exact transport truth", () => {
       new MutationJournal(removeStorage).discard(start().mutation_id)
     ).rejects.toThrow(removeFailure);
   });
+
+  describe("discardPoisoned: the one way out of a journal entries() refuses to read (#914)", () => {
+    it("removes a poisoned journal that entries() itself rejects, never reading it first", async () => {
+      sessionStorage.setItem("atelier2.mutation-journal.v1", "{");
+      const journal = new MutationJournal(sessionStorage);
+      await expect(journal.entries()).rejects.toThrow(/valid JSON/);
+
+      expect(journal.discardPoisoned()).toBe(true);
+      expect(sessionStorage.getItem("atelier2.mutation-journal.v1")).toBeNull();
+      await expect(journal.entries()).resolves.toEqual([]);
+    });
+
+    it("removes every remembered mutation, valid ones included -- there is no partial rescue", async () => {
+      const journal = new MutationJournal(sessionStorage);
+      await journal.prepare(start());
+      await journal.prepare(wait());
+
+      expect(journal.discardPoisoned()).toBe(true);
+      expect(await journal.entries()).toEqual([]);
+    });
+
+    it("reports honestly when there was nothing to forget", () => {
+      expect(new MutationJournal(sessionStorage).discardPoisoned()).toBe(false);
+    });
+  });
 });
 
 function publish(): MutationEnvelope {

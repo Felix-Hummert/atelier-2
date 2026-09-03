@@ -46,6 +46,7 @@ const NAMED_RESIDUAL_FILES = [
   "components/CatalogImportSheet.svelte",
   "components/ConnectSourceSheet.svelte",
   "components/DisconnectSourceSheet.svelte",
+  "components/PoisonedJournalDiscardSheet.svelte",
   "components/RenewSourceTokenSheet.svelte",
   "components/RetireCatalogLineageSheet.svelte",
   "components/RunCancelCard.svelte",
