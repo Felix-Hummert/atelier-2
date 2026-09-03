@@ -106,7 +106,19 @@ if command == "uv":
             raise SystemExit("definition source connect reached before migration")
         if state.get("fail_connect"):
             raise SystemExit("definition source connect refused for testing")
-        print(f"connected git source as {DEFINITION_SOURCE_ID} revision 1")
+        location = arguments[arguments.index("--location") + 1]
+        ref = arguments[arguments.index("--ref") + 1]
+        if state.get("connect_already_registered"):
+            print(
+                f"{DEFINITION_SOURCE_ID} is already connected to {location!r} at "
+                f"{ref!r}; revision 1 is unchanged"
+            )
+        else:
+            print(
+                f"connected git source {location!r} at {ref!r} as "
+                f"{DEFINITION_SOURCE_ID} revision 1"
+            )
+            print("  workflows/*.yaml -> workflow")
         raise SystemExit(0)
     if arguments[:5] == ["run", "--locked", "atelier2", "definition-source", "intake"]:
         if not state.get("migrated"):
@@ -446,6 +458,33 @@ def test_connect_failure_rolls_back_without_ever_reaching_intake(
         call[:5] == ["uv", "run", "--locked", "atelier2", "definition-source"]
         and call[5] == "intake"
         for call in harness.invocations()
+    )
+
+
+@pytest.mark.parametrize("connect_already_registered", [False, True])
+def test_the_id_connect_reports_either_way_is_the_id_intake_receives(
+    tmp_path: Path, connect_already_registered: bool
+) -> None:
+    """A first connect and an idempotent repeat use different wordings
+
+    (`connected ... as <id> ...` versus `<id> is already connected to ...`),
+    and the script must read the source id out of either one.
+    """
+    harness = UpdateHarness.create(tmp_path)
+    harness.configure(connect_already_registered=connect_already_registered)
+
+    completed = harness.run()
+
+    assert completed.returncode == 0, completed.stderr
+    intake_calls = [
+        call
+        for call in harness.invocations()
+        if call[:5] == ["uv", "run", "--locked", "atelier2", "definition-source"]
+        and call[5] == "intake"
+    ]
+    assert len(intake_calls) == 1
+    assert intake_calls[0][intake_calls[0].index("--source-id") + 1] == (
+        DEFINITION_SOURCE_ID
     )
 
 

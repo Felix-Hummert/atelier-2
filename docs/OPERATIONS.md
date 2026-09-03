@@ -645,12 +645,16 @@ Each path gets its own word in the log: `published` for bytes the catalog
 gained, `present` for bytes it already held, or `refused` for the one path
 that stopped that intake. A refusal does not hold the Serve back -- it starts
 with whatever workflow catalog state it already had -- but the command exits
-`3` rather than `0`, distinct from the generic failure exit `1`, so that a
-plain success/failure exit-code check (auto-redeploy's own) still counts that
-tick as a failure and, on a third consecutive one, escalates to the operator.
-The source itself failing to connect (an unreadable checkout or an unresolved
-ref, not a per-file refusal) is treated like a migration failure instead: it
-rolls back to the previously served commit and restarts that.
+`3` rather than `0`, distinct from the generic failure exit `1`, so
+auto-redeploy's watcher can tell the two apart. It logs a warning naming the
+served commit and the refusal, does not count a failure tick, and keeps the
+unit green: the deploy itself succeeded, so nothing here should raise the
+operator's failure streak toward its alert threshold. The refused path keeps
+serving its previous catalog state until the next successful deploy or a hand
+`atelier2 definition-source intake` fixes it. The source itself failing to
+connect (an unreadable checkout or an unresolved ref, not a per-file refusal)
+is treated like a migration failure instead: it rolls back to the previously
+served commit and restarts that, and does count as an ordinary failure tick.
 
 Install the clean-stop classification once beside the unit, as the same user:
 

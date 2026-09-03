@@ -15,6 +15,10 @@ readonly alert_repeat_seconds=3600
 readonly check_run_lookup_timeout_seconds=60
 readonly check_run_appearance_grace_seconds=1800
 readonly github_repository="repos/FlexOr2/atelier-2"
+# Must match serve_live_update.sh's own intake_refused_exit_code: the deploy
+# still succeeded (the new commit is served), only a workflow intake was
+# refused, so this is not an ordinary failure tick.
+readonly intake_refused_exit_code=3
 
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 serve_live_update="${repository}/scripts/serve_live_update.sh"
@@ -365,5 +369,10 @@ if "${serve_live_update}" "${target_commit}"; then
   exit 0
 else
   update_exit=$?
+fi
+if ((update_exit == intake_refused_exit_code)); then
+  reset_counters
+  log_warning "main now served at ${target_commit}; workflow intake refused (see serve_live_update journal)"
+  exit 0
 fi
 refuse_tick "loopback update failed" "serve_live_update.sh failed for ${target_commit} (exit ${update_exit})"
