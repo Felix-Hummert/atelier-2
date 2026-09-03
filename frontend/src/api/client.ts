@@ -479,6 +479,7 @@ export const agentConfigurationRevisionListItemObjectSchema =
       not_startable_reason: z
         .enum([
           "agent-executor-binding-unavailable",
+          "model-not-registered",
           "provider-probe-receipt-missing",
         ])
         .nullable(),
@@ -495,15 +496,30 @@ const agentConfigurationRevisionListItemSchema =
             "agent configuration startability cannot hold without its own structural startability",
         });
       }
-      const expectedReason = item.startable
-        ? null
-        : item.structurally_startable
-          ? "provider-probe-receipt-missing"
-          : "agent-executor-binding-unavailable";
-      if (item.not_startable_reason !== expectedReason) {
+      if (item.startable !== (item.not_startable_reason === null)) {
         context.addIssue({
           code: "custom",
           message: "agent configuration startability and reason disagree",
+        });
+      }
+      if (
+        !item.structurally_startable &&
+        item.not_startable_reason !== "agent-executor-binding-unavailable"
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "a structurally unavailable configuration must carry its own reason",
+        });
+      }
+      if (
+        item.structurally_startable &&
+        item.not_startable_reason === "agent-executor-binding-unavailable"
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "a structurally startable configuration cannot carry the executor-unavailable reason",
         });
       }
     },
@@ -821,34 +837,6 @@ const runForkSuccessorSchema = z
 
 export const MAXIMUM_RUN_FORK_SUCCESSORS = 100;
 
-export const runV3Schema = z
-  .object({
-    workflow_format_version: z.literal(3),
-    run_id: z.string().min(1),
-    public_run_reference: publicRunReference,
-    workflow_revision_hash: sha256,
-    agent_binding_set_hash: sha256,
-    run_configuration_revision_hash: sha256,
-    agent_bindings: z.array(agentBindingV2Schema).max(100),
-    orders: z.array(runOrderSchema),
-    fork_origin: runForkOriginSchema.nullable().optional(),
-    fork_successors: z
-      .array(runForkSuccessorSchema)
-      .max(MAXIMUM_RUN_FORK_SUCCESSORS)
-      .optional(),
-    state_version: nonnegativeSafeInteger,
-    state: z.enum(RUN_STATES_V3),
-    current_node_id: z.string().min(1),
-    current_node_execution_id: sha256,
-    node_rail: z.array(nodeRailEntrySchema).min(1),
-    cancellation: runCancellabilitySchema,
-    terminal_hash: sha256.nullable(),
-    latest_event_cursor: eventCursor.nullable(),
-    started_at: z.string().nullable().optional(),
-    ended_at: z.string().nullable().optional(),
-  })
-  .strict();
-
 /**
  * One node of a run, as `GET /runs/{ref}/nodes/{node_id}` answers it.
  *
@@ -910,6 +898,85 @@ const nodeRefusalOutputSchema = z
   .object({
     value_base64: z.string().max(MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS),
     value_hash: sha256,
+  })
+  .strict();
+
+/**
+ * `base64_characters_for(MAXIMUM_AGENT_OUTPUT_BYTES_V2)` (`api/references.py`),
+ * mirrored here the same way `MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS` above
+ * already is. `RunResourceV3.answer` (#1045) is served on every listed run,
+ * repeated once per row, so unlike `nodeAnswerSchema` (unbounded: a single
+ * node detail read shares no byte bound across node kinds) it needs one.
+ */
+export const MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = 65_536;
+
+const runTerminalAnswerValueSchema = z
+  .object({
+    kind: z.literal("value"),
+    value_base64: z.string().max(MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS),
+    value_hash: sha256,
+  })
+  .strict();
+
+/**
+ * A terminal node did write an answer, but not the value this row carries
+ * (#1045): a bare `null` would read the same as a node that wrote nothing at
+ * all, so an oversized value is named instead of hidden behind that absence.
+ */
+const runTerminalAnswerOmittedSchema = z
+  .object({
+    kind: z.literal("omitted"),
+    reason: z.literal("too_large"),
+    maximum_bytes: nonnegativeSafeInteger,
+  })
+  .strict();
+
+const runTerminalAnswerSchema = z.discriminatedUnion("kind", [
+  runTerminalAnswerValueSchema,
+  runTerminalAnswerOmittedSchema,
+]);
+
+export type RunTerminalAnswer = z.infer<typeof runTerminalAnswerSchema>;
+
+export const runV3Schema = z
+  .object({
+    workflow_format_version: z.literal(3),
+    run_id: z.string().min(1),
+    public_run_reference: publicRunReference,
+    workflow_revision_hash: sha256,
+    // A format-3 document always declares a name, so this is never absent
+    // (#1045). History used to ask `getWorkflowRevision` once per distinct
+    // revision hash for exactly this; this is that fact carried on the row.
+    workflow_name: z.string().min(1),
+    agent_binding_set_hash: sha256,
+    run_configuration_revision_hash: sha256,
+    agent_bindings: z.array(agentBindingV2Schema).max(100),
+    orders: z.array(runOrderSchema),
+    // The tracker reference one of `orders` above names, read against the
+    // published `work_item` order schema server-side (#1045) -- never a
+    // guess parsed from a node's job text. `1_024` mirrors
+    // `MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS` (`contracts/queue_projection.py`).
+    work_item_reference: z.string().min(1).max(1_024).nullable().optional(),
+    fork_origin: runForkOriginSchema.nullable().optional(),
+    fork_successors: z
+      .array(runForkSuccessorSchema)
+      .max(MAXIMUM_RUN_FORK_SUCCESSORS)
+      .optional(),
+    // What the terminal node wrote or refused, mutually exclusive, both
+    // absent on a run that has not ended (#1045). History used to ask
+    // `getNodeDetail` once per row for exactly these two facts.
+    answer: runTerminalAnswerSchema.nullable().optional(),
+    refusal_output: nodeRefusalOutputSchema.nullable().optional(),
+    state_version: nonnegativeSafeInteger,
+    state: z.enum(RUN_STATES_V3),
+    current_node_id: z.string().min(1),
+    current_node_execution_id: sha256,
+    node_rail: z.array(nodeRailEntrySchema).min(1),
+    cancellation: runCancellabilitySchema,
+    terminal_hash: sha256.nullable(),
+    latest_event_cursor: eventCursor.nullable(),
+    started_at: z.string().nullable().optional(),
+    ended_at: z.string().nullable().optional(),
   })
   .strict();
 
