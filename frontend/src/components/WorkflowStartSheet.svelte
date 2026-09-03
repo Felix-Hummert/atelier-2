@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import type {
@@ -12,6 +12,7 @@
     WorkflowRevisionDetail
   } from "../api/client";
   import {
+    matchesSearchTerm,
     observedSourceHeading,
     observedWorkItemLabel,
     pinnedModelLine,
@@ -91,6 +92,7 @@
   let openWorkItemOrder: string | null = null;
   let activeWorkItemId: string | null = null;
   let workItemFilter = "";
+  let workItemFilterElement: HTMLInputElement | null = null;
   let suppressDialogCancel = false;
 
   $: roles = agentRolesOf(revision.graph);
@@ -101,9 +103,7 @@
     roles.every(roleCanStart) &&
     orders.every(orderCanStart);
   $: offerableQueueItems = observedQueueItems.filter((item) => item.retired_at === null);
-  $: filteredItemsBySource = groupObservedItemsBySource(
-    filterObservedItems(offerableQueueItems, workItemFilter)
-  );
+  $: filteredItemsBySource = visibleItemsBySource(workItemFilter, offerableQueueItems);
   $: disabledStartReason = startDisabledReason(
     loading,
     resolving,
@@ -460,20 +460,25 @@
     items: readonly ObservedQueueItem[],
     query: string
   ): readonly ObservedQueueItem[] {
-    const needle = query.trim().toLowerCase();
-    if (needle.length === 0) return items;
-    return items.filter((item) => {
-      const reference = item.tracker_item_reference.toLowerCase();
-      const grammar = adapterGrammarLabel(item.tracker_item_reference).toLowerCase();
-      const title = item.title?.toLowerCase() ?? "";
-      return reference.includes(needle) || grammar.includes(needle) || title.includes(needle);
-    });
+    return items.filter((item) =>
+      matchesSearchTerm(
+        [item.tracker_item_reference, adapterGrammarLabel(item.tracker_item_reference), item.title],
+        query
+      )
+    );
   }
 
+  /**
+   * The one grouping-and-filtering pipeline behind both the reactive render
+   * value and the imperative reads (`flattenedObservedItems`) that need the
+   * result for a `workItemFilter` that has not reached the reactive
+   * statement yet.
+   */
   function visibleItemsBySource(
-    query: string
+    query: string,
+    items: readonly ObservedQueueItem[]
   ): ReadonlyArray<readonly [string, readonly ObservedQueueItem[]]> {
-    return groupObservedItemsBySource(filterObservedItems(offerableQueueItems, query));
+    return groupObservedItemsBySource(filterObservedItems(items, query));
   }
 
   function selectedWorkItemLabel(order: OrderDraft): string {
@@ -497,14 +502,23 @@
     return `work-item-option-${orderName}-${itemId}`;
   }
 
+  function workItemComboboxId(orderName: string): string {
+    return `work-item-combobox-${orderName}`;
+  }
+
   function flattenedObservedItems(): readonly ObservedQueueItem[] {
-    return visibleItemsBySource(workItemFilter).flatMap(([, items]) => items);
+    return visibleItemsBySource(workItemFilter, offerableQueueItems).flatMap(([, items]) => items);
   }
 
   function closeWorkItemPicker(): void {
+    const closedOrder = openWorkItemOrder;
     openWorkItemOrder = null;
     activeWorkItemId = null;
     workItemFilter = "";
+    if (closedOrder === null) return;
+    // The filter field the closing picker owned is about to unmount; hand
+    // focus back to the trigger instead of letting it fall to the document.
+    globalThis.document.getElementById(workItemComboboxId(closedOrder))?.focus();
   }
 
   function openWorkItemPicker(orderName: string, preferEnd = false): void {
@@ -517,6 +531,9 @@
     activeWorkItemId = selectedItem?.item_id
       ?? (preferEnd ? items.at(-1)?.item_id : items[0]?.item_id)
       ?? null;
+    // A mouse or keyboard open both land the caret in the filter field, the
+    // one place ArrowUp/ArrowDown/Enter/Escape now work (REQ-UIQ-05).
+    void tick().then(() => workItemFilterElement?.focus());
   }
 
   function toggleWorkItemPicker(orderName: string): void {
@@ -558,6 +575,13 @@
     chooseWorkItem(orderName, item.tracker_item_reference);
   }
 
+  /**
+   * The closed combobox's own keys: open it (ArrowUp/ArrowDown/Enter/Space)
+   * or move within it once it is already open by some other route. Once the
+   * picker opens, focus leaves this button for the filter field below, so
+   * Tab is left to its native action — the filter field is the very next
+   * focusable element, not a target this handler intercepts (REQ-UIQ-05).
+   */
   function handleWorkItemPickerKey(orderName: string, event: KeyboardEvent): void {
     switch (event.key) {
       case "ArrowDown":
@@ -574,8 +598,37 @@
         if (openWorkItemOrder === orderName) chooseActiveWorkItem(orderName);
         else openWorkItemPicker(orderName);
         return;
-      case "Tab":
-        if (openWorkItemOrder === orderName) closeWorkItemPicker();
+      default:
+        return;
+    }
+  }
+
+  /**
+   * The filter field's own keys, once real keyboard focus reaches it
+   * (REQ-UIQ-05). Deliberately not `handleWorkItemPickerKey`: that
+   * handler's " " case would swallow a space typed into a title filter.
+   */
+  function handleWorkItemFilterKey(orderName: string, event: KeyboardEvent): void {
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        moveActiveWorkItem(orderName, 1);
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        moveActiveWorkItem(orderName, -1);
+        return;
+      case "Enter":
+        event.preventDefault();
+        chooseActiveWorkItem(orderName);
+        return;
+      case "Escape":
+        // Close only the picker, not the whole sheet: stop the dialog's own
+        // Escape handling (containDialogFocus) from seeing an already-closed
+        // picker and dismissing the sheet underneath it.
+        event.preventDefault();
+        event.stopPropagation();
+        closeWorkItemPicker();
         return;
       default:
         return;
@@ -725,6 +778,7 @@
               {:else}
                 <button
                   type="button"
+                  id={workItemComboboxId(order.name)}
                   class="picker-field"
                   role="combobox"
                   aria-haspopup="listbox"
@@ -743,43 +797,47 @@
                   <span class="picker-caret" aria-hidden="true">{openWorkItemOrder === order.name ? "▴" : "▾"}</span>
                 </button>
                 {#if openWorkItemOrder === order.name}
-                  <div
-                    class="picker-menu"
-                    id={`work-item-list-${order.name}`}
-                    role="listbox"
-                    aria-label={workItemListName(order.name)}
-                  >
+                  <div class="picker-menu">
                     <input
                       type="search"
                       class="picker-filter"
                       placeholder={workflowStartCopy.filterWorkItemsPlaceholder}
                       aria-label={workflowStartCopy.filterWorkItemsLabel}
                       value={workItemFilter}
+                      bind:this={workItemFilterElement}
                       oninput={(event) => setWorkItemFilter(event.currentTarget.value)}
+                      onkeydown={(event) => handleWorkItemFilterKey(order.name, event)}
                     />
-                    {#if filteredItemsBySource.length === 0}
-                      <div class="picker-none">{workflowStartCopy.noWorkItemMatch(workItemFilter)}</div>
-                    {:else}
-                      {#each filteredItemsBySource as [heading, items] (heading)}
-                        <div class="picker-group">{heading}</div>
-                        {#each items as item (item.item_id)}
-                          <button
-                            type="button"
-                            class="picker-option"
-                            class:selected={(order.values.work_item ?? "") === item.tracker_item_reference}
-                            class:active={activeWorkItemId === item.item_id}
-                            id={workItemOptionId(order.name, item.item_id)}
-                            tabindex="-1"
-                            role="option"
-                            aria-selected={(order.values.work_item ?? "") === item.tracker_item_reference}
-                            onmousedown={(event) => event.preventDefault()}
-                            onclick={() => chooseWorkItem(order.name, item.tracker_item_reference)}
-                          >
-                            {workItemLabel(item)}
-                          </button>
+                    <div
+                      class="picker-options"
+                      id={`work-item-list-${order.name}`}
+                      role="listbox"
+                      aria-label={workItemListName(order.name)}
+                    >
+                      {#if filteredItemsBySource.length === 0}
+                        <div class="picker-none">{workflowStartCopy.noWorkItemMatch(workItemFilter)}</div>
+                      {:else}
+                        {#each filteredItemsBySource as [heading, items] (heading)}
+                          <div class="picker-group">{heading}</div>
+                          {#each items as item (item.item_id)}
+                            <button
+                              type="button"
+                              class="picker-option"
+                              class:selected={(order.values.work_item ?? "") === item.tracker_item_reference}
+                              class:active={activeWorkItemId === item.item_id}
+                              id={workItemOptionId(order.name, item.item_id)}
+                              tabindex="-1"
+                              role="option"
+                              aria-selected={(order.values.work_item ?? "") === item.tracker_item_reference}
+                              onmousedown={(event) => event.preventDefault()}
+                              onclick={() => chooseWorkItem(order.name, item.tracker_item_reference)}
+                            >
+                              {workItemLabel(item)}
+                            </button>
+                          {/each}
                         {/each}
-                      {/each}
-                    {/if}
+                      {/if}
+                    </div>
                   </div>
                 {/if}
               {/if}
@@ -898,7 +956,7 @@
   .picker-field { display: flex; width: 100%; justify-content: space-between; gap: var(--space-2); background: var(--panel2); border-color: var(--line); font-weight: var(--weight-medium); text-align: left; }
   .picker-caret { color: var(--ink-dim); }
   .picker-menu { border: var(--edge) solid var(--line); border-radius: var(--r); background: var(--panel2); padding: var(--space-1) 0; }
-  .picker-filter { box-sizing: border-box; display: block; width: 100%; margin: 0 0 var(--space-1); border: var(--edge) solid var(--line); border-radius: var(--r); padding: var(--space-2) var(--space-3); color: var(--ink); background: var(--panel2); font-size: var(--text-xs); }
+  .picker-filter { box-sizing: border-box; display: block; width: 100%; min-height: var(--tap); margin: 0 0 var(--space-1); border: var(--edge) solid var(--line); border-radius: var(--r); padding: var(--space-2) var(--space-3); color: var(--ink); background: var(--panel2); font-size: var(--text-xs); }
   .picker-group { padding: var(--space-1) var(--space-3); color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
   .picker-none { padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5); color: var(--ink-dim); }
   .picker-option { display: flex; width: 100%; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; font-weight: var(--weight-medium); padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5); text-align: left; }

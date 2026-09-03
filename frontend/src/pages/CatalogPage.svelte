@@ -7,7 +7,7 @@
   import ReadState from "../components/ReadState.svelte";
   import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR, handCatalogDocumentIn } from "../lib/catalogAdmission";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
-  import { catalogPageCopy } from "../lib/catalogPageCopy";
+  import { catalogPageCopy, matchesSearchTerm } from "../lib/catalogPageCopy";
   import {
     catalogAgentRows,
     catalogRowFacts,
@@ -239,12 +239,8 @@
     rows: readonly T[],
     term: string
   ): T[] {
-    const normalizedTerm = term.trim().toLocaleLowerCase();
-    if (normalizedTerm === "") return [...rows];
     return rows.filter((row) =>
-      [row.title, row.description, "provider" in row ? row.provider : ""]
-        .filter((value): value is string => value !== null)
-        .some((value) => value.toLocaleLowerCase().includes(normalizedTerm))
+      matchesSearchTerm([row.title, row.description, "provider" in row ? row.provider : ""], term)
     );
   }
 

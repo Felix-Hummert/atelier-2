@@ -356,7 +356,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect(request.orders).toEqual([{ name: "work", work_item: "gh:450" }]);
   });
 
-  it("walks the work-item picker by keyboard, keeps focus on the combobox, and names the listbox", async () => {
+  it("walks the work-item picker by keyboard, focuses the filter field while open, returns focus to the combobox once closed, and names the listbox", async () => {
     const cockpitApi = api({
       getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
       getSchemaRevision: vi.fn(async () => workItemSchema),
@@ -375,7 +375,13 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     const second = screen.getByRole("option", { name: "#446" });
     const third = screen.getByRole("option", { name: "!13 Deploy runner" });
     expect(picker.getAttribute("aria-activedescendant")).toBe(first.id);
-    expect(document.activeElement).toBe(picker);
+    // REQ-UIQ-05: opening lands real keyboard focus in the filter field, the
+    // one place ArrowUp/ArrowDown/Enter/Escape actually reach as a keyboard
+    // user tabs or types through the picker -- not the still-labelled but
+    // now-unfocused combobox button.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText(workflowStartCopy.filterWorkItemsLabel))
+    );
 
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
     expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);

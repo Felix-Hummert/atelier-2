@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import axe from "axe-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -15,15 +16,16 @@ import { cockpitApiStub } from "../support/cockpitApi";
 /**
  * The start sheet's work-item picker filter (#962 Scheibe 8, operator ruling
  * 31.08. line 4): typing narrows the grouped list by reference or title, and
- * the two honest empty states -- "no match" and "all retired" -- replace a
- * silently unopenable `Choose` button.
+ * the honest "no match" empty state replaces a silently unopenable `Choose`
+ * button. The all-retired gate is `materialField.test.ts`'s own assertion,
+ * next to the Start-disabled reason it shares a fixture with.
  *
  * `frontend/tests/e2e/catalog-start.spec.ts` proves the same narrowing
  * through the real interface, but the harness seeds exactly one observed
- * item, so it cannot show a group dropping out or the all-retired gate. This
- * file mounts the real app against a `CockpitApi` double instead -- the
- * economical way to reach those edges (leerer Liste, mehrere Quellen,
- * Groß-/Kleinschreibung) without a live tracker fixture.
+ * item, so it cannot show a group dropping out. This file mounts the real
+ * app against a `CockpitApi` double instead -- the economical way to reach
+ * that edge (mehrere Quellen, Groß-/Kleinschreibung) without a live tracker
+ * fixture.
  */
 
 const revisionHash = "a".repeat(64);
@@ -226,12 +228,38 @@ describe("work-item picker filter", () => {
     await openStart(cockpitApi);
     const picker = await openPicker();
 
-    await fireEvent.input(filterField(), { target: { value: "#45" } });
+    // A keyboard user's ArrowDown reaches the filter field, not the
+    // combobox button underneath it (REQ-UIQ-05) -- the state a real user
+    // produces once the picker is open.
+    const filter = filterField();
+    await fireEvent.input(filter, { target: { value: "#45" } });
     const only = screen.getByRole("option", { name: "#450 Preview door" });
     expect(picker.getAttribute("aria-activedescendant")).toBe(only.id);
 
-    await fireEvent.keyDown(picker, { key: "ArrowDown" });
+    await fireEvent.keyDown(filter, { key: "ArrowDown" });
     expect(picker.getAttribute("aria-activedescendant")).toBe(only.id);
+  });
+
+  it("focuses the filter field when the picker opens, and lets Tab from the combobox reach it (REQ-UIQ-05)", async () => {
+    const cockpitApi = api({ listObservedQueueItems: vi.fn(async () => groupedQueueItems) });
+    await openStart(cockpitApi);
+    const picker = await openPicker();
+
+    await waitFor(() => expect(document.activeElement).toBe(filterField()));
+
+    // Tab must not be intercepted to close the picker first (that was the
+    // defect): the field has to still be there, immediately after the
+    // combobox in tab order, for the browser's own Tab action to reach.
+    picker.focus();
+    fireEvent.keyDown(picker, { key: "Tab" });
+    expect(screen.getByRole("listbox", { name: workItemFor("work") })).toBeTruthy();
+    const dialog = screen.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]):not([role="option"]), input:not([disabled]), select:not([disabled]), a[href]'
+      )
+    );
+    expect(focusable[focusable.indexOf(picker) + 1]).toBe(filterField());
   });
 
   it("resets the filter when the picker is closed and reopened", async () => {
@@ -249,26 +277,18 @@ describe("work-item picker filter", () => {
     expect(screen.getByRole("option", { name: "!13 Deploy runner" })).toBeTruthy();
   });
 
-  it("shows the honest all-retired state instead of a Choose that opens nothing", async () => {
-    const cockpitApi = api({
-      listObservedQueueItems: vi.fn(async () => ({
-        items: [{
-          project_id: "atelier",
-          tracker_item_reference: "gh:450",
-          item_id: "1".repeat(64),
-          revision: 0,
-          title: "Preview door",
-          title_observed_at: "2026-09-01T14:00:00Z",
-          retired_at: "2026-09-02T09:30:00Z"
-        }],
-        next_after: null
-      }))
-    });
+  it("proves(picker-open-has-no-unnamed-axe-violations): the open, filtered picker has no WCAG 2.1/2.2 AA violation axe can catch in jsdom (REQ-UIQ-05)", async () => {
+    const cockpitApi = api({ listObservedQueueItems: vi.fn(async () => groupedQueueItems) });
     await openStart(cockpitApi);
+    await openPicker();
+    await fireEvent.input(filterField(), { target: { value: "#45" } });
 
-    expect(screen.getByText(workflowStartCopy.allRetired)).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: workItemFor("work") })).toBeNull();
-    expect(screen.queryByText(workflowStartCopy.noSource)).toBeNull();
-    expect(screen.queryByRole("button", { name: workflowStartCopy.connectSource })).toBeNull();
+    const results = await axe.run(screen.getByRole("dialog"), {
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag22aa"] }
+    });
+    // jsdom cannot compute color-contrast; that lands in `incomplete`, not
+    // `violations`, and this scan does not need it either way.
+    const violations = results.violations.map((violation) => `${violation.id}: ${violation.help}`);
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 });
