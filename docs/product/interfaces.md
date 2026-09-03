@@ -14,7 +14,9 @@ the tracker title last observed at import, its observation timestamp, and,
 for a retired item, when import saw it leave the tracker's open set.
 It can
 publish secret-free auth-profile and agent-configuration revisions and list
-both; publish
+both (a listed configuration names its live `startable` answer and, when
+false, the exact reason: no executor bound, the model registry pointing
+elsewhere, or only its live receipt still missing); publish
 exact JSON Schema revisions; publish and
 inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
 (the list accepts a `state` filter so a consumer can ask which runs wait;

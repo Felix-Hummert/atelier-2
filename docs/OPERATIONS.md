@@ -729,8 +729,16 @@ from the deploy checkout. Because the post-Serve-start drop-in fires this run
 at process start rather than once it can answer, the run first polls `/health`
 for up to 60 seconds until it answers `serving` -- failing loud with the last
 health answer, and trying no vector, if it never does -- before any other
-discovery step begins. Discovery is capped at four configuration pages, 50
-known startable vectors, and 300 seconds. All distinct admitted workflow names
+discovery step begins. A configuration is a vector when the listing's own
+`startable` field says so, or when its only problem is a missing live
+receipt (`not_startable_reason: provider-probe-receipt-missing`) -- both the
+same judgment a start reads, computed once by the deployment's atomic
+snapshot; discovery derives nothing of its own from either field. A
+superseded revision (the model registry no longer points to it) carries its
+own distinct reason and is excluded; a redeploy that invalidates every
+receipt by `source_commit` still leaves every registered configuration
+reprobable. Discovery is capped at four configuration pages, 50 known
+startable vectors, and 300 seconds. All distinct admitted workflow names
 resolve before any vector starts. Each run then has a 300-second terminal
 deadline, while the complete process has a 15,300-second deadline enforced by
 both the runner and its systemd unit. Every HTTP call has a 30-second cap reduced

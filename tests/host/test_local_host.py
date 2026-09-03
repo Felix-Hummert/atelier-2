@@ -1051,6 +1051,9 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             catalog.publish_agent_configuration_revision(grok_configuration),
             AgentConfigurationRevisionCreated,
         )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("xai"), (grok_configuration,)
+        )
         # Pin the real catalog producing the exact pair the reprobe exemption
         # depends on, not a fake standing in for it: before any receipt
         # exists, Claude is unstartable structurally (its factory is
