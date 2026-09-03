@@ -248,22 +248,30 @@ class AgentConfigurationRevisionResource(ApiModel):
 
 
 class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResource):
-    """A listed configuration plus the host's two independent startability answers.
+    """A listed configuration plus the host's live startability answer.
 
-    `startable` is the receipt-gated answer: an operator's own Start control
-    gates on it, and it is the same answer a real start door acts on.
-    `structurally_startable` asks only whether a factory is registered,
-    available, and declares the capability, with no live evidence asked at
-    all -- the live provider canary's own discovery reads that one, because it
-    exists to produce the evidence `startable` is missing and could never find
-    a vector to probe through a question that already requires the evidence.
+    `startable` is the answer a real start door acts on: a factory
+    registered for this executor, the model registry still pointing at this
+    exact configuration hash, and live receipt evidence, all three.
+    `structurally_startable` asks only the first of those, with no live
+    evidence asked at all -- the live provider canary's own discovery reads
+    `startable` and this one apart, because between them they are exactly the
+    evidence a canary's own run could still produce. `not_startable_reason`
+    names whichever of the three a start would meet first:
+    `agent-executor-binding-unavailable` (no factory), `model-not-registered`
+    (a superseded or never-registered model), or `provider-probe-receipt-missing`
+    (everything else holds, only live evidence is missing or stale).
     `startable` cannot hold without `structurally_startable`.
     """
 
     startable: bool
     structurally_startable: bool
     not_startable_reason: (
-        Literal["agent-executor-binding-unavailable", "provider-probe-receipt-missing"]
+        Literal[
+            "agent-executor-binding-unavailable",
+            "model-not-registered",
+            "provider-probe-receipt-missing",
+        ]
         | None
     )
 
@@ -274,15 +282,23 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
                 "agent configuration startability cannot hold without its own "
                 "structural startability"
             )
-        expected_reason = (
-            None
-            if self.startable
-            else "agent-executor-binding-unavailable"
-            if not self.structurally_startable
-            else "provider-probe-receipt-missing"
-        )
-        if self.not_startable_reason != expected_reason:
+        if self.startable != (self.not_startable_reason is None):
             raise ValueError("agent configuration startability and reason disagree")
+        if (
+            not self.structurally_startable
+            and self.not_startable_reason != "agent-executor-binding-unavailable"
+        ):
+            raise ValueError(
+                "a structurally unavailable configuration must carry its own reason"
+            )
+        if (
+            self.structurally_startable
+            and self.not_startable_reason == "agent-executor-binding-unavailable"
+        ):
+            raise ValueError(
+                "a structurally startable configuration cannot carry the "
+                "executor-unavailable reason"
+            )
         return self
 
 

@@ -479,6 +479,7 @@ export const agentConfigurationRevisionListItemObjectSchema =
       not_startable_reason: z
         .enum([
           "agent-executor-binding-unavailable",
+          "model-not-registered",
           "provider-probe-receipt-missing",
         ])
         .nullable(),
@@ -495,15 +496,30 @@ const agentConfigurationRevisionListItemSchema =
             "agent configuration startability cannot hold without its own structural startability",
         });
       }
-      const expectedReason = item.startable
-        ? null
-        : item.structurally_startable
-          ? "provider-probe-receipt-missing"
-          : "agent-executor-binding-unavailable";
-      if (item.not_startable_reason !== expectedReason) {
+      if (item.startable !== (item.not_startable_reason === null)) {
         context.addIssue({
           code: "custom",
           message: "agent configuration startability and reason disagree",
+        });
+      }
+      if (
+        !item.structurally_startable &&
+        item.not_startable_reason !== "agent-executor-binding-unavailable"
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "a structurally unavailable configuration must carry its own reason",
+        });
+      }
+      if (
+        item.structurally_startable &&
+        item.not_startable_reason === "agent-executor-binding-unavailable"
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "a structurally startable configuration cannot carry the executor-unavailable reason",
         });
       }
     },
