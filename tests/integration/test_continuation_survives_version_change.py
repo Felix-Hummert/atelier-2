@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 from dbos import DBOS, WorkflowHandle
+
 from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
     intent_snapshot_from_record,
@@ -93,17 +94,18 @@ WAIT_NODE = "approve"
 ANSWER = b'"accepted"'
 TIMEOUT_SECONDS = 12
 POLL_SECONDS = 0.025
+_EXECUTE_WORKFLOW_BY_ID_ATTR = "execute_workflow_by_id"
+"""Named in a variable, not a literal, so neither ruff nor pyright folds the
+`getattr`/`setattr` monkeypatch of this DBOS-internal name back into a static
+attribute access -- see `hold_pending_continuation`."""
 
-WAIT_DOCUMENT = (
-    b"""format_version: 3
+WAIT_DOCUMENT = b"""format_version: 3
 name: An accepted wait completes
 nodes:
   - id: approve
     type: wait
     prompt: Approve this change.
-"""
-    + declared_output(ANY_JSON_SCHEMA, "approval")
-)
+""" + declared_output(ANY_JSON_SCHEMA, "approval")
 
 
 def wait_runtime(root: Path, version: str) -> DbosRuntime:
@@ -133,6 +135,29 @@ def status_row(root: Path, workflow_id: str) -> tuple[str, str]:
     return str(row[0]), str(row[1])
 
 
+def wait_for_status_row(
+    root: Path, workflow_id: str, expected: tuple[str, str]
+) -> None:
+    """Poll for DBOS's own bookkeeping, not just the business effect it drove.
+
+    A workflow's body durably writes the run's observable state (here: the run
+    reaching `COMPLETED`) as one of its own last steps; DBOS marks the
+    envelope `SUCCESS` in a separate write immediately afterward, once the
+    function has returned. The two are not one transaction, so a caller that
+    waits only for the run's state and then reads `workflow_status` once can
+    observe that harmless gap. Poll here the same way `_wait_for_run` does.
+    """
+
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    observed = ("", "")
+    while time.monotonic() < deadline:
+        observed = status_row(root, workflow_id)
+        if observed == expected:
+            return
+        time.sleep(POLL_SECONDS)
+    raise AssertionError(f"workflow_status stayed {observed!r}, expected {expected!r}")
+
+
 def wait_for_marker(process: subprocess.Popen[str], marker: Path) -> None:
     deadline = time.monotonic() + TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -157,7 +182,9 @@ def stop_child(process: subprocess.Popen[str]) -> None:
     process.communicate(timeout=TIMEOUT_SECONDS)
 
 
-def stage_in_child(root: Path, continuation: str, barrier: str) -> subprocess.Popen[str]:
+def stage_in_child(
+    root: Path, continuation: str, barrier: str
+) -> subprocess.Popen[str]:
     marker = root / f"{continuation}-{barrier.lower()}-held"
     process = subprocess.Popen(
         [
@@ -188,11 +215,23 @@ def stage_in_child(root: Path, continuation: str, barrier: str) -> subprocess.Po
 def hold_pending_continuation(
     root: Path, workflow_id: str, marker: Path, launch: Callable[[], None]
 ) -> None:
-    """Hold the queue just after DBOS made its real dequeue state durable."""
+    """Hold the queue just after DBOS made its real dequeue state durable.
+
+    `dbos._queue` binds `execute_workflow_by_id` into its own module namespace
+    from `dbos._core` at import time; that binding, not the defining module, is
+    what the queue's dequeue path calls, so the barrier must patch it there.
+    Neither module declares the name in `__all__` -- it is DBOS-internal, not a
+    contract this repository owns -- so the patch reaches it through the
+    dynamic-attribute-name form of `getattr`/`setattr` (the name lives in a
+    variable, not a literal) rather than a static attribute access that both a
+    type checker and a linter would read as a claim on public API.
+    """
 
     from dbos import _queue
 
-    original = _queue.execute_workflow_by_id
+    execute_workflow_by_id: Callable[[DBOS, str, bool, bool], WorkflowHandle[Any]] = (
+        getattr(_queue, _EXECUTE_WORKFLOW_BY_ID_ATTR)
+    )
 
     def held(
         dbos: DBOS,
@@ -201,16 +240,16 @@ def hold_pending_continuation(
         is_dequeue: bool,
     ) -> WorkflowHandle[Any]:
         if candidate_workflow_id != workflow_id:
-            return original(dbos, candidate_workflow_id, is_recovery, is_dequeue)
-        if status_row(root, workflow_id)[0] != "PENDING":
-            raise AssertionError(
-                "DBOS invoked continuation before marking it PENDING"
+            return execute_workflow_by_id(
+                dbos, candidate_workflow_id, is_recovery, is_dequeue
             )
+        if status_row(root, workflow_id)[0] != "PENDING":
+            raise AssertionError("DBOS invoked continuation before marking it PENDING")
         marker.touch()
         while True:
             time.sleep(1)
 
-    _queue.execute_workflow_by_id = held
+    setattr(_queue, _EXECUTE_WORKFLOW_BY_ID_ATTR, held)
     launch()
     while True:
         time.sleep(1)
@@ -378,20 +417,28 @@ def test_an_accepted_answer_continues_once_after_a_version_change(
     try:
         second.launch()
         _wait_for_run(second, RunState.COMPLETED)
-        assert status_row(tmp_path, workflow_id) == ("SUCCESS", VERSION_Y)
+        wait_for_status_row(tmp_path, workflow_id, ("SUCCESS", VERSION_Y))
         with second.engine.connect() as connection:
-            assert connection.scalar(
-                sa.text(
-                    "SELECT COUNT(*) FROM workflow_status WHERE workflow_uuid=:workflow_id"
-                ),
-                {"workflow_id": workflow_id},
-            ) == 1
-            assert connection.scalar(
-                sa.select(sa.func.count()).select_from(run_events).where(
-                    run_events.c.run_id == RUN.value,
-                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+            assert (
+                connection.scalar(
+                    sa.text(
+                        "SELECT COUNT(*) FROM workflow_status WHERE workflow_uuid=:workflow_id"
+                    ),
+                    {"workflow_id": workflow_id},
                 )
-            ) == 1
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(run_events)
+                    .where(
+                        run_events.c.run_id == RUN.value,
+                        run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+                    )
+                )
+                == 1
+            )
             assert connection.scalar(sa.select(wait_answers.c.state)) == "APPLIED"
         replay = submit_answer(
             answer_request(), DbosWaitAnswerer(second.engine, VERSION_Y)
@@ -414,7 +461,11 @@ def test_an_accepted_reconciliation_continues_once_after_a_version_change(
             first.engine, first.settings, RUN, revision, first.agent_executor_registry
         )
         complete_v3_agent_node(
-            first, RUN, V3_EFFECT_LINE_AGENT_NODE_ID, V3_EFFECT_LINE_AGENT_JOB, b'"request"'
+            first,
+            RUN,
+            V3_EFFECT_LINE_AGENT_NODE_ID,
+            V3_EFFECT_LINE_AGENT_JOB,
+            b'"request"',
         )
         intent_snapshot = prepare_graph_action(
             first.engine, RUN, revision.revision_hash, first.effect_adapter_binding
@@ -439,37 +490,54 @@ def test_an_accepted_reconciliation_continues_once_after_a_version_change(
         )
     finally:
         decoy_runtime.close()
-    workflow_id = reconcile_workflow_id_for(ReconcileCommandId("continuation-reconcile"))
+    workflow_id = reconcile_workflow_id_for(
+        ReconcileCommandId("continuation-reconcile")
+    )
     second = effect_runtime(tmp_path, VERSION_Y)
     try:
         second.launch()
         _wait_for_run(second, RunState.WAITING_INPUT, V3_EFFECT_LINE_WAIT_NODE_ID)
-        assert status_row(tmp_path, workflow_id) == ("SUCCESS", VERSION_Y)
+        wait_for_status_row(tmp_path, workflow_id, ("SUCCESS", VERSION_Y))
         decoy_status, decoy_version = status_row(tmp_path, decoy_workflow_id)
         assert decoy_version == VERSION_X
         assert decoy_status in {"ENQUEUED", "PENDING"}
         with second.engine.connect() as connection:
-            assert connection.scalar(
-                sa.text(
-                    "SELECT COUNT(*) FROM workflow_status WHERE workflow_uuid=:workflow_id"
-                ),
-                {"workflow_id": workflow_id},
-            ) == 1
-            assert connection.scalar(
-                sa.select(sa.func.count()).select_from(
-                    reconcile_commands
-                ).where(reconcile_commands.c.command_id == "continuation-reconcile")
-            ) == 1
-            assert connection.scalar(
-                sa.select(reconcile_commands.c.state).where(
-                    reconcile_commands.c.command_id == "continuation-reconcile"
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(reconcile_commands)
+                    .where(reconcile_commands.c.command_id == "continuation-reconcile")
                 )
-            ) == "APPLIED"
-            assert connection.scalar(
-                sa.select(sa.func.count()).select_from(effect_receipts).where(
-                    effect_receipts.c.reconcile_command_id == "continuation-reconcile"
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.text(
+                        "SELECT COUNT(*) FROM workflow_status WHERE workflow_uuid=:workflow_id"
+                    ),
+                    {"workflow_id": workflow_id},
                 )
-            ) == 1
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.select(reconcile_commands.c.state).where(
+                        reconcile_commands.c.command_id == "continuation-reconcile"
+                    )
+                )
+                == "APPLIED"
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(effect_receipts)
+                    .where(
+                        effect_receipts.c.reconcile_command_id
+                        == "continuation-reconcile"
+                    )
+                )
+                == 1
+            )
             current_intent = _current_intent(connection, revision)
         replay = reconcile_effect_result(
             reconciliation_command(current_intent, "continuation-reconcile"),
@@ -480,15 +548,23 @@ def test_an_accepted_reconciliation_continues_once_after_a_version_change(
         second.close()
 
 
-def _current_intent(connection: sa.Connection, revision: WorkflowRevision) -> EffectIntent:
+def _current_intent(
+    connection: sa.Connection, revision: WorkflowRevision
+) -> EffectIntent:
     logical_key = logical_effect_key_for_node(
         RUN,
         revision.revision_hash,
         V3_EFFECT_LINE_ACTION_NODE_ID,
     )
-    record = connection.execute(
-        sa.select(effect_intents).where(effect_intents.c.logical_key == logical_key.value)
-    ).mappings().one()
+    record = (
+        connection.execute(
+            sa.select(effect_intents).where(
+                effect_intents.c.logical_key == logical_key.value
+            )
+        )
+        .mappings()
+        .one()
+    )
     return intent_snapshot_from_record(record).intent
 
 

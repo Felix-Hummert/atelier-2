@@ -54,6 +54,20 @@ datasource transaction without making the cockpit lie. Atelier's immutable
 `WorkflowRevisionHash` is a product identity and remains distinct from DBOS
 `application_version`, which fences executor compatibility.
 
+An accepted answer or reconciliation can still be mid-enqueue when a redeploy
+retires its `application_version`: DBOS recovers a `PENDING` or re-admits an
+`ENQUEUED` workflow only under the version that enqueued it, so that
+continuation strands and would otherwise leave the answer door reporting
+`DurableAnswerExisting` forever (issue #1096). `retag_stranded_continuations`
+(`src/atelier2/adapters/dbos/uncontinuable_runs.py`) runs once, before
+`DBOS.launch()`, and re-derives each candidate's ownership, run state, and
+version from the product row that started it before conditionally updating
+`workflow_status.application_version` in the same canonical write transaction
+as that check — the same read-decide-write discipline the convergence sweeps
+already use, never a blind rewrite. This is why a continuation's payload must
+stay readable across `application_version`s: the row a later version resumes
+was minted, and partly executed, by an earlier one.
+
 The format-version-1 Agent execution path — an injected exact-output executor
 whose successful result committed one immutable `AgentReceipt`, the
 `AGENT_COMPLETED` event, and the configured successor transition in one
