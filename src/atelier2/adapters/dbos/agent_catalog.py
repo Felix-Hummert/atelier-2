@@ -29,9 +29,11 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     AuthProfileRevisionHash,
     ProviderId,
+    ProviderProbeFailure,
 )
 from atelier2.contracts.host_configuration import ModelRegistryBytesDisagree
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
+from atelier2.contracts.provider_probe_receipts import ProviderProbeResult
 from atelier2.ports.agent_configurations import (
     AgentConfigurationCatalog,
     AgentConfigurationRevisionCollision,
@@ -275,6 +277,26 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                     executor_key = AgentExecutorKey(
                         auth.provider_id, configuration.executor_revision
                     )
+                    has_valid_receipt = self._registry.has_valid_receipt(
+                        configuration.revision_hash
+                    )
+                    # A receipt worth naming as a failure only when it is
+                    # itself the reason live evidence is missing -- a stale or
+                    # foreign-commit success stays `provider-probe-receipt-
+                    # missing`, honestly, rather than borrowing a failure that
+                    # was never the cause.
+                    probe_failure = None
+                    if not has_valid_receipt:
+                        receipt = self._registry.latest_receipt(
+                            configuration.revision_hash
+                        )
+                        if receipt is not None and receipt.result is (
+                            ProviderProbeResult.FAILED
+                        ):
+                            assert receipt.problem_code is not None
+                            probe_failure = ProviderProbeFailure(
+                                receipt.problem_code, receipt.observed_at
+                            )
                     items.append(
                         AgentConfigurationRevisionListItem(
                             configuration,
@@ -288,9 +310,8 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                                 configuration.model,
                                 registries,
                             ),
-                            self._registry.has_valid_receipt(
-                                configuration.revision_hash
-                            ),
+                            has_valid_receipt,
+                            probe_failure,
                         )
                     )
                 return AgentConfigurationRevisionPage(

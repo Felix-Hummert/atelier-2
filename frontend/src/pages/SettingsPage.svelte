@@ -280,7 +280,9 @@
             ...revision,
             startable: pin.startable,
             structurally_startable: pin.structurally_startable,
-            not_startable_reason: pin.not_startable_reason
+            not_startable_reason: pin.not_startable_reason,
+            provider_probe_problem_code: pin.provider_probe_problem_code,
+            provider_probe_observed_at: pin.provider_probe_observed_at
           }
         ]
       }
