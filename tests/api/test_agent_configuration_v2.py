@@ -466,7 +466,12 @@ def test_list_answers_with_the_published_item_form_and_no_secrets() -> None:
     catalog = RecordingCatalog(
         object(),
         list_result=AgentConfigurationRevisionPage(
-            (AgentConfigurationRevisionListItem(CONFIGURATION, AUTH, True, True),), None
+            (
+                AgentConfigurationRevisionListItem(
+                    CONFIGURATION, AUTH, True, True, True
+                ),
+            ),
+            None,
         ),
     )
 
@@ -501,7 +506,11 @@ def test_list_pages_with_the_workflow_revision_cursor() -> None:
     catalog = RecordingCatalog(
         object(),
         list_result=AgentConfigurationRevisionPage(
-            (AgentConfigurationRevisionListItem(CONFIGURATION, AUTH, True, True),),
+            (
+                AgentConfigurationRevisionListItem(
+                    CONFIGURATION, AUTH, True, True, True
+                ),
+            ),
             CONFIGURATION.revision_hash,
         ),
     )
@@ -527,7 +536,11 @@ def test_list_marks_a_declared_but_unstartable_configuration_without_diagnostics
     catalog = RecordingCatalog(
         object(),
         list_result=AgentConfigurationRevisionPage(
-            (AgentConfigurationRevisionListItem(CONFIGURATION, AUTH, False, False),),
+            (
+                AgentConfigurationRevisionListItem(
+                    CONFIGURATION, AUTH, False, False, False
+                ),
+            ),
             None,
         ),
     )
@@ -554,7 +567,11 @@ def test_list_names_a_missing_receipt_apart_from_an_unavailable_executor() -> No
     catalog = RecordingCatalog(
         object(),
         list_result=AgentConfigurationRevisionPage(
-            (AgentConfigurationRevisionListItem(CONFIGURATION, AUTH, False, True),),
+            (
+                AgentConfigurationRevisionListItem(
+                    CONFIGURATION, AUTH, True, True, False
+                ),
+            ),
             None,
         ),
     )
@@ -566,6 +583,36 @@ def test_list_names_a_missing_receipt_apart_from_an_unavailable_executor() -> No
     assert item["startable"] is False
     assert item["structurally_startable"] is True
     assert item["not_startable_reason"] == "provider-probe-receipt-missing"
+
+
+def test_list_names_a_superseded_model_apart_from_a_missing_receipt() -> None:
+    """A registry pointer that moved on names its own reason, before receipts.
+
+    A structurally startable configuration the model registry no longer
+    points to is not "merely unproven": a start's cast would refuse it
+    (`uncast-agent-roles`) before any receipt is even asked for, so the
+    listing must not offer it as though a fresh probe would fix it.
+    """
+
+    catalog = RecordingCatalog(
+        object(),
+        list_result=AgentConfigurationRevisionPage(
+            (
+                AgentConfigurationRevisionListItem(
+                    CONFIGURATION, AUTH, True, False, True
+                ),
+            ),
+            None,
+        ),
+    )
+
+    response = _client(catalog).get(API_PREFIX + "/agent-configuration-revisions")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["startable"] is False
+    assert item["structurally_startable"] is True
+    assert item["not_startable_reason"] == "model-not-registered"
 
 
 def test_list_empty_is_an_empty_page() -> None:

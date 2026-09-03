@@ -85,6 +85,14 @@ def _interpreter_reachable_grants() -> tuple[RunnerPathGrant, ...]:
     )
 
 
+def _wait_for_file(path: Path) -> None:
+    deadline = time.monotonic() + 2
+    while not path.is_file() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not path.is_file():
+        raise AssertionError(f"file did not appear: {path}")
+
+
 @pytest.mark.proves("runner-child-landlock")
 def test_landlock_guard_denies_a_child_direct_read_of_runner_identity(
     tmp_path: Path,
@@ -197,10 +205,7 @@ def test_cancel_reap_kills_a_child_that_ignores_term(tmp_path: Path) -> None:
             str(ready),
         )
     )
-    deadline = time.monotonic() + 2
-    while not ready.is_file() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert ready.is_file()
+    _wait_for_file(ready)
     try:
         assert (
             reap_cancelled_runner_child(child, 1, 5)
@@ -290,10 +295,7 @@ def test_child_reap_grace_comes_from_the_attested_manifest(tmp_path: Path) -> No
             str(ready),
         )
     )
-    deadline = time.monotonic() + 2
-    while not ready.is_file() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert ready.is_file()
+    _wait_for_file(ready)
     try:
         reaped_from = time.monotonic()
 

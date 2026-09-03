@@ -183,6 +183,32 @@ def _eligible_registry_candidates(
     )
 
 
+def configuration_registered(
+    configuration_hash: AgentConfigurationRevisionHash,
+    provider_id: str,
+    model_id: str,
+    registries: tuple[ModelRegistryRevision, ...],
+) -> bool:
+    """Whether the model registry still points to this exact configuration.
+
+    The same registry lookup and uniqueness `cast_unbound_roles` enforces for
+    an explicit override (`_candidate_choices`'s `requested` branch): exactly
+    one checked entry across every registry must match both the hash and this
+    configuration's own provider and model. The listing's `model_registered`
+    answer asks this exact question, so a start's cast and the catalog's own
+    listing can never silently disagree.
+    """
+    matches = tuple(
+        candidate
+        for candidate in _eligible_registry_candidates(registries)
+        if candidate.configuration_hash == configuration_hash
+    )
+    return len(matches) == 1 and (matches[0].provider_id, matches[0].model_id) == (
+        provider_id,
+        model_id,
+    )
+
+
 def _candidate_choices(
     declaration: DeclaredRole,
     requested_by_role: dict[str, AgentBinding],

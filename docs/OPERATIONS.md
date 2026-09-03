@@ -618,7 +618,8 @@ installation above. The host-process installation runs as the systemd user unit
 `atelier2-serve.service`. From its clean `main` deploy checkout, one hand
 command fast-forwards, installs the locked Python and frontend dependencies,
 builds the frontend, stops the unit, backs up the live store, migrates it,
-starts the unit, and verifies that health serves the new commit:
+takes the checkout's own workflows into the live catalog, starts the unit, and
+verifies that health serves the new commit:
 
 ```bash
 bash scripts/serve_live_update.sh
@@ -634,6 +635,26 @@ still exits nonzero. With the Serve unreachable and no recorded deploy, the
 command refuses and changes nothing. A `live serve is DOWN, operator action
 needed` line means that recovery itself failed; inspect `journalctl --user -u
 atelier2-serve.service -e` before acting.
+
+After migration and before the unit restarts -- the Serve is still stopped, so
+nothing else writes the store at the same time -- the command connects the
+deploy checkout itself as a definition source (`workflows/*.yaml`, ref
+`refs/heads/main`; connecting the same checkout and ref again is the same
+source, so this step is idempotent across runs) and takes its workflows in.
+Each path gets its own word in the log: `published` for bytes the catalog
+gained, `present` for bytes it already held, or `refused` for the one path
+that stopped that intake. A refusal does not hold the Serve back -- it starts
+with whatever workflow catalog state it already had -- but the command exits
+`3` rather than `0`, distinct from the generic failure exit `1`, so
+auto-redeploy's watcher can tell the two apart. It logs a warning naming the
+served commit and the refusal, does not count a failure tick, and keeps the
+unit green: the deploy itself succeeded, so nothing here should raise the
+operator's failure streak toward its alert threshold. The refused path keeps
+serving its previous catalog state until the next successful deploy or a hand
+`atelier2 definition-source intake` fixes it. The source itself failing to
+connect (an unreadable checkout or an unresolved ref, not a per-file refusal)
+is treated like a migration failure instead: it rolls back to the previously
+served commit and restarts that, and does count as an ordinary failure tick.
 
 Install the clean-stop classification once beside the unit, as the same user:
 
@@ -708,8 +729,16 @@ from the deploy checkout. Because the post-Serve-start drop-in fires this run
 at process start rather than once it can answer, the run first polls `/health`
 for up to 60 seconds until it answers `serving` -- failing loud with the last
 health answer, and trying no vector, if it never does -- before any other
-discovery step begins. Discovery is capped at four configuration pages, 50
-known startable vectors, and 300 seconds. All distinct admitted workflow names
+discovery step begins. A configuration is a vector when the listing's own
+`startable` field says so, or when its only problem is a missing live
+receipt (`not_startable_reason: provider-probe-receipt-missing`) -- both the
+same judgment a start reads, computed once by the deployment's atomic
+snapshot; discovery derives nothing of its own from either field. A
+superseded revision (the model registry no longer points to it) carries its
+own distinct reason and is excluded; a redeploy that invalidates every
+receipt by `source_commit` still leaves every registered configuration
+reprobable. Discovery is capped at four configuration pages, 50 known
+startable vectors, and 300 seconds. All distinct admitted workflow names
 resolve before any vector starts. Each run then has a 300-second terminal
 deadline, while the complete process has a 15,300-second deadline enforced by
 both the runner and its systemd unit. Every HTTP call has a 30-second cap reduced
