@@ -72,14 +72,27 @@ async function importInto(
   document: string,
   kind: string
 ): Promise<void> {
-  await page.getByRole("button", { name: catalogPageCopy.import }).click();
+  const opener = page.getByRole("button", { name: catalogPageCopy.import });
+  await opener.click();
   await expect(page.getByRole("dialog", { name: catalogPageCopy.import })).toHaveCount(0);
-  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
-    name: fileName,
-    mimeType: "application/octet-stream",
-    buffer: Buffer.from(document)
-  });
+  const chooseFile = () =>
+    page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
+      name: fileName,
+      mimeType: "application/octet-stream",
+      buffer: Buffer.from(document)
+    });
+  await chooseFile();
   const sheet = page.getByRole("dialog", { name: catalogPageCopy.import });
+  await expect(sheet).toBeVisible();
+
+  // Escape closes the sheet onto the door that opened it (REQ-UIQ-05), not
+  // onto the hidden file input the click passed through.
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  await expect(opener).toBeFocused();
+
+  await opener.click();
+  await chooseFile();
   await expect(sheet).toBeVisible();
   await sheet.getByRole("button", { name: kind, exact: true }).click();
   await sheet.getByRole("button", { name: catalogPageCopy.addToCatalog }).click();
@@ -109,7 +122,9 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
     catalogPageCopy.kindWorkflow
   );
   await expect(entry(page, workflowName)).toBeVisible();
-  await expect(entry(page, workflowName).getByText(catalogPageCopy.provenanceManual)).toBeVisible();
+  // A file dropped in by hand carries no source, so its card wears no
+  // provenance pill -- a chip every card wore would distinguish nothing.
+  await expect(entry(page, workflowName).locator(".tile-pill:not(.tile-status)")).toHaveCount(0);
 
   await importInto(page, `${agentName}.agent.md`, agentFile(agentName), catalogPageCopy.kindAgent);
   await expect(entry(page, agentName)).toBeVisible();
