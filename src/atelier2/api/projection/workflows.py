@@ -5,6 +5,7 @@ from __future__ import annotations
 from atelier2.api.references import (
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     encode_canonical_base64,
+    encode_public_definition_source_reference,
 )
 from atelier2.api.wire.resources import (
     EffectReceiptResource,
@@ -178,11 +179,10 @@ def provenance_resource(
     if provenance is None:
         return None
     return WorkflowRevisionProvenanceResource(
-        source_id=provenance.source_id.value,
-        source_location=provenance.location.value,
-        source_ref=provenance.ref.value,
+        source=encode_public_definition_source_reference(provenance.source_id),
         source_commit=provenance.commit.value,
         source_path=provenance.path.value,
+        intaken_at=provenance.intaken_at.value,
     )
 
 

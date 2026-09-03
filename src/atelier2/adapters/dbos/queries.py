@@ -53,7 +53,6 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
     event_instants,
-    host_definition_source_revisions,
     node_receipts_v3,
     reconcile_commands,
     run_events,
@@ -93,11 +92,10 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.artifacts import ArtifactHash
+from atelier2.contracts.catalog_v3 import CatalogActivatedAt
 from atelier2.contracts.definition_sources import (
     DefinitionSourceId,
-    RepositoryLocation,
     RepositoryPath,
-    RepositoryRef,
     RevisionProvenance,
     SourceCommit,
 )
@@ -308,9 +306,8 @@ _RUN_FORK_FIELD_COLUMNS = frozenset(
     ("origin_run_id", "successor_run_id", "restart_from_node_id")
 )
 
-_FIRST_ROW_OF_ITS_PARTITION = 1
+_FIRST_INTAKE_OF_ITS_REVISION = 1
 _INTAKE_RANK = "intake_rank"
-_CONFIGURATION_RANK = "configuration_rank"
 
 
 def _revision_provenance_rows() -> sa.Subquery:
@@ -324,18 +321,18 @@ def _revision_provenance_rows() -> sa.Subquery:
     repeat that revision's whole document once per row, spend the page budget
     on duplicates and break the `limit + 1` a page counts with.
 
-    The source's location and ref come from its newest configuration, because
-    a scan resolves the ref as configured now; which configuration an older
-    intake was read under is a question nobody can ask while editing a
-    registered selection is itself deferred (#660, #1071).
+    Nothing but that row is read. Where the source stands today is
+    configuration a later connect may change, and joining it here would answer
+    an old delivery with a repository that never carried it.
     """
 
-    first_intake = sa.select(
+    ranked = sa.select(
         catalog_source_intakes.c.revision_kind,
         catalog_source_intakes.c.revision_hash,
         catalog_source_intakes.c.source_id,
         catalog_source_intakes.c.source_path,
         catalog_source_intakes.c.source_commit,
+        catalog_source_intakes.c.intaken_at,
         sa.func.row_number()
         .over(
             partition_by=(
@@ -350,37 +347,16 @@ def _revision_provenance_rows() -> sa.Subquery:
         )
         .label(_INTAKE_RANK),
     ).subquery()
-    newest_configuration = sa.select(
-        host_definition_source_revisions.c.source_id,
-        host_definition_source_revisions.c.repository_location,
-        host_definition_source_revisions.c.repository_ref,
-        sa.func.row_number()
-        .over(
-            partition_by=host_definition_source_revisions.c.source_id,
-            order_by=host_definition_source_revisions.c.revision_number.desc(),
-        )
-        .label(_CONFIGURATION_RANK),
-    ).subquery()
     return (
         sa.select(
-            first_intake.c.revision_kind,
-            first_intake.c.revision_hash,
-            first_intake.c.source_id,
-            first_intake.c.source_path,
-            first_intake.c.source_commit,
-            newest_configuration.c.repository_location,
-            newest_configuration.c.repository_ref,
+            ranked.c.revision_kind,
+            ranked.c.revision_hash,
+            ranked.c.source_id,
+            ranked.c.source_path,
+            ranked.c.source_commit,
+            ranked.c.intaken_at,
         )
-        .select_from(
-            first_intake.join(
-                newest_configuration,
-                first_intake.c.source_id == newest_configuration.c.source_id,
-            )
-        )
-        .where(first_intake.c[_INTAKE_RANK] == _FIRST_ROW_OF_ITS_PARTITION)
-        .where(
-            newest_configuration.c[_CONFIGURATION_RANK] == _FIRST_ROW_OF_ITS_PARTITION
-        )
+        .where(ranked.c[_INTAKE_RANK] == _FIRST_INTAKE_OF_ITS_REVISION)
         .subquery()
     )
 
@@ -388,10 +364,9 @@ def _revision_provenance_rows() -> sa.Subquery:
 _REVISION_PROVENANCE = _revision_provenance_rows()
 _REVISION_PROVENANCE_COLUMNS = (
     _REVISION_PROVENANCE.c.source_id,
-    _REVISION_PROVENANCE.c.repository_location,
-    _REVISION_PROVENANCE.c.repository_ref,
     _REVISION_PROVENANCE.c.source_commit,
     _REVISION_PROVENANCE.c.source_path,
+    _REVISION_PROVENANCE.c.intaken_at,
 )
 
 
@@ -416,10 +391,9 @@ def _revision_provenance(record: Mapping[Any, Any]) -> RevisionProvenance | None
         return None
     return RevisionProvenance(
         DefinitionSourceId(str(record["source_id"])),
-        RepositoryLocation(str(record["repository_location"])),
-        RepositoryRef(str(record["repository_ref"])),
         SourceCommit(str(record["source_commit"])),
         RepositoryPath(str(record["source_path"])),
+        CatalogActivatedAt(str(record["intaken_at"])),
     )
 
 

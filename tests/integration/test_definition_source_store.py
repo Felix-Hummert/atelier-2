@@ -922,6 +922,19 @@ def described_page(engine: Engine, limit: int = 50) -> DescribedWorkflowRevision
     return listed
 
 
+def recorded_instant(engine: Engine, path: str) -> str:
+    """When the store says one path was taken in, in its own words."""
+
+    with engine.connect() as connection:
+        return str(
+            connection.execute(
+                sa.select(catalog_source_intakes.c.intaken_at).where(
+                    catalog_source_intakes.c.source_path == path
+                )
+            ).scalar_one()
+        )
+
+
 def listed_provenance(engine: Engine) -> dict[str, RevisionProvenance | None]:
     """Where each listed revision came from, as the described catalog answers it."""
 
@@ -970,10 +983,9 @@ def test_the_described_catalog_names_the_source_an_intaken_revision_came_from(
     assert provenance[WorkflowRevision(document).revision_hash.value] == (
         RevisionProvenance(
             DefinitionSourceId(source_id),
-            RepositoryLocation(str(repository)),
-            RepositoryRef(MAIN),
             SourceCommit(commit),
             RepositoryPath("workflows/build.yaml"),
+            CatalogActivatedAt(recorded_instant(engine, "workflows/build.yaml")),
         )
     )
     assert provenance[authored_here.revision_hash.value] is None
@@ -1019,10 +1031,9 @@ def test_the_first_intake_of_one_revision_is_the_origin_it_keeps(
     assert listed_provenance(engine) == {
         WorkflowRevision(document).revision_hash.value: RevisionProvenance(
             first.source_id,
-            RepositoryLocation("/srv/first.git"),
-            RepositoryRef(MAIN),
             SourceCommit("a" * 40),
             RepositoryPath("workflows/early.yaml"),
+            CatalogActivatedAt("2026-09-02T08:00:00Z"),
         )
     }
 
