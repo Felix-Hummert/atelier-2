@@ -159,11 +159,10 @@ describe("the catalog room", () => {
 
     const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
     expect(card).not.toBeNull();
-    expect(
-      within(card as HTMLElement).getByText(
-        catalogPageCopy.provenanceSource(sourceCommit, "workflows/iterate-code.yaml")
-      ).isConnected
-    ).toBe(true);
+    const fact = workflowDetailCopy.sourceFact(sourceCommit, "workflows/iterate-code.yaml");
+    const pill = within(card as HTMLElement).getByText(fact.label);
+    expect(pill.isConnected).toBe(true);
+    expect(pill.title).toBe(fact.title);
   });
 
   it("leaves an admitted workflow calm with no second admission door", async () => {

@@ -324,7 +324,7 @@
               title={row.title}
               ariaLabel={wrapDisplayCopy(row.title)}
               description={row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}
-              provenance={catalogRowFacts(row.sourceLabel)}
+              provenance={catalogRowFacts(row.source)}
               href={workflowPath(row.name)}
               status={workflowTileStatus(row)}
               onOpen={navigate}

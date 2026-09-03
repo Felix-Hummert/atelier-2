@@ -4,6 +4,16 @@ import type { CatalogNameState } from "./catalogName";
 const GIT_SHORT_COMMIT_LENGTH = 8;
 
 /**
+ * Where a revision's bytes came from, when a connected source delivered
+ * them: the shortened label a chip or row can hold, and the full commit
+ * still reachable through `title` for a hover reveal (#1077, #1112).
+ */
+export interface SourceFact {
+  readonly label: string;
+  readonly title: string;
+}
+
+/**
  * Copy the Catalog room renders: what this atelier can run, and where it came
  * from.
  *
@@ -38,18 +48,6 @@ export const catalogPageCopy = {
 
   agentsUnavailable: "Agents unavailable",
   skillsNone: "A plugin folder brings skills.",
-
-  /**
-   * Where a revision's bytes came from, when a connected source delivered
-   * them -- the wire facts (commit, path), never the opaque `source1.`
-   * reference a person cannot read. A file-imported revision carries no
-   * source at all, so its card wears no provenance pill rather than a
-   * "Manual import" placeholder that named nothing (#1112): the workshop got
-   * every revision by hand until a Git link exists to say otherwise, so a
-   * chip every card wears distinguishes nothing.
-   */
-  provenanceSource: (commit: string, path: string): string =>
-    `${commit.slice(0, GIT_SHORT_COMMIT_LENGTH)} · ${path}`,
 
   // The provider an imported agent belongs to. The import door takes exactly
   // one authoring format — the Markdown definition with frontmatter, which is
@@ -102,10 +100,16 @@ export const workflowDetailCopy = {
   // Where this revision's bytes first entered the catalog: the honest wire
   // facts (commit, path), never the opaque `source1.` reference a person
   // cannot read (#1077). A file-imported revision carries no provenance at
-  // all, so this row is absent for it -- no "Manual import" placeholder,
-  // unlike the catalog card's own `provenanceManual` sentence.
+  // all, so this row is absent for it -- no placeholder invented, matching
+  // the catalog card's own bare chip (#1112). `sourceFact` is the one owner
+  // for this format across the room: the catalog card's chip
+  // (`catalogRows.ts`) and this fold both call it, so `<8-hex commit> ·
+  // <path>` reads identically everywhere.
   source: "Source",
-  sourceFact: (commit: string, path: string) => `${commit} · ${path}`,
+  sourceFact: (commit: string, path: string): SourceFact => ({
+    label: `${commit.slice(0, GIT_SHORT_COMMIT_LENGTH)} · ${path}`,
+    title: commit
+  }),
   orders: "Orders",
   noOrders: "No orders declared.",
   schema: "Schema",

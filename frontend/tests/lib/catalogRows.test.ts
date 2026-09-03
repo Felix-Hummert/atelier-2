@@ -5,7 +5,7 @@ import type {
   WorkflowRevisionSummary
 } from "../../src/api/client";
 import type { CatalogNameState } from "../../src/lib/catalogName";
-import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import { catalogPageCopy, workflowDetailCopy } from "../../src/lib/catalogPageCopy";
 import {
   catalogAgentRows,
   catalogRowFacts,
@@ -100,12 +100,12 @@ describe("what the catalog says about a workflow", () => {
 
   it("computes a connected source's display fact, shortening the commit to git's own prefix, and no source at all as null", () => {
     const [manual] = catalogWorkflowRows([summary()], {});
-    expect(manual?.sourceLabel).toBeNull();
+    expect(manual?.source).toBeNull();
 
     const sourced = provenance({ source_commit: "a".repeat(40), source_path: "flows/build.yaml" });
     const [row] = catalogWorkflowRows([summary({ provenance: sourced })], {});
-    expect(row?.sourceLabel).toBe(
-      catalogPageCopy.provenanceSource(sourced.source_commit, sourced.source_path)
+    expect(row?.source).toEqual(
+      workflowDetailCopy.sourceFact(sourced.source_commit, sourced.source_path)
     );
   });
 
@@ -209,13 +209,13 @@ describe("what the catalog says about an agent", () => {
 });
 
 describe("the facts under an entry's name", () => {
-  it("wears no provenance pill for a row with no source label", () => {
+  it("wears no provenance pill for a row with no source fact", () => {
     expect(catalogRowFacts(null)).toEqual([]);
   });
 
-  it("names the row's own source label first", () => {
-    const label = catalogPageCopy.provenanceSource("a".repeat(40), "flows/build.yaml");
+  it("names the row's own source fact first", () => {
+    const fact = workflowDetailCopy.sourceFact("a".repeat(40), "flows/build.yaml");
 
-    expect(catalogRowFacts(label)).toEqual([label]);
+    expect(catalogRowFacts(fact)).toEqual([fact]);
   });
 });

@@ -2,7 +2,7 @@ import type {
   AgentDefinitionRevisionListItem,
   WorkflowRevisionSummary
 } from "../api/client";
-import { catalogPageCopy } from "./catalogPageCopy";
+import { catalogPageCopy, workflowDetailCopy, type SourceFact } from "./catalogPageCopy";
 import type { CatalogNameState } from "./catalogName";
 import { catalogHeadsOf, isCatalogDisplayName } from "./catalogName";
 import { humanStartRefusal } from "./humanRefusal";
@@ -31,13 +31,13 @@ export interface CatalogWorkflowRow {
   name: string;
   description: string | null;
   /**
-   * What a card says about where this revision's bytes first entered the
-   * catalog from -- `<8-hex commit> · <path>` for a revision a connected
-   * source delivered, `null` for a file dropped in by hand, the only way in
-   * before a Git link (#660) exists. Formatted here, once, so the page only
-   * renders; `catalogRowFacts` decides whether the row wears it at all.
+   * Where this revision's bytes first entered the catalog from, for a
+   * revision a connected source delivered; `null` for a file dropped in by
+   * hand, the only way in before a Git link (#660) exists. Formatted by the
+   * one shared owner, `workflowDetailCopy.sourceFact`; `catalogRowFacts`
+   * decides whether the row wears it at all.
    */
-  sourceLabel: string | null;
+  source: SourceFact | null;
   /**
    * `null` where this room cannot honestly answer: the catalog is asked by
    * name, and a document that declares none may still be an admitted member
@@ -88,12 +88,12 @@ export interface CatalogWorkflowTiles {
 /**
  * The facts that stand under an entry's name, in reading order.
  *
- * A row's source label is the first of them, and `null` wears no chip at
+ * A row's source fact is the first of them, and `null` wears no chip at
  * all: a file dropped in by hand names nothing, and a chip every card wears
  * distinguishes nothing (#1112).
  */
-export function catalogRowFacts(sourceLabel: string | null): readonly string[] {
-  return sourceLabel === null ? [] : [sourceLabel];
+export function catalogRowFacts(source: SourceFact | null): readonly SourceFact[] {
+  return source === null ? [] : [source];
 }
 
 /**
@@ -123,10 +123,10 @@ export function catalogWorkflowRows(
       title: revision.name,
       name: revision.name,
       description: revision.description,
-      sourceLabel:
+      source:
         revision.provenance === null || revision.provenance === undefined
           ? null
-          : catalogPageCopy.provenanceSource(
+          : workflowDetailCopy.sourceFact(
               revision.provenance.source_commit,
               revision.provenance.source_path
             ),
