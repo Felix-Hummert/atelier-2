@@ -48,56 +48,6 @@ export function trackerItemHref(
   return null;
 }
 
-/**
- * A complete work-item order document\'s tracker reference, or null.
- *
- * The house schema\'s fields are closed: body, change marker, digest, kind,
- * observed_at, reference. This reads only `reference`. The body is never a
- * title and never returned.
- */
-export function workItemReferenceFromOrderDocument(value: unknown): string | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record);
-  if (keys.length !== WORK_ITEM_ORDER_FIELDS.length) return null;
-  if (!WORK_ITEM_ORDER_FIELDS.every((field) => keys.includes(field))) return null;
-  if (!WORK_ITEM_ORDER_FIELDS.every((field) => typeof record[field] === "string")) {
-    return null;
-  }
-  if (record.kind !== "issue" && record.kind !== "change_request") return null;
-  const reference = record.reference;
-  return typeof reference === "string" && reference.length > 0 ? reference : null;
-}
-
-/**
- * The work-item reference pinned on a node job, read only from a complete
- * house-schema order document in the job. Other JSON in the job is ignored.
- */
-export function workItemReferenceFromJob(job: string): string | null {
-  for (const block of job.split("\n\n")) {
-    const start = block.indexOf("{");
-    if (start < 0) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(block.slice(start));
-    } catch {
-      continue;
-    }
-    const reference = workItemReferenceFromOrderDocument(parsed);
-    if (reference !== null) return reference;
-  }
-  return null;
-}
-
-const WORK_ITEM_ORDER_FIELDS = [
-  "body",
-  "change_marker",
-  "digest",
-  "kind",
-  "observed_at",
-  "reference"
-] as const;
-
 function githubRepository(address: string): { owner: string; name: string } | null {
   const at = address.indexOf("@");
   const repositoryPart = at < 0 ? address : address.slice(0, at);
