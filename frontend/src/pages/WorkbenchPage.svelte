@@ -8,6 +8,7 @@
     type RunEventSubscription,
     type RunV3
   } from "../api/client";
+  import DefectiveRunRowItem from "../components/DefectiveRunRow.svelte";
   import PinnedDecision from "../components/PinnedDecision.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ReadState from "../components/ReadState.svelte";
@@ -46,7 +47,6 @@
   } from "../lib/conductorEpisode";
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { shortPublicRunReference } from "../lib/fingerprint";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import type { MutationJournal } from "../lib/mutationJournal";
   import {
@@ -666,15 +666,7 @@
   {#if defective.length > 0}
     <ul class="living-shelf" aria-label={wrapDisplayCopy(workbenchPageCopy.defectiveRunsLabel)}>
       {#each defective as row (row.public_run_reference)}
-        <li class="living-row living-row-defective">
-          <span class="living-mark" aria-hidden="true">◇</span>
-          <span class="living-name">{wrapDisplayCopy(workbenchPageCopy.defectiveRunTitle)}</span>
-          <span class="living-at">{shortPublicRunReference(row.public_run_reference)}</span>
-          <details class="living-defective-detail">
-            <summary>{wrapDisplayCopy(workbenchPageCopy.defectiveRunDetail)}</summary>
-            <code>{row.detail}</code>
-          </details>
-        </li>
+        <DefectiveRunRowItem {row} />
       {/each}
     </ul>
   {/if}
@@ -857,34 +849,6 @@
 
   .living-row-waiting .living-mark {
     color: var(--signal-attention-mark);
-  }
-
-  /* Quiet everywhere but the one shape and colour that carry the failure
-     itself (HEART): the brick mark and border, nothing else raised. */
-  .living-row-defective {
-    border-color: var(--signal-failure);
-  }
-
-  .living-row-defective .living-mark {
-    color: var(--signal-failure);
-  }
-
-  .living-defective-detail {
-    flex-basis: 100%;
-    font-size: var(--text-xs);
-  }
-
-  .living-defective-detail summary {
-    display: flex;
-    align-items: center;
-    min-height: var(--tap);
-    cursor: pointer;
-    color: var(--ink-dim);
-  }
-
-  .living-defective-detail code {
-    display: block;
-    overflow-wrap: anywhere;
   }
 
   .living-name {

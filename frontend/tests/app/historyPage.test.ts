@@ -15,10 +15,12 @@ import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { historyOutcome } from "../../src/lib/historyOutcome";
 import { historyWhenLabel } from "../../src/lib/historyRows";
 import { standingWords } from "../../src/lib/runState";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
 import {
   completedRun,
+  defectiveRunRow,
   publicReference,
   revisionHash,
   runRow,
@@ -725,6 +727,41 @@ describe("History shows only what has finished", () => {
     await screen.findByText(historyPageCopy.emptyTitle);
     expect(screen.queryByText("ancient")).toBeNull();
     expect(getNodeDetail).not.toHaveBeenCalled();
+  });
+
+  it("shows a run whose own projection failed as a defective row beside its healthy neighbours (#1042)", async () => {
+    openHistory(
+      { completed: [v3Run({ run_id: "healthy" })] },
+      {
+        listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
+          items:
+            state === "FAILED"
+              ? []
+              : [
+                  runRow(v3Run({ run_id: "healthy" })),
+                  defectiveRunRow({
+                    public_run_reference: "run1.Yg",
+                    detail: "RunTransitionConflict"
+                  })
+                ],
+          next_after: null
+        })),
+        getWorkflowRevision: vi.fn(async () => v3Revision())
+      }
+    );
+
+    // The healthy neighbour still shows and opens its run -- one row's own
+    // defect never dims the ones beside it.
+    expect((await findHistoryCard(/Two agents in a line/)).isConnected).toBe(true);
+
+    const defectiveList = await screen.findByRole("list", {
+      name: workbenchPageCopy.defectiveRunsLabel
+    });
+    expect(within(defectiveList).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(defectiveList).getByText(workbenchPageCopy.defectiveRunTitle)).toBeTruthy();
+    // Nothing here opens: History has no run to show for a row it could not
+    // read (no new door).
+    expect(within(defectiveList).queryByRole("link")).toBeNull();
   });
 });
 

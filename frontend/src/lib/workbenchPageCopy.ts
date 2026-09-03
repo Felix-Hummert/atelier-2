@@ -43,7 +43,10 @@ export const workbenchPageCopy = {
    * A run whose own projection failed (#1042) reads as this quiet row, not
    * as an empty shelf and not as the whole room failing: the other runs
    * beside it read fine, and this is the one honest thing left to say about
-   * the run that does not.
+   * the run that does not. `DefectiveRunRow.svelte` renders this row and
+   * owns these three strings for every surface that lists runs, History
+   * included -- one copy owner, not a second set of words for the same row
+   * (operator ruling, #1042 review).
    */
   defectiveRunsLabel: "Runs that could not be read",
   defectiveRunTitle: "Could not be read",

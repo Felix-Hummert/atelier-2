@@ -38,10 +38,6 @@ MAXIMUM_RUN_ORDERS = 100
 # problem object decides the glance once.
 MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
 MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
-# The wire's own bound: a defective run row's `detail` is the store's own
-# exception message, which has no durable owner or length rule of its own, so
-# the read edge decides it once (#1042) instead of serving an unbounded row.
-MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512
 
 
 def base64_characters_for(payload_bytes: int) -> int:

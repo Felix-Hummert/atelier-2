@@ -303,7 +303,9 @@ def test_a_corrupt_run_becomes_a_defective_row_beside_its_healthy_neighbours(
     defective = next(item for item in items if item["kind"] == "defective")
     assert defective["public_run_reference"] == encode_public_run_reference(poison_id)
     assert defective["problem_code"] == "durable-state-corrupt"
-    assert "absent" in defective["detail"].lower()
+    # The curated, bounded reason names the failure's class, never the raw
+    # exception text (#1042 review) -- that stays in the journal entry below.
+    assert defective["detail"] == "RunTransitionConflict"
     assert inspected.status_code == 500
     assert inspected.json()["type"].endswith("durable-state-corrupt")
     logged = _json_records(process_log.getvalue())

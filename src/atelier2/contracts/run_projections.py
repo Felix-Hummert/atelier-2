@@ -237,14 +237,51 @@ class RunProjectionProblemCode(StrEnum):
     """Why one listed run's own projection could not be told.
 
     Closed to what the store can actually distinguish today (#1042): every
-    exception the query layer refuses a single run's projection for is durable
-    state a reader cannot make sense of, the same fact `durable-state-corrupt`
-    already names for a single-run read. One code, not one per exception
-    class -- a second value earns its place only once a caller needs to react
-    to a cause differently from this one.
+    exception the query layer refuses a single run's projection for reads as
+    the same `durable-state-corrupt` a single-run read already names. That is
+    accurate for most members -- a durable graph or event binding that truly
+    disagrees with itself needs an operator's inspection, not a retry -- but
+    not for every one: a same-snapshot invariant check that a defensive guard
+    trips without ever proving the state it guards is actually gone (a fork
+    row a later read cannot find, though nothing wrote it away) is a race the
+    next read heals, told the same way today only because no caller yet needs
+    to react to it differently. One code, not one per exception class -- a
+    second value earns its place once a caller does.
     """
 
     DURABLE_STATE_CORRUPT = "durable-state-corrupt"
+
+
+MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512
+"""The one bound `DefectiveRunProjection.detail` and the wire it feeds share.
+
+Owned here rather than by the API: `adapters.dbos` (the read edge that builds
+the row) sits beside `api` in the package layers, so a bound the wire alone
+declared could never be applied where the row is actually constructed. A
+projection contract both layers already import from is neutral ground for the
+one number they must agree on (#1042).
+"""
+
+
+def bounded_run_row_defect_detail(error: BaseException) -> str:
+    """The short, curated reason a defective run row's own projection failed.
+
+    Never the exception's own message: a `DatabaseError` embeds the failing
+    SQL and its bound parameters, and `DefectiveRunProjection.detail` promises
+    never to carry the run's own durable bytes (#1042) -- a promise a raw
+    exception message cannot keep, since nothing bounds what a store exception
+    says. The failure's *class* is what a reader can act on: which failure
+    family stopped this one row without exposing what it actually held. The
+    exception's full text stays exactly where it always has, in the per-run
+    process journal entry the read edge writes beside this row.
+
+    Bounded and non-empty because the wire field this reason fills requires
+    both. A class name never approaches the bound in practice and Python
+    guarantees it is never empty, but the read edge that builds this string
+    does not trust either without saying so.
+    """
+    name = type(error).__name__.strip()
+    return (name or "unlabelled failure")[:MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS]
 
 
 @dataclass(frozen=True)
@@ -254,9 +291,9 @@ class DefectiveRunProjection:
     A run list answers for every entry it can, not for the whole page at
     once: the other rows prove nothing about this one, so a run whose
     projection cannot be told becomes this row instead of taking the page
-    down with it (#1042). `detail` is the store's own reason, already the
-    level of detail its process journal has always logged for the same
-    failure -- never the run's own durable bytes.
+    down with it (#1042). `detail` is `bounded_run_row_defect_detail`'s
+    curated, bounded reason -- never the run's own durable bytes, and never
+    the store exception's own message, which carries no bound of its own.
     """
 
     run_id: RunId

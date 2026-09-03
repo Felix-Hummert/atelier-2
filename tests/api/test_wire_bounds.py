@@ -36,7 +36,6 @@ from atelier2.api.references import (
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
-    MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS,
 )
 from atelier2.api.wire import events, library, requests, resources
 from atelier2.contracts.agent_definitions import (
@@ -71,6 +70,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
+from atelier2.contracts.run_projections import MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)

@@ -146,6 +146,7 @@ from atelier2.contracts.run_projections import (
     RunProjection,
     RunProjectionProblemCode,
     WaitingReconciliationProjection,
+    bounded_run_row_defect_detail,
     execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
 )
@@ -1835,7 +1836,7 @@ class DbosQueries:
                     DefectiveRunProjection(
                         run_id,
                         RunProjectionProblemCode.DURABLE_STATE_CORRUPT,
-                        str(error),
+                        bounded_run_row_defect_detail(error),
                     )
                 )
         return tuple(rows)
@@ -1897,6 +1898,16 @@ class DbosQueries:
             )
         stored_forks = []
         for record in fork_records:
+            # A same-snapshot invariant check, not a live race: `record` was
+            # read from `run_forks` under this call's one SQLite snapshot
+            # (`_connection` opens one `BEGIN DEFERRED` transaction for the
+            # whole read), and `_stored_fork_for_command` re-reads the exact
+            # same table under that unchanged snapshot -- so this branch
+            # should be unreachable today. It stays as a guard rather than an
+            # assumption, and if that snapshot guarantee is ever weakened, the
+            # honest response is retrying the read, not treating the row as
+            # permanently corrupt: nothing here proves the fork is gone, only
+            # that this one read could not see it.
             fork = _stored_fork_for_command(
                 connection, RunForkCommandId(str(record["command_id"]))
             )

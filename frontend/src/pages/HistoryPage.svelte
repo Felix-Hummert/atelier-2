@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { CockpitApi, NodeDetail, RunV3 } from "../api/client";
+  import type { CockpitApi, DefectiveRunRow, NodeDetail, RunV3 } from "../api/client";
+  import DefectiveRunRowItem from "../components/DefectiveRunRow.svelte";
   import LoadingState from "../components/LoadingState.svelte";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -39,6 +40,7 @@
     type TrackerSourceConnection
   } from "../lib/trackerItem";
   import { ageLabel, exactLocal } from "../lib/when";
+  import { workbenchPageCopy } from "../lib/workbenchPageCopy";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
 
   export let cockpitApi: CockpitApi;
@@ -48,6 +50,8 @@
 
   interface HistorySnapshot {
     runs: RunV3[];
+    /** Runs whose own projection failed (#1042): read apart, shown apart. */
+    defective: DefectiveRunRow[];
     workflowNames: ReadonlyMap<string, string>;
   }
 
@@ -90,18 +94,17 @@
         });
         return;
       }
-      // A defective row (#1042) has no rendering here yet -- History shows
-      // the runs whose projection could be told and silently omits the rest,
-      // never claiming a run it cannot read finished cleanly. Showing that
-      // row itself is a named gap, owned by #1042's own body, not a claim
-      // this page makes today.
-      const { runs } = splitRunListRows([...completed.runs, ...failed.runs]);
+      // A run whose own projection failed (#1042) is told apart from the
+      // runs History can read, the same shape and copy the Workbench already
+      // shows it in (DefectiveRunRow.svelte) -- never claimed as a run that
+      // finished cleanly, and never folded into an empty list.
+      const { runs, defective } = splitRunListRows([...completed.runs, ...failed.runs]);
       const workflowNames = await workflowNamesOf(runs, (hash) =>
         cockpitApi.getWorkflowRevision(hash)
       );
       sourceConnection = await sourcePromise;
       if (history.generation !== begun.generation) return;
-      history = confirmRead(history, begun.generation, { runs, workflowNames });
+      history = confirmRead(history, begun.generation, { runs, defective, workflowNames });
       if (history.generation !== begun.generation) return;
       const visible = projectHistoryRows(runs, workflowNames).filter((row) =>
         withinHistoryPeriod(row, now)
@@ -235,6 +238,7 @@
   $: visibleRows = rows.filter((row) => withinHistoryPeriod(row, now));
   $: showTimestamplessHint = hasTimestamplessRows(visibleRows);
   $: hasWorkItem = visibleRows.some((row) => row.workItem !== null);
+  $: defectiveRows = history.confirmed?.defective ?? [];
 </script>
 
 <section class="history-page surface" aria-labelledby="history-title">
@@ -259,7 +263,7 @@
   {/if}
 
   {#if history.confirmed !== null}
-    {#if visibleRows.length === 0}
+    {#if visibleRows.length === 0 && defectiveRows.length === 0}
       <div class="history-empty card empty-state">
         <h2>{wrapDisplayCopy(historyPageCopy.emptyTitle)}</h2>
         <p>{wrapDisplayCopy(historyPageCopy.emptyDescription)}</p>
@@ -270,6 +274,7 @@
         >{wrapDisplayCopy(historyPageCopy.emptyNext)}</a>
       </div>
     {:else}
+    {#if visibleRows.length > 0}
       <div
         class="history-head-row"
         class:history-head-no-work-item={!hasWorkItem}
@@ -360,6 +365,14 @@
       {#if showTimestamplessHint}
         <p class="timestampless-hint">{wrapDisplayCopy(historyPageCopy.timestamplessHint)}</p>
       {/if}
+    {/if}
+    {#if defectiveRows.length > 0}
+      <ul class="history-rows" aria-label={wrapDisplayCopy(workbenchPageCopy.defectiveRunsLabel)}>
+        {#each defectiveRows as row (row.public_run_reference)}
+          <DefectiveRunRowItem {row} />
+        {/each}
+      </ul>
+    {/if}
     {/if}
   {/if}
 </section>
