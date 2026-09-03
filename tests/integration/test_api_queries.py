@@ -89,7 +89,9 @@ from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_projections import (
+    DefectiveRunProjection,
     RunPage,
+    RunProjectionProblemCode,
 )
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -1846,6 +1848,22 @@ def test_terminal_results_cost_a_constant_number_of_statements_across_a_mixed_en
     }
 
 
+def _assert_run_page_carries_one_defective_row(result: object, run_id: RunId) -> None:
+    """The row a run's own projection failure becomes on a list page (#1042).
+
+    A single run's projection failing no longer fails the whole page: the
+    page still answers, and that one row is told apart as
+    `DefectiveRunProjection` instead. `get_run` (the single-run read) stays
+    the fail-loud `QueryDurableStateCorrupt` these scenarios predate.
+    """
+    assert isinstance(result, RunPage)
+    assert len(result.runs) == 1
+    row = result.runs[0]
+    assert isinstance(row, DefectiveRunProjection)
+    assert row.run_id == run_id
+    assert row.problem_code is RunProjectionProblemCode.DURABLE_STATE_CORRUPT
+
+
 def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrupt(
     engine: Engine,
 ) -> None:
@@ -1855,6 +1873,9 @@ def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrup
     seen. Two different answer-bearing kinds on one execution is the shape
     that reaches this: the store's own unique index already refuses two rows
     of the *same* kind on one execution.
+
+    A listed page no longer fails whole for this one run's own defect
+    (#1042): the row becomes `DefectiveRunProjection` instead.
     """
 
     revision = WorkflowRevision(_v3_workflow_document())
@@ -1894,7 +1915,7 @@ def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrup
 
     result = durable_queries(engine).list_runs(None, 100)
 
-    assert isinstance(result, QueryDurableStateCorrupt)
+    _assert_run_page_carries_one_defective_row(result, run_id)
 
 
 def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_durable_state_corrupt(
@@ -1906,15 +1927,17 @@ def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_dura
     (`agent_attempt_store.py`). Restored in `_run_terminal_results`: a
     mismatch is the store disagreeing with itself, never a value this
     projection shows.
+
+    A listed page no longer fails whole for this one run's own defect
+    (#1042): the row becomes `DefectiveRunProjection` instead.
     """
 
-    _seed_attempt_receipt_refusal(
-        engine, RunId("mismatched-artifact"), mismatched_artifact=True
-    )
+    run_id = RunId("mismatched-artifact")
+    _seed_attempt_receipt_refusal(engine, run_id, mismatched_artifact=True)
 
     result = durable_queries(engine).list_runs(None, 100)
 
-    assert isinstance(result, QueryDurableStateCorrupt)
+    _assert_run_page_carries_one_defective_row(result, run_id)
 
 
 def test_an_attempt_receipt_whose_artifact_matches_its_value_hash_reads_the_refusal(
