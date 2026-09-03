@@ -433,7 +433,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
   });
 
-  it("does not claim a connected source is missing when every observed item from it is retired", async () => {
+  it("shows the honest all-retired state, not a Choose that opens nothing, when every observed item from a connected source is retired", async () => {
     const cockpitApi = api({
       getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
       getSchemaRevision: vi.fn(async () => workItemSchema),
@@ -456,16 +456,14 @@ describe("the schema-generated fields on the catalog start sheet", () => {
 
     expect(screen.queryByText(workflowStartCopy.noSource)).toBeNull();
     expect(screen.queryByRole("button", { name: workflowStartCopy.connectSource })).toBeNull();
+    expect(screen.getByText(workflowStartCopy.allRetired)).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: workItemFor("work") })).toBeNull();
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
     const startRun = screen.getByRole("button", { name: workflowStartCopy.startRun }) as HTMLButtonElement;
     expect(startRun.disabled).toBe(true);
     expect(startRun.title).toBe(workflowStartCopy.startNeedsWorkItem);
-    const picker = screen.getByRole("combobox", { name: workItemFor("work") });
-    await fireEvent.click(picker);
-    expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
-    expect(screen.queryByRole("option", { name: "#450 Preview door" })).toBeNull();
   });
 
   it("refuses a work-item lookalike before it can enable Start", async () => {
