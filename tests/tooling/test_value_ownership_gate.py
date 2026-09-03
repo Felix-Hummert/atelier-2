@@ -48,6 +48,14 @@ class SpelledValue:
 
 
 VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
+    "host/serving.py::SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: the grace a redeploy stop gives the "
+        "never-ending SSE events stream before uvicorn drops its sockets, "
+        "kept well under the live unit's TimeoutStopSec (documented in "
+        "OPERATIONS.md) so runtime.close() still runs before SIGKILL -- an "
+        "operator's stop cadence, never a per-request patience (#1117)",
+    ),
     "host/serving.py::EVENT_PAGE_SIZE": SpelledValue(
         1, "the channel's named default, feeding --event-page-size into ApiLimits"
     ),
