@@ -1365,15 +1365,22 @@ def _run_terminal_results(
             artifact_hashes.add(value_hash.value)
     for attempt_receipt in attempt_receipts_by_execution.values():
         artifact_hash = attempt_receipt["artifact_hash"]
-        if (
-            artifact_hash is None
-            and str(attempt_receipt["value_hash"]) != Sha256Hash.of(b"").value
-        ):
+        attempt_value_hash = str(attempt_receipt["value_hash"])
+        if artifact_hash is None:
+            if attempt_value_hash != Sha256Hash.of(b"").value:
+                raise RunTransitionConflict(
+                    "nonempty output-schema refusal has no artifact"
+                )
+            continue
+        # The mirror of `load_output_schema_refusal_receipt`'s own check
+        # (agent_attempt_store.py): the artifact an attempt names is always
+        # addressed by the same hash it judged, so the two disagreeing is the
+        # store contradicting itself, not a value this projection may show.
+        if str(artifact_hash) != attempt_value_hash:
             raise RunTransitionConflict(
-                "nonempty output-schema refusal has no artifact"
+                "output-schema refusal artifact differs from its value hash"
             )
-        if artifact_hash is not None:
-            artifact_hashes.add(str(artifact_hash))
+        artifact_hashes.add(str(artifact_hash))
 
     artifacts_by_hash = read_stored_artifacts(
         connection, tuple(ArtifactHash(value) for value in artifact_hashes)
