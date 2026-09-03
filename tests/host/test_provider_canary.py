@@ -32,6 +32,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
 from atelier2.host import main
 from atelier2.host.provider_canary import (
+    PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS,
     PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES,
     PROVIDER_CANARY_MAXIMUM_VECTORS,
     ProviderCanaryDiscoveryFailed,
@@ -78,6 +79,7 @@ class FakeHttp:
     health_unavailable: bool = False
     health_refusal: str | None = None
     health_answer: bytes | None = None
+    health_non_serving_answers: int = 0
     health_source_commit: str = SOURCE_COMMIT
     configuration_pages: tuple[bytes, ...] | None = None
     node_detail_transcript_events: tuple[dict[str, object], ...] | None = None
@@ -103,6 +105,9 @@ class FakeHttp:
         assert timeout_seconds > 0
         self.calls.append(("GET", path, None))
         if path == "/health":
+            if self.health_non_serving_answers > 0:
+                self.health_non_serving_answers -= 1
+                raise ProviderCanaryServerUnavailable("health timed out")
             if self.health_unavailable:
                 raise ProviderCanaryServerUnavailable("health timed out")
             if self.health_refusal is not None:
@@ -428,6 +433,41 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     assert {receipt.valid_until.value for receipt in receipts} == {
         "2026-09-02T10:00:00Z"
     }
+
+
+def test_a_canary_waits_for_serving_health_before_it_tries_any_vector(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    state_directory = tmp_path / "state"
+    http = FakeHttp((configuration(),), workflow_directory)
+    http.health_non_serving_answers = 2
+    clock = FakeClock()
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=clock
+    )
+
+    assert report.attempted == 1
+    assert report.failed == 0
+    health_calls = [call for call in http.calls if call[1] == "/health"]
+    assert len(health_calls) == 3
+    assert clock.elapsed >= 2 * PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS
+
+
+def test_health_that_never_turns_serving_fails_loud_once_with_no_vector_attempted(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    state_directory = tmp_path / "state"
+    http = FakeHttp((configuration(),), workflow_directory)
+    http.health_unavailable = True
+
+    with pytest.raises(ProviderCanaryDiscoveryFailed, match="health-wait-timeout"):
+        execute_provider_canaries(
+            settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+        )
+
+    assert not any(method == "POST" for method, _path, _body in http.calls)
+    assert all(path == "/health" for _method, path, _body in http.calls)
 
 
 def test_discovery_selects_a_structurally_startable_vector_whose_receipt_is_foreign(
