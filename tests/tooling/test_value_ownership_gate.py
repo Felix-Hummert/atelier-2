@@ -92,6 +92,18 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "stable slice invariant: OPERATIONS.md's named discovery deadline, "
         "the first term the documented whole-run ceiling sums (#950)",
     ),
+    "host/provider_canary.py::PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: how often this client re-reads /health while "
+        "it waits for a fresh start to answer serving -- a fact about the wait "
+        "loop, never an operator's to choose (#1076)",
+    ),
+    "host/provider_canary.py::PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: OPERATIONS.md's named 60-second health-wait "
+        "deadline, bounding the pre-discovery poll before this run refuses "
+        "with the last health answer rather than trying a vector (#1076)",
+    ),
     "host/provider_canary.py::PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS": SpelledValue(
         1,
         "stable slice invariant: OPERATIONS.md's named per-call cap, itself "
