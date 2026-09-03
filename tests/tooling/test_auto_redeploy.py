@@ -215,7 +215,20 @@ scenarios = {
     "neutral_and_skipped": [("completed", "neutral"), ("completed", "skipped")],
     "none": [],
 }
-checks = scenarios[os.environ.get("ATELIER2_TEST_CHECKS", "green")]
+# A sequence lets a test give the walk over first-parent history a different
+# scenario per commit it examines (newest candidate first), which a single
+# ATELIER2_TEST_CHECKS value cannot express; each call consumes the next
+# name and the last one repeats for any call beyond the list.
+sequence = os.environ.get("ATELIER2_TEST_CHECKS_SEQUENCE")
+if sequence:
+    names = sequence.split(",")
+    counter_path = Path(os.environ["ATELIER2_TEST_CHECK_REQUEST_COUNT"])
+    call_index = int(counter_path.read_text(encoding="utf-8")) if counter_path.exists() else 0
+    counter_path.write_text(str(call_index + 1), encoding="utf-8")
+    scenario_name = names[min(call_index, len(names) - 1)]
+else:
+    scenario_name = os.environ.get("ATELIER2_TEST_CHECKS", "green")
+checks = scenarios[scenario_name]
 print(f"envelope\\t{len(checks)}")
 for status, conclusion in checks:
     print(f"check\\t{status}\\t{conclusion}")
@@ -373,6 +386,9 @@ class AutoRedeployHarness:
             "PATH": f"{self.bin_directory}{os.pathsep}{os.environ['PATH']}",
             "ATELIER2_TEST_COMMAND_LOG": str(self.command_log),
             "ATELIER2_TEST_RUN_REQUEST_COUNT": str(self.tmp_path / "run-request-count"),
+            "ATELIER2_TEST_CHECK_REQUEST_COUNT": str(
+                self.tmp_path / "check-request-count"
+            ),
             "ATELIER2_TEST_SERVED_COMMIT_FILE": str(self.served_commit_file),
             "ATELIER2_TEST_NOW_SECONDS": "2000000000",
             "ATELIER2_TEST_BUSY_RUNS": json.dumps([BLOCKING_RUN]),
@@ -633,6 +649,77 @@ def test_a_red_check_run_never_deploys_and_counts_a_failure(
     assert run_git(harness.deploy, "rev-parse", "HEAD") == previous_commit
     assert harness.invocations("serve_live_update") == []
     assert harness.state("auto-redeploy.failures") == 1
+
+
+def test_a_still_waiting_head_defers_to_a_green_predecessor(tmp_path: Path) -> None:
+    harness = AutoRedeployHarness.create(tmp_path)
+    harness.seed_served_commit()
+    predecessor_commit = harness.commit("v2\n")
+    head_commit = harness.commit("v3\n")
+
+    completed = harness.run(ATELIER2_TEST_CHECKS_SEQUENCE="queued,green")
+
+    assert completed.returncode == 0, completed.stderr
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == predecessor_commit
+    assert harness.served_commit_file.read_text(encoding="utf-8") == predecessor_commit
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", predecessor_commit]
+    ]
+    assert (
+        f"HEAD {head_commit} still waiting or red; "
+        f"deploying newest green ancestor {predecessor_commit}"
+    ) in harness.journal()
+
+
+def test_a_green_head_deploys_without_even_checking_a_red_predecessor(
+    tmp_path: Path,
+) -> None:
+    harness = AutoRedeployHarness.create(tmp_path)
+    harness.seed_served_commit()
+    harness.commit("v2\n")  # predecessor would classify red, but must never be queried
+    head_commit = harness.commit("v3\n")
+
+    completed = harness.run(ATELIER2_TEST_CHECKS_SEQUENCE="green,failure")
+
+    assert completed.returncode == 0, completed.stderr
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == head_commit
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", head_commit]
+    ]
+    assert len(harness.invocations("gh")) == 1
+
+
+def test_every_candidate_still_pending_defers_without_failing(tmp_path: Path) -> None:
+    harness = AutoRedeployHarness.create(tmp_path)
+    previous_commit = harness.seed_served_commit()
+    harness.commit("v2\n")
+    harness.commit("v3\n")
+
+    completed = harness.run(ATELIER2_TEST_CHECKS_SEQUENCE="queued,queued")
+
+    assert completed.returncode == 0, completed.stderr
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == previous_commit
+    assert harness.invocations("serve_live_update") == []
+    assert harness.state("auto-redeploy.failures") == 0
+
+
+def test_the_newest_green_ancestor_already_served_is_a_no_op(tmp_path: Path) -> None:
+    harness = AutoRedeployHarness.create(tmp_path)
+    initial_commit = run_git(harness.deploy, "rev-parse", "HEAD")
+    served_commit = harness.commit("v2\n")
+    harness.seed_served_commit(served_commit)
+    harness.commit("v3\n")  # newest, still red or pending; never deployed
+
+    completed = harness.run(ATELIER2_TEST_CHECKS_SEQUENCE="failure,green")
+
+    assert completed.returncode == 0, completed.stderr
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == initial_commit
+    assert harness.invocations("serve_live_update") == []
+    assert harness.state("auto-redeploy.failures") == 0
+    assert (
+        f"newest green ancestor {served_commit} is already served; nothing to deploy"
+        in harness.journal()
+    )
 
 
 def test_neutral_and_skipped_check_runs_are_not_red(tmp_path: Path) -> None:

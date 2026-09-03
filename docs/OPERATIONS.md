@@ -677,9 +677,14 @@ landing on `main` reaches it without an operator hand.** A systemd user timer
 `scripts/auto_redeploy.sh`. The watcher serializes timer and hand runs in the
 checkout's Git admin directory, fetches `origin/main`, and compares it with the
 commit reported by live health. A matching commit is a no-op. Otherwise the
-watcher requires a clean `main` checkout and green GitHub check runs, checks
-for running runs before requesting GitHub check runs and again immediately
-before the update, then hands the verified commit to
+watcher requires a clean `main` checkout, checks for running runs, then walks
+`main`'s first-parent history back from the fetched commit (bounded to
+`green_ancestor_search_depth` commits) for the newest commit with green
+GitHub checks, so continuous merges landing faster than CI never starve live
+delivery behind a HEAD that is always still checking; a commit older than
+what is already served, or found only because nothing newer is green yet, is
+never deployed. It checks for running runs again immediately before the
+update, then hands the verified commit to
 `scripts/serve_live_update.sh`. That script owns the fast-forward to the
 verified commit and remains the one owner of build, backup, migration,
 restart, and post-update health verification; the watcher never moves the
