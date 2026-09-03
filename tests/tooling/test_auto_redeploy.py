@@ -13,6 +13,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AUTO_REDEPLOY = PROJECT_ROOT / "scripts" / "auto_redeploy.sh"
 AUTO_REDEPLOY_SERVICE = PROJECT_ROOT / "scripts" / "atelier2-auto-redeploy.service"
 
+BLOCKING_RUN = {
+    "public_run_reference": "cnVuLTE",
+    "state": "STARTED",
+    "started_at": "2026-09-03T07:15:00Z",
+}
+"""The one running run a busy scenario serves from the runs list."""
+
+BLOCKING_RUN_SENTENCE = "cnVuLTE STARTED since 2026-09-03T07:15:00Z"
+"""How the watcher must name that run: reference, state, since when."""
+
 GIT_IDENTITY = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_SYSTEM": os.devnull,
@@ -126,8 +136,6 @@ if parsed.path != "/atelier/api/v1/runs":
     raise SystemExit(2)
 query = parse_qs(parsed.query)
 state = query.get("state", [""])[0]
-if query.get("limit") != ["1"]:
-    raise SystemExit(2)
 
 counter_path = Path(os.environ["ATELIER2_TEST_RUN_REQUEST_COUNT"])
 request_count = int(counter_path.read_text(encoding="utf-8")) if counter_path.exists() else 0
@@ -141,9 +149,11 @@ if os.environ.get("ATELIER2_TEST_RUNS_MALFORMED_STATE") == state:
 
 busy_state = os.environ.get("ATELIER2_TEST_BUSY_STATE")
 busy_after_first_check = os.environ.get("ATELIER2_TEST_BUSY_AFTER_FAST_FORWARD") == "1"
-is_second_check = request_count >= 3
+is_second_check = request_count >= 1
 is_busy = state == busy_state and (is_second_check or not busy_after_first_check)
-print(json.dumps({"items": [{"id": "run-1"}] if is_busy else []}))
+items = json.loads(os.environ["ATELIER2_TEST_BUSY_RUNS"]) if is_busy else []
+next_after = os.environ.get("ATELIER2_TEST_BUSY_NEXT_PAGE") or None
+print(json.dumps({"items": items, "next_after": next_after}))
 """,
     )
 
@@ -321,6 +331,7 @@ class AutoRedeployHarness:
             "ATELIER2_TEST_RUN_REQUEST_COUNT": str(self.tmp_path / "run-request-count"),
             "ATELIER2_TEST_SERVED_COMMIT_FILE": str(self.served_commit_file),
             "ATELIER2_TEST_NOW_SECONDS": "2000000000",
+            "ATELIER2_TEST_BUSY_RUNS": json.dumps([BLOCKING_RUN]),
         }
         environment.update(settings)
         return subprocess.run(
@@ -363,6 +374,14 @@ class AutoRedeployHarness:
             for invocation in self.invocations("logger")
         ]
 
+    def journal(self, priority: str | None = None) -> list[str]:
+        """Every message the watcher logged, narrowed to one priority on request."""
+        return [
+            invocation[-1]
+            for invocation in self.invocations("logger")
+            if priority is None or invocation[invocation.index("-p") + 1] == priority
+        ]
+
 
 def prepare_pending_deploy(tmp_path: Path) -> tuple[AutoRedeployHarness, str, str]:
     harness = AutoRedeployHarness.create(tmp_path)
@@ -397,7 +416,7 @@ def test_a_green_commit_is_handed_to_the_loopback_update_without_the_watcher_mov
     assert not list(harness.git_admin_directory.glob("*deployed*"))
 
 
-def test_busy_checks_cover_every_run_state_before_and_after_the_github_checks(
+def test_the_busy_check_asks_only_for_running_runs_before_and_after_the_github_checks(
     tmp_path: Path,
 ) -> None:
     harness, _, _ = prepare_pending_deploy(tmp_path)
@@ -408,30 +427,74 @@ def test_busy_checks_cover_every_run_state_before_and_after_the_github_checks(
     run_urls = [invocation[-1] for invocation in harness.invocations("curl")][1:]
     assert (
         run_urls
-        == [
-            "http://127.0.0.1:8422/atelier/api/v1/runs?state=STARTED&limit=1",
-            "http://127.0.0.1:8422/atelier/api/v1/runs?state=WAITING_INPUT&limit=1",
-            "http://127.0.0.1:8422/atelier/api/v1/runs?state=WAITING_RECONCILIATION&limit=1",
-        ]
-        * 2
+        == ["http://127.0.0.1:8422/atelier/api/v1/runs?state=STARTED&limit=5"] * 2
     )
 
 
-@pytest.mark.parametrize(
-    "state", ("STARTED", "WAITING_INPUT", "WAITING_RECONCILIATION")
-)
-def test_each_busy_run_state_defers_without_failing_or_touching_the_checkout(
-    tmp_path: Path, state: str
+def test_a_running_run_defers_the_deploy_without_failing_or_touching_the_checkout(
+    tmp_path: Path,
 ) -> None:
     harness, previous_commit, _ = prepare_pending_deploy(tmp_path)
 
-    completed = harness.run(ATELIER2_TEST_BUSY_STATE=state)
+    completed = harness.run(ATELIER2_TEST_BUSY_STATE="STARTED")
 
     assert completed.returncode == 0, completed.stderr
     assert run_git(harness.deploy, "rev-parse", "HEAD") == previous_commit
     assert harness.invocations("serve_live_update") == []
     assert harness.state("auto-redeploy.busy") == 1
     assert harness.state("auto-redeploy.failures") == 0
+
+
+@pytest.mark.parametrize("state", ("WAITING_INPUT", "WAITING_RECONCILIATION"))
+def test_a_run_parked_on_a_person_never_defers_the_deploy(
+    tmp_path: Path, state: str
+) -> None:
+    """A conversation waits for its operator for as long as it likes, and its
+    answer survives the new `--application-version` the deploy hands the serve
+    (`tests/integration/test_wait_survives_version_change.py`), so it is not
+    work the watcher may stand behind."""
+
+    harness, _, target_commit = prepare_pending_deploy(tmp_path)
+
+    completed = harness.run(ATELIER2_TEST_BUSY_STATE=state)
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", target_commit]
+    ]
+    assert harness.state("auto-redeploy.busy") == 0
+
+
+@pytest.mark.parametrize(
+    ("runs", "next_page", "sentence"),
+    (
+        ([BLOCKING_RUN], "", BLOCKING_RUN_SENTENCE),
+        (
+            [{**BLOCKING_RUN, "started_at": None}],
+            "",
+            "cnVuLTE STARTED since an unrecorded time",
+        ),
+        (
+            [BLOCKING_RUN],
+            "next-page-cursor",
+            f"{BLOCKING_RUN_SENTENCE}, and further runs",
+        ),
+    ),
+    ids=("one-known-run", "a-run-without-a-start-time", "more-than-the-page-holds"),
+)
+def test_a_busy_deferral_names_what_it_is_waiting_for(
+    tmp_path: Path, runs: list[dict[str, object]], next_page: str, sentence: str
+) -> None:
+    harness, _, _ = prepare_pending_deploy(tmp_path)
+
+    completed = harness.run(
+        ATELIER2_TEST_BUSY_STATE="STARTED",
+        ATELIER2_TEST_BUSY_RUNS=json.dumps(runs),
+        ATELIER2_TEST_BUSY_NEXT_PAGE=next_page,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"busy count now 1; waiting for {sentence}" in harness.journal()
 
 
 def test_a_run_starting_after_the_checks_pass_still_defers_without_touching_the_checkout(
@@ -457,7 +520,7 @@ def test_an_unreadable_run_list_fails_closed_and_counts_the_tick(
     harness, previous_commit, _ = prepare_pending_deploy(tmp_path)
     setting = f"ATELIER2_TEST_RUNS_{failure.upper()}_STATE"
 
-    completed = harness.run(**{setting: "WAITING_INPUT"})
+    completed = harness.run(**{setting: "STARTED"})
 
     assert completed.returncode == 0, completed.stderr
     assert run_git(harness.deploy, "rev-parse", "HEAD") == previous_commit
@@ -591,16 +654,28 @@ def test_only_the_third_failure_and_hourly_repeats_fail_the_unit(
     )
 
 
-def test_the_thirtieth_busy_tick_warns_without_failing_the_unit(
+def test_the_tenth_busy_tick_says_loudly_what_blocks_it_and_repeats_hourly(
     tmp_path: Path,
 ) -> None:
     harness, _, _ = prepare_pending_deploy(tmp_path)
 
-    completed = [harness.run(ATELIER2_TEST_BUSY_STATE="STARTED") for _ in range(30)]
+    def defer(now_seconds: str) -> subprocess.CompletedProcess[str]:
+        return harness.run(
+            ATELIER2_TEST_BUSY_STATE="STARTED",
+            ATELIER2_TEST_NOW_SECONDS=now_seconds,
+        )
 
-    assert all(run.returncode == 0 for run in completed)
-    assert harness.state("auto-redeploy.busy") == 30
-    assert harness.priorities().count("user.warning") == 1
+    quiet = [defer("10000") for _ in range(9)]
+    tenth = defer("10001")
+    suppressed = defer("13600")
+    repeated = defer("13602")
+
+    assert all(run.returncode == 0 for run in (*quiet, tenth, suppressed, repeated))
+    assert harness.state("auto-redeploy.busy") == 12
+    assert harness.journal("user.warning") == [
+        f"ALERT: deploy deferred on 10 ticks in a row, waiting for {BLOCKING_RUN_SENTENCE}",
+        f"ALERT: deploy deferred on 12 ticks in a row, waiting for {BLOCKING_RUN_SENTENCE}",
+    ]
     assert "user.err" not in harness.priorities()
 
 
@@ -627,12 +702,20 @@ def test_successful_deploy_and_nothing_to_do_reset_both_counters(
 ) -> None:
     harness, _, target_commit = prepare_pending_deploy(tmp_path)
     admin = harness.git_admin_directory
-    (admin / "auto-redeploy.failures").write_text("2", encoding="utf-8")
-    (admin / "auto-redeploy.busy").write_text("29", encoding="utf-8")
+    alert_files = (
+        admin / "auto-redeploy.last-alert",
+        admin / "auto-redeploy.last-busy-alert",
+    )
 
+    def seed_a_standing_streak() -> None:
+        (admin / "auto-redeploy.failures").write_text("2", encoding="utf-8")
+        (admin / "auto-redeploy.busy").write_text("9", encoding="utf-8")
+        for alert_file in alert_files:
+            alert_file.write_text("10000", encoding="utf-8")
+
+    seed_a_standing_streak()
     deployed = harness.run()
-    (admin / "auto-redeploy.failures").write_text("2", encoding="utf-8")
-    (admin / "auto-redeploy.busy").write_text("29", encoding="utf-8")
+    seed_a_standing_streak()
     current = harness.run()
 
     assert deployed.returncode == 0, deployed.stderr
@@ -640,6 +723,7 @@ def test_successful_deploy_and_nothing_to_do_reset_both_counters(
     assert harness.served_commit_file.read_text(encoding="utf-8") == target_commit
     assert harness.state("auto-redeploy.failures") == 0
     assert harness.state("auto-redeploy.busy") == 0
+    assert not any(alert_file.exists() for alert_file in alert_files)
     assert any(
         "already current" in " ".join(call) for call in harness.invocations("logger")
     )
