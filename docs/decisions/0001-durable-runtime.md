@@ -54,6 +54,30 @@ datasource transaction without making the cockpit lie. Atelier's immutable
 `WorkflowRevisionHash` is a product identity and remains distinct from DBOS
 `application_version`, which fences executor compatibility.
 
+An accepted answer or reconciliation can still be mid-enqueue when a redeploy
+retires its `application_version`: DBOS recovers a `PENDING` or re-admits an
+`ENQUEUED` workflow only under the version that enqueued it, so that
+continuation strands and would otherwise leave the answer door reporting
+`DurableAnswerExisting` forever (issue #1096). `retag_stranded_continuations`
+(`src/atelier2/adapters/dbos/uncontinuable_runs.py`) runs once, before
+`DBOS.launch()`, and re-derives each candidate's ownership, run state, and
+version from the product row that started it before conditionally updating
+`workflow_status.application_version` in the same canonical write transaction
+as that check — the same read-decide-write discipline the convergence sweeps
+already use, never a blind rewrite. This is why a continuation's payload must
+stay readable across `application_version`s: the row a later version resumes
+was minted, and partly executed, by an earlier one.
+
+Whether the retiring version's own process is still driving a workflow it
+still owes a step to is not observable from `workflow_status`, which names
+only a version, never a live process; the retag therefore does not attempt to
+check it. The invariant it depends on instead is that **the retiring runtime
+is stopped before the new one launches**: `scripts/serve_live_update.sh`
+stops `atelier2-serve.service` synchronously, and only that stopped state
+makes the retag's version compare-and-swap safe, because DBOS's own active
+workflow set otherwise lives only in that stopped process's memory, where
+this store cannot see it.
+
 The format-version-1 Agent execution path — an injected exact-output executor
 whose successful result committed one immutable `AgentReceipt`, the
 `AGENT_COMPLETED` event, and the configured successor transition in one

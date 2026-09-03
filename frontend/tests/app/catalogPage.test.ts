@@ -133,12 +133,36 @@ describe("the catalog room", () => {
     expect((await screen.findByText(catalogPageCopy.skillsNone)).isConnected).toBe(true);
   });
 
-  it("shows a published workflow with where it came from", async () => {
+  it("wears no provenance pill for a workflow dropped in by hand, since every card would then wear the same one", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
-    expect((await screen.findByText(WORKFLOW_NAME)).isConnected).toBe(true);
-    const facts = await screen.findByText(/Manual import/);
-    expect(facts.textContent).toBe(catalogPageCopy.provenanceManual);
+    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).queryByText(/·/)).toBeNull();
+  });
+
+  it("names a connected source's commit and path on the card that carries one", async () => {
+    const sourceCommit = "a".repeat(40);
+    openCatalog({
+      ...listing([
+        workflowSummary({
+          provenance: {
+            source: "source1.git-abc123",
+            source_commit: sourceCommit,
+            source_path: "workflows/iterate-code.yaml",
+            intaken_at: "2026-08-27T10:00:00Z"
+          }
+        })
+      ]),
+      ...admittedName()
+    });
+
+    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
+    expect(card).not.toBeNull();
+    const fact = workflowDetailCopy.sourceFact(sourceCommit, "workflows/iterate-code.yaml");
+    const pill = within(card as HTMLElement).getByText(fact.label);
+    expect(pill.isConnected).toBe(true);
+    expect(pill.title).toBe(fact.title);
   });
 
   it("leaves an admitted workflow calm with no second admission door", async () => {
@@ -605,6 +629,34 @@ describe("the catalog room", () => {
       expect.any(String),
       expect.any(String)
     );
+  });
+
+  it("Import opens the import sheet, and Escape closes it and returns focus to the button that opened it", async () => {
+    openCatalog({
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "workflow" as const,
+        workflow_format_version: 3 as const,
+        name: WORKFLOW_NAME,
+        description: null
+      }))
+    });
+
+    const importButton = await screen.findByRole("button", { name: catalogPageCopy.import });
+    expect(screen.queryByRole("dialog", { name: catalogPageCopy.import })).toBeNull();
+
+    await fireEvent.click(importButton);
+    const file = { name: "iterate-code.yaml", arrayBuffer: async () => new TextEncoder().encode(EXACT_YAML).buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
+    const sheet = await screen.findByRole("dialog", { name: catalogPageCopy.import });
+    expect(sheet.isConnected).toBe(true);
+
+    // A real browser turns Escape on an open modal `<dialog>` into its own
+    // "cancel" event; jsdom does not implement that translation, so the test
+    // fires the event the sheet's own `oncancel` handler already answers to.
+    await fireEvent(sheet, new Event("cancel", { cancelable: true }));
+
+    expect(screen.queryByRole("dialog", { name: catalogPageCopy.import })).toBeNull();
+    expect(document.activeElement).toBe(importButton);
   });
 
   it("recognizes a file dropped anywhere on the Catalog page", async () => {
