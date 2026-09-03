@@ -63,6 +63,7 @@
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { loadPendingWaitAnswer, type PendingWaitLookup } from "../lib/waitAnswerDelivery";
   import { humanMove, runHasEnded, runStanding, standingMarks } from "../lib/runState";
+  import { exactLocal } from "../lib/when";
   import {
     connectionLabel,
     protocolDetail,
@@ -150,6 +151,16 @@
    */
   let journalPoisoned = false;
   let discardConfirming = false;
+  /** The exact bytes about to be forgotten, read once when the confirm sheet
+   * opens (#914 line 12) -- the same reading the sheet's Technical reveal
+   * shows and the post-discard receipt below measures. */
+  let discardRaw: string | null = null;
+  let discardSubmitting = false;
+  let discardFailure: string | null = null;
+  /** The receipt at display time: gone once this room is left, because no
+   * second ledger survives the same poisoned storage (#914 line 12). */
+  let discardReceipt: string | null = null;
+  let roomHeading: { focus(): void };
 
   const speakerLabels: Record<ChatMessage["speaker"], string> = {
     you: workbenchPageCopy.youLabel,
@@ -212,6 +223,8 @@
   }
 
   function openDiscardConfirm(): void {
+    discardRaw = mutationJournal.rawStored();
+    discardFailure = null;
     discardConfirming = true;
   }
 
@@ -225,12 +238,32 @@
    * lets each pin mount and read the now-healthy journal on its own; the
    * conductor's own pending wait needs one explicit re-read, since nothing
    * else nudges it right now.
+   *
+   * A throw from the browser's own storage stays inside the sheet as its
+   * `failure` sentence instead of escaping after the sheet already closed
+   * (#914 finding 6); only a successful discard closes it, heals the room,
+   * and moves focus to the room heading -- the same place a fresh page load
+   * would land it.
    */
-  function confirmDiscardJournal(): void {
-    discardConfirming = false;
-    mutationJournal.discardPoisoned();
-    journalPoisoned = false;
-    if (conductorRun !== null) void refreshConductorRun(conductorRun.public_run_reference);
+  async function confirmDiscardJournal(): Promise<void> {
+    discardSubmitting = true;
+    discardFailure = null;
+    try {
+      mutationJournal.discardPoisoned();
+      discardReceipt = journalPoisonedCopy.forgottenReceipt(
+        exactLocal(new Date().toISOString()),
+        new globalThis.TextEncoder().encode(discardRaw ?? "").length
+      );
+      discardConfirming = false;
+      journalPoisoned = false;
+      if (conductorRun !== null) void refreshConductorRun(conductorRun.public_run_reference);
+      await tick();
+      roomHeading.focus();
+    } catch (error) {
+      discardFailure = humanErrorMessage(error, journalPoisonedCopy.discardFailure);
+    } finally {
+      discardSubmitting = false;
+    }
   }
 
   function followConductor(run: RunV3): void {
@@ -637,7 +670,7 @@
 
 <section class="workbench surface" aria-labelledby="workbench-title">
   <header class="surface-head">
-    <h1 id="workbench-title">{wrapDisplayCopy(workbenchPageCopy.title)}</h1>
+    <h1 id="workbench-title" tabindex="-1" bind:this={roomHeading}>{wrapDisplayCopy(workbenchPageCopy.title)}</h1>
   </header>
 
   <!-- A healthy stream says nothing: a permanent "live" badge is chrome and a
@@ -660,12 +693,12 @@
     <ProblemNotice message={streamFailureMessage} />
   {/if}
   {#if projectionFailure !== null}
-    <ProblemNotice message={projectionFailure} />
-    <button
-      type="button"
-      {...{ [workbenchQuestionAttribute]: workbenchQuestions.retryProjection.id }}
-      onclick={retryProjection}
-    >{wrapDisplayCopy(workbenchPageCopy.retryEvent)}</button>
+    <ProblemNotice
+      message={projectionFailure}
+      actionLabel={wrapDisplayCopy(workbenchPageCopy.retryEvent)}
+      onAction={retryProjection}
+      actionAttributes={{ [workbenchQuestionAttribute]: workbenchQuestions.retryProjection.id }}
+    />
   {/if}
 
   <ReadState
@@ -689,6 +722,10 @@
       onAction={openDiscardConfirm}
     />
   {:else}
+
+  {#if discardReceipt !== null}
+    <p class="discard-receipt" role="status">{wrapDisplayCopy(discardReceipt)}</p>
+  {/if}
 
   {#if pins.length > 0}
     <section class="needs-you" aria-label={wrapDisplayCopy(workbenchPageCopy.pinnedDecisionsLabel)}>
@@ -830,7 +867,13 @@
   {/if}
 
   {#if discardConfirming}
-    <PoisonedJournalDiscardSheet onConfirm={confirmDiscardJournal} onDismiss={dismissDiscardConfirm} />
+    <PoisonedJournalDiscardSheet
+      raw={discardRaw ?? ""}
+      submitting={discardSubmitting}
+      failure={discardFailure}
+      onConfirm={() => { void confirmDiscardJournal(); }}
+      onDismiss={dismissDiscardConfirm}
+    />
   {/if}
 </section>
 
@@ -872,6 +915,12 @@
   }
 
   .names-notice {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+  }
+
+  .discard-receipt {
     margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);

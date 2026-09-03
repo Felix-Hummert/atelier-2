@@ -44,16 +44,34 @@ function listRunsWaiting(waiting: readonly ReturnType<typeof waitingInputRun>[])
   });
 }
 
-function openWorkbench(overrides: Partial<CockpitApi> = {}): void {
+function openWorkbench(
+  overrides: Partial<CockpitApi> = {},
+  mutationJournal: MutationJournal = new MutationJournal(sessionStorage)
+): void {
   render(App, {
     props: {
       cockpitApi: cockpitApiStub({
         listRuns: listRunsWaiting([waitingInputRun()]),
         ...overrides
       }),
-      mutationJournal: new MutationJournal(sessionStorage)
+      mutationJournal
     }
   });
+}
+
+/** A `Storage` whose `removeItem` refuses -- the one way `discardPoisoned()`
+ * itself can fail (#914 finding 6), proven without reaching into the
+ * component's internals. */
+function storageThatRefusesRemoval(stored: string): Storage {
+  const backing = new Map([[MUTATION_JOURNAL_STORAGE_KEY, stored]]);
+  return {
+    getItem: (key) => backing.get(key) ?? null,
+    setItem: (key, value) => { backing.set(key, value); },
+    removeItem: () => { throw new Error("this browser refused to forget"); },
+    clear: () => backing.clear(),
+    key: () => null,
+    get length() { return backing.size; }
+  };
 }
 
 beforeEach(() => {
@@ -83,7 +101,7 @@ describe("a poisoned mutation journal on the Workbench", () => {
     expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();
   });
 
-  it("the door opens the retire card's own three facts, and confirming heals the room without a reload", async () => {
+  it("the door opens the retire card's own three facts plus the raw stored text behind a Technical reveal, and confirming heals the room without a reload", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
     openWorkbench();
     await screen.findByText(journalPoisonedCopy.sentence);
@@ -98,6 +116,16 @@ describe("a poisoned mutation journal on the Workbench", () => {
     expect(within(dialog).getByText(journalPoisonedCopy.stays)).toBeTruthy();
     expect(within(dialog).getByText(journalPoisonedCopy.permanent)).toBeTruthy();
 
+    // The exact stored bytes are readable and copyable behind the Technical
+    // reveal, before anything is forgotten (#914 line 12).
+    const technicalReveal = within(dialog)
+      .getByText(journalPoisonedCopy.technical, { selector: "summary" })
+      .closest("details");
+    expect(technicalReveal?.open).toBe(false);
+    await fireEvent.click(within(dialog).getByText(journalPoisonedCopy.technical, { selector: "summary" }));
+    expect(technicalReveal?.open).toBe(true);
+    expect(within(dialog).getByText("{").isConnected).toBe(true);
+
     await fireEvent.click(within(dialog).getByRole("button", { name: journalPoisonedCopy.confirm }));
 
     // Healed in the same render tree, no reload: the notice retires, the
@@ -106,6 +134,31 @@ describe("a poisoned mutation journal on the Workbench", () => {
     await waitFor(() => expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull());
     expect(sessionStorage.getItem(MUTATION_JOURNAL_STORAGE_KEY)).toBeNull();
     expect(await screen.findByRole("heading", { name: runPageCopy.needsYou })).toBeTruthy();
+
+    // One sentence names what was forgotten and when, since the poisoned
+    // key itself can carry no durable receipt (#914 line 12): "{" is one
+    // byte.
+    expect(await screen.findByText(/^Forgotten at .+ — 1 byte gone\.$/)).toBeTruthy();
+
+    // Focus lands on the room heading, the same place a fresh load would
+    // put it (#914 finding 6).
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Workbench" }))
+    );
+  });
+
+  it("keeps the sheet open with its own failure sentence when forgetting itself fails, and leaves the room still poisoned", async () => {
+    const throwing = new MutationJournal(storageThatRefusesRemoval("{"));
+    openWorkbench({}, throwing);
+    await screen.findByText(journalPoisonedCopy.sentence);
+
+    await fireEvent.click(screen.getByRole("button", { name: journalPoisonedCopy.door }));
+    const dialog = await screen.findByRole("dialog", { name: journalPoisonedCopy.confirmLabel });
+    await fireEvent.click(within(dialog).getByRole("button", { name: journalPoisonedCopy.confirm }));
+
+    expect(await within(dialog).findByText("this browser refused to forget")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: journalPoisonedCopy.confirmLabel })).toBeTruthy();
+    expect(screen.getByText(journalPoisonedCopy.sentence)).toBeTruthy();
   });
 
   it("cancelling the confirmation leaves the poisoned journal exactly as it was", async () => {

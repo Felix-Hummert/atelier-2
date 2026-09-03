@@ -22,5 +22,13 @@ export const journalPoisonedCopy = {
   permanent: "Permanent",
   permanentFact: "There is no way back.",
   confirm: "Forget them",
-  cancel: "Cancel"
+  cancel: "Cancel",
+  technical: "Technical",
+  rawContentLabel: "The exact stored text, before it is forgotten",
+  discardFailure: "This browser's memory could not be forgotten.",
+  /** The receipt at display time (#914 line 12): no second ledger survives the
+   * same poisoned storage, so this is read once, right after the discard,
+   * and is gone once the room is left. */
+  forgottenReceipt: (atLocal: string, byteCount: number) =>
+    `Forgotten at ${atLocal} — ${byteCount} ${byteCount === 1 ? "byte" : "bytes"} gone.`
 } as const;

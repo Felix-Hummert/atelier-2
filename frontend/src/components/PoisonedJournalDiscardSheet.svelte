@@ -1,88 +1,88 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from "svelte";
-
+  import ThreeFactConfirmSheet from "./ThreeFactConfirmSheet.svelte";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
 
   /**
    * The one confirmation a poisoned mutation journal's door opens (#914,
-   * mockup v8 `#v8-21-journal-poisoned`): the same three facts the catalog's
-   * own retire card asks with (`RetireCatalogLineageSheet.svelte`,
-   * `#v8-16-retire-confirmation`) -- Disappears / Stays / Permanent -- because
-   * the mockup names this the identical irreversible-decision shape and it
-   * needs no new one. Removing the journal is a synchronous local write, so
-   * unlike the retire card this carries no `submitting` or `failure` state.
+   * mockup v8 `#v8-21-journal-poisoned`): the shared three-fact confirm shape
+   * (`ThreeFactConfirmSheet.svelte`) also used by the catalog's own retire
+   * card, plus one addition the mockup does not draw -- the exact raw text
+   * about to be forgotten, copyable behind a Technical reveal, because it is
+   * the only honest receipt a poisoned `localStorage` key can still give
+   * (issue #914 line 12). `raw` is read once by the caller, before this
+   * sheet ever opens, so the same bytes shown here are the ones the caller's
+   * post-discard receipt measures.
    */
+  export let raw: string;
+  export let submitting = false;
+  export let failure: string | null = null;
   export let onConfirm: () => void;
   export let onDismiss: () => void;
 
-  let dialogElement: globalThis.HTMLDialogElement;
-  let cancelButton: HTMLButtonElement;
-
-  onMount(() => {
-    void openDialog();
-  });
-
-  async function openDialog(): Promise<void> {
-    await tick();
-    dialogElement.showModal();
-    cancelButton.focus();
+  /**
+   * A scrollable exact-bytes box takes a tab stop the same way
+   * `ReadableResult.svelte`'s own exact-bytes disclosure already does.
+   */
+  function keyboardScrollableRegion(region: HTMLElement): void {
+    region.tabIndex = 0;
   }
-
-  function dismiss(): void {
-    dialogElement.close();
-    onDismiss();
-  }
-
-  function handleCancel(event: Event): void {
-    event.preventDefault();
-    dismiss();
-  }
-
-  onDestroy(() => {
-    dialogElement?.close();
-  });
 </script>
 
-<dialog
-  class="sheet"
-  aria-label={wrapDisplayCopy(journalPoisonedCopy.confirmLabel)}
-  bind:this={dialogElement}
-  oncancel={handleCancel}
+<ThreeFactConfirmSheet
+  ariaLabel={journalPoisonedCopy.confirmLabel}
+  heading={journalPoisonedCopy.confirmQuestion}
+  facts={[
+    { label: journalPoisonedCopy.disappears, text: journalPoisonedCopy.disappearsFact },
+    { label: journalPoisonedCopy.stays, text: journalPoisonedCopy.staysFact },
+    { label: journalPoisonedCopy.permanent, text: journalPoisonedCopy.permanentFact }
+  ]}
+  confirmLabel={journalPoisonedCopy.confirm}
+  cancelLabel={journalPoisonedCopy.cancel}
+  {submitting}
+  {failure}
+  {onConfirm}
+  {onDismiss}
 >
-  <h2>{wrapDisplayCopy(journalPoisonedCopy.confirmQuestion)}</h2>
-  <div class="facts">
-    <div class="fact">
-      <b>{wrapDisplayCopy(journalPoisonedCopy.disappears)}</b>
-      <span>{wrapDisplayCopy(journalPoisonedCopy.disappearsFact)}</span>
-    </div>
-    <div class="fact">
-      <b>{wrapDisplayCopy(journalPoisonedCopy.stays)}</b>
-      <span>{wrapDisplayCopy(journalPoisonedCopy.staysFact)}</span>
-    </div>
-    <div class="fact">
-      <b>{wrapDisplayCopy(journalPoisonedCopy.permanent)}</b>
-      <span>{wrapDisplayCopy(journalPoisonedCopy.permanentFact)}</span>
-    </div>
-  </div>
-  <footer>
-    <button class="danger" type="button" onclick={onConfirm}>
-      {wrapDisplayCopy(journalPoisonedCopy.confirm)}
-    </button>
-    <button bind:this={cancelButton} class="quiet" type="button" onclick={dismiss}>
-      {wrapDisplayCopy(journalPoisonedCopy.cancel)}
-    </button>
-  </footer>
-</dialog>
+  <details class="technical">
+    <summary>{wrapDisplayCopy(journalPoisonedCopy.technical)}</summary>
+    <pre
+      class="exact"
+      role="region"
+      use:keyboardScrollableRegion
+      aria-label={wrapDisplayCopy(journalPoisonedCopy.rawContentLabel)}
+    >{raw}</pre>
+  </details>
+</ThreeFactConfirmSheet>
 
 <style>
-  .sheet { box-sizing: border-box; position: fixed; inset: var(--space-5) var(--space-5) auto auto; width: min(var(--dialog-width), calc(100% - (var(--space-5) * 2))); margin: 0; padding: var(--space-5); background: var(--panel2); border: var(--edge) solid var(--ink); border-radius: var(--r-lg); box-shadow: var(--shadow-lift); }
-  .sheet::backdrop { background: color-mix(in srgb, var(--ground) 80%, transparent); }
-  h2 { margin: 0; font-family: var(--serif); }
-  .facts { display: grid; gap: var(--space-3); margin: var(--space-4) 0; }
-  .fact { display: grid; gap: var(--space-1); }
-  .fact b { color: var(--ink-dim); font-size: var(--text-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; }
-  footer { display: flex; gap: var(--space-3); }
-  .danger { border-color: var(--signal-failure); color: var(--signal-failure); background: transparent; }
-  @media (max-width: 390px) { .sheet { inset: auto 0 0 0; width: 100%; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
+  .technical {
+    margin: 0 0 var(--space-4);
+    font-size: var(--text-xs);
+  }
+
+  .technical summary {
+    display: flex;
+    align-items: center;
+    min-height: var(--tap);
+    cursor: pointer;
+  }
+
+  .exact {
+    margin: var(--space-2) 0 0;
+    max-height: var(--scroll-box);
+    overflow: auto;
+    padding: var(--space-3);
+    border-radius: var(--r);
+    background: var(--chip);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: var(--mono);
+    font-size: var(--text-sm);
+  }
+
+  .exact:focus-visible {
+    outline: var(--edge-focus) solid var(--accent);
+    outline-offset: var(--edge-focus);
+  }
 </style>

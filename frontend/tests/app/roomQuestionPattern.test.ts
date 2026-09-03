@@ -23,13 +23,19 @@ import {
  * never excuse one. A file is not exempt because its first element
  * looks like a question surface.
  *
- * Today's tree has no such shared module: ten imported files each
- * compose their own `<dialog>`. The sentence names them and does not
- * prove they share one Stage or Sheet. A `createElement` overlay, a
- * question in a `.ts` module, a dynamic `role={...}`, a sheet that is
- * not a dialog, and an in-page decision stage that is not a dialog or
- * confirm (PinnedDecision, V3AnswerCard, the Workbench
- * ear) are outside what the templates and script tags show.
+ * Today's tree has no such shared module: nine imported files each
+ * compose their own `<dialog>`. `RetireCatalogLineageSheet.svelte` and
+ * `PoisonedJournalDiscardSheet.svelte` are not two of the nine any more --
+ * both now render `ThreeFactConfirmSheet.svelte`, the one irreversible-
+ * decision dialog they used to compose separately (#914) -- but that shared
+ * file is itself still one composer among the other eight, so the tree as a
+ * whole is not yet down to the single shared component this check would
+ * recognise. The sentence names the nine and does not prove they share one
+ * Stage or Sheet. A `createElement` overlay, a question in a `.ts` module, a
+ * dynamic `role={...}`, a sheet that is not a dialog, and an in-page
+ * decision stage that is not a dialog or confirm (PinnedDecision,
+ * V3AnswerCard, the Workbench ear) are outside what the templates and
+ * script tags show.
  */
 
 const SCRIPT_OR_STYLE = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi;
@@ -46,11 +52,10 @@ const NAMED_RESIDUAL_FILES = [
   "components/CatalogImportSheet.svelte",
   "components/ConnectSourceSheet.svelte",
   "components/DisconnectSourceSheet.svelte",
-  "components/PoisonedJournalDiscardSheet.svelte",
   "components/RenewSourceTokenSheet.svelte",
-  "components/RetireCatalogLineageSheet.svelte",
   "components/RunCancelCard.svelte",
   "components/RunForkSheet.svelte",
+  "components/ThreeFactConfirmSheet.svelte",
   "components/WorkflowStartSheet.svelte"
 ] as const;
 
