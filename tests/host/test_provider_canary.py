@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request
 
 import pytest
 
+from atelier2.api.problems import problem_resource
 from atelier2.api.wire.resources import (
     CatalogNameResolutionResource,
     HealthResource,
@@ -81,6 +85,7 @@ class FakeHttp:
     health_source_commit: str = SOURCE_COMMIT
     configuration_pages: tuple[bytes, ...] | None = None
     node_detail_transcript_events: tuple[dict[str, object], ...] | None = None
+    superseded_configuration_hashes: frozenset[str] = frozenset()
     calls: list[tuple[str, str, bytes | None]] = field(default_factory=list)
     workflow_hashes: list[str] = field(default_factory=list)
     run_reads: int = 0
@@ -128,6 +133,15 @@ class FakeHttp:
                 self.configuration_page_reads += 1
                 return page
             return encoded(items=self.configurations, next_after_revision_hash=None)
+        if path.startswith("/model-registries/"):
+            provider_id = path.rsplit("/", 1)[-1]
+            registered = tuple(
+                config
+                for config in self.configurations
+                if config["agent_configuration_revision_hash"]
+                not in self.superseded_configuration_hashes
+            )
+            return model_registry_answer(registered, provider_id)
         if path.startswith("/workflow-revisions/by-name/"):
             if self.catalog_unavailable:
                 raise ProviderCanaryServerUnavailable("workflow catalog timed out")
@@ -190,6 +204,29 @@ class FakeHttp:
 
 def encoded(**document: object) -> bytes:
     return json.dumps(document).encode()
+
+
+def model_registry_answer(
+    configurations: tuple[dict[str, object], ...], provider_id: str
+) -> bytes:
+    entries = tuple(
+        {
+            "model_id": config["model"],
+            "agent_configuration_revision_hash": config[
+                "agent_configuration_revision_hash"
+            ],
+            "source": "operator",
+            "provider_check": "checked",
+        }
+        for config in configurations
+        if config["provider_id"] == provider_id
+    )
+    return encoded(
+        provider_id=provider_id,
+        revision_number=1,
+        model_registry_revision_hash="9" * 64,
+        entries=entries,
+    )
 
 
 def run_resource(run_id: str, workflow_hash: str, state: str) -> RunResourceV3:
@@ -474,6 +511,46 @@ def test_discovery_selects_a_structurally_startable_vector_whose_receipt_is_fore
     assert {receipt.result for receipt in receipts} == {ProviderProbeResult.SUCCEEDED}
 
 
+def test_discovery_excludes_a_configuration_the_model_registry_no_longer_points_to(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """A structurally startable but superseded revision is not a vector.
+
+    The model registry now points at a newer revision for the same model; a
+    start would refuse the old hash's cast (`starter.py:
+    _cast_against_model_configuration` / `cast_unbound_roles`, ADR 0019) before
+    any process runs -- `uncast-agent-roles` -- so discovery must never choose
+    it either. `structurally_startable` alone cannot see this: the executor is
+    registered, only the registry pointer moved.
+    """
+
+    superseded_hash = "1" * 64
+    http = FakeHttp(
+        (
+            configuration(configuration_hash=superseded_hash),
+            configuration(),
+        ),
+        workflow_directory,
+        superseded_configuration_hashes=frozenset({superseded_hash}),
+    )
+    state_directory = tmp_path / "state"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert any(
+        method == "GET" and path == "/model-registries/anthropic"
+        for method, path, _body in http.calls
+    )
+    assert report.attempted == 1
+    assert report.failed == 0
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.configuration_hash == AgentConfigurationRevisionHash(
+        CONFIGURATION_HASH
+    )
+
+
 def test_discovery_finds_nothing_for_a_vector_whose_executor_is_unavailable(
     tmp_path: Path, workflow_directory: Path
 ) -> None:
@@ -525,7 +602,7 @@ def test_each_trigger_starts_a_new_run_even_on_the_same_day(
         ("timeout", "run-timeout"),
         (
             "refusal",
-            "agent-executor-binding-unavailable",
+            "start-refused-agent-executor-binding-unavailable",
         ),
     ),
 )
@@ -747,6 +824,8 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
             answer = encoded(
                 items=(configuration(),), next_after_revision_hash=None
             ).decode()
+        elif full_url.endswith("/model-registries/anthropic"):
+            answer = model_registry_answer((configuration(),), "anthropic").decode()
         elif full_url.endswith(f"/workflow-revisions/by-name/{workflow_name}"):
             answer = CatalogNameResolutionResource(
                 display_name=workflow_name,
@@ -783,6 +862,94 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
     (receipt,) = read_receipts(state_directory)
     assert receipt.result is ProviderProbeResult.FAILED
     assert receipt.problem_code == ProviderProbeProblemCode("server-unavailable")
+
+
+@pytest.mark.parametrize(
+    ("failure_status", "failure_body", "expected_problem_code"),
+    (
+        (
+            422,
+            lambda: problem_resource("uncast-agent-roles").model_dump_json().encode(),
+            "start-refused-uncast-agent-roles",
+        ),
+        (502, lambda: b"upstream exploded", "http-refused"),
+    ),
+    ids=("typed-start-refusal", "unclassifiable-http-refusal"),
+)
+def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
+    tmp_path: Path,
+    workflow_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_status: int,
+    failure_body: Callable[[], bytes],
+    expected_problem_code: str,
+) -> None:
+    """The URN is parsed at its owner (`atelier2.api.problems`), never guessed.
+
+    A typed start refusal (`uncast-agent-roles` among them) keeps its own
+    honest token instead of degrading to `http-refused`; an answer this
+    client genuinely cannot classify still keeps that same generic code,
+    unchanged from before.
+    """
+
+    workflow_name = "provider-canary-headless"
+    workflow_hash = Sha256Hash.of(
+        (workflow_directory / f"{workflow_name}.yaml").read_bytes()
+    ).value
+
+    def answering(request: Request, *, timeout: float) -> io.BytesIO:
+        full_url = request.full_url
+        method = request.method
+        if full_url.endswith("/health"):
+            answer = (
+                HealthResource(
+                    status="serving", source_commit=SOURCE_COMMIT, source_tree="d" * 40
+                )
+                .model_dump_json()
+                .encode()
+            )
+        elif "/agent-configuration-revisions?" in full_url:
+            answer = encoded(items=(configuration(),), next_after_revision_hash=None)
+        elif full_url.endswith("/model-registries/anthropic"):
+            answer = model_registry_answer((configuration(),), "anthropic")
+        elif full_url.endswith(f"/workflow-revisions/by-name/{workflow_name}"):
+            answer = (
+                CatalogNameResolutionResource(
+                    display_name=workflow_name,
+                    lineage_id="4" * 64,
+                    workflow_revision_hash=workflow_hash,
+                    revision_number=1,
+                )
+                .model_dump_json()
+                .encode()
+            )
+        elif full_url.endswith("/runs") and method == "POST":
+            raise HTTPError(
+                full_url,
+                failure_status,
+                "refused",
+                Message(),
+                io.BytesIO(failure_body()),
+            )
+        else:
+            raise AssertionError((method, full_url))
+        return io.BytesIO(answer)
+
+    monkeypatch.setattr("atelier2.host.provider_canary.urlopen", answering)
+    state_directory = tmp_path / "state"
+    canary_settings = ProviderCanarySettings(
+        service_url="http://127.0.0.1:8422",
+        workflow_directory=workflow_directory,
+        state_directory=state_directory,
+        terminal_timeout_seconds=5,
+        poll_interval_seconds=1,
+    )
+
+    report = execute_provider_canaries(canary_settings, clock=FakeClock())
+
+    assert report.failed == 1
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.problem_code == ProviderProbeProblemCode(expected_problem_code)
 
 
 @pytest.mark.parametrize("limit_kind", ("pages", "vectors"))

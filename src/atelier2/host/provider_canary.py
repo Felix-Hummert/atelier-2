@@ -3,15 +3,19 @@
 The served agent-configuration list is the deployment's answer about which
 exact provider/executor/configuration vectors are structurally startable now
 -- a factory registered, available, and declaring the capability, with no
-live evidence asked at all. This client reads that list, resolves the
-matching admitted workflow, starts one fresh run with the listed
-configuration hash, and polls the public run resource to a terminal state. It
-owns no provider process and opens no store.
+live evidence asked at all. A vector still needs one more thing a start would
+also demand: the model registry must currently point to that exact
+configuration hash for its provider, not a since-superseded one. This client
+asks the model registry the start itself reads, rather than re-deriving that
+cast decision, then resolves the matching admitted workflow, starts one fresh
+run with the listed configuration hash, and polls the public run resource to
+a terminal state. It owns no provider process and opens no store.
 
-Discovery is receipt-neutral: health, the bounded configuration list, and all
-distinct admitted workflow names must resolve before any vector becomes an
-attempt. Discovery refusal is visible through the process exit and journal and
-leaves every last-known vector receipt byte-identical. Once one vector enters
+Discovery is receipt-neutral: health, the bounded configuration list, each
+candidate's model registry, and all distinct admitted workflow names must
+resolve before any vector becomes an attempt. Discovery refusal is visible
+through the process exit and journal and leaves every last-known vector
+receipt byte-identical. Once one vector enters
 execution, its outcome replaces that vector's secret-free
 ``provider-probe-receipt/v1`` beneath the operator's XDG state directory. The
 durable run remains the evidence owner; a receipt carries only its identities
@@ -56,11 +60,13 @@ from atelier2.adapters.grok_subscription import (
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
 )
 from atelier2.api.openapi import API_PREFIX
+from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionListItemResource,
     AgentConfigurationRevisionPageResource,
     CatalogNameResolutionResource,
     HealthResource,
+    ModelRegistryRevisionResource,
     NodeDetailResource,
     RunResourceV3,
 )
@@ -106,11 +112,19 @@ PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS = (
 )
 PROVIDER_CANARY_STATE_RELATIVE_PATH = Path("atelier2/provider-probes/live")
 
+_MODEL_REGISTRY_PATH_PREFIX = "/model-registries"
+"""The relative path host clients use, mirroring the served route without
+`API_PREFIX`. `host/run_command.py` owns the sibling constants this module
+already imports (`AGENT_CONFIGURATION_PATH`, `WORKFLOW_REVISION_PATH`,
+`RUN_PATH`); this one stays local because the canary is its only host caller.
+"""
+
 _MAXIMUM_PROBLEM_RESPONSE_BYTES = 4_096
 
 _health_resource = TypeAdapter(HealthResource)
 _configuration_page_resource = TypeAdapter(AgentConfigurationRevisionPageResource)
 _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
+_model_registry_resource = TypeAdapter(ModelRegistryRevisionResource)
 _run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
 _node_detail_resource = TypeAdapter[NodeDetailResource](NodeDetailResource)
 
@@ -489,7 +503,7 @@ def _configured_vectors(
     clock: ProviderCanaryClock,
     deadline: float,
 ) -> tuple[_CanaryVector, ...]:
-    vectors: list[_CanaryVector] = []
+    candidates: list[tuple[str, _CanaryVector]] = []
     after: str | None = None
     for page_number in range(1, PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES + 1):
         query = urlencode(
@@ -514,27 +528,94 @@ def _configured_vectors(
         # Selecting on `startable` here would be the same surface-vs-start-door
         # divergence this gate exists to close, running the other way -- the
         # listing saying "not startable" while the one run that could produce
-        # the missing evidence is refused from ever finding it.
-        vectors.extend(
-            vector
+        # the missing evidence is refused from ever finding it. A configuration
+        # the model registry no longer points to (a superseded revision) is
+        # filtered separately below, by the same registry pointer a start
+        # itself would consult.
+        candidates.extend(
+            (item.provider_id, vector)
             for item in page.items
             if item.structurally_startable
             and (vector := _canary_vector(item)) is not None
         )
-        if len(vectors) > PROVIDER_CANARY_MAXIMUM_VECTORS:
+        if len(candidates) > PROVIDER_CANARY_MAXIMUM_VECTORS:
             raise ProviderCanaryDiscoveryFailed(
                 "too-many-provider-vectors: the service listed more than "
                 f"{PROVIDER_CANARY_MAXIMUM_VECTORS} known startable provider vectors"
             )
         after = page.next_after_revision_hash
         if after is None:
-            return tuple(vectors)
+            return _currently_registered_vectors(
+                candidates, client, clock=clock, deadline=deadline
+            )
         if page_number == PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES:
             raise ProviderCanaryDiscoveryFailed(
                 "too-many-configuration-pages: the service requires more than "
                 f"{PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES} configuration pages"
             )
     raise AssertionError("bounded configuration pagination did not terminate")
+
+
+def _currently_registered_vectors(
+    candidates: list[tuple[str, _CanaryVector]],
+    client: ProviderCanaryHttp,
+    *,
+    clock: ProviderCanaryClock,
+    deadline: float,
+) -> tuple[_CanaryVector, ...]:
+    """Keep only the candidates the model registry still points to.
+
+    A structurally startable configuration can still be a superseded
+    revision -- the registry now holds a newer one for the same model -- and
+    a start refuses that exact judgment (`starter.py:
+    _cast_against_model_configuration` / `cast_unbound_roles`) before any
+    process runs. This asks the model registry the start itself reads,
+    rather than re-deriving the cast decision, so the two can never drift.
+    """
+
+    checked_hashes_by_provider = {
+        provider_id: _checked_configuration_hashes(
+            client, provider_id, clock=clock, deadline=deadline
+        )
+        for provider_id in dict.fromkeys(
+            provider_id for provider_id, _vector in candidates
+        )
+    }
+    return tuple(
+        vector
+        for provider_id, vector in candidates
+        if vector.configuration_hash.value in checked_hashes_by_provider[provider_id]
+    )
+
+
+def _checked_configuration_hashes(
+    client: ProviderCanaryHttp,
+    provider_id: str,
+    *,
+    clock: ProviderCanaryClock,
+    deadline: float,
+) -> frozenset[str]:
+    try:
+        registry = _decoded(
+            _model_registry_resource,
+            _get_before_deadline(
+                client,
+                f"{_MODEL_REGISTRY_PATH_PREFIX}/{quote(provider_id, safe='')}",
+                clock=clock,
+                deadline=deadline,
+                timeout_error=_discovery_timeout,
+            ),
+            "model registry",
+        )
+    except ProviderCanaryHttpRefused as refused:
+        if refused.problem_code == "model-registry-missing":
+            return frozenset()
+        raise
+    return frozenset(
+        entry.agent_configuration_revision_hash
+        for entry in registry.entries
+        if entry.provider_check == "checked"
+    )
 
 
 def _resolve_admitted_workflows(
@@ -674,7 +755,7 @@ def _execute_vector(
         problem_code = ProviderProbeProblemCode("process-timeout")
         detail = str(timed_out)
     except ProviderCanaryHttpRefused as refused:
-        problem_code = _bounded_problem_code(refused.problem_code)
+        problem_code = _start_refused_problem_code(refused.problem_code)
         detail = str(refused)
     except ProviderCanaryAnswerUnreadable as unreadable:
         problem_code = ProviderProbeProblemCode("server-answer-unreadable")
@@ -861,9 +942,12 @@ def _problem_answer(document: bytes, fallback: str) -> tuple[str, str]:
         return "http-refused", fallback
     raw_type = decoded.get("type")
     detail = decoded.get("detail")
+    # The problem-vocabulary owner (`atelier2.api.problems`) frames every type
+    # as `urn:atelier2:problem:v1:<code>` -- colon-separated, not `/`-separated
+    # -- so the code is read by stripping that exact prefix, never guessed.
     problem_code = (
-        raw_type.rsplit("/", 1)[-1]
-        if isinstance(raw_type, str) and raw_type
+        raw_type.removeprefix(PROBLEM_TYPE_PREFIX)
+        if isinstance(raw_type, str) and raw_type.startswith(PROBLEM_TYPE_PREFIX)
         else "http-refused"
     )
     return problem_code, detail if isinstance(detail, str) else fallback
@@ -872,5 +956,27 @@ def _problem_answer(document: bytes, fallback: str) -> tuple[str, str]:
 def _bounded_problem_code(raw: str) -> ProviderProbeProblemCode:
     try:
         return ProviderProbeProblemCode(raw)
+    except (TypeError, ValueError):
+        return ProviderProbeProblemCode("http-refused")
+
+
+def _start_refused_problem_code(raw: str) -> ProviderProbeProblemCode:
+    """A typed refusal the start answered, named as its own honest token.
+
+    `raw` already carries the correctly parsed problem code (`_problem_answer`
+    reads the type from its owning vocabulary), so this only prefixes it into
+    the canary's own namespace -- distinguishing "the start refused this
+    binding with a named problem" from every other receipt code this module
+    assigns. `ProviderProbeProblemCode` bounds its token to lowercase ASCII
+    and hyphens, so the prefix joins with a hyphen rather than the colon the
+    problem vocabulary itself uses. `raw` itself already reading `http-refused`
+    means no type was ever recovered -- that ambient case stays exactly
+    `http-refused`, not a hollow "start-refused" wrapper around nothing.
+    """
+
+    if raw == "http-refused":
+        return ProviderProbeProblemCode("http-refused")
+    try:
+        return ProviderProbeProblemCode(f"start-refused-{raw}")
     except (TypeError, ValueError):
         return ProviderProbeProblemCode("http-refused")
