@@ -1,9 +1,11 @@
 <script lang="ts">
+  import type { SourceFact } from "../lib/catalogPageCopy";
+
   export let kind: "workflow" | "agent";
   export let title: string;
   export let ariaLabel: string;
   export let description: string;
-  export let provenance: readonly string[];
+  export let provenance: readonly SourceFact[];
   export let provider: string | null = null;
   export let href: string | null = null;
   export let status: { label: string; description: string; dashed: boolean } | null = null;
@@ -35,8 +37,8 @@
         {#if provider !== null && providerMark !== null}
           <span class="provider-mark" aria-label={provider} title={provider}>{providerMark}</span>
         {/if}
-        {#each provenance as source (source)}
-          <span class="tile-pill">{source}</span>
+        {#each provenance as source (source.label)}
+          <span class="tile-pill" title={source.title}>{source.label}</span>
         {/each}
         {#if status !== null}
           <span
@@ -55,8 +57,8 @@
         {#if provider !== null && providerMark !== null}
           <span class="provider-mark" aria-label={provider} title={provider}>{providerMark}</span>
         {/if}
-        {#each provenance as source (source)}
-          <span class="tile-pill">{source}</span>
+        {#each provenance as source (source.label)}
+          <span class="tile-pill" title={source.title}>{source.label}</span>
         {/each}
         {#if status !== null}
           <span
