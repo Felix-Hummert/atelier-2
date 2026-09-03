@@ -8,6 +8,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.host_configuration import model_configuration_snapshot
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     auth_profile_revisions,
@@ -15,6 +16,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
+    configuration_registered,
 )
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
@@ -28,6 +30,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevisionHash,
     ProviderId,
 )
+from atelier2.contracts.host_configuration import ModelRegistryBytesDisagree
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.ports.agent_configurations import (
     AgentConfigurationCatalog,
@@ -246,6 +249,11 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                 )
                 has_more = len(records) > limit
                 page = records[:limit]
+                # One snapshot for the whole page: the registry pointer a
+                # start's cast would read does not vary per configuration,
+                # so it is asked once through the same connection's
+                # transaction rather than once per listed item.
+                registries = model_configuration_snapshot(connection, None).registries
                 items: list[AgentConfigurationRevisionListItem] = []
                 for record in page:
                     configuration = agent_configuration_from_record(record)
@@ -271,13 +279,17 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                         AgentConfigurationRevisionListItem(
                             configuration,
                             auth,
-                            self._registry.is_startable(
-                                executor_key,
-                                configuration.requested_capability,
-                                configuration.revision_hash,
-                            ),
                             self._registry.is_structurally_startable(
                                 executor_key, configuration.requested_capability
+                            ),
+                            configuration_registered(
+                                configuration.revision_hash,
+                                auth.provider_id.value,
+                                configuration.model,
+                                registries,
+                            ),
+                            self._registry.has_valid_receipt(
+                                configuration.revision_hash
                             ),
                         )
                     )
@@ -287,7 +299,7 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                 )
         except (OperationalError, PoolTimeoutError):
             return CatalogReadUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
+        except (ValueError, RuntimeError, DatabaseError, ModelRegistryBytesDisagree):
             return DurableStateCorrupt()
 
     def list_auth_profile_revisions(

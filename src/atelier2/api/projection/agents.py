@@ -45,16 +45,13 @@ def agent_configuration_revision_list_item_resource(
     item: AgentConfigurationRevisionListItem,
 ) -> AgentConfigurationRevisionListItemResource:
     revision = agent_configuration_revision_resource(item.revision, item.auth_profile)
-    not_startable_reason = (
-        None
-        if item.startable
-        else "agent-executor-binding-unavailable"
-        if not item.structurally_startable
-        else "provider-probe-receipt-missing"
-    )
     return AgentConfigurationRevisionListItemResource(
         **revision.model_dump(),
         startable=item.startable,
         structurally_startable=item.structurally_startable,
-        not_startable_reason=not_startable_reason,
+        not_startable_reason=(
+            None
+            if item.not_startable_reason is None
+            else item.not_startable_reason.value
+        ),
     )

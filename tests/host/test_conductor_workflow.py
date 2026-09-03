@@ -78,6 +78,7 @@ from atelier2.ports.agent_executions import AgentExecutorCarrier
 from tests.scenarios.agents import (
     agent_scratch_root,
     claude_subscription_deployment,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import permissive_projection_limit
 
@@ -584,6 +585,9 @@ def test_the_published_conductor_configuration_is_startable_where_doors_are_arme
             AgentConfigurationRevisionFormatVersion.V2,
         )
         catalog.publish_agent_configuration_revision(configuration)
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (configuration,)
+        )
 
         assert settings.provider_probe_receipt_directory is not None
         settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
