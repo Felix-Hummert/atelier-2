@@ -18,6 +18,7 @@ before any caller has opened a transaction.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from atelier2.adapters.project_source import (
@@ -49,6 +50,23 @@ _PATH_SEPARATOR = "\t"
 _COMMIT_OF = "^{commit}"
 _END_OF_OPTIONS = "--end-of-options"
 """What keeps a configured ref that starts with a dash a ref rather than a flag."""
+
+
+@dataclass(frozen=True)
+class _GitAnswered:
+    """Git answered this probe with one line."""
+
+    line: str
+
+
+@dataclass(frozen=True)
+class _GitSilent:
+    """Git gave this probe no line, and this is why it gave none."""
+
+    reason: str
+
+
+type _Probed = _GitAnswered | _GitSilent
 
 
 class GitDefinitionSource:
@@ -129,10 +147,11 @@ class GitDefinitionSource:
                 DefinitionSourceRefusal.UNREACHABLE,
                 f"{repository} names no directory: {error}",
             ) from error
-        top_level = self._answering(repository, ("rev-parse", "--show-toplevel"))
-        if top_level is None:
+        probed = self._answering(repository, ("rev-parse", "--show-toplevel"))
+        if isinstance(probed, _GitSilent):
             self._require_bare_repository_at(repository, resolved)
             return
+        top_level = probed.line
         if Path(top_level).resolve() != resolved:
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.UNREACHABLE,
@@ -141,14 +160,20 @@ class GitDefinitionSource:
             )
 
     def _require_bare_repository_at(self, repository: str, resolved: Path) -> None:
-        """A location with no working tree is a repository only if it is the bare one."""
+        """A location with no working tree is a repository only if it is the bare one.
 
-        found = self._answering(repository, ("rev-parse", "--absolute-git-dir"))
-        if found is None:
+        Git's own words travel into the refusal: a location that is merely
+        misspelled and one this user may not enter earn the same word, and
+        only what git said tells the operator which of the two they have.
+        """
+
+        probed = self._answering(repository, ("rev-parse", "--absolute-git-dir"))
+        if isinstance(probed, _GitSilent):
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.UNREACHABLE,
-                f"{repository} could not be read as a git repository",
+                f"{repository} could not be read as a git repository: {probed.reason}",
             )
+        found = probed.line
         if Path(found).resolve() != resolved:
             raise DefinitionSourceUnreadable(
                 DefinitionSourceRefusal.UNREACHABLE,
@@ -156,14 +181,22 @@ class GitDefinitionSource:
                 f"{found}, whose content this source never named",
             )
 
-    def _answering(self, repository: str, arguments: tuple[str, ...]) -> str | None:
-        """What git said, or nothing when it would not answer this question here."""
+    def _answering(self, repository: str, arguments: tuple[str, ...]) -> _Probed:
+        """What git said here, or why it said nothing.
+
+        A silent probe is an answer rather than a failure -- a bare repository
+        has no top level -- so the reason travels beside the silence instead of
+        replacing it, and the caller that turns silence into a refusal is the
+        one that can say why.
+        """
 
         try:
             answered = self._line(repository, arguments)
-        except (GitRefused, OSError):
-            return None
-        return answered or None
+        except (GitRefused, OSError) as error:
+            return _GitSilent(str(error))
+        if not answered:
+            return _GitSilent(f"git {' '.join(arguments)} answered no line")
+        return _GitAnswered(answered)
 
     def _selected(
         self,

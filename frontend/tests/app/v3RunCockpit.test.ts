@@ -34,6 +34,7 @@ function v3Revision() {
   return {
     workflow_revision_hash: digest,
     document_base64: "YQ==",
+    provenance: null,
     graph: {
       workflow_format_version: 3 as const,
       executable: true as const,
@@ -267,6 +268,35 @@ describe("a version 3 run in the cockpit", () => {
     expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
   });
 
+  it("closes the stream once a run watched live lands on CANCELLED, through the one terminality owner", async () => {
+    const feed = new FakeRunEventFeed();
+    const cancelled = v3Run({
+      state: "CANCELLED",
+      cancellation: notCancellableBlock("already-ended"),
+      current_node_id: "review",
+      latest_event_cursor: eventCursor(1),
+      node_rail: [
+        { node_id: "implement", state: "succeeded", attempt: null },
+        { node_id: "review", state: "queued", attempt: null }
+      ]
+    });
+    const getRun = vi.fn().mockResolvedValueOnce(v3Run()).mockResolvedValue(cancelled);
+    const cockpitApi = api(v3Run(), { getRun, openRunEvents: feed.open });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
+
+    await waitFor(() => expect(feed.close).toHaveBeenCalled());
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Cancelled");
+    // Closed, not reconnected: the browser's own EventSource retry never fires
+    // because the app closed the connection itself.
+    expect(feed.open).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the terminal fingerprint out of the main surface and inside the node's evidence", async () => {
     const cockpitApi = api(
       v3Run({ state: "COMPLETED", terminal_hash: terminalHash, current_node_id: "review" }),
@@ -363,6 +393,40 @@ describe("a version 3 run in the cockpit", () => {
       "←Workbench"
     ]);
     expect(within(back).queryByText("Two agents in a line")).toBeNull();
+  });
+});
+
+describe("a run whose first read has already ended", () => {
+  it("opens no event stream and never reconnects for a run already FAILED or CANCELLED", async () => {
+    const terminalCases = [
+      { state: "FAILED" as const, cancellation: cancellableBlock() },
+      { state: "CANCELLED" as const, cancellation: notCancellableBlock("already-ended") }
+    ];
+    for (const { state, cancellation } of terminalCases) {
+      cleanup();
+      window.history.replaceState(null, "", `/atelier/runs/${publicReference}`);
+      const feed = new FakeRunEventFeed();
+      const cockpitApi = api(v3Run({ state, cancellation }), { openRunEvents: feed.open });
+
+      render(App, {
+        props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+      });
+      await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+      expect(feed.open).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still subscribes to the event stream for a run that is still running", async () => {
+    const feed = new FakeRunEventFeed();
+    const cockpitApi = api(v3Run({ state: "STARTED" }), { openRunEvents: feed.open });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+    expect(feed.open).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1278,19 +1342,25 @@ describe("a failed node on the run page", () => {
   });
 
   it("proves(a-failed-node-shows-the-stored-reason-on-the-run-page): shows the stored reason beside the state that says the run failed", async () => {
+    // The run is still STARTED on the first read -- the terminal FAILED
+    // reading arrives only through the live event below, the same way an
+    // operator watching a run actually sees it fail. A run already FAILED on
+    // its first read opens no stream at all (#1044), so a stream event is not
+    // how such a run's reason can reach this page.
     const feed = new FakeRunEventFeed();
     const reason = "output-schema-refused: instance-not-json: Expecting value";
-    const cockpitApi = api(
-      v3Run({
-        state: "FAILED",
-        current_node_id: "implement",
-        node_rail: [
-          { node_id: "implement", state: "failed", attempt: null },
-          { node_id: "review", state: "queued", attempt: null }
-        ]
-      }),
-      { openRunEvents: feed.open }
-    );
+    const failed = v3Run({
+      state: "FAILED",
+      current_node_id: "implement",
+      terminal_hash: terminalHash,
+      latest_event_cursor: eventCursor(1),
+      node_rail: [
+        { node_id: "implement", state: "failed", attempt: null },
+        { node_id: "review", state: "queued", attempt: null }
+      ]
+    });
+    const getRun = vi.fn().mockResolvedValueOnce(v3Run()).mockResolvedValue(failed);
+    const cockpitApi = api(v3Run(), { getRun, openRunEvents: feed.open });
 
     render(App, {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }

@@ -24,6 +24,7 @@ function summary(overrides: Partial<WorkflowRevisionSummary> = {}): WorkflowRevi
     not_executable_reason: null,
     name: NAME,
     description: "build, then review",
+    provenance: null,
     ...overrides
   };
 }

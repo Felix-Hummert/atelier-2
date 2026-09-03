@@ -1341,6 +1341,7 @@ def _success_body(operation: str) -> object:
             "name": "Implement a candidate, then ask whether it stands",
             "description": None,
         },
+        "provenance": None,
     }
     if operation == "publish-schema":
         return {"schema_revision_hash": SCHEMA_REVISION.revision_hash.value}

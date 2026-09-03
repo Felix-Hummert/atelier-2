@@ -253,7 +253,8 @@ describe("the served vocabulary", () => {
       executable: false,
       not_executable_reason: "agent forms nothing binds yet: outputs",
       name: "Implement a candidate, then review it for defects",
-      description: null
+      description: null,
+      provenance: null
     };
 
     expect(Object.keys(sample).sort()).toEqual(
@@ -298,6 +299,7 @@ describe("the served vocabulary", () => {
     const sample = {
       workflow_revision_hash: "a".repeat(64),
       document_base64: "YQ==",
+      provenance: null,
       graph: {
         workflow_format_version: 3 as const,
         executable: true,
@@ -351,6 +353,11 @@ describe("the served vocabulary", () => {
     expect(Object.keys(waitAnswerSchemaV3Schema.shape).sort()).toEqual(
       Object.keys(
         servedDocument.components.schemas.WaitAnswerSchemaResourceV3?.properties ?? {}
+      ).sort()
+    );
+    expect(Object.keys(workflowRevisionDetailSchema.shape).sort()).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.WorkflowRevisionDetailResource?.properties ?? {}
       ).sort()
     );
     expect(workflowRevisionDetailSchema.parse(sample)).toEqual(sample);
