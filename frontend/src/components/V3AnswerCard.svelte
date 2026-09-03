@@ -42,16 +42,24 @@
   /**
    * How the waiting node's own schema classifies its answer (#553).
    *
-   * `boolean` and `enum` render as decision buttons that send an exact JSON
+   * `boolean` and `enum` render as decision buttons that send an exact
    * value the click itself decides, never text a person typed; `string` and
    * `free` both render the textarea this card always had -- `string` sends
-   * what was typed verbatim (`onAnswer`'s caller reads this same `answerKind`
-   * to decide, #1091), `free` still JSON-encodes it, and an unclassified wait
-   * (this build has not yet resolved its schema) is `free`, no worse than
-   * before.
+   * what was typed verbatim (`onAnswer`'s caller reads `answerStringTyped`
+   * to decide, #1091 PR #1108 finding 1), `free` still JSON-encodes it, and
+   * an unclassified wait (this build has not yet resolved its schema) is
+   * `free`, no worse than before.
    */
   export let answerKind: "boolean" | "enum" | "string" | "free" = "free";
-  /** The enum's own members, each already the exact JSON text a click sends. Present only when `answerKind` is `enum`. */
+  /**
+   * Whether the waiting node's schema is `type: string` (every `string`
+   * kind, and an `enum` that also names `type: string`) -- the one shape
+   * whose door reads an answer's raw text verbatim, so `answerValues` there
+   * already carries each member's raw text rather than JSON-encoded text
+   * (#1091 PR #1108 finding 1).
+   */
+  export let answerStringTyped = false;
+  /** The enum's own members -- raw text when `answerStringTyped`, JSON-encoded text otherwise. Present only when `answerKind` is `enum`. */
   export let answerValues: readonly string[] = [];
 
   let answer = "";
@@ -79,7 +87,13 @@
   $: confirmedDecision =
     pendingAnswer === null
       ? null
-      : confirmedDecisionLabel(answerKind, pendingAnswer, runPageCopy.answerYes, runPageCopy.answerNo);
+      : confirmedDecisionLabel(
+          answerKind,
+          answerStringTyped,
+          pendingAnswer,
+          runPageCopy.answerYes,
+          runPageCopy.answerNo
+        );
 </script>
 
 <section
@@ -162,7 +176,7 @@
       <div class="decision-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
         {#each answerValues as value (value)}
           <button class="primary" type="button" disabled={busy} onclick={() => onAnswer(value)}>
-            {decisionLabel(value)}
+            {decisionLabel(value, answerStringTyped)}
           </button>
         {/each}
       </div>

@@ -112,15 +112,16 @@ function messageFromEvent(event: RunEvent): ConductorMessage | null {
   return null;
 }
 
+/**
+ * The conductor's message wait is always `CONDUCTOR_MESSAGE_SCHEMA`
+ * (`{type: "string", minLength: 1}`), so `answerConductorWait` sends it raw
+ * (`CONDUCTOR_MESSAGE_IS_STRING_SCHEMA`); reading it back is the same fact in
+ * reverse -- the decoded bytes already are the operator's text, verbatim,
+ * with no JSON layer to undo (#1091 PR #1108 finding 3).
+ */
 function readableWaitAnswer(answerBase64: string): string {
   const decoded = decodeUtf8Base64(answerBase64);
-  if (decoded === null) return conductorChatCopy.replyUnreadable;
-  try {
-    const answer: unknown = JSON.parse(decoded);
-    return typeof answer === "string" ? answer : JSON.stringify(answer);
-  } catch {
-    return decoded;
-  }
+  return decoded ?? conductorChatCopy.replyUnreadable;
 }
 
 function readableReport(outputBase64: string): string {

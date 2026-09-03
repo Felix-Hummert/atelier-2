@@ -57,6 +57,7 @@
     | {
         state: "ready";
         kind: "boolean" | "enum" | "string" | "free";
+        stringTyped: boolean;
         values: readonly string[];
         role: string | null;
       }
@@ -78,7 +79,13 @@
   $: confirmedDecision =
     pendingAnswer === null || graph.state !== "ready"
       ? null
-      : confirmedDecisionLabel(graph.kind, pendingAnswer, runPageCopy.answerYes, runPageCopy.answerNo);
+      : confirmedDecisionLabel(
+          graph.kind,
+          graph.stringTyped,
+          pendingAnswer,
+          runPageCopy.answerYes,
+          runPageCopy.answerNo
+        );
   $: senderRole = graph.state === "ready" && graph.role !== null ? graph.role : run.current_node_id;
   $: senderItem = run.orders.length === 0 ? null : run.orders.map((order) => order.name).join(", ");
 
@@ -146,6 +153,7 @@
       graph = {
         state: "ready",
         kind: schema?.kind ?? "free",
+        stringTyped: schema?.string_typed ?? false,
         values: schema?.values ?? [],
         role: node?.role ?? null
       };
@@ -179,7 +187,12 @@
     }
   }
 
-  /** Always a boolean or enum's own exact JSON text, never a string-schema wait (#1091). */
+  /**
+   * A boolean or enum decision button's own exact value: JSON-encoded text
+   * for every ordinary schema, raw text for a `type: string` schema
+   * (`graph.stringTyped`, #1091 PR #1108 finding 1) -- never a free-typed
+   * answer, which the run page's own composer sends instead.
+   */
   async function decide(answer: string): Promise<void> {
     waitFailureMessage = null;
     waitBusy = true;
@@ -192,7 +205,7 @@
         run.current_node_id,
         nodeExecutionId,
         answer,
-        false
+        graph.state === "ready" && graph.stringTyped
       );
       pendingWait = mutation;
       waitAccepted = false;

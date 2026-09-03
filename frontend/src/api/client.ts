@@ -105,17 +105,26 @@ export type JsonSchemaDocument = z.infer<typeof jsonSchemaDocumentSchema>;
  * One waiting node's answer schema, classified as far as the server's excerpt
  * may without evaluating it. `kind` is `boolean` only where the schema's own
  * top level names `type: boolean`, `enum` only where it names `enum` (with
- * `values` the author's own members, each already the exact JSON text a
- * decision sends), `string` only where it names `type: string` and no
- * `enum` -- the one kind whose composer must send typed text verbatim
- * (`waitAnswer.ts`, #1091) -- and `free` for every other shape, including a
- * schema the server's own excerpt has not yet resolved.
+ * `values` the author's own members), `string` only where it names
+ * `type: string` and no `enum` -- and `free` for every other shape, including
+ * a schema the server's own excerpt has not yet resolved.
+ *
+ * `string_typed` is the one fact a composer needs to send `values` back the
+ * way the door reads them: true names a schema whose own top level is
+ * `type: string` (every `string` kind, and an `enum` that also names
+ * `type: string`), the one shape whose door
+ * (`schemas_v3.instance_for_schema`) reads an answer's raw UTF-8 text as the
+ * value directly -- so `values` there already carries each member's raw
+ * text, sent back verbatim (`waitAnswer.ts`, #1091 PR #1108 finding 1).
+ * Every other `enum`, and `boolean`/`free`, carry `string_typed: false` and
+ * `values` (where present) stay the JSON-encoded text they always were.
  */
 const waitAnswerSchemaV3Schema = z
   .object({
     node_id: z.string().min(1),
     schema: workflowDeclaredSchemaSchema,
     kind: z.enum(["boolean", "enum", "string", "free"]),
+    string_typed: z.boolean(),
     values: z.array(z.string()).nullable(),
   })
   .strict()
