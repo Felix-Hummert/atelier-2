@@ -19,6 +19,19 @@ class _CompletedWorkflow:
         return self.result
 
 
+@dataclass
+class _FailingWorkflow:
+    error: Exception
+
+    def get_result(self) -> object:
+        raise self.error
+
+
+@dataclass
+class _WorkflowStatusStub:
+    status: str
+
+
 def _run_database(database_path: Path, state: RunState) -> None:
     with sqlite3.connect(database_path) as connection:
         connection.execute("CREATE TABLE runs (run_id TEXT, state TEXT)")
@@ -37,14 +50,62 @@ def test_waits_for_the_named_workflow_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     completed = _CompletedWorkflow("WAITING_INPUT")
-    monkeypatch.setattr(run_waiting.DBOS, "get_workflow_status", lambda _: object())
+    statuses = iter(
+        (
+            _WorkflowStatusStub(run_waiting.WorkflowStatusString.PENDING.value),
+            _WorkflowStatusStub(run_waiting.WorkflowStatusString.PENDING.value),
+            _WorkflowStatusStub(run_waiting.WorkflowStatusString.SUCCESS.value),
+        )
+    )
+    monkeypatch.setattr(
+        run_waiting.DBOS, "get_workflow_status", lambda _: next(statuses)
+    )
     monkeypatch.setattr(run_waiting.DBOS, "retrieve_workflow", lambda _: completed)
+    monkeypatch.setattr(run_waiting.time, "sleep", lambda _: None)
 
     result = run_waiting.wait_for_workflow_completion(
         "wait-node-workflow", "the wait node to write WAITING_INPUT"
     )
 
     assert result == "WAITING_INPUT"
+
+
+def test_completion_wait_still_propagates_the_workflow_own_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing = _FailingWorkflow(RuntimeError("boom"))
+    status = _WorkflowStatusStub(run_waiting.WorkflowStatusString.ERROR.value)
+    monkeypatch.setattr(run_waiting.DBOS, "get_workflow_status", lambda _: status)
+    monkeypatch.setattr(run_waiting.DBOS, "retrieve_workflow", lambda _: failing)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_waiting.wait_for_workflow_completion(
+            "wait-node-workflow", "the wait node to fail"
+        )
+
+
+def test_completion_wait_fails_loudly_when_the_workflow_never_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pending_status = _WorkflowStatusStub(run_waiting.WorkflowStatusString.PENDING.value)
+    monkeypatch.setattr(
+        run_waiting.DBOS, "get_workflow_status", lambda _: pending_status
+    )
+    monkeypatch.setattr(run_waiting, "_WORKFLOW_COMPLETION_TIMEOUT_SECONDS", 1.0)
+    moments = iter((0.0, 0.0, 0.0, 2.0))
+    monkeypatch.setattr(run_waiting.time, "monotonic", lambda: next(moments))
+    monkeypatch.setattr(run_waiting.time, "sleep", lambda _: None)
+
+    with pytest.raises(
+        TimeoutError,
+        match=(
+            r"awaited the wait node to complete did not complete within "
+            r"1\.0 s; last status PENDING"
+        ),
+    ):
+        run_waiting.wait_for_workflow_completion(
+            "wait-node-workflow", "the wait node to complete"
+        )
 
 
 def test_refuses_to_succeed_when_the_named_workflow_never_appears(

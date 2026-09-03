@@ -60,7 +60,9 @@ from atelier2.adapters.dbos.schema import (
     V45_SCHEMA_HANDOFF,
     V46_SCHEMA_HANDOFF,
     V47_SCHEMA_HANDOFF,
+    V48_SCHEMA_HANDOFF,
     MigrationRequired,
+    StoreMigrationRefused,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
     _product_schema_fingerprint_sha256,
@@ -98,7 +100,10 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
-from tests.integration.test_store_migration import _create_populated_v41_store
+from tests.integration.test_store_migration import (
+    _create_populated_v41_store,
+    _restore_v48_definition_source_predecessor,
+)
 
 
 def _create_populated_version_one_database(database_path: Path) -> None:
@@ -525,23 +530,29 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[47]
         == "d7987152a11a2702808b5fb1b71c0891e1c6724519435e87ee840cc235c00e39"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 48
+    assert V48_SCHEMA_HANDOFF.version == 48
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V48_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[48]
         == "ecf4b2aba21f7225f121a3afc128d76e9ce10801c83121a93712f39320704653"
     )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 49
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[49]
+        == "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2"
+    )
 
 
-def test_v47_store_migrates_to_v48_inventing_no_observation_or_retirement(
+def test_v47_store_migrates_onwards_inventing_no_observation_or_retirement(
     tmp_path: Path,
 ) -> None:
     """A real V47 queue row crosses the hop with its new columns NULL.
 
     The store is raised to today's declaration, then `queue_items` and its
-    transition trigger are rebuilt down to the exact bytes V47 published --
-    proving the migration on a real predecessor row, not on a freshly
-    created database.
+    transition trigger are rebuilt down to the exact bytes V47 published and
+    every table a later hop added is taken back off -- proving the migration on
+    a real predecessor row, not on a freshly created database.
     """
 
     database_path = tmp_path / "atelier.sqlite"
@@ -584,13 +595,14 @@ def test_v47_store_migrates_to_v48_inventing_no_observation_or_retirement(
                 reference.tracker_item.value,
             ),
         )
+        _restore_v48_definition_source_predecessor(connection)
         connection.execute("UPDATE atelier_schema_versions SET version = 47")
         connection.commit()
         _require_product_shape(connection, 47)
 
     report = migrate_store(database_path)
 
-    assert (report.source_version, report.target_version) == (47, 48)
+    assert (report.source_version, report.target_version) == (47, SCHEMA_VERSION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT document FROM workflow_revisions"
@@ -601,7 +613,104 @@ def test_v47_store_migrates_to_v48_inventing_no_observation_or_retirement(
             (reference.item_id.value,),
         ).fetchone()
         assert row == (QueueItemState.OBSERVED.value, None, None, None)
+        _require_product_shape(connection, SCHEMA_VERSION)
+
+
+def _schema_object_names(connection: sqlite3.Connection) -> frozenset[str]:
+    """Every object this product declared, without SQLite's own bookkeeping.
+
+    A `sqlite_autoindex_*` is not a schema object anybody wrote: SQLite mints
+    one per UNIQUE and primary key inside a CREATE TABLE this product already
+    names, so counting them would be counting the same declaration twice.
+    """
+
+    return frozenset(
+        str(record[0])
+        for record in connection.execute("SELECT name FROM sqlite_master")
+        if not str(record[0]).startswith("sqlite_")
+    )
+
+
+def _rows_beside_the_version_owner(connection: sqlite3.Connection) -> frozenset[str]:
+    """Every dumped statement except the one the hop is expected to change."""
+
+    return frozenset(
+        statement
+        for statement in connection.iterdump()
+        if "atelier_schema_versions" not in statement
+    )
+
+
+def test_a_v48_store_gains_the_definition_source_tables_and_keeps_its_rows(
+    tmp_path: Path,
+) -> None:
+    """The additive hop adds three empty tables and touches nothing else."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(revision_hash="a" * 64, document=b"kept")
+        )
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v48_definition_source_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 48")
+        connection.commit()
         _require_product_shape(connection, 48)
+        standing = _rows_beside_the_version_owner(connection)
+        named = _schema_object_names(connection)
+
+    report = migrate_store(database_path)
+
+    assert (report.source_version, report.target_version) == (48, SCHEMA_VERSION)
+    with sqlite3.connect(database_path) as connection:
+        assert _rows_beside_the_version_owner(connection) >= standing
+        assert _schema_object_names(connection) - named == frozenset(
+            {
+                "host_definition_source_revisions",
+                "host_definition_source_revisions_no_update",
+                "host_definition_source_revisions_no_delete",
+                "host_definition_source_selections",
+                "host_definition_source_selections_no_update",
+                "host_definition_source_selections_no_delete",
+                "catalog_source_intakes",
+                "catalog_source_intakes_no_update",
+                "catalog_source_intakes_no_delete",
+            }
+        )
+        assert all(
+            connection.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
+            for table in (
+                "host_definition_source_revisions",
+                "host_definition_source_selections",
+                "catalog_source_intakes",
+            )
+        )
+        _require_product_shape(connection, SCHEMA_VERSION)
+
+
+def test_a_store_already_carrying_a_definition_source_table_is_refused_whole(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v48_definition_source_predecessor(connection)
+        connection.execute("CREATE TABLE catalog_source_intakes (mine TEXT)")
+        connection.execute("UPDATE atelier_schema_versions SET version = 48")
+        connection.commit()
+
+    with pytest.raises(StoreMigrationRefused, match="catalog_source_intakes"):
+        migrate_store(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (48,)
 
 
 def test_populated_v41_effect_rows_are_backfilled_before_v42_publish(

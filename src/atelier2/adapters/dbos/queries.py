@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import math
 import sqlite3
-import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -67,6 +66,7 @@ from atelier2.adapters.dbos.workflow import (
     _pinned_maximum_assistant_turns,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.bounded_process_cache import BoundedProcessCache
 from atelier2.application.compose_node_job import (
     NodeJobCompositionVersion,
     node_job,
@@ -104,6 +104,7 @@ from atelier2.contracts.executions import (
     WaitAnswerAttribution,
     WaitAnswerAttributionKind,
     WaitAnswerState,
+    logical_effect_key_for,
     logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -135,6 +136,7 @@ from atelier2.contracts.run_projections import (
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
+    execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
 )
 from atelier2.contracts.runs import (
@@ -211,39 +213,20 @@ invalidate.
 """
 
 
-class _ParsedWorkflowRevisionCache:
-    """Workflow revision graphs this process has already parsed successfully.
-
-    #937 (round 3): profiling a described page after the lookup and settlement
-    caches from rounds 1 and 2 found the dominant remaining cost was parsing
-    every immutable revision again on every read. All `DbosQueries` instances
-    share this module-level cache so reads across pages and adapter instances
-    pay that parse once per content hash. The API can execute those reads in a
-    worker pool, so the lock makes lookup and insertion safe across threads.
-
-    A failed parse is deliberately never cached: it proved no graph value, and
-    remembering its exception would turn one transient parser or runtime failure
-    into process-lifetime durable-state corruption instead of letting the next
-    read retry.
-    """
-
-    def __init__(self) -> None:
-        self._found: dict[WorkflowRevisionHash, AnyWorkflowDocument] = {}
-        self._lock = threading.Lock()
-
-    def found(self, revision_hash: WorkflowRevisionHash) -> AnyWorkflowDocument | None:
-        with self._lock:
-            return self._found.get(revision_hash)
-
-    def remember(
-        self, revision_hash: WorkflowRevisionHash, graph: AnyWorkflowDocument
-    ) -> None:
-        with self._lock:
-            if len(self._found) < _PARSED_WORKFLOW_REVISION_CACHE_CAPACITY:
-                self._found[revision_hash] = graph
-
-
-_PARSED_WORKFLOW_REVISIONS = _ParsedWorkflowRevisionCache()
+# #937 (round 3): profiling a described page after the lookup and settlement
+# caches from rounds 1 and 2 found the dominant remaining cost was parsing
+# every immutable revision again on every read. All `DbosQueries` instances
+# share this module-level cache (`BoundedProcessCache`, round 4's extracted
+# owner) so reads across pages and adapter instances pay that parse once per
+# content hash.
+#
+# A failed parse is deliberately never cached: it proved no graph value, and
+# remembering its exception would turn one transient parser or runtime failure
+# into process-lifetime durable-state corruption instead of letting the next
+# read retry.
+_PARSED_WORKFLOW_REVISIONS: BoundedProcessCache[
+    WorkflowRevisionHash, AnyWorkflowDocument
+] = BoundedProcessCache(capacity=_PARSED_WORKFLOW_REVISION_CACHE_CAPACITY)
 
 
 def _parsed_workflow_revision(
@@ -402,7 +385,7 @@ _AGENT_FAILURE_FORMATS = frozenset((WorkflowFormatVersion.V2, WorkflowFormatVers
 
 def _run_ending_event_predicate(
     current_node_execution_id: NodeExecutionId,
-) -> Callable[[tuple[str, NodeExecutionId]], bool]:
+) -> Callable[[Connection, Mapping[Any, Any]], bool]:
     """Whether one event is the event that ended this run.
 
     #194 H1b lifted the terminal condition off a dedicated terminal node onto
@@ -422,9 +405,12 @@ def _run_ending_event_predicate(
     (`bind_node` refuses one before any event could be written for it), so
     neither belongs here until that gap is closed with its own runtime wiring.
 
-    Asking the run row rather than parsing its document keeps this cheap: it is a
-    pre-flight before stream headers and a check beside a page read, never a
-    projection.
+    Two events of those kinds still end nothing, and both are asked only after
+    the cheap halves have matched: an output-schema refusal that orders its own
+    repair, and an agent success on a node whose own effect is still owed. Both
+    read durable rows rather than the run's document, which keeps this cheap: it
+    is a pre-flight before stream headers and a check beside a page read, never
+    a projection.
     """
 
     ending = {
@@ -433,8 +419,44 @@ def _run_ending_event_predicate(
         RunEventKind.ACTION_COMPLETED.value,
         RunEventKind.WAIT_ANSWERED.value,
     }
-    return lambda endpoint: (
-        endpoint[0] in ending and endpoint[1] == current_node_execution_id
+
+    def ended_the_run(connection: Connection, record: Mapping[Any, Any]) -> bool:
+        kind, execution_id = _event_endpoint(record)
+        return (
+            kind in ending
+            and execution_id == current_node_execution_id
+            and not _event_orders_output_schema_repair(connection, record)
+            and not _agent_success_owes_its_node_effect(connection, record)
+        )
+
+    return ended_the_run
+
+
+def _agent_success_owes_its_node_effect(
+    connection: Connection, record: Mapping[Any, Any]
+) -> bool:
+    """Whether this agent success left its own node's platform effect to perform.
+
+    A tool grant lets an agent node hold an effect (decision 0010): the run does
+    not leave that node when the agent succeeds. It stands there while the effect
+    is prepared, reconciled by the operator and completed, and the node's own
+    `ACTION_COMPLETED` is what ends the run. The intent that effect is carried on
+    is the row the reconciliation door reads, and it stays on the node's exact
+    execution for good -- so every later read of this history, including the one
+    after the effect was performed, still sees the success for what it was.
+    """
+    if str(record["event_kind"]) != RunEventKind.AGENT_COMPLETED.value:
+        return False
+    logical_key = logical_effect_key_for(
+        NodeExecutionId(str(record["node_execution_id"]))
+    )
+    return (
+        connection.scalar(
+            sa.select(effect_intents.c.logical_key).where(
+                effect_intents.c.logical_key == logical_key.value
+            )
+        )
+        is not None
     )
 
 
@@ -496,6 +518,7 @@ def _current_attempt_projection(
     session: Connection,
     run: RunV2 | RunV3,
     graph: WorkflowGraphV3,
+    effect_awaits_reconciliation: bool,
 ) -> AgentAttemptProjection:
     node = graph.node(run.current_node_id)
     if not isinstance(node, AgentNodeV3):
@@ -601,10 +624,13 @@ def _current_attempt_projection(
             f"expected={run.revision_hash.value!r}"
         )
     durable_state = _durable_attempt_state(record["state"])
-    public_state = public_agent_attempt_state(durable_state)
+    public_state = public_agent_attempt_state(
+        durable_state, effect_awaits_reconciliation=effect_awaits_reconciliation
+    )
     if public_state is None:
         raise RunTransitionConflict(
-            "successful current attempt has no atomic successor transition"
+            "successful current attempt has neither an atomic successor transition "
+            "nor an effect awaiting reconciliation"
         )
     failure_value = record["failure_code"]
     receipt_value = record["receipt_hash"]
@@ -620,6 +646,9 @@ def _current_attempt_projection(
         if state_version < 2 or receipt_value is not None:
             raise RunTransitionConflict("failed agent attempt shape disagrees")
         failure = AgentAttemptFailureCode(str(failure_value))
+    elif durable_state is AgentAttemptState.SUCCEEDED:
+        if state_version < 2 or receipt_value is None:
+            raise RunTransitionConflict("succeeded agent attempt shape disagrees")
     elif durable_state in {
         AgentAttemptState.CANCEL_REQUESTED,
         AgentAttemptState.CANCELLED,
@@ -1991,10 +2020,11 @@ class DbosQueries:
                 if not isinstance(run, (RunV2, RunV3)):
                     raise RunTransitionConflict("agent node belongs to a V1 run")
                 records_for_execution = attempt_records.get(execution.value, [])
-                # A succeeded attempt has no public state, so projecting it
-                # would refuse the read. COMPLETED is that case. FAILED is
-                # not: the attempt is still the current one, and the rail
-                # needs it so a list read does not pose the node as working.
+                # A succeeded attempt has no public state unless the run
+                # parks on its node's effect, so projecting it would refuse
+                # the read. COMPLETED is that case. FAILED is not: the attempt
+                # is still the current one, and the rail needs it so a list
+                # read does not pose the node as working.
                 # NEVER_LAUNCHED cleanup on a FAILED run is the exception: it
                 # is control evidence for an attempt-less refusal, not the
                 # public node ending.
@@ -2006,6 +2036,11 @@ class DbosQueries:
                             session=connection,
                             run=run,
                             graph=graph,
+                            effect_awaits_reconciliation=(
+                                execution_awaits_effect_reconciliation(
+                                    run.state, reconciliation, execution
+                                )
+                            ),
                         )
                         for attempt_record in records_for_execution
                     )
@@ -2107,15 +2142,8 @@ class DbosQueries:
                         int(record["current_round_ordinal"]),
                     ),
                 )
-                if (
-                    ended_the_run(_event_endpoint(endpoint_records[head]))
-                    and not _event_orders_output_schema_repair(
-                        connection, endpoint_records[head]
-                    )
-                ) != terminal or any(
-                    sequence < head
-                    and ended_the_run(_event_endpoint(endpoint))
-                    and not _event_orders_output_schema_repair(connection, endpoint)
+                if ended_the_run(connection, endpoint_records[head]) != terminal or any(
+                    sequence < head and ended_the_run(connection, endpoint)
                     for sequence, endpoint in endpoint_records.items()
                 ):
                     return EventHistoryCorrupt()
@@ -2198,8 +2226,7 @@ class DbosQueries:
                 terminal_sequences = tuple(
                     int(record["event_sequence"])
                     for record in records
-                    if ended_the_run(_event_endpoint(record))
-                    and not _event_orders_output_schema_repair(connection, record)
+                    if ended_the_run(connection, record)
                 )
                 terminal = str(run_record["state"]) in {
                     RunState.COMPLETED.value,

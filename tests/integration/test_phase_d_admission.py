@@ -1303,6 +1303,10 @@ def _restore_v43(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("BEGIN IMMEDIATE")
+        for trigger in schema_module._DEFINITION_SOURCE_TRIGGERS:
+            connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        for table in reversed(schema_module._DEFINITION_SOURCE_TABLES):
+            connection.execute(f"DROP TABLE IF EXISTS {table.name}")
         for trigger in ("catalog_intakes_no_update", "catalog_intakes_no_delete"):
             connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
         connection.execute("DROP TABLE IF EXISTS catalog_intakes")
@@ -1381,7 +1385,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 48
+    assert report.target_version == SCHEMA_VERSION == 49
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:
