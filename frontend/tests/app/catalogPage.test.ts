@@ -289,7 +289,9 @@ describe("the catalog room", () => {
 
     const source = await screen.findByText(workflowDetailCopy.source);
     const sourceRow = source.closest("div");
-    expect(sourceRow?.textContent).toContain(`${shortFingerprint(sourceCommit)} · ${sourcePath}`);
+    const sourceValue = sourceRow?.querySelector("dd");
+    expect(sourceValue?.textContent).toBe("b8cfa0d5 · workflows/iterate-code.yaml");
+    expect(sourceValue?.title).toBe(sourceCommit);
     expect(screen.queryByText(/source1\./)).toBeNull();
     expect((await screen.findByText(workflowDetailCopy.formatVersion(3))).isConnected).toBe(true);
   });

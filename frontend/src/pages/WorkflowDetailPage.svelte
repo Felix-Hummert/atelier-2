@@ -12,7 +12,6 @@
   import type { MutationJournal } from "../lib/mutationJournal";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { shortFingerprint } from "../lib/fingerprint";
   import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
   import {
     beginRead,
@@ -35,6 +34,9 @@
   export let createRunId: () => string;
 
   const catalog = WORKSHOP_DESTINATION.catalog;
+
+  /** Git's own short-hash convention (`git rev-parse --short`). */
+  const GIT_SHORT_COMMIT_LENGTH = 8;
 
   type ReadFailure =
     | { kind: "unavailable"; title: string }
@@ -73,22 +75,27 @@
   $: graph = found?.detail.graph ?? null;
   $: orders = found?.orders ?? [];
   $: revisionHash = found?.detail.workflow_revision_hash ?? "";
+  $: provenance = found?.detail.provenance ?? null;
   /**
    * The Technical fold's two facts beyond the revision anchor (mockup v8
    * :1528): the format the document itself declares, and -- only when a
    * connected source delivered these bytes -- where they came from. A
    * file-imported revision carries `provenance: null`, so this row is
-   * absent rather than a placeholder (#1077).
+   * absent rather than a placeholder (#1077). The commit shown is git's own
+   * short-hash prefix, with the full hash still reachable on the row's
+   * `title` -- the fold's one other proof affordance, `ProofAnchor`, already
+   * owns copy-to-clipboard for the revision hash, so this reuses a plain
+   * hover reveal rather than a second copy control for the same purpose.
    */
   $: technicalFormat =
     graph !== null && graph.workflow_format_version === 3
       ? workflowDetailCopy.formatVersion(graph.workflow_format_version)
       : null;
   $: technicalSource =
-    found?.detail.provenance != null
+    provenance !== null
       ? workflowDetailCopy.sourceFact(
-          shortFingerprint(found.detail.provenance.source_commit),
-          found.detail.provenance.source_path
+          provenance.source_commit.slice(0, GIT_SHORT_COMMIT_LENGTH),
+          provenance.source_path
         )
       : null;
   $: retired = found?.catalogState.kind === "retired";
@@ -291,16 +298,16 @@
         />
         {#if technicalFormat !== null || technicalSource !== null}
           <dl class="detail-technical-facts">
+            {#if technicalSource !== null}
+              <div>
+                <dt>{workflowDetailCopy.source}</dt>
+                <dd title={provenance?.source_commit}>{technicalSource}</dd>
+              </div>
+            {/if}
             {#if technicalFormat !== null}
               <div>
                 <dt>{workflowDetailCopy.format}</dt>
                 <dd>{technicalFormat}</dd>
-              </div>
-            {/if}
-            {#if technicalSource !== null}
-              <div>
-                <dt>{workflowDetailCopy.source}</dt>
-                <dd>{technicalSource}</dd>
               </div>
             {/if}
           </dl>
