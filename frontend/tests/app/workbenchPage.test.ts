@@ -2,7 +2,7 @@ import type * as SvelteTestingLibrary from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { encodePublicRunReference } from "../../src/api/client";
-import type { CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import type { CockpitApi, Problem, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { railCopy } from "../../src/lib/railCopy";
@@ -336,7 +336,9 @@ describe("the workbench conductor conversation", () => {
             requested_capability: "headless" as const,
             startable: true,
             structurally_startable: true,
-            not_startable_reason: null
+            not_startable_reason: null,
+            provider_probe_problem_code: null,
+            provider_probe_observed_at: null
           }
         ],
         next_after_revision_hash: null
@@ -655,6 +657,172 @@ describe("the workbench conductor conversation", () => {
       expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
         "disabled",
         true
+      );
+    });
+  });
+
+  // #1103: `resolveConductorConnection` answers a discriminated union instead
+  // of folding five refusals onto `null`. Each non-connected answer names its
+  // own reason and locks the composer with a real `disabled` attribute,
+  // instead of silently accepting a message that starts nothing.
+  describe("the honest conductor connection (#1103)", () => {
+    function catalogNameNotFoundOverrides(): Partial<CockpitApi> {
+      return {
+        getRevisionByName: vi.fn(async () => {
+          // `beforeEach` already reset the module graph for this test; a
+          // dynamic import here resolves to the exact same fresh
+          // `CockpitRequestError` class `conductorEpisode.ts`'s own
+          // `instanceof` check reads (module identity, not just shape --
+          // this file's own `vi.resetModules()` note above explains why).
+          const { CockpitRequestError: FreshCockpitRequestError } = await import(
+            "../../src/api/client"
+          );
+          throw new FreshCockpitRequestError("not found", {
+            type: "urn:atelier2:problem:v1:catalog-name-not-found",
+            title: "Catalog name not found",
+            status: 404,
+            detail: "conductor"
+          } as Problem);
+        })
+      };
+    }
+
+    function unboundOverrides(): Partial<CockpitApi> {
+      return {
+        getRevisionByName: vi.fn(async () => ({
+          display_name: "conductor",
+          lineage_id: "7".repeat(64),
+          workflow_revision_hash: conductorRevisionHash,
+          revision_number: 1
+        })),
+        getWorkflowRevision: vi.fn(async () => conductorRevisionDetail()),
+        listProjects: vi.fn(async () => ({
+          items: [{ public_project_reference: conductorProjectReference }]
+        })),
+        resolveProjectModels: vi.fn(async () => ({
+          project_id: "conductor-project",
+          public_project_reference: conductorProjectReference,
+          workflow_revision_hash: conductorRevisionHash,
+          resolutions: []
+        }))
+      };
+    }
+
+    function notStartableOverrides(): Partial<CockpitApi> {
+      return {
+        ...unboundOverrides(),
+        resolveProjectModels: vi.fn(async () => ({
+          project_id: "conductor-project",
+          public_project_reference: conductorProjectReference,
+          workflow_revision_hash: conductorRevisionHash,
+          resolutions: [
+            {
+              role: conductorRole,
+              agent_configuration_revision_hash: conductorConfigurationHash,
+              source: "chosen-now" as const,
+              model_id: "claude-opus-5",
+              declared_difficulty: 3 as const,
+              default_difficulty: null,
+              uncast_reason: null,
+              family_differs_from: null
+            }
+          ]
+        })),
+        listAgentConfigurationRevisions: vi.fn(async () => ({
+          items: [
+            {
+              agent_configuration_revision_hash: conductorConfigurationHash,
+              provider_id: "anthropic",
+              model: "claude-opus-5",
+              auth_mode: "subscription" as const,
+              auth_profile_revision_hash: "6".repeat(64),
+              executor_revision: "immediate/v1",
+              requested_capability: "headless" as const,
+              startable: false,
+              structurally_startable: false,
+              not_startable_reason: "provider-probe-failed" as const,
+              provider_probe_problem_code: "provider-overloaded",
+              // Deliberately far in the past: `ageLabel`'s "just now" only
+              // holds inside the first minute, and this assertion pins the
+              // sentence's shape, never a duration this real clock would make
+              // flaky.
+              provider_probe_observed_at: "2020-01-01T00:00:00Z"
+            }
+          ],
+          next_after_revision_hash: null
+        }))
+      };
+    }
+
+    it("names no catalog conductor as absent, with a locked composer", async () => {
+      openChat(catalogNameNotFoundOverrides());
+      const { screen } = testingLibrary;
+      await screen.findByRole("heading", { name: "Workbench" });
+
+      await screen.findByText(workbenchPageCopy.composerHint);
+      expect(screen.getByText(workbenchPageCopy.emptyDescription).isConnected).toBe(true);
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+    });
+
+    it("names an unbound role, with the door to Settings and a locked composer", async () => {
+      openChat(unboundOverrides());
+      const { screen } = testingLibrary;
+      await screen.findByRole("heading", { name: "Workbench" });
+
+      await screen.findByText(workbenchPageCopy.composerHintUnbound(conductorRole));
+      expect(
+        screen.getByText(workbenchPageCopy.emptyDescriptionUnbound(conductorRole)).isConnected
+      ).toBe(true);
+      expect(screen.getByRole("link", { name: workbenchPageCopy.openSettings }).isConnected).toBe(
+        true
+      );
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+    });
+
+    it("names a not-startable configuration by its real reason, with a locked composer", async () => {
+      openChat(notStartableOverrides());
+      const { screen, within } = testingLibrary;
+      await screen.findByRole("heading", { name: "Workbench" });
+
+      // The empty room names the model and the real reason -- the exact
+      // relative "ago" wording is `when.ts`'s own concern, not pinned here.
+      const empty = within(document.querySelector(".workbench-empty") as HTMLElement);
+      await empty.findByText(/Your conductor \(claude-opus-5\) cannot start right now/);
+      expect(
+        empty.getByText(/its last provider probe failed/).textContent
+      ).toMatch(/its last provider probe failed .+ ago/);
+      expect(
+        empty.getByText(/The next canary run or a Settings change re-arms it\./).isConnected
+      ).toBe(true);
+      expect(empty.getByRole("link", { name: workbenchPageCopy.openSettings })).toHaveProperty(
+        "href",
+        expect.stringContaining("/atelier/settings")
+      );
+
+      expect(document.querySelector(".composer-hint")?.textContent).toBe(
+        "The next canary run or a Settings change re-arms it."
+      );
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+    });
+
+    it("leaves the composer unlocked once a conductor is connected", async () => {
+      openChat(conductorConnectionOverrides());
+      const { screen } = testingLibrary;
+      await screen.findByRole("heading", { name: "Workbench" });
+
+      await screen.findByText(conductorConversationCopy.composerHint);
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        false
       );
     });
   });

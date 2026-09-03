@@ -5,7 +5,10 @@ import binascii
 import re
 from dataclasses import dataclass
 
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    PROVIDER_PROBE_TOKEN,
+)
 from atelier2.contracts.definition_sources import (
     MAXIMUM_GIT_OBJECT_NAME_CHARACTERS,
     MINIMUM_GIT_OBJECT_NAME_CHARACTERS,
@@ -75,6 +78,7 @@ its Zod mirror cannot each pick a different one.
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
+PROVIDER_PROBE_PROBLEM_CODE_PATTERN = f"^{PROVIDER_PROBE_TOKEN.pattern}$"
 SOURCE_COMMIT_PATTERN = (
     f"^[0-9a-f]{{{MINIMUM_GIT_OBJECT_NAME_CHARACTERS},"
     f"{MAXIMUM_GIT_OBJECT_NAME_CHARACTERS}}}$"

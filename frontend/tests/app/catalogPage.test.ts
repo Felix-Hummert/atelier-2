@@ -408,7 +408,9 @@ describe("the catalog room", () => {
             requested_capability: "headless" as const,
             startable: true,
             structurally_startable: true,
-            not_startable_reason: null
+            not_startable_reason: null,
+            provider_probe_problem_code: null,
+            provider_probe_observed_at: null
           }
         ],
         next_after_revision_hash: null

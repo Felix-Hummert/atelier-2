@@ -10,6 +10,41 @@ from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
+
+MAXIMUM_PROVIDER_PROBE_PROBLEM_CODE_BYTES = 128
+PROVIDER_PROBE_TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+"""Owned here, one layer below `contracts/provider_probe_receipts.py`, which
+already imports this module for `AgentConfigurationRevisionHash` -- importing
+a receipt type back here would close that cycle. `provider_probe_receipts.py`
+re-exports `ProviderProbeProblemCode` for its own `ProviderProbeVectorId`,
+which shares the same bounded-token shape."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderProbeProblemCode:
+    """A bounded classification of a provider probe's failure.
+
+    Never provider output or diagnostics -- moved here from
+    `contracts/provider_probe_receipts.py` so `ProviderProbeFailure` below can
+    name it without a cycle; that module still owns the receipt shape itself
+    and re-exports this name for its own callers.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str):
+            raise TypeError("a provider probe problem code must be text")
+        if (
+            PROVIDER_PROBE_TOKEN.fullmatch(self.value) is None
+            or len(self.value.encode("ascii"))
+            > MAXIMUM_PROVIDER_PROBE_PROBLEM_CODE_BYTES
+        ):
+            raise ValueError(
+                "a provider probe problem code must be a bounded lowercase ASCII token"
+            )
+
 
 MAXIMUM_AGENT_FIELD_CHARACTERS = 1_024
 MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
@@ -245,6 +280,27 @@ class AgentConfigurationNotStartableReason(StrEnum):
     AGENT_EXECUTOR_BINDING_UNAVAILABLE = "agent-executor-binding-unavailable"
     MODEL_NOT_REGISTERED = "model-not-registered"
     PROVIDER_PROBE_RECEIPT_MISSING = "provider-probe-receipt-missing"
+    PROVIDER_PROBE_FAILED = "provider-probe-failed"
+
+
+@dataclass(frozen=True)
+class ProviderProbeFailure:
+    """The latest provider probe's own recorded failure for one configuration.
+
+    Carried only when a receipt for this exact configuration exists and its
+    own result is a failure -- the honest evidence
+    `provider-probe-failed` names, never invented from a merely missing or
+    stale receipt (`provider-probe-receipt-missing` stays the answer there).
+    """
+
+    problem_code: ProviderProbeProblemCode
+    observed_at: RecordedAt
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.problem_code, ProviderProbeProblemCode):
+            raise TypeError("a provider probe failure names a typed problem code")
+        if not isinstance(self.observed_at, RecordedAt):
+            raise TypeError("a provider probe failure names a typed recording instant")
 
 
 @dataclass(frozen=True)
@@ -261,7 +317,10 @@ class AgentConfigurationRevisionListItem:
     and model, or has a newer revision superseded it. `has_valid_receipt` is
     the live evidence one provider probe leaves behind. `startable` and
     `not_startable_reason` are computed from these three, never stored
-    independently, so the two can never disagree.
+    independently, so the two can never disagree. `probe_failure` is the one
+    exception carrying its own payload: when a receipt exists and failed, the
+    reason it names (`provider-probe-failed`) needs the failure's own problem
+    code and recorded instant, which no boolean carries.
     """
 
     revision: AgentConfigurationRevision
@@ -269,6 +328,7 @@ class AgentConfigurationRevisionListItem:
     structurally_startable: bool
     model_registered: bool
     has_valid_receipt: bool
+    probe_failure: ProviderProbeFailure | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -278,6 +338,15 @@ class AgentConfigurationRevisionListItem:
         ):
             if type(value) is not bool:
                 raise TypeError(f"agent configuration {name} must be a bool")
+        if self.probe_failure is not None and not isinstance(
+            self.probe_failure, ProviderProbeFailure
+        ):
+            raise TypeError("agent configuration probe failure must be typed")
+        if self.has_valid_receipt and self.probe_failure is not None:
+            raise ValueError(
+                "agent configuration cannot carry a probe failure beside a "
+                "valid receipt"
+            )
 
     @property
     def not_startable_reason(self) -> AgentConfigurationNotStartableReason | None:
@@ -288,7 +357,11 @@ class AgentConfigurationRevisionListItem:
         if not self.model_registered:
             return AgentConfigurationNotStartableReason.MODEL_NOT_REGISTERED
         if not self.has_valid_receipt:
-            return AgentConfigurationNotStartableReason.PROVIDER_PROBE_RECEIPT_MISSING
+            return (
+                AgentConfigurationNotStartableReason.PROVIDER_PROBE_FAILED
+                if self.probe_failure is not None
+                else AgentConfigurationNotStartableReason.PROVIDER_PROBE_RECEIPT_MISSING
+            )
         return None
 
     @property

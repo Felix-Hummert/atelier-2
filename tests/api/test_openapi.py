@@ -868,6 +868,7 @@ def test_openapi_list_item_names_the_closed_startability_reasons() -> None:
                 "agent-executor-binding-unavailable",
                 "model-not-registered",
                 "provider-probe-receipt-missing",
+                "provider-probe-failed",
             ],
         },
         {"type": "null"},

@@ -1,3 +1,4 @@
+import type { ConductorNotStartableReason } from "./conductorEpisode";
 import { PRODUCT_NAME } from "./productName";
 
 /**
@@ -45,20 +46,23 @@ export const workbenchPageCopy = {
   /**
    * The empty room teaches the one next move (REQ-UI-24) instead of staying
    * blank: today that move is the Catalog, the one room a run is started from
-   * by hand.
+   * by hand. Shown while no conductor exists at all (`absent`) or its own
+   * read failed (`unreadable`) -- `emptyDescriptionUnbound` and
+   * `emptyDescriptionNotStartable` below carry the two states that instead
+   * name a real, existing conductor's own reason (#1103).
    */
-  emptyDescription:
-    "The conductor that turns what you say into runs is not built yet. Until then, start work from the Catalog.",
+  emptyDescription: "No conductor is connected yet. Until then, start work from the Catalog.",
   emptyStart: "Open the Catalog",
+  openSettings: "Open Settings",
   youLabel: "You",
   houseLabel: PRODUCT_NAME,
   composerRegionLabel: "Composer",
   composerLabel: "Message",
   send: "Send",
   /**
-   * The one honest sentence the ear carries while no conductor is connected
-   * (HEART, "The ear"): it says plainly that words are not yet turned into
-   * runs, without a second button that duplicates a door.
+   * The one honest sentence the ear carries while no conductor exists at all,
+   * or its own read failed (HEART, "The ear"): it says plainly that words are
+   * not yet turned into runs, without a second button that duplicates a door.
    */
   composerHint: "No conductor is connected yet, so your words are kept here but start nothing.",
   /**
@@ -70,5 +74,65 @@ export const workbenchPageCopy = {
    * module that owns it outlives the page component) but not a reload.
    */
   conductorAbsent:
-    "Nothing was started. Your message is kept in this conversation until you reload the page."
+    "Nothing was started. Your message is kept in this conversation until you reload the page.",
+
+  /**
+   * A published conductor exists but its role carries no agent-configuration
+   * binding (#1103): the empty room's own explanation, naming the role and
+   * the one door that fixes it.
+   */
+  emptyDescriptionUnbound: (role: string): string =>
+    `The conductor's "${role}" role has no agent configuration bound yet. Bind one in Settings, then start work from the Catalog until it is.`,
+  /** The composer's own short reminder for the same state, beside the disabled Send. */
+  composerHintUnbound: (role: string): string =>
+    `The "${role}" role has no agent configuration bound yet. Settings can bind one.`,
+
+  /**
+   * A published, bound conductor configuration cannot start right now
+   * (#1103): the empty room's own explanation, naming the model, the real
+   * reason the server gave, and the one door that helps -- Settings for a
+   * binding or model problem; for a probe problem, no retry is reachable
+   * from here, so the next canary run or a Settings change is named instead.
+   * `probeFailedAgo` is the caller's own relative rendering of
+   * `providerProbeObservedAt` (`when.ts` owns that formatting), carried only
+   * for `provider-probe-failed`.
+   */
+  emptyDescriptionNotStartable: (
+    modelId: string,
+    reason: ConductorNotStartableReason,
+    probeFailedAgo: string | null
+  ): string =>
+    `Your conductor (${modelId}) cannot start right now: ${notStartableReasonClause(reason, probeFailedAgo)}. ${notStartableDoorClause(reason)}`,
+  /** The composer's own short reminder for the same state, beside the disabled Send. */
+  composerHintNotStartable: (reason: ConductorNotStartableReason): string =>
+    notStartableDoorClause(reason)
 } as const;
+
+function notStartableReasonClause(
+  reason: ConductorNotStartableReason,
+  probeFailedAgo: string | null
+): string {
+  switch (reason) {
+    case "agent-executor-binding-unavailable":
+      return "its executor is not registered on this host";
+    case "model-not-registered":
+      return "its model is not registered for this provider";
+    case "provider-probe-failed":
+      return probeFailedAgo === null
+        ? "its last provider probe failed"
+        : `its last provider probe failed ${probeFailedAgo}`;
+    case "provider-probe-receipt-missing":
+      return "no provider probe has proven it yet";
+  }
+}
+
+function notStartableDoorClause(reason: ConductorNotStartableReason): string {
+  switch (reason) {
+    case "agent-executor-binding-unavailable":
+    case "model-not-registered":
+      return "Settings can fix this.";
+    case "provider-probe-failed":
+    case "provider-probe-receipt-missing":
+      return "The next canary run or a Settings change re-arms it.";
+  }
+}

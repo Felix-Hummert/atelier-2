@@ -26,6 +26,7 @@ from atelier2.api.references import (
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
+    PROVIDER_PROBE_PROBLEM_CODE_PATTERN,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     PUBLIC_SOURCE_REFERENCE_PATTERN,
@@ -258,8 +259,11 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
     evidence a canary's own run could still produce. `not_startable_reason`
     names whichever of the three a start would meet first:
     `agent-executor-binding-unavailable` (no factory), `model-not-registered`
-    (a superseded or never-registered model), or `provider-probe-receipt-missing`
-    (everything else holds, only live evidence is missing or stale).
+    (a superseded or never-registered model), `provider-probe-failed` (the
+    latest receipt for this exact configuration exists and itself records a
+    failure -- `provider_probe_problem_code` and `provider_probe_observed_at`
+    then carry that failure's own evidence), or `provider-probe-receipt-missing`
+    (everything else holds, but no receipt proves this exact configuration).
     `startable` cannot hold without `structurally_startable`.
     """
 
@@ -270,8 +274,15 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
             "agent-executor-binding-unavailable",
             "model-not-registered",
             "provider-probe-receipt-missing",
+            "provider-probe-failed",
         ]
         | None
+    )
+    provider_probe_problem_code: str | None = Field(
+        default=None, pattern=PROVIDER_PROBE_PROBLEM_CODE_PATTERN
+    )
+    provider_probe_observed_at: str | None = Field(
+        default=None, pattern=RECORDED_AT_PATTERN
     )
 
     @model_validator(mode="after")
@@ -297,6 +308,24 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
             raise ValueError(
                 "a structurally startable configuration cannot carry the "
                 "executor-unavailable reason"
+            )
+        carries_probe_failure_evidence = (
+            self.provider_probe_problem_code is not None
+            or self.provider_probe_observed_at is not None
+        )
+        if (self.not_startable_reason == "provider-probe-failed") != (
+            carries_probe_failure_evidence
+        ):
+            raise ValueError(
+                "provider probe failure evidence and its reason must agree"
+            )
+        if carries_probe_failure_evidence and (
+            self.provider_probe_problem_code is None
+            or self.provider_probe_observed_at is None
+        ):
+            raise ValueError(
+                "a provider probe failure names both its problem code and "
+                "when it was observed"
             )
         return self
 
