@@ -72,6 +72,22 @@ transform this field's value is guaranteed to have been through, restated in
 the encoding the browser reads it under, once, so the Pydantic resource and
 its Zod mirror cannot each pick a different one.
 """
+
+MAXIMUM_RUN_TERMINAL_ANSWER_BYTES = MAXIMUM_AGENT_OUTPUT_BYTES_V2
+"""The run list's own byte bound on the terminal `answer` a row may carry.
+
+`NodeDetail.answer` stays unbounded on the single-node route (#238: it is
+served for every answer-bearing node kind, agent, wait, action, subworkflow,
+which share no one byte bound) -- but `RunResourceV3.answer` (#1045) is
+served on every listed run, repeated once per row, so it needs its own. This
+reuses the agent output cap every executor already holds rather than
+inventing a second number: `run_resource` never asks for a value larger than
+this, so it is the honest ceiling to name here too, and a projected answer
+over it is nulled, never truncated mid-byte (see `run_resource`).
+"""
+MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = base64_characters_for(
+    MAXIMUM_RUN_TERMINAL_ANSWER_BYTES
+)
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
