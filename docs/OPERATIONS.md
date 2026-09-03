@@ -669,6 +669,14 @@ The drop-in makes the launcher's SIGTERM exit code 143 a successful stop, so a
 deliberate update stop does not leave the unit failed. Installation does not
 start, restart, or enable the live service; those remain explicit host actions.
 
+The unit sets no `TimeoutStopSec`, so a `stop` waits systemd's default 90
+seconds before SIGKILLing the process; the serve process itself bounds an open
+Workbench tab's event stream to `SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS`
+(`src/atelier2/host/serving.py`, 10 seconds), comfortably under that default so
+a stop always finishes clean and runs `runtime.close()` regardless of how many
+tabs are open. An operator who ever sets `TimeoutStopSec` on the unit must keep
+it above that grace.
+
 ### Auto-redeploy watcher
 
 **Auto-redeploy is the deploy path for the loopback host Serve above: a green

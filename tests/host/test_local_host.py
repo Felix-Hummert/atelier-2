@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Never
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 import sqlalchemy as sa
@@ -57,7 +57,12 @@ from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
-from atelier2.api.openapi import API_PREFIX, PROJECT_PATH, PROJECTS_PATH
+from atelier2.api.openapi import (
+    API_PREFIX,
+    ATTENTION_EVENT_PATH,
+    PROJECT_PATH,
+    PROJECTS_PATH,
+)
 from atelier2.api.references import encode_public_project_reference
 from atelier2.application.project_connections import (
     ProjectSourceConnectionPublished,
@@ -89,6 +94,7 @@ from atelier2.contracts.when import recorded_instant
 from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
+    SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS,
     HostSettings,
     LegacyAgentOpenPrCompletionWithoutReceipt,
     api_limits,
@@ -1304,6 +1310,98 @@ def test_real_console_launcher_serves_one_opaque_project_resource(
     exposed = repr((listed, detailed))
     assert project_id.value not in exposed
     assert str(project_root.resolve()) not in exposed
+
+
+# A redeploy stop takes the test bound in this margin on top of the production
+# grace: how long uvicorn and `runtime.close()` actually need once the grace has
+# forced the open stream's sockets shut, in a process with no other work
+# in flight. Not itself the invariant under test -- SERVE_SHUTDOWN_CONNECTION_
+# GRACE_SECONDS is -- just the slack this assertion gives real scheduling.
+_STOP_TEARDOWN_MARGIN_SECONDS = 5.0
+
+
+def test_a_stop_with_an_open_events_stream_exits_within_the_shutdown_grace(
+    tmp_path: Path,
+) -> None:
+    frontend = tmp_path / "frontend"
+    (frontend / "assets").mkdir(parents=True)
+    (frontend / "index.html").write_text("<main>shutdown</main>")
+    port = free_port()
+    command = [
+        "uv",
+        "run",
+        "atelier2",
+        "serve",
+        "--database",
+        str(tmp_path / "durable.sqlite"),
+        "--effect-store",
+        str(tmp_path / "effects.sqlite"),
+        "--effect-adapter-revision",
+        "loopback-v1",
+        "--effect-destination",
+        "shutdown-grace-test",
+        "--application-version",
+        "shutdown-grace-v1",
+        "--source-commit",
+        "exact-commit",
+        "--source-tree",
+        "exact-tree",
+        "--frontend-dist",
+        str(frontend),
+        "--port",
+        str(port),
+    ]
+
+    child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    events_stream = None
+    try:
+        wait_for_health(port)
+        events_stream = urlopen(
+            Request(
+                f"http://127.0.0.1:{port}{ATTENTION_EVENT_PATH}",
+                headers={"Accept": "text/event-stream"},
+            ),
+            timeout=5,
+        )
+        assert events_stream.status == 200
+
+        stop_bound = SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS + (
+            _STOP_TEARDOWN_MARGIN_SECONDS
+        )
+        started_stop = time.monotonic()
+        child.send_signal(signal.SIGTERM)
+        try:
+            _, stderr = child.communicate(timeout=stop_bound)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            _, stderr = child.communicate(timeout=10)
+            raise AssertionError(
+                "serve did not exit within its shutdown grace "
+                f"({stop_bound}s) with an open events stream"
+            ) from None
+        elapsed = time.monotonic() - started_stop
+    finally:
+        if events_stream is not None:
+            events_stream.close()
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=10)
+
+    # A SIGTERM-driven stop exits 128+SIGTERM here even on a clean, fully
+    # graceful shutdown -- the same code the live unit's clean-stop.conf
+    # already classifies as a successful stop (docs/OPERATIONS.md); a
+    # different code would mean the shutdown did not finish on its own terms.
+    assert child.returncode == 143, stderr.decode(errors="replace")
+    assert elapsed <= stop_bound
+    closed_log_lines = [
+        json.loads(line)
+        for line in stderr.decode(errors="replace").splitlines()
+        if line.strip().startswith("{")
+    ]
+    assert any(
+        record.get("message") == "atelier2 serve runtime closed"
+        for record in closed_log_lines
+    ), stderr.decode(errors="replace")
 
 
 def stop_child_process(child: subprocess.Popen[bytes]) -> bytes:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -10,14 +11,15 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import assert_never
 
 import uvicorn
 from fastapi import FastAPI
+from starlette.types import Lifespan
 
 from atelier2.adapters.bounded_processes import (
     BoundedProcessFailure,
@@ -1212,7 +1214,48 @@ def _effect_adapters(
     )
 
 
-def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
+def _close_runtime_at_shutdown(
+    runtime: DbosRuntime, inner: Lifespan[FastAPI] | None
+) -> Lifespan[FastAPI]:
+    """Close the runtime when the ASGI application's own lifespan shuts down.
+
+    Uvicorn's `Server.serve()` restores each signal's original disposition
+    and re-raises it on this process right after `Server.run()` returns
+    (`capture_signals()` in `uvicorn.server`) -- so a stop signal kills the
+    process before any of `serve()`'s own code past `.run()` executes, no
+    matter how that call's own `try/finally` reads (issue #1117). The ASGI
+    lifespan's shutdown event is awaited *inside* that same call, before the
+    signal is re-raised, so it is the one hook a stop signal cannot outrun.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            if inner is None:
+                yield
+            else:
+                async with inner(app):
+                    yield
+        finally:
+            await asyncio.to_thread(runtime.close)
+            logging.getLogger("atelier2").info("atelier2 serve runtime closed")
+
+    return lifespan
+
+
+def compose_application(
+    settings: HostSettings, *, close_runtime_at_shutdown: bool = False
+) -> tuple[FastAPI, DbosRuntime]:
+    """Build the served app and its runtime lease from one settings record.
+
+    `close_runtime_at_shutdown` folds `runtime.close()` into the app's own
+    ASGI lifespan shutdown; off by default, because most callers -- every
+    test that composes an app, drives it through a `TestClient`, and keeps
+    reading `runtime` afterwards -- own the runtime's lifetime themselves and
+    close it on their own terms, independently of the app's. `serve()` is
+    the one caller that turns it on, for its own served process's own
+    runtime (issue #1117).
+    """
     subscription_executors = (
         *_subscription_executor_registrations(settings),
         *_runner_lease_executor_registrations(settings),
@@ -1250,6 +1293,8 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             lifespan = webhook_delivery_lifespan(delivery_loop, transport)
         else:
             lifespan = None
+        if close_runtime_at_shutdown:
+            lifespan = _close_runtime_at_shutdown(runtime, lifespan)
         app = create_app(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,
@@ -1324,10 +1369,26 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         raise
 
 
+# The Workbench holds `GET /atelier/api/v1/events` (server-sent) open for as
+# long as it is on screen, and that stream never ends on its own. Without a
+# bound, uvicorn's graceful shutdown waits it out, so a redeploy with an open
+# tab rides `systemctl --user stop` all the way to the live unit's
+# TimeoutStopSec (90s, systemd's default; the unit sets none -- see
+# docs/OPERATIONS.md's serve/redeploy section) before SIGKILL (issue #1117).
+# This is the grace an open connection gets before uvicorn drops its sockets
+# anyway, kept well under TimeoutStopSec so a stop always finishes on its own.
+# The e2e harness owns a sibling constant for the same shape of problem
+# (`RESTART_CONNECTION_GRACE_SECONDS` in tests/e2e/serve_cockpit.py) but not
+# the same value: that one only has to outrun one test assertion, this one
+# has to outrun a redeploy an operator is watching, so the two stay
+# separately owned.
+SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS = 10
+
+
 def serve(settings: HostSettings) -> None:
     configure_process_logging()
     _log_unstartable_executors(settings)
-    app, runtime = compose_application(settings)
+    app, runtime = compose_application(settings, close_runtime_at_shutdown=True)
     try:
         uvicorn.Server(
             uvicorn.Config(
@@ -1336,7 +1397,18 @@ def serve(settings: HostSettings) -> None:
                 port=settings.port,
                 log_config=None,
                 access_log=False,
+                timeout_graceful_shutdown=SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS,
             )
         ).run()
     finally:
+        # A stop that reaches this point at all -- an exception before the
+        # ASGI lifespan ever started, most likely -- has not already closed
+        # the runtime through it, and close() is idempotent, so this is a
+        # safety net rather than the primary path. The primary path is
+        # `_close_runtime_at_shutdown`, composed into `app` above through
+        # `close_runtime_at_shutdown=True`: uvicorn re-raises whatever signal
+        # it caught right after `Server.run()` returns, with that signal's
+        # default disposition restored (`capture_signals()` in
+        # `uvicorn.server`), which ends this process before any of *this*
+        # function's own code past `.run()` executes.
         runtime.close()
