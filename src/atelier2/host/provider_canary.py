@@ -104,6 +104,12 @@ PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS = (
     PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS
     + PROVIDER_CANARY_MAXIMUM_VECTORS * PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS
 )
+# The post-Serve-start drop-in fires this run the instant the Serve process
+# begins, not once it can answer, so it races the ASGI startup rather than
+# waiting behind it. 60 s comfortably outlasts every observed cold start while
+# still failing loud long before an operator would suspect a hang.
+PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS = 60.0
+PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS = 1.0
 PROVIDER_CANARY_STATE_RELATIVE_PATH = Path("atelier2/provider-probes/live")
 
 _MAXIMUM_PROBLEM_RESPONSE_BYTES = 4_096
@@ -420,18 +426,15 @@ def execute_provider_canaries(
     discovery_deadline = min(
         process_deadline, started_at + PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS
     )
+    health_wait_deadline = min(
+        discovery_deadline, started_at + PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS
+    )
     try:
-        discovery_timeout = _discovery_timeout
-        health = _decoded(
-            _health_resource,
-            _get_before_deadline(
-                client,
-                "/health",
-                clock=canary_clock,
-                deadline=discovery_deadline,
-                timeout_error=discovery_timeout,
-            ),
-            "health",
+        health = _wait_for_serving_health(
+            client,
+            clock=canary_clock,
+            deadline=health_wait_deadline,
+            poll_interval_seconds=PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS,
         )
         if PROVIDER_PROBE_SOURCE_COMMIT_FORMAT.fullmatch(health.source_commit) is None:
             raise ProviderCanaryAnswerUnreadable(
@@ -451,21 +454,17 @@ def execute_provider_canaries(
             clock=canary_clock,
             deadline=discovery_deadline,
         )
-        _raise_if_deadline_reached(canary_clock, discovery_deadline, discovery_timeout)
+        _raise_if_deadline_reached(canary_clock, discovery_deadline, _discovery_timeout)
     except ProviderCanaryDiscoveryFailed:
         raise
-    except ProviderCanaryServerUnavailable as unavailable:
+    except (
+        ProviderCanaryServerUnavailable,
+        ProviderCanaryHttpRefused,
+        ProviderCanaryAnswerUnreadable,
+    ) as failure:
         raise ProviderCanaryDiscoveryFailed(
-            f"server-unavailable: {unavailable}"
-        ) from unavailable
-    except ProviderCanaryHttpRefused as refused:
-        raise ProviderCanaryDiscoveryFailed(
-            f"{_bounded_problem_code(refused.problem_code).value}: {refused}"
-        ) from refused
-    except ProviderCanaryAnswerUnreadable as unreadable:
-        raise ProviderCanaryDiscoveryFailed(
-            f"server-answer-unreadable: {unreadable}"
-        ) from unreadable
+            _discovery_problem_text(failure)
+        ) from failure
     failures: list[ProviderCanaryFailure] = []
     for vector in vectors:
         _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
@@ -481,6 +480,58 @@ def execute_provider_canaries(
         if failure is not None:
             failures.append(failure)
     return ProviderCanaryReport(len(vectors), tuple(failures))
+
+
+def _discovery_problem_text(
+    failure: ProviderCanaryServerUnavailable
+    | ProviderCanaryHttpRefused
+    | ProviderCanaryAnswerUnreadable,
+) -> str:
+    """The same bounded classification prefix an immediate discovery failure
+    uses, reused for the last health answer a bounded wait gives up on."""
+
+    if isinstance(failure, ProviderCanaryServerUnavailable):
+        return f"server-unavailable: {failure}"
+    if isinstance(failure, ProviderCanaryHttpRefused):
+        return f"{_bounded_problem_code(failure.problem_code).value}: {failure}"
+    return f"server-answer-unreadable: {failure}"
+
+
+def _wait_for_serving_health(
+    client: ProviderCanaryHttp,
+    *,
+    clock: ProviderCanaryClock,
+    deadline: float,
+    poll_interval_seconds: float,
+) -> HealthResource:
+    """Poll `/health` until it answers `serving`, before any vector is tried.
+
+    The post-Serve-start drop-in fires this run at process start, not once the
+    process can answer, so a refused connection or a not-yet-mounted route is
+    the expected first answer after an auto-deploy, not a defect. Absorbing
+    that race here -- the one place both the timer and a hand run share --
+    keeps every vector from meeting a spurious `server-unavailable` and
+    leaving a fail receipt for a deploy that was actually fine.
+    """
+
+    last_health_text = "no health answer was received"
+    while True:
+        remaining = deadline - clock.monotonic()
+        if remaining <= 0:
+            raise ProviderCanaryDiscoveryFailed(
+                "health-wait-timeout: /health never answered serving within its "
+                f"bounded wait; last health answer: {last_health_text}"
+            )
+        try:
+            document = client.get("/health", timeout_seconds=remaining)
+            return _decoded(_health_resource, document, "health")
+        except (
+            ProviderCanaryServerUnavailable,
+            ProviderCanaryHttpRefused,
+            ProviderCanaryAnswerUnreadable,
+        ) as failure:
+            last_health_text = _discovery_problem_text(failure)
+        clock.sleep(min(poll_interval_seconds, max(deadline - clock.monotonic(), 0.0)))
 
 
 def _configured_vectors(
