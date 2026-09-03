@@ -771,7 +771,7 @@ describe("a version 3 run that stops for a person", () => {
 
   /** The published answer schema of #553's decision-button graphs, everything but its classification. */
   function decisionSchema(
-    kind: "boolean" | "enum" | "free",
+    kind: "boolean" | "enum" | "string" | "free",
     values: string[] | null = null,
     stringTyped = false
   ) {
@@ -888,6 +888,23 @@ describe("a version 3 run that stops for a person", () => {
     expect(body.answer_base64).toBe(btoa("nein"));
     await screen.findByText(`${runPageCopy.answeredPrefix} nein`);
     resolveAnswer({ status: 202, value: answeredRun() });
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): a string schema keeps the text field, never the decision buttons (#1091 PR #1108 regression)", async () => {
+    render(App, {
+      props: {
+        cockpitApi: waitingApi({
+          getWorkflowRevision: vi.fn(async () => decisionSchema("string", null, true))
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByRole("heading", { name: question });
+
+    expect(screen.getByLabelText(runPageCopy.answerLabel).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.answerNo })).toBeNull();
   });
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): keeps the free-form textarea for a schema this build has not classified", async () => {
