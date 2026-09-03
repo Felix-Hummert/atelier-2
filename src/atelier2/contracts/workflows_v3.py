@@ -1518,9 +1518,13 @@ A redemption leaves exactly one receipt per shape per node execution, so a
 second grant of the same shape on one node would either go unredeemed or
 answer for the first. Which capability a pin names is only known once its
 published bytes are read, though, and this reading has no registry to ask --
-so the document alone can only refuse a third pin outright; the finer rule
-that the two bound grants must be one of each shape is a binding-time refusal
-once their resolved capabilities are known (`agent_effect_grants.py`).
+so the document alone can only refuse a third pin outright at this count. The
+finer rule -- the two bound grants must be one of each shape -- is refused
+twice over, at the two places a grant's resolved capability is read: first at
+start, in `evaluate_executability.py::resolve_document_references`, before a
+run exists; again at redemption, in `agent_effect_grants.py`, as the
+binding-time invariant a run itself cannot violate even if a start-level
+check were ever bypassed.
 """
 
 AGENT_OUTPUT_SHAPE_UNAVAILABLE = "agent-output-shape-unavailable"
