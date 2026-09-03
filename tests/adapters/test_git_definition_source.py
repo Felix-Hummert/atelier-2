@@ -257,13 +257,38 @@ def test_a_ref_the_source_does_not_carry_refuses_by_name(tmp_path: Path) -> None
     )
 
 
-def test_a_location_that_is_no_repository_refuses_by_name(tmp_path: Path) -> None:
-    (tmp_path / "not-a-repository").mkdir()
+def test_a_location_that_is_no_repository_refuses_by_name_with_gits_reason(
+    tmp_path: Path,
+) -> None:
+    """The word says what happened; git's own sentence says why.
 
-    assert (
-        refusal_of(registration(tmp_path / "not-a-repository"))
-        == DefinitionSourceRefusal.UNREACHABLE
+    A location that is merely misspelled and one this user may not enter earn
+    the same refusal word, so a refusal that dropped git's words left the
+    operator with nothing to act on (#1071).
+    """
+
+    unreadable = tmp_path / "not-a-repository"
+    unreadable.mkdir()
+
+    with pytest.raises(DefinitionSourceUnreadable) as refused:
+        GitDefinitionSource().scan(registration(unreadable))
+
+    assert refused.value.refusal == DefinitionSourceRefusal.UNREACHABLE
+    assert what_git_refuses_at(unreadable) in refused.value.detail
+
+
+def what_git_refuses_at(directory: Path) -> str:
+    """What git itself writes when asked for the repository in this directory."""
+
+    completed = subprocess.run(
+        ("git", "rev-parse", "--absolute-git-dir"),
+        cwd=directory,
+        env={**os.environ, **_AUTHORED_BY_THE_SCENARIO},
+        capture_output=True,
+        check=False,
     )
+    assert completed.returncode != 0, "this scenario needs a location git refuses"
+    return completed.stderr.decode("utf-8").strip()
 
 
 def test_a_plain_directory_inside_a_repository_is_not_that_repository(

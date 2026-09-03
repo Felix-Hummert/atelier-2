@@ -1,18 +1,25 @@
 """Run the configured live provider vectors and leave bounded proof behind.
 
 The served agent-configuration list is the deployment's answer about which
-exact provider/executor/configuration vectors are structurally startable now
--- a factory registered, available, and declaring the capability, with no
-live evidence asked at all. This client reads that list, resolves the
-matching admitted workflow, starts one fresh run with the listed
-configuration hash, and polls the public run resource to a terminal state. It
-owns no provider process and opens no store.
+exact provider/executor/configuration vectors are worth a live attempt: one
+the deployment's own snapshot already calls `startable`, or one whose only
+named problem is the receipt this very run would write
+(`not_startable_reason: provider-probe-receipt-missing`). Both answers come
+from the same server-side judgment a start itself makes -- the model
+registry pointer, the executor, and live evidence, all computed once through
+`agent_catalog.py` -- so a superseded revision carries its own distinct
+reason (`model-not-registered`) and is never offered as a vector. This
+client reads those two fields and derives nothing of its own: no local
+registry fetch, no local cast, no parse of the repository's workflow bytes.
+It then resolves the matching admitted workflow, starts one fresh run with
+the listed configuration hash, and polls the public run resource to a
+terminal state. It owns no provider process and opens no store.
 
 Discovery is receipt-neutral: health, the bounded configuration list, and all
 distinct admitted workflow names must resolve before any vector becomes an
-attempt. Discovery refusal is visible through the process exit and journal and
-leaves every last-known vector receipt byte-identical. Once one vector enters
-execution, its outcome replaces that vector's secret-free
+attempt. Discovery refusal is visible through the process exit and journal
+and leaves every last-known vector receipt byte-identical. Once one vector
+enters execution, its outcome replaces that vector's secret-free
 ``provider-probe-receipt/v1`` beneath the operator's XDG state directory. The
 durable run remains the evidence owner; a receipt carries only its identities
 and terminal hash, or a bounded problem code. Replacement is a same-directory
@@ -56,6 +63,7 @@ from atelier2.adapters.grok_subscription import (
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
 )
 from atelier2.api.openapi import API_PREFIX
+from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionListItemResource,
     AgentConfigurationRevisionPageResource,
@@ -65,7 +73,10 @@ from atelier2.api.wire.resources import (
     RunResourceV3,
 )
 from atelier2.contracts.agent_transcripts import TranscriptEventKind
-from atelier2.contracts.agents import AgentConfigurationRevisionHash
+from atelier2.contracts.agents import (
+    AgentConfigurationNotStartableReason,
+    AgentConfigurationRevisionHash,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.provider_probe_receipts import (
     _SOURCE_COMMIT as PROVIDER_PROBE_SOURCE_COMMIT_FORMAT,
@@ -104,6 +115,12 @@ PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS = (
     PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS
     + PROVIDER_CANARY_MAXIMUM_VECTORS * PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS
 )
+# The post-Serve-start drop-in fires this run the instant the Serve process
+# begins, not once it can answer, so it races the ASGI startup rather than
+# waiting behind it. 60 s comfortably outlasts every observed cold start while
+# still failing loud long before an operator would suspect a hang.
+PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS = 60.0
+PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS = 1.0
 PROVIDER_CANARY_STATE_RELATIVE_PATH = Path("atelier2/provider-probes/live")
 
 _MAXIMUM_PROBLEM_RESPONSE_BYTES = 4_096
@@ -420,18 +437,15 @@ def execute_provider_canaries(
     discovery_deadline = min(
         process_deadline, started_at + PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS
     )
+    health_wait_deadline = min(
+        discovery_deadline, started_at + PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS
+    )
     try:
-        discovery_timeout = _discovery_timeout
-        health = _decoded(
-            _health_resource,
-            _get_before_deadline(
-                client,
-                "/health",
-                clock=canary_clock,
-                deadline=discovery_deadline,
-                timeout_error=discovery_timeout,
-            ),
-            "health",
+        health = _wait_for_serving_health(
+            client,
+            clock=canary_clock,
+            deadline=health_wait_deadline,
+            poll_interval_seconds=PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS,
         )
         if PROVIDER_PROBE_SOURCE_COMMIT_FORMAT.fullmatch(health.source_commit) is None:
             raise ProviderCanaryAnswerUnreadable(
@@ -451,21 +465,17 @@ def execute_provider_canaries(
             clock=canary_clock,
             deadline=discovery_deadline,
         )
-        _raise_if_deadline_reached(canary_clock, discovery_deadline, discovery_timeout)
+        _raise_if_deadline_reached(canary_clock, discovery_deadline, _discovery_timeout)
     except ProviderCanaryDiscoveryFailed:
         raise
-    except ProviderCanaryServerUnavailable as unavailable:
+    except (
+        ProviderCanaryServerUnavailable,
+        ProviderCanaryHttpRefused,
+        ProviderCanaryAnswerUnreadable,
+    ) as failure:
         raise ProviderCanaryDiscoveryFailed(
-            f"server-unavailable: {unavailable}"
-        ) from unavailable
-    except ProviderCanaryHttpRefused as refused:
-        raise ProviderCanaryDiscoveryFailed(
-            f"{_bounded_problem_code(refused.problem_code).value}: {refused}"
-        ) from refused
-    except ProviderCanaryAnswerUnreadable as unreadable:
-        raise ProviderCanaryDiscoveryFailed(
-            f"server-answer-unreadable: {unreadable}"
-        ) from unreadable
+            _discovery_problem_text(failure)
+        ) from failure
     failures: list[ProviderCanaryFailure] = []
     for vector in vectors:
         _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
@@ -481,6 +491,58 @@ def execute_provider_canaries(
         if failure is not None:
             failures.append(failure)
     return ProviderCanaryReport(len(vectors), tuple(failures))
+
+
+def _discovery_problem_text(
+    failure: ProviderCanaryServerUnavailable
+    | ProviderCanaryHttpRefused
+    | ProviderCanaryAnswerUnreadable,
+) -> str:
+    """The same bounded classification prefix an immediate discovery failure
+    uses, reused for the last health answer a bounded wait gives up on."""
+
+    if isinstance(failure, ProviderCanaryServerUnavailable):
+        return f"server-unavailable: {failure}"
+    if isinstance(failure, ProviderCanaryHttpRefused):
+        return f"{_bounded_problem_code(failure.problem_code).value}: {failure}"
+    return f"server-answer-unreadable: {failure}"
+
+
+def _wait_for_serving_health(
+    client: ProviderCanaryHttp,
+    *,
+    clock: ProviderCanaryClock,
+    deadline: float,
+    poll_interval_seconds: float,
+) -> HealthResource:
+    """Poll `/health` until it answers `serving`, before any vector is tried.
+
+    The post-Serve-start drop-in fires this run at process start, not once the
+    process can answer, so a refused connection or a not-yet-mounted route is
+    the expected first answer after an auto-deploy, not a defect. Absorbing
+    that race here -- the one place both the timer and a hand run share --
+    keeps every vector from meeting a spurious `server-unavailable` and
+    leaving a fail receipt for a deploy that was actually fine.
+    """
+
+    last_health_text = "no health answer was received"
+    while True:
+        remaining = deadline - clock.monotonic()
+        if remaining <= 0:
+            raise ProviderCanaryDiscoveryFailed(
+                "health-wait-timeout: /health never answered serving within its "
+                f"bounded wait; last health answer: {last_health_text}"
+            )
+        try:
+            document = client.get("/health", timeout_seconds=remaining)
+            return _decoded(_health_resource, document, "health")
+        except (
+            ProviderCanaryServerUnavailable,
+            ProviderCanaryHttpRefused,
+            ProviderCanaryAnswerUnreadable,
+        ) as failure:
+            last_health_text = _discovery_problem_text(failure)
+        clock.sleep(min(poll_interval_seconds, max(deadline - clock.monotonic(), 0.0)))
 
 
 def _configured_vectors(
@@ -509,16 +571,28 @@ def _configured_vectors(
             ),
             "agent-configuration page",
         )
-        # `structurally_startable`, not `startable`: discovery must find a
-        # vector whose only problem is the receipt this very run would write.
-        # Selecting on `startable` here would be the same surface-vs-start-door
-        # divergence this gate exists to close, running the other way -- the
-        # listing saying "not startable" while the one run that could produce
-        # the missing evidence is refused from ever finding it.
+        # A vector is a configuration the deployment's own snapshot already
+        # calls `startable`, or one whose only problem is the receipt this
+        # very run would write (`not_startable_reason ==
+        # provider-probe-receipt-missing`, the exact token
+        # `AgentConfigurationNotStartableReason` owns). A superseded
+        # configuration now carries its own distinct reason
+        # (`model-not-registered`) computed by the same cast lookup a start
+        # makes (`agent_catalog.py` -> `resolve_start_bindings.
+        # configuration_registered`), so it is excluded honestly rather than
+        # offered as though a fresh probe would fix it. Discovery derives
+        # nothing of its own from either field -- no local registry fetch, no
+        # local cast -- so it can never drift from what a real start would
+        # decide, and a redeploy that invalidates every receipt still leaves
+        # every genuinely registered configuration reprobable.
         vectors.extend(
             vector
             for item in page.items
-            if item.structurally_startable
+            if (
+                item.startable
+                or item.not_startable_reason
+                == AgentConfigurationNotStartableReason.PROVIDER_PROBE_RECEIPT_MISSING
+            )
             and (vector := _canary_vector(item)) is not None
         )
         if len(vectors) > PROVIDER_CANARY_MAXIMUM_VECTORS:
@@ -584,6 +658,21 @@ def _workflow_for(provider_id: str, executor_revision: str) -> str | None:
     return _WORKFLOW_BY_EXECUTOR.get((provider_id, executor_revision))
 
 
+class _StartRequestRefused(RuntimeError):
+    """The POST /runs answer itself was a typed or generic refusal.
+
+    Raised only around the start request, never around the terminal poll
+    that follows it, so `start-refused-*` names exactly what it says: the
+    start's own answer, not an unrelated refusal met while merely watching
+    the run it already accepted.
+    """
+
+    def __init__(self, problem_code: ProviderProbeProblemCode, detail: str) -> None:
+        super().__init__(detail)
+        self.problem_code = problem_code
+        self.detail = detail
+
+
 def _execute_vector(
     settings: ProviderCanarySettings,
     vector: _CanaryVector,
@@ -620,9 +709,8 @@ def _execute_vector(
         binding = AgentRoleBinding(
             PROVIDER_CANARY_ROLE, vector.configuration_hash.value
         )
-        started = _decoded(
-            _run_resource,
-            _post_before_deadline(
+        try:
+            posted = _post_before_deadline(
                 client,
                 RUN_PATH,
                 # The shared public-run owner emits StartRunRequestResourceV2:
@@ -631,9 +719,12 @@ def _execute_vector(
                 clock=clock,
                 deadline=deadline,
                 timeout_error=timeout_error,
-            ),
-            "started run",
-        )
+            )
+        except ProviderCanaryHttpRefused as refused:
+            raise _StartRequestRefused(
+                _start_refused_problem_code(refused.problem_code), str(refused)
+            ) from refused
+        started = _decoded(_run_resource, posted, "started run")
         ended = _wait_for_terminal(
             client,
             started,
@@ -673,6 +764,9 @@ def _execute_vector(
     except ProviderCanaryProcessTimedOut as timed_out:
         problem_code = ProviderProbeProblemCode("process-timeout")
         detail = str(timed_out)
+    except _StartRequestRefused as refused:
+        problem_code = refused.problem_code
+        detail = refused.detail
     except ProviderCanaryHttpRefused as refused:
         problem_code = _bounded_problem_code(refused.problem_code)
         detail = str(refused)
@@ -861,9 +955,12 @@ def _problem_answer(document: bytes, fallback: str) -> tuple[str, str]:
         return "http-refused", fallback
     raw_type = decoded.get("type")
     detail = decoded.get("detail")
+    # The problem-vocabulary owner (`atelier2.api.problems`) frames every type
+    # as `urn:atelier2:problem:v1:<code>` -- colon-separated, not `/`-separated
+    # -- so the code is read by stripping that exact prefix, never guessed.
     problem_code = (
-        raw_type.rsplit("/", 1)[-1]
-        if isinstance(raw_type, str) and raw_type
+        raw_type.removeprefix(PROBLEM_TYPE_PREFIX)
+        if isinstance(raw_type, str) and raw_type.startswith(PROBLEM_TYPE_PREFIX)
         else "http-refused"
     )
     return problem_code, detail if isinstance(detail, str) else fallback
@@ -872,5 +969,27 @@ def _problem_answer(document: bytes, fallback: str) -> tuple[str, str]:
 def _bounded_problem_code(raw: str) -> ProviderProbeProblemCode:
     try:
         return ProviderProbeProblemCode(raw)
+    except (TypeError, ValueError):
+        return ProviderProbeProblemCode("http-refused")
+
+
+def _start_refused_problem_code(raw: str) -> ProviderProbeProblemCode:
+    """A typed refusal the start answered, named as its own honest token.
+
+    `raw` already carries the correctly parsed problem code (`_problem_answer`
+    reads the type from its owning vocabulary), so this only prefixes it into
+    the canary's own namespace -- distinguishing "the start refused this
+    binding with a named problem" from every other receipt code this module
+    assigns. `ProviderProbeProblemCode` bounds its token to lowercase ASCII
+    and hyphens, so the prefix joins with a hyphen rather than the colon the
+    problem vocabulary itself uses. `raw` itself already reading `http-refused`
+    means no type was ever recovered -- that ambient case stays exactly
+    `http-refused`, not a hollow "start-refused" wrapper around nothing.
+    """
+
+    if raw == "http-refused":
+        return ProviderProbeProblemCode("http-refused")
+    try:
+        return ProviderProbeProblemCode(f"start-refused-{raw}")
     except (TypeError, ValueError):
         return ProviderProbeProblemCode("http-refused")

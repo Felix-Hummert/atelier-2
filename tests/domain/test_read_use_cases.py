@@ -8,6 +8,7 @@ import pytest
 
 from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application import resolve_references as resolve_references_module
 from atelier2.application.evaluate_executability import (
     DocumentNotExecutable,
     ExecutableDocument,
@@ -59,6 +60,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHas
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
+    ListedWorkflowRevision,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
@@ -432,6 +434,82 @@ def test_a_wait_answer_schema_classifies_free_for_every_named_resolution_failure
     )
 
 
+def test_a_schema_document_is_validated_at_most_once_across_two_separate_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#937 round 4: two separate reads pinning the same schema hash -- as two
+    separate `GET /workflow-revisions/{hash}` requests would -- pay the Draft
+    2020-12 validation once for the process, not once per request. The same
+    document is also settled twice inside one such read (once by
+    `evaluate_executability`, once by the wait-node classifier), so this pins
+    the process cache is the one owner both share, not just a per-request one."""
+    schema = PublishedRevision(
+        RevisionKind.SCHEMA, b'{"type": "string", "enum": ["issue-937-round-4"]}'
+    )
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+    validated = 0
+    original_read_schema_document = resolve_references_module.read_schema_document
+
+    def counting_read_schema_document(document: bytes) -> object:
+        nonlocal validated
+        validated += 1
+        return original_read_schema_document(document)
+
+    monkeypatch.setattr(
+        resolve_references_module,
+        "read_schema_document",
+        counting_read_schema_document,
+    )
+
+    first = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+    second = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(first, WorkflowRevisionRead)
+    assert isinstance(second, WorkflowRevisionRead)
+    assert first.wait_answer_classifications == (
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID, kind="enum", values=('"issue-937-round-4"',)
+        ),
+    )
+    assert second.wait_answer_classifications == first.wait_answer_classifications
+    assert validated <= 1
+
+
+def test_a_resolver_answering_a_different_revision_than_pinned_is_not_cached() -> None:
+    """#937 round 4 review finding 2: the cache is keyed by the *requested* hash,
+    so a resolver whose answer names a different revision must be refused
+    rather than remembered under the hash actually pinned -- otherwise the
+    stranger's schema would poison every later reader of that hash for the
+    rest of the process."""
+    pinned = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
+    stranger = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
+    projection = _wait_revision_projection(pinned.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+
+    mismatched = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(stranger))
+    )
+    correct = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(pinned))
+    )
+
+    assert isinstance(mismatched, WorkflowRevisionRead)
+    assert mismatched.wait_answer_classifications == (
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free"),
+    )
+    assert isinstance(correct, WorkflowRevisionRead)
+    assert correct.wait_answer_classifications == (
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="boolean"),
+    ), (
+        "the mismatched resolve must not have cached the stranger's schema under the pinned hash"
+    )
+
+
 def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() -> None:
     listed = AgentConfigurationRevisionPage((), None)
 
@@ -613,7 +691,10 @@ def test_a_described_page_resolves_every_reference_inside_one_session() -> None:
     first_item = _wait_revision_projection(schema_one.revision_hash.value)
     second_item = _wait_revision_projection(schema_two.revision_hash.value)
     queries = ScriptedQueries(
-        DescribedWorkflowRevisionPage((first_item, second_item), None)
+        DescribedWorkflowRevisionPage(
+            (ListedWorkflowRevision(first_item), ListedWorkflowRevision(second_item)),
+            None,
+        )
     )
     resolver = ScriptedSessionResolver(PublishedRevisionFound(schema_one))
 

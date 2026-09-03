@@ -171,6 +171,7 @@ function surfaceApi(): CockpitApi {
         ? {
             workflow_revision_hash: WORKFLOW_HASH,
             document_base64: "YQ==",
+            provenance: null,
             graph: {
               workflow_format_version: 3 as const,
               executable: true,
@@ -201,7 +202,8 @@ function surfaceApi(): CockpitApi {
           executable: true,
           not_executable_reason: null,
           name: SAMPLE_WORKFLOW_NAME,
-          description: "build"
+          description: "build",
+          provenance: null
         }
       ],
       next_after_revision_hash: null

@@ -20,6 +20,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    MAXIMUM_PUBLIC_DEFINITION_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
@@ -30,6 +31,7 @@ from atelier2.api.references import (
     PUBLIC_SOURCE_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
+    SOURCE_COMMIT_PATTERN,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -51,6 +53,9 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_REPOSITORY_PATH_CHARACTERS,
 )
 from atelier2.contracts.host_configuration import (
     EXACT_MODEL_ID_PATTERN,
@@ -242,22 +247,30 @@ class AgentConfigurationRevisionResource(ApiModel):
 
 
 class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResource):
-    """A listed configuration plus the host's two independent startability answers.
+    """A listed configuration plus the host's live startability answer.
 
-    `startable` is the receipt-gated answer: an operator's own Start control
-    gates on it, and it is the same answer a real start door acts on.
-    `structurally_startable` asks only whether a factory is registered,
-    available, and declares the capability, with no live evidence asked at
-    all -- the live provider canary's own discovery reads that one, because it
-    exists to produce the evidence `startable` is missing and could never find
-    a vector to probe through a question that already requires the evidence.
+    `startable` is the answer a real start door acts on: a factory
+    registered for this executor, the model registry still pointing at this
+    exact configuration hash, and live receipt evidence, all three.
+    `structurally_startable` asks only the first of those, with no live
+    evidence asked at all -- the live provider canary's own discovery reads
+    `startable` and this one apart, because between them they are exactly the
+    evidence a canary's own run could still produce. `not_startable_reason`
+    names whichever of the three a start would meet first:
+    `agent-executor-binding-unavailable` (no factory), `model-not-registered`
+    (a superseded or never-registered model), or `provider-probe-receipt-missing`
+    (everything else holds, only live evidence is missing or stale).
     `startable` cannot hold without `structurally_startable`.
     """
 
     startable: bool
     structurally_startable: bool
     not_startable_reason: (
-        Literal["agent-executor-binding-unavailable", "provider-probe-receipt-missing"]
+        Literal[
+            "agent-executor-binding-unavailable",
+            "model-not-registered",
+            "provider-probe-receipt-missing",
+        ]
         | None
     )
 
@@ -268,15 +281,23 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
                 "agent configuration startability cannot hold without its own "
                 "structural startability"
             )
-        expected_reason = (
-            None
-            if self.startable
-            else "agent-executor-binding-unavailable"
-            if not self.structurally_startable
-            else "provider-probe-receipt-missing"
-        )
-        if self.not_startable_reason != expected_reason:
+        if self.startable != (self.not_startable_reason is None):
             raise ValueError("agent configuration startability and reason disagree")
+        if (
+            not self.structurally_startable
+            and self.not_startable_reason != "agent-executor-binding-unavailable"
+        ):
+            raise ValueError(
+                "a structurally unavailable configuration must carry its own reason"
+            )
+        if (
+            self.structurally_startable
+            and self.not_startable_reason == "agent-executor-binding-unavailable"
+        ):
+            raise ValueError(
+                "a structurally startable configuration cannot carry the "
+                "executor-unavailable reason"
+            )
         return self
 
 
@@ -688,6 +709,29 @@ class WorkflowGraphResourceV3(ApiModel):
         return self
 
 
+class WorkflowRevisionProvenanceResource(ApiModel):
+    """Where a revision's bytes first entered the catalog from, as it was then.
+
+    Every field was true at that intake: which source delivered the bytes, out
+    of which commit, at which path, and when. Where that source points *now* is
+    absent on purpose -- a later connect may move it, and answering an old
+    delivery with today's repository would name one that never carried these
+    bytes. The source travels as its public reference, never as the durable id
+    the store keeps. A revision no definition source delivered carries no
+    provenance at all rather than empty strings.
+    """
+
+    source: str = Field(
+        pattern=PUBLIC_SOURCE_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_DEFINITION_SOURCE_REFERENCE_CHARACTERS,
+    )
+    source_commit: str = Field(pattern=SOURCE_COMMIT_PATTERN)
+    source_path: str = Field(
+        min_length=1, max_length=MAXIMUM_REPOSITORY_PATH_CHARACTERS
+    )
+    intaken_at: str = Field(pattern=RECORDED_AT_PATTERN)
+
+
 class WorkflowRevisionSummaryResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
@@ -696,6 +740,7 @@ class WorkflowRevisionDetailResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
     graph: WorkflowGraphResourceV3
+    provenance: WorkflowRevisionProvenanceResource | None = None
 
 
 class CatalogNameResolutionResource(ApiModel):
@@ -836,6 +881,7 @@ class WorkflowRevisionSummaryResourceV2(ApiModel):
     not_executable_reason: str | None
     name: str
     description: str | None
+    provenance: WorkflowRevisionProvenanceResource | None = None
 
     @model_validator(mode="after")
     def validate_reason_shape(self) -> WorkflowRevisionSummaryResourceV2:
