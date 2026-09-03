@@ -161,7 +161,8 @@ function catalogRevision(index: number): WorkflowRevisionSummary {
     executable: true,
     not_executable_reason: null,
     name: `wf${index}`,
-    description: "build"
+    description: "build",
+    provenance: null
   };
 }
 

@@ -20,6 +20,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    MAXIMUM_PUBLIC_DEFINITION_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
@@ -31,6 +32,7 @@ from atelier2.api.references import (
     PUBLIC_SOURCE_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
+    SOURCE_COMMIT_PATTERN,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -52,6 +54,9 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_REPOSITORY_PATH_CHARACTERS,
 )
 from atelier2.contracts.host_configuration import (
     EXACT_MODEL_ID_PATTERN,
@@ -689,6 +694,29 @@ class WorkflowGraphResourceV3(ApiModel):
         return self
 
 
+class WorkflowRevisionProvenanceResource(ApiModel):
+    """Where a revision's bytes first entered the catalog from, as it was then.
+
+    Every field was true at that intake: which source delivered the bytes, out
+    of which commit, at which path, and when. Where that source points *now* is
+    absent on purpose -- a later connect may move it, and answering an old
+    delivery with today's repository would name one that never carried these
+    bytes. The source travels as its public reference, never as the durable id
+    the store keeps. A revision no definition source delivered carries no
+    provenance at all rather than empty strings.
+    """
+
+    source: str = Field(
+        pattern=PUBLIC_SOURCE_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_DEFINITION_SOURCE_REFERENCE_CHARACTERS,
+    )
+    source_commit: str = Field(pattern=SOURCE_COMMIT_PATTERN)
+    source_path: str = Field(
+        min_length=1, max_length=MAXIMUM_REPOSITORY_PATH_CHARACTERS
+    )
+    intaken_at: str = Field(pattern=RECORDED_AT_PATTERN)
+
+
 class WorkflowRevisionSummaryResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
@@ -697,6 +725,7 @@ class WorkflowRevisionDetailResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
     graph: WorkflowGraphResourceV3
+    provenance: WorkflowRevisionProvenanceResource | None = None
 
 
 class CatalogNameResolutionResource(ApiModel):
@@ -837,6 +866,7 @@ class WorkflowRevisionSummaryResourceV2(ApiModel):
     not_executable_reason: str | None
     name: str
     description: str | None
+    provenance: WorkflowRevisionProvenanceResource | None = None
 
     @model_validator(mode="after")
     def validate_reason_shape(self) -> WorkflowRevisionSummaryResourceV2:

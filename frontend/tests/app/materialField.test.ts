@@ -107,6 +107,7 @@ function detail(orders = [portionsOrder]): WorkflowRevisionDetail {
   return {
     workflow_revision_hash: revisionHash,
     document_base64: "YQ==",
+    provenance: null,
     graph: {
       workflow_format_version: 3,
       executable: true,
@@ -164,7 +165,8 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
         executable: true,
         not_executable_reason: null,
         name: workflowName,
-        description: null
+        description: null,
+        provenance: null
       }],
       next_after_revision_hash: null
     })),

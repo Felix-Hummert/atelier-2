@@ -40,6 +40,7 @@ export function workflowRevision(): WorkflowRevisionDetail {
   return {
     workflow_revision_hash: revisionHash,
     document_base64: "YQ==",
+    provenance: null,
     graph: {
       workflow_format_version: 3,
       executable: true,

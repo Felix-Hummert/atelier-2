@@ -222,11 +222,11 @@ bytes so a later review can identify documentation drift.
 Production crash tests replace the H0 effect, unknown, C1, C2, C3, and
 concurrency simulations, so the exploratory probe is no longer retained.
 
-Until a named maturity, the product does not promise store compatibility.
-[#16 comment 5307892458](https://github.com/FlexOr2/atelier-2/issues/16#issuecomment-5307892458)
-rules that preserving hops, compatibility layers, and keeping old store shapes
-openable are unnecessary while the store is a prototype. Runtime still refuses
-every predecessor. The offline migrate command is the one exception: an exact
+[docs/PRODUCT.md](../PRODUCT.md) § Stage: prototype owns why the product does
+not promise store compatibility: preserving hops, compatibility layers, and
+keeping old store shapes openable are not owed. Runtime still refuses every
+predecessor. The offline migrate command is the one exception, and it is this
+record's own technical decision: an exact
 store on any source version `schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder
 still names is raised to the current schema one published step at a time,
 preserving every product row. Each step is either an additive table home

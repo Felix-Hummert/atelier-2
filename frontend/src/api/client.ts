@@ -12,6 +12,9 @@ import type {
 } from "../lib/mutationJournal";
 
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
+const recordedAtStamp = z
+  .string()
+  .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
 const standardBase64 = z
   .string()
   .refine(
@@ -171,6 +174,22 @@ const workflowGraphV3Schema = z
   .strict();
 
 /**
+ * Where a revision's bytes first entered the catalog from, as it was then --
+ * mirrors `WorkflowRevisionProvenanceResource`. The source travels as its
+ * public `source1.` reference, never the durable id the store keeps, and
+ * every field is an intake-time fact: where that source points *now* is
+ * absent on purpose (see the Python resource's docstring).
+ */
+const workflowRevisionProvenanceSchema = z
+  .object({
+    source: z.string().regex(/^source1\.[A-Za-z0-9_-]+$/).max(94),
+    source_commit: z.string().regex(/^[0-9a-f]{40,64}$/),
+    source_path: z.string().min(1).max(1_024),
+    intaken_at: recordedAtStamp,
+  })
+  .strict();
+
+/**
  * The cockpit asks for the described listing, because a picker has to offer a
  * name rather than a hash. These fields mirror `WorkflowRevisionSummaryResourceV2`
  * in the frozen document and `servedVocabulary.test.ts` holds them to it: the
@@ -185,6 +204,7 @@ export const workflowRevisionSummarySchema = z
     not_executable_reason: z.string().nullable(),
     name: z.string(),
     description: z.string().nullable(),
+    provenance: workflowRevisionProvenanceSchema.nullable().optional(),
   })
   .strict();
 
@@ -193,6 +213,7 @@ export const workflowRevisionDetailSchema = z
     workflow_revision_hash: sha256,
     document_base64: standardBase64,
     graph: workflowGraphV3Schema,
+    provenance: workflowRevisionProvenanceSchema.nullable().optional(),
   })
   .strict();
 
@@ -226,9 +247,6 @@ const publicSourceReference = z
   .string()
   .regex(/^source1\.[A-Za-z0-9_-]+$/)
   .max(56);
-const recordedAtStamp = z
-  .string()
-  .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
 
 export const projectSourceResourceSchema = z
   .object({

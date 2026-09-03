@@ -338,6 +338,7 @@ describe("the run view shows panel chrome while node detail is still arriving", 
       getWorkflowRevision: vi.fn(async () => ({
         workflow_revision_hash: digest,
         document_base64: "YQ==",
+        provenance: null,
         graph: {
           workflow_format_version: 3 as const,
           executable: true as const,
