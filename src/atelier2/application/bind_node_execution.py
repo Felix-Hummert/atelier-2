@@ -269,6 +269,19 @@ def _bound_revisions_of(
     `agent_configuration` stays absent here: a V3 node names its agent by role,
     and which configuration that role reached is the run's binding matrix, not a
     reference this document declared.
+
+    `tool` carries at most the node's exec-shaped grant. A node may pin a second,
+    effect-shaped grant (`run-project-verification` plus `push-atelier-commit` or
+    `open-pr`, #1101) alongside it, but that second grant is never in the
+    resolution this reads under the authored `tools` field: `evaluate_executability.py`
+    (`EFFECT_SHAPED_TOOL_RESOLUTION_FIELD`) renames its resolved site to a
+    synthesized field the moment a node pins two, so the durable
+    node-execution-request/v3 this builds keeps carrying only the one exec-shaped
+    id it always has -- "no schema hop" (#1101 plan review). The effect-shaped
+    grant is not lost, only not here: it stays frozen in the run configuration's
+    own resolutions for the run's record, and is read back straight from the
+    immutable workflow revision when its effect is prepared
+    (`agent_effect_grants.py`).
     """
     return BoundNodeRevisions(
         profile=resolution.optional_revision("profile"),
@@ -287,10 +300,16 @@ def _single(
     """The one revision a single-valued bound field carries, or a named refusal.
 
     `skills` and `tools` are authored sequences while ADR 0006's request binds one
-    resolved id each. A node declaring more than one cannot be written down, and
-    the answer is its count rather than a quieter request: binding fewer would run
-    an agent under capabilities its author declared, and the receipt would carry
-    no trace of the ones that went missing.
+    resolved id each. For `tools` this sees at most one entry even when a node
+    pins two grants together: the exec-shaped one arrives under the authored
+    field, and the effect-shaped one never does, because `evaluate_executability.py`
+    renamed its resolved site off `tools` before this ran (see `_bound_revisions_of`).
+    So the refusal below still fires -- naming its count rather than quietly
+    narrowing -- but only for what this contract never admits: two grants of one
+    shape (already refused earlier, at start) or any other authoring mistake this
+    reading would otherwise silently drop. Binding fewer would run an agent under
+    capabilities its author declared, and the receipt would carry no trace of the
+    ones that went missing.
     """
     if len(revisions) > 1:
         raise NodeExecutionBindingUnsupported(kind, len(revisions))

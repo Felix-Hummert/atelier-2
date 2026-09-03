@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from atelier2.contracts.artifacts import Artifact
+from atelier2.contracts.artifacts import Artifact, ArtifactHash
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 
@@ -33,7 +33,19 @@ class ArtifactExisting:
 type PublishArtifactResult = (
     ArtifactCreated | ArtifactExisting | DurableWriteUnavailable | DurableStateCorrupt
 )
+type ReadArtifactResult = Artifact | DurableStateCorrupt | None
 
 
 class ArtifactPublisher(Protocol):
     def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult: ...
+
+
+class ArtifactReader(Protocol):
+    """The bytes one address names, for a caller holding nothing but the address.
+
+    Reading is its own protocol because it is its own decision: publication
+    writes under a transaction it must not share with a lookup, and a caller
+    that only reads should not be handed the write.
+    """
+
+    def read_artifact(self, artifact_hash: ArtifactHash) -> ReadArtifactResult: ...

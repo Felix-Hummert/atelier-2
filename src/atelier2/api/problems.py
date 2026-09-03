@@ -370,6 +370,16 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Submit exact bytes for a safe closed workflow graph.",
     ),
     **_artifact_problems(),
+    "invalid-artifact-hash": ProblemDefinition(
+        400,
+        "Invalid artifact hash",
+        "Name an artifact by the exact address its publication answered.",
+    ),
+    "artifact-not-found": ProblemDefinition(
+        404,
+        "Artifact not found",
+        "Publish the exact bytes before reading them back under their address.",
+    ),
     **_schema_document_problems(),
     "schema-revision-collision": ProblemDefinition(
         409,

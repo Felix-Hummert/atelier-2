@@ -67,6 +67,8 @@ WORKFLOW_DOCUMENT_GRAMMAR_SCOPE = (
     "this build executes the result. Each of those is refused by its own name when "
     "the document is published."
 )
+ARTIFACTS_PATH = API_PREFIX + "/artifacts"
+ARTIFACT_PATH = ARTIFACTS_PATH + "/{artifact_hash}"
 EVENT_PATH = API_PREFIX + "/runs/{public_ref}/events"
 ATTENTION_EVENT_PATH = API_PREFIX + "/events"
 CANCELLATION_PATH = (
@@ -142,10 +144,16 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/artifacts", "post"): (
+    (ARTIFACTS_PATH, "post"): (
         *ARTIFACT_PROBLEM_CODES,
         "unsupported-media-type",
         "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (ARTIFACT_PATH, "get"): (
+        "invalid-artifact-hash",
+        "artifact-not-found",
         "durable-state-corrupt",
         "internal-error",
     ),
@@ -990,6 +998,10 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         "type": "string",
         "pattern": REVISION_HASH_PATTERN,
     }
+    components["ArtifactHash"] = {
+        "type": "string",
+        "pattern": SHA256_HASH_PATTERN,
+    }
     components["AgentAttemptId"] = {
         "type": "string",
         "pattern": SHA256_HASH_PATTERN,
@@ -1068,6 +1080,7 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
             ),
             (EVENT_PATH, "get", "public_ref", "path"),
         ),
+        "ArtifactHash": ((ARTIFACT_PATH, "get", "artifact_hash", "path"),),
         "RevisionHash": (
             (
                 API_PREFIX + "/workflow-revisions",
