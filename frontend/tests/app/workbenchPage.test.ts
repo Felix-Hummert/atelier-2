@@ -773,13 +773,54 @@ describe("the workbench conductor conversation", () => {
       const { screen } = testingLibrary;
       await screen.findByRole("heading", { name: "Workbench" });
 
-      await screen.findByText(workbenchPageCopy.composerHintUnbound(conductorRole));
-      expect(
-        screen.getByText(workbenchPageCopy.emptyDescriptionUnbound(conductorRole)).isConnected
-      ).toBe(true);
+      await screen.findByText(workbenchPageCopy.emptyDescriptionUnbound(conductorRole));
       expect(screen.getByRole("link", { name: workbenchPageCopy.openSettings }).isConnected).toBe(
         true
       );
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+
+      // The empty room's own card already names the reason: HEART's "a state
+      // is shown, never restated" leaves the composer hint silent here
+      // rather than repeating the same sentence a second time on one screen
+      // (#1103).
+      expect(document.querySelector(".composer-hint")).toBeNull();
+    });
+
+    it("names the unbound role in the composer hint once a message already turned the room away from its empty card", async () => {
+      const workflowResolution = {
+        display_name: "conductor",
+        lineage_id: "7".repeat(64),
+        workflow_revision_hash: conductorRevisionHash,
+        revision_number: 1
+      };
+      openChat({
+        ...unboundOverrides(),
+        // The connection's first read cannot be told apart from a real
+        // outage yet ("unreadable"), so the composer is not locked and a
+        // message can land; only the *second* read -- run again once the
+        // connection recovers -- resolves the real "unbound" reason.
+        getRevisionByName: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("network hiccup"))
+          .mockResolvedValue(workflowResolution)
+      });
+      const { screen } = testingLibrary;
+      await screen.findByRole("heading", { name: "Workbench" });
+      await screen.findByText(conductorChatCopy.connectionUnknown);
+
+      await say("Is anyone there?");
+
+      reportConnectionLost();
+      reportConnectionRestored();
+
+      await screen.findByText(workbenchPageCopy.composerHintUnbound(conductorRole));
+      // The conversation already holds turns, so the empty room's card never
+      // mounts here -- the composer hint is the one place left standing to
+      // carry the reason, and it names it on its own.
+      expect(document.querySelector(".workbench-empty")).toBeNull();
       expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
         "disabled",
         true

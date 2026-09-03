@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { catalogPageCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { runPageCopy } from "../../src/lib/runPageCopy";
@@ -18,6 +19,12 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
  * locally it is skipped unless that variable names where the images go.
  */
 const shotDir = process.env.ATELIER2_SHOT_DIR ?? "";
+
+// The reply text is `CONDUCTOR_FAKE_ANSWER` in `tests/e2e/serve_cockpit.py`,
+// asserted verbatim so the words a human reads are the proof (mirrors
+// `workbench-conductor.spec.ts`).
+const CONDUCTOR_FAKE_ANSWER =
+  "Nothing started: the workbench probe only asked for an answer.";
 
 test.skip(shotDir === "", "no shot directory named");
 
@@ -291,9 +298,10 @@ test("captures every surface at both widths", async ({ page }) => {
   expect(seeded.ok()).toBeTruthy();
   await page.reload();
   await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
+  await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible();
   await page.getByLabel(workbenchPageCopy.composerLabel).fill("Finish the preview door and fix the wait bug, in parallel.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
-  await expect(page.locator(".conversation-line-house")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 60_000 });
   await shoot(page, "workbench-said");
 
   await page.goto("/atelier/catalog/iterate-code");

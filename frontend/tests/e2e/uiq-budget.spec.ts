@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { nodeAriaName } from "../../src/lib/stateMarkCopy";
@@ -468,6 +469,11 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     // restores its already-started run, asynchronously; typing before that
     // settles would either find Send still disabled or race a second run
     // into existence instead of continuing the one from the last viewport.
+    // Send is enabled while the connection is still `reading` too, so the
+    // connected composer hint is the actual signal that resolution finished.
+    await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible({
+      timeout: 20_000
+    });
     await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled({
       timeout: 20_000
     });

@@ -779,7 +779,11 @@
       <p class="composer-hint">{wrapDisplayCopy(connectedComposerHint)}</p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
-    {:else if conductorLink.kind === "unbound"}
+    {:else if conductorLink.kind === "unbound" && conversationTranscript.length > 0}
+      <!-- The empty room's own card already names this exact reason (above,
+           `emptyDescriptionUnbound`) whenever the conversation is empty; this
+           hint only repeats it when that card is not on screen -- the same
+           complementary rule as "not-startable" below (#1103). -->
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHintUnbound(conductorLink.role))}</p>
     {:else if conductorLink.kind === "not-startable" && conversationTranscript.length > 0}
       <!-- The empty room's own card already names this exact reason (below,
