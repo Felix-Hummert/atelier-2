@@ -463,7 +463,7 @@
       {:else if pendingWait === null && graph.state === "ready" && graph.kind === "enum"}
         <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
           {#each graph.values as value (value)}
-            <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide(value); }}>{decisionLabel(value)}</button>
+            <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide(value); }}>{decisionLabel(value, graph.stringTyped)}</button>
           {/each}
         </div>
       {/if}

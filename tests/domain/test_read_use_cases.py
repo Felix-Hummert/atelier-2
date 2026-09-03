@@ -498,7 +498,9 @@ def test_a_wait_answer_schema_classifies_string_for_a_plain_string_schema() -> N
 
     assert isinstance(result, WorkflowRevisionRead)
     assert result.wait_answer_classifications == (
-        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="string", string_typed=True),
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID, kind="string", string_typed=True
+        ),
     )
 
 
@@ -524,7 +526,10 @@ def test_a_wait_answer_schema_classifies_enum_over_string_when_a_schema_names_bo
     assert isinstance(result, WorkflowRevisionRead)
     assert result.wait_answer_classifications == (
         WaitAnswerClassification(
-            node_id=WAIT_NODE_ID, kind="enum", string_typed=True, values=("ship", "hold")
+            node_id=WAIT_NODE_ID,
+            kind="enum",
+            string_typed=True,
+            values=("ship", "hold"),
         ),
     )
 
@@ -575,7 +580,9 @@ def test_a_resolver_answering_a_different_revision_than_pinned_is_not_cached() -
     )
     assert isinstance(correct, WorkflowRevisionRead)
     assert correct.wait_answer_classifications == (
-        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="boolean", string_typed=False),
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID, kind="boolean", string_typed=False
+        ),
     ), (
         "the mismatched resolve must not have cached the stranger's schema under the pinned hash"
     )

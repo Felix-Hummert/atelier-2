@@ -267,6 +267,7 @@ describe("the workbench conductor conversation", () => {
             node_id: "next_message",
             schema: { ref: "message", revision: conductorRevisionHash },
             kind: "string",
+            string_typed: true,
             values: null
           }
         ],
@@ -835,6 +836,7 @@ describe("the workbench is the room the workshop opens on", () => {
             node_id: "approve",
             schema: { ref: "decision", revision: "e".repeat(64) },
             kind: "boolean",
+            string_typed: false,
             values: null
           }
         ],
