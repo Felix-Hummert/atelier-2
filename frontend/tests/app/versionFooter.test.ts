@@ -7,6 +7,7 @@ import { reportConnectionLost, reportConnectionRestored } from "../../src/lib/co
 import { exactLocal } from "../../src/lib/when";
 import { railCopy } from "../../src/lib/railCopy";
 import { reloadPage } from "../../src/lib/pageReload";
+import { resetVersionState } from "../../src/lib/versionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, healthResource } from "../support/cockpitApi";
 
@@ -16,6 +17,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
   reportConnectionRestored();
+  resetVersionState();
   window.history.replaceState(null, "", "/atelier");
 });
 
@@ -44,8 +46,23 @@ describe("the workshop shell's footer names the running serve (#1100)", () => {
   });
 
   it("says nothing about the serve until the loaded version is known", () => {
-    openWorkshop(vi.fn(() => new Promise<never>(() => {})));
+    const { container } = openWorkshop(vi.fn(() => new Promise<never>(() => {})));
 
+    expect(container.querySelector(".serve-footer")).toBeNull();
+  });
+
+  it("records the baseline once recovery's health succeeds after the mount read failed", async () => {
+    const commit = "d".repeat(40);
+    const health = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("restarting"))
+      .mockResolvedValueOnce(healthResource({ source_commit: commit }));
+    openWorkshop(health);
+
+    reportConnectionLost();
+    reportConnectionRestored();
+
+    expect(await screen.findByTitle(commit)).not.toBeNull();
     expect(screen.queryByText(railCopy.newVersionAvailable)).toBeNull();
   });
 

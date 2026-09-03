@@ -1,14 +1,19 @@
 import { get } from "svelte/store";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   loadedVersion,
   newVersionAvailable,
   noteObservedVersion,
-  recordLoadedVersion
+  recordLoadedVersion,
+  resetVersionState
 } from "../../src/lib/versionState";
 
 const LOADED = { commit: "a".repeat(40), deployedAt: "2026-08-31T08:00:00Z" };
+
+beforeEach(() => {
+  resetVersionState();
+});
 
 describe("the loaded serve version, compared against later health answers (#1100)", () => {
   it("names the version the page loaded with", () => {
@@ -35,6 +40,13 @@ describe("the loaded serve version, compared against later health answers (#1100
 
     recordLoadedVersion({ commit: "b".repeat(40), deployedAt: "2026-09-01T08:00:00Z" });
 
+    expect(get(newVersionAvailable)).toBe(false);
+  });
+
+  it("adopts the first observed version as the baseline when the mount read never landed one", () => {
+    noteObservedVersion(LOADED);
+
+    expect(get(loadedVersion)).toEqual(LOADED);
     expect(get(newVersionAvailable)).toBe(false);
   });
 });

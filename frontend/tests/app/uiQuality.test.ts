@@ -174,8 +174,12 @@ async function railShowsOwnedPseudoLocale(): Promise<void> {
   }
   expect(unowned, `unowned rail copy escapes the pseudo-locale wrap: ${unowned.join("; ")}`).toEqual([]);
 
+  // Titles never live inside the decorative aria-hidden glyphs, only on the
+  // footer's own data (the full commit hash); exempting the wider
+  // RAIL_DATA_SUBTREE here would also wave through a stray title an
+  // aria-hidden wrapper happened to carry elsewhere.
   const unwrappedTitles = [...rail.querySelectorAll("[title]")]
-    .filter((element) => element.closest(RAIL_DATA_SUBTREE) == null)
+    .filter((element) => element.closest(".serve-footer:not(.new-version)") == null)
     .map((element) => element.getAttribute("title") ?? "")
     .filter((title) => title !== "" && !isPseudoLocaleWrapped(title));
   expect(unwrappedTitles, `unwrapped rail title: ${unwrappedTitles.join("; ")}`).toEqual([]);

@@ -120,7 +120,7 @@
   }
 
   /* The one state that does earn a control: an operator confirms the
-     reload instead of the page taking the decision for them (REQ-UIQ-10). */
+     reload instead of the page taking the decision for them (#1100). */
   .serve-footer.new-version {
     display: flex;
     align-items: center;

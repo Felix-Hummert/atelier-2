@@ -44,7 +44,7 @@
     const stopWatchingRecovery = watchConnectionRecovery((signal) => cockpitApi.health(signal));
     // A redeploy the operator lived through (#1100): read health once on the
     // same edge every other room already reloads its own data on, and let
-    // the footer say so instead of reloading on its own (REQ-UIQ-10).
+    // the footer say so instead of reloading on its own.
     const stopWatchingVersion = onConnectionRecovered(() => {
       void cockpitApi.health().then((health) => noteObservedVersion(servedVersion(health)), () => {});
     });

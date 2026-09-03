@@ -7,7 +7,7 @@ import { get, writable, type Readable } from "svelte/store";
  * `loadedVersion`, and a later answer -- read once after a reconnect
  * (`onConnectionRecovered`) -- is compared against it by `noteObservedVersion`.
  * A mismatch means the serve behind the page changed since it loaded, and the
- * footer says so instead of silently reloading (REQ-UIQ-10): a confirmed page
+ * footer says so instead of silently reloading (#1100): a confirmed page
  * never disappears out from under the operator's hands.
  */
 export interface ServeVersion {
@@ -37,10 +37,35 @@ export function recordLoadedVersion(version: ServeVersion): void {
   newVersionAvailableStore.set(false);
 }
 
-/** Compares a freshly observed health answer against the loaded version. */
+/**
+ * Compares a freshly observed health answer against the loaded version.
+ *
+ * A page opened while the serve was mid-restart never got a baseline at
+ * mount time (App.svelte's own health read failed silently). This later
+ * answer, once the connection recovers, is that page's first real look at
+ * the serve -- its provenance, not yet a comparison -- so it becomes the
+ * loaded version instead of being swallowed as a mismatch nobody ever saw
+ * load.
+ */
 export function noteObservedVersion(version: ServeVersion): void {
   const loaded = get(loadedVersionStore);
-  if (loaded !== null && loaded.commit !== version.commit) {
+  if (loaded === null) {
+    recordLoadedVersion(version);
+    return;
+  }
+  if (loaded.commit !== version.commit) {
     newVersionAvailableStore.set(true);
   }
+}
+
+/**
+ * Clears both stores back to their start-of-session shape.
+ *
+ * The stores above are module-level, so a test file that renders `App` more
+ * than once needs this between cases -- a real page load already starts
+ * from these same defaults, so production code never calls it.
+ */
+export function resetVersionState(): void {
+  loadedVersionStore.set(null);
+  newVersionAvailableStore.set(false);
 }
