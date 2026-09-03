@@ -28,6 +28,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import (
     action_continuation_workflow_id_for,
+    answer_workflow_id_for,
     effect_workflow_id_for,
     node_workflow_id_for,
     reconcile_workflow_id_for,
@@ -43,8 +44,19 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
 )
-from atelier2.contracts.effects import LogicalEffectKey, ReconcileCommandId
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.effects import (
+    EFFECT_INTENT_VERSION_RECONCILING,
+    EFFECT_INTENT_VERSION_WAITING,
+    EffectIntentState,
+    LogicalEffectKey,
+    ReconcileCommandId,
+    ReconcileCommandState,
+)
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    WaitAnswerState,
+    logical_effect_key_for_node,
+)
 from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
@@ -68,7 +80,10 @@ decides that, this tuple only ever names the plain word.
 # them, to answer whether a workflow is still one DBOS itself owes a next
 # step. `atelier2.adapters.dbos`'s other readers of `workflow_status` each
 # keep their own narrower copy for a question this one does not answer --
-# whether a workflow *raised*, not whether it is still live.
+# whether a workflow *raised*, not whether it is still live. DBOS takes its
+# recovery snapshot at launch, and `_insert_workflow_status` does not update an
+# existing version; therefore this DBOS-owned table permits only the narrow,
+# conditional version update in `retag_stranded_continuations` below.
 _dbos_workflow_status = sa.table(
     "workflow_status",
     sa.column("workflow_uuid"),
@@ -77,6 +92,254 @@ _dbos_workflow_status = sa.table(
 )
 LIVE_DRIVER_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
 """The DBOS statuses under which a workflow is still owed its next step."""
+_RETAGGABLE_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED")
+"""The stranded continuation statuses DBOS can recover after their retag."""
+
+
+def retag_stranded_continuations(engine: Engine, application_version: str) -> None:
+    """Move safely identified parked continuations to this launch's version.
+
+    The scans only make a finite candidate list. Every predicate that grants
+    ownership is repeated under that candidate's canonical write transaction,
+    where the version compare-and-swap is the sole write to DBOS state.
+
+    The deployment/caller has already stopped the old runtime: this guard can
+    refuse a row current launch already owns, but DBOS keeps another process's
+    active set in memory and this store cannot observe it.
+    """
+
+    if not sa.inspect(engine).has_table("workflow_status"):
+        return
+    with engine.connect() as connection:
+        answer_candidates = _stranded_answer_workflow_ids(
+            connection, application_version
+        )
+        reconciliation_candidates = _stranded_reconciliation_workflow_ids(
+            connection, application_version
+        )
+    for workflow_id in answer_candidates:
+        with canonical_write_transaction(engine) as connection:
+            _retag_stranded_answer(connection, workflow_id, application_version)
+    for workflow_id in reconciliation_candidates:
+        with canonical_write_transaction(engine) as connection:
+            _retag_stranded_reconciliation(connection, workflow_id, application_version)
+
+
+def _stranded_answer_workflow_ids(
+    connection: Connection, application_version: str
+) -> tuple[str, ...]:
+    rows = connection.execute(
+        sa.select(wait_answers.c.answer_workflow_id)
+        .select_from(
+            wait_answers.join(runs, wait_answers.c.run_id == runs.c.run_id).join(
+                _dbos_workflow_status,
+                _dbos_workflow_status.c.workflow_uuid
+                == wait_answers.c.answer_workflow_id,
+            )
+        )
+        .where(
+            runs.c.state == RunState.WAITING_INPUT.value,
+            wait_answers.c.state == WaitAnswerState.PENDING.value,
+            wait_answers.c.state_version == 0,
+            _dbos_workflow_status.c.application_version != application_version,
+            _dbos_workflow_status.c.status.in_(_RETAGGABLE_WORKFLOW_STATUSES),
+        )
+    )
+    return tuple(str(workflow_id) for (workflow_id,) in rows)
+
+
+def _stranded_reconciliation_workflow_ids(
+    connection: Connection, application_version: str
+) -> tuple[str, ...]:
+    rows = connection.execute(
+        sa.select(reconcile_commands.c.command_id)
+        .select_from(
+            reconcile_commands.join(
+                effect_intents,
+                reconcile_commands.c.logical_key == effect_intents.c.logical_key,
+            ).join(runs, effect_intents.c.run_id == runs.c.run_id)
+        )
+        .where(
+            runs.c.state == RunState.WAITING_RECONCILIATION.value,
+            effect_intents.c.state == EffectIntentState.RECONCILING.value,
+            reconcile_commands.c.state == ReconcileCommandState.PENDING.value,
+        )
+    )
+    candidates: list[str] = []
+    for (command_id,) in rows:
+        workflow_id = reconcile_workflow_id_for(ReconcileCommandId(str(command_id)))
+        status = connection.execute(
+            sa.select(
+                _dbos_workflow_status.c.application_version,
+                _dbos_workflow_status.c.status,
+            ).where(_dbos_workflow_status.c.workflow_uuid == workflow_id)
+        ).one_or_none()
+        if (
+            status is not None
+            and str(status.application_version) != application_version
+            and str(status.status) in _RETAGGABLE_WORKFLOW_STATUSES
+        ):
+            candidates.append(workflow_id)
+    return tuple(candidates)
+
+
+def _retag_stranded_answer(
+    connection: Connection, workflow_id: str, application_version: str
+) -> bool:
+    record = (
+        connection.execute(
+            sa.select(
+                runs.c.run_id,
+                runs.c.revision_hash,
+                runs.c.current_node_id,
+                runs.c.current_round_ordinal,
+                runs.c.state,
+                wait_answers.c.run_id.label("answer_run_id"),
+                wait_answers.c.revision_hash.label("answer_revision_hash"),
+                wait_answers.c.node_id.label("answer_node_id"),
+                wait_answers.c.round_ordinal.label("answer_round_ordinal"),
+                wait_answers.c.node_execution_id,
+                wait_answers.c.answer_workflow_id,
+                wait_answers.c.state.label("answer_state"),
+                wait_answers.c.state_version.label("answer_state_version"),
+            )
+            .select_from(
+                wait_answers.join(runs, wait_answers.c.run_id == runs.c.run_id)
+            )
+            .where(wait_answers.c.answer_workflow_id == workflow_id)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None or str(record["state"]) != RunState.WAITING_INPUT.value:
+        return False
+    run_id = RunId(str(record["run_id"]))
+    revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
+    execution = NodeExecutionId.for_node(
+        run_id,
+        revision_hash,
+        str(record["current_node_id"]),
+        int(record["current_round_ordinal"]),
+    )
+    if (
+        str(record["answer_state"]) != WaitAnswerState.PENDING.value
+        or int(record["answer_state_version"]) != 0
+        or str(record["answer_run_id"]) != run_id.value
+        or str(record["answer_revision_hash"]) != revision_hash.value
+        or str(record["answer_node_id"]) != str(record["current_node_id"])
+        or int(record["answer_round_ordinal"]) != int(record["current_round_ordinal"])
+        or str(record["node_execution_id"]) != execution.value
+        or str(record["answer_workflow_id"]) != workflow_id
+        or answer_workflow_id_for(execution) != workflow_id
+    ):
+        return False
+    return _retag_workflow_status(connection, workflow_id, application_version)
+
+
+def _retag_stranded_reconciliation(
+    connection: Connection, workflow_id: str, application_version: str
+) -> bool:
+    record = (
+        connection.execute(
+            sa.select(
+                runs.c.run_id,
+                runs.c.revision_hash,
+                runs.c.current_node_id,
+                runs.c.current_round_ordinal,
+                runs.c.state,
+                effect_intents.c.logical_key,
+                effect_intents.c.run_id.label("intent_run_id"),
+                effect_intents.c.workflow_revision_hash.label("intent_revision_hash"),
+                effect_intents.c.state.label("intent_state"),
+                effect_intents.c.state_version.label("intent_state_version"),
+                effect_intents.c.reconciliation_owner_command_id,
+                reconcile_commands.c.command_id,
+                reconcile_commands.c.logical_key.label("command_logical_key"),
+                reconcile_commands.c.expected_intent_version,
+                reconcile_commands.c.state.label("command_state"),
+            )
+            .select_from(
+                effect_intents.join(
+                    runs, effect_intents.c.run_id == runs.c.run_id
+                ).join(
+                    reconcile_commands,
+                    reconcile_commands.c.command_id
+                    == effect_intents.c.reconciliation_owner_command_id,
+                )
+            )
+            .where(
+                reconcile_commands.c.command_id
+                == effect_intents.c.reconciliation_owner_command_id
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for candidate in record:
+        command_id = ReconcileCommandId(str(candidate["command_id"]))
+        if reconcile_workflow_id_for(command_id) != workflow_id:
+            continue
+        if str(candidate["state"]) != RunState.WAITING_RECONCILIATION.value:
+            continue
+        run_id = RunId(str(candidate["run_id"]))
+        revision_hash = WorkflowRevisionHash(str(candidate["revision_hash"]))
+        logical_key = logical_effect_key_for_node(
+            run_id,
+            revision_hash,
+            str(candidate["current_node_id"]),
+            int(candidate["current_round_ordinal"]),
+        )
+        if (
+            str(candidate["logical_key"]) != logical_key.value
+            or str(candidate["intent_run_id"]) != run_id.value
+            or str(candidate["intent_revision_hash"]) != revision_hash.value
+            or str(candidate["intent_state"]) != EffectIntentState.RECONCILING.value
+            or int(candidate["intent_state_version"])
+            != EFFECT_INTENT_VERSION_RECONCILING.value
+            or str(candidate["reconciliation_owner_command_id"]) != command_id.value
+            or str(candidate["command_logical_key"]) != logical_key.value
+            or int(candidate["expected_intent_version"])
+            != EFFECT_INTENT_VERSION_WAITING.value
+            or str(candidate["command_state"]) != ReconcileCommandState.PENDING.value
+        ):
+            continue
+        return _retag_workflow_status(connection, workflow_id, application_version)
+    return False
+
+
+def _retag_workflow_status(
+    connection: Connection, workflow_id: str, application_version: str
+) -> bool:
+    workflow_status = (
+        connection.execute(
+            sa.select(
+                _dbos_workflow_status.c.application_version,
+                _dbos_workflow_status.c.status,
+            ).where(_dbos_workflow_status.c.workflow_uuid == workflow_id)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if (
+        workflow_status is None
+        or str(workflow_status["application_version"]) == application_version
+        or str(workflow_status["status"]) not in _RETAGGABLE_WORKFLOW_STATUSES
+        or live_driver_workflow_ids(connection, (workflow_id,), application_version)
+    ):
+        return False
+    observed_version = str(workflow_status["application_version"])
+    observed_status = str(workflow_status["status"])
+    updated = connection.execute(
+        _dbos_workflow_status.update()
+        .where(
+            _dbos_workflow_status.c.workflow_uuid == workflow_id,
+            _dbos_workflow_status.c.application_version == observed_version,
+            _dbos_workflow_status.c.status == observed_status,
+            _dbos_workflow_status.c.status.in_(_RETAGGABLE_WORKFLOW_STATUSES),
+        )
+        .values(application_version=application_version)
+    )
+    return updated.rowcount == 1
 
 
 def live_driver_workflow_ids(
