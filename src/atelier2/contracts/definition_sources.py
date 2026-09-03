@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
+from atelier2.contracts.catalog_v3 import CatalogActivatedAt
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 
@@ -448,3 +449,34 @@ class SourceIntake:
             raise TypeError("a published revision hash must use its typed contract")
         if not isinstance(self.source_commit, SourceCommit):
             raise TypeError("a source commit must use its typed contract")
+
+
+@dataclass(frozen=True)
+class RevisionProvenance:
+    """Where one published revision's bytes first came in from, as it was then.
+
+    Beside the identity, never part of it (ADR 0007): the same bytes stay one
+    revision however many sources carry them, and this says which delivery
+    brought them into the catalog first.
+
+    Only what was true at that intake. The source's location and ref are
+    deliberately absent: they are configuration a later connect may change, so
+    carrying today's pair beside an old commit would name a repository that
+    never delivered these bytes. Which repository a source stands for now is
+    the source's own question, and answering it is a later slice.
+    """
+
+    source_id: DefinitionSourceId
+    commit: SourceCommit
+    path: RepositoryPath
+    intaken_at: CatalogActivatedAt
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_id, DefinitionSourceId):
+            raise TypeError("a source id must use its typed contract")
+        if not isinstance(self.commit, SourceCommit):
+            raise TypeError("a source commit must use its typed contract")
+        if not isinstance(self.path, RepositoryPath):
+            raise TypeError("a repository path must use its typed contract")
+        if not isinstance(self.intaken_at, CatalogActivatedAt):
+            raise TypeError("an intake instant must use its typed contract")

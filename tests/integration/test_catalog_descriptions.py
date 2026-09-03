@@ -190,13 +190,13 @@ def test_an_enriched_page_stops_at_its_derived_bound_and_pages_on(
 
     assert isinstance(page, DescribedWorkflowRevisionPage)
     assert len(page.items) == 1
-    assert page.items[0].revision.revision_hash.value == published[0]
+    assert page.items[0].projection.revision.revision_hash.value == published[0]
     assert page.next_after == WorkflowRevisionHash(published[0])
 
     rest = queries.list_described_workflow_revisions(page.next_after, 50, budget)
 
     assert isinstance(rest, DescribedWorkflowRevisionPage)
-    assert rest.items[0].revision.revision_hash.value == published[1]
+    assert rest.items[0].projection.revision.revision_hash.value == published[1]
 
 
 @pytest.mark.parametrize(
@@ -236,7 +236,7 @@ def test_each_bound_stops_a_page_on_its_own_and_pages_through_to_the_end(
         page = queries.list_described_workflow_revisions(after, 50, budget)
         assert isinstance(page, DescribedWorkflowRevisionPage)
         assert len(page.items) == 1, "the tight bound admits exactly one row a page"
-        walked.append(page.items[0].revision.revision_hash.value)
+        walked.append(page.items[0].projection.revision.revision_hash.value)
         if page.next_after is None:
             break
         after = page.next_after
@@ -284,7 +284,7 @@ def test_the_frozen_hash_only_listing_still_answers_beside_the_enriched_one(
     assert isinstance(frozen, WorkflowRevisionPage)
     assert isinstance(enriched, DescribedWorkflowRevisionPage)
     assert frozen.revision_hashes == tuple(
-        item.revision.revision_hash for item in enriched.items
+        item.projection.revision.revision_hash for item in enriched.items
     )
 
 
