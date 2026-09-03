@@ -1,16 +1,19 @@
 """Run the configured live provider vectors and leave bounded proof behind.
 
 The served agent-configuration list is the deployment's answer about which
-exact provider/executor/configuration vectors are startable right now --
-the live judgment a start itself would make, computed by the deployment's
-own atomic snapshot (registries, defaults, receipts, everything
-`resolve_start_bindings.py` asks). This client reads that field and derives
-nothing of its own: no local registry fetch, no local cast, no parse of the
-repository's workflow bytes -- only the served answer can never drift from
-what a real start would decide. It then resolves the matching admitted
-workflow, starts one fresh run with the listed configuration hash, and polls
-the public run resource to a terminal state. It owns no provider process and
-opens no store.
+exact provider/executor/configuration vectors are worth a live attempt: one
+the deployment's own snapshot already calls `startable`, or one whose only
+named problem is the receipt this very run would write
+(`not_startable_reason: provider-probe-receipt-missing`). Both answers come
+from the same server-side judgment a start itself makes -- the model
+registry pointer, the executor, and live evidence, all computed once through
+`agent_catalog.py` -- so a superseded revision carries its own distinct
+reason (`model-not-registered`) and is never offered as a vector. This
+client reads those two fields and derives nothing of its own: no local
+registry fetch, no local cast, no parse of the repository's workflow bytes.
+It then resolves the matching admitted workflow, starts one fresh run with
+the listed configuration hash, and polls the public run resource to a
+terminal state. It owns no provider process and opens no store.
 
 Discovery is receipt-neutral: health, the bounded configuration list, and all
 distinct admitted workflow names must resolve before any vector becomes an
@@ -70,7 +73,10 @@ from atelier2.api.wire.resources import (
     RunResourceV3,
 )
 from atelier2.contracts.agent_transcripts import TranscriptEventKind
-from atelier2.contracts.agents import AgentConfigurationRevisionHash
+from atelier2.contracts.agents import (
+    AgentConfigurationNotStartableReason,
+    AgentConfigurationRevisionHash,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.provider_probe_receipts import (
     _SOURCE_COMMIT as PROVIDER_PROBE_SOURCE_COMMIT_FORMAT,
@@ -514,28 +520,29 @@ def _configured_vectors(
             ),
             "agent-configuration page",
         )
-        # `startable`: the live judgment a start itself would make for this
-        # exact configuration (registry pointer, receipt evidence, and
-        # everything else `resolve_start_bindings.py` asks), computed by the
-        # deployment's own snapshot. Discovery reads this field and derives
-        # nothing of its own -- no local registry fetch, no local cast, no
-        # parse of the repository's workflow bytes -- so it can never drift
-        # from what a real start would decide.
-        #
-        # Named gap: `startable` is receipt-gated
-        # (`ports/agent_executions.py::ProviderProbeReceiptGate.is_proven`)
-        # and invalidates on every redeploy's new `source_commit`. A real
-        # start still admits a `reprobe_exempt` canary workflow through that
-        # gate (`resolve_start_bindings.resolve_start_bindings`), but this
-        # listing field does not encode that exemption, so a redeploy can
-        # make every configuration read `startable: false` here at once --
-        # discovery then finds nothing to reprobe, and the self-healing
-        # property #942 established is lost until an operator (or the
-        # exemption reaching this field) restores it.
+        # A vector is a configuration the deployment's own snapshot already
+        # calls `startable`, or one whose only problem is the receipt this
+        # very run would write (`not_startable_reason ==
+        # provider-probe-receipt-missing`, the exact token
+        # `AgentConfigurationNotStartableReason` owns). A superseded
+        # configuration now carries its own distinct reason
+        # (`model-not-registered`) computed by the same cast lookup a start
+        # makes (`agent_catalog.py` -> `resolve_start_bindings.
+        # configuration_registered`), so it is excluded honestly rather than
+        # offered as though a fresh probe would fix it. Discovery derives
+        # nothing of its own from either field -- no local registry fetch, no
+        # local cast -- so it can never drift from what a real start would
+        # decide, and a redeploy that invalidates every receipt still leaves
+        # every genuinely registered configuration reprobable.
         vectors.extend(
             vector
             for item in page.items
-            if item.startable and (vector := _canary_vector(item)) is not None
+            if (
+                item.startable
+                or item.not_startable_reason
+                == AgentConfigurationNotStartableReason.PROVIDER_PROBE_RECEIPT_MISSING
+            )
+            and (vector := _canary_vector(item)) is not None
         )
         if len(vectors) > PROVIDER_CANARY_MAXIMUM_VECTORS:
             raise ProviderCanaryDiscoveryFailed(

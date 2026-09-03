@@ -275,15 +275,26 @@ def configuration(
     executor: str = "claude-subscription/v1",
     capability: str = "headless",
     configuration_hash: str = CONFIGURATION_HASH,
-    startable: bool = True,
     structurally_startable: bool = True,
+    model_registered: bool = True,
+    has_valid_receipt: bool = True,
 ) -> dict[str, object]:
+    """A listed item shaped exactly as the server's own precedence computes it.
+
+    Mirrors `AgentConfigurationRevisionListItem`'s fixed order: an
+    unavailable executor refuses first, then a registry the cast would
+    refuse (a superseded revision), then only a missing live receipt --
+    `startable` never needs its own knob, it is `not_startable_reason is None`.
+    """
+
     not_startable_reason = (
-        None
-        if startable
-        else "agent-executor-binding-unavailable"
+        "agent-executor-binding-unavailable"
         if not structurally_startable
+        else "model-not-registered"
+        if not model_registered
         else "provider-probe-receipt-missing"
+        if not has_valid_receipt
+        else None
     )
     return {
         "model": "provider-model",
@@ -293,7 +304,7 @@ def configuration(
         "auth_mode": "subscription",
         "requested_capability": capability,
         "agent_configuration_revision_hash": configuration_hash,
-        "startable": startable,
+        "startable": not_startable_reason is None,
         "structurally_startable": structurally_startable,
         "not_startable_reason": not_startable_reason,
     }
@@ -443,13 +454,89 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     }
 
 
+def test_discovery_reprobes_every_registered_vector_whose_receipt_is_foreign(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """The self-healing property #942 claimed, restored under the amended rule.
+
+    A redeploy invalidates every receipt by `source_commit`: the listing
+    answers `startable: false` for every genuinely registered vector, exactly
+    as it would the morning after -- but its reason is
+    `provider-probe-receipt-missing`, not a superseded registry pointer, so
+    discovery still finds it, still starts it through the exemption, and
+    still writes it a fresh receipt.
+    """
+
+    http = FakeHttp(
+        (
+            configuration(has_valid_receipt=False),
+            configuration(
+                provider="xai",
+                executor="grok-subscription-tools/v1",
+                capability="headless_with_tools",
+                configuration_hash="f" * 64,
+                has_valid_receipt=False,
+            ),
+        ),
+        workflow_directory,
+    )
+    state_directory = tmp_path / "state"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    start_bodies = [
+        body for _method, path, body in http.calls if path == "/runs" and body
+    ]
+    assert len(start_bodies) == 2
+    assert report.attempted == 2
+    assert report.failed == 0
+    receipts = read_receipts(state_directory)
+    assert len(receipts) == 2
+    assert {receipt.result for receipt in receipts} == {ProviderProbeResult.SUCCEEDED}
+
+
+def test_discovery_excludes_a_superseded_configuration_by_its_own_reason(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """A structurally startable but superseded revision is not a vector.
+
+    The listing's own `not_startable_reason` names it `model-not-registered`
+    -- computed by the same cast lookup a start makes -- not
+    `provider-probe-receipt-missing`, so discovery excludes it honestly
+    rather than offering it as though a fresh probe would fix it.
+    """
+
+    superseded_hash = "1" * 64
+    http = FakeHttp(
+        (
+            configuration(configuration_hash=superseded_hash, model_registered=False),
+            configuration(),
+        ),
+        workflow_directory,
+    )
+    state_directory = tmp_path / "state"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.attempted == 1
+    assert report.failed == 0
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.configuration_hash == AgentConfigurationRevisionHash(
+        CONFIGURATION_HASH
+    )
+
+
 def test_the_vector_cap_applies_after_filtering_not_before(
     tmp_path: Path, workflow_directory: Path
 ) -> None:
-    """51 raw candidates, one the service marks not startable: 50 attempts.
+    """51 raw candidates, one superseded (`startable: false`): 50 attempts.
 
     The cap is checked against the filtered vector count, never the raw
-    listing count -- a listing this size with exactly one non-startable
+    listing count -- a listing this size with exactly one superseded
     configuration must attempt every genuine vector, not fail loud over a
     limit it never actually reached.
     """
@@ -458,10 +545,8 @@ def test_the_vector_cap_applies_after_filtering_not_before(
         configuration(configuration_hash=f"{number:064x}")
         for number in range(PROVIDER_CANARY_MAXIMUM_VECTORS)
     )
-    not_startable = configuration(
-        configuration_hash="f" * 64, startable=False, structurally_startable=True
-    )
-    http = FakeHttp((*first_page, not_startable), workflow_directory)
+    superseded = configuration(configuration_hash="f" * 64, model_registered=False)
+    http = FakeHttp((*first_page, superseded), workflow_directory)
     state_directory = tmp_path / "state"
 
     report = execute_provider_canaries(
@@ -571,7 +656,7 @@ def test_discovery_finds_nothing_for_a_vector_the_service_marks_not_startable(
     service's own judgment and derives nothing of its own from it."""
 
     http = FakeHttp(
-        (configuration(startable=False, structurally_startable=False),),
+        (configuration(structurally_startable=False),),
         workflow_directory,
     )
     state_directory = tmp_path / "state"

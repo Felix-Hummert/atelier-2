@@ -1098,6 +1098,9 @@ def test_list_publication_and_start_share_the_current_registry_decision(
         publish_checked_model_registry(
             runtime.engine, ProviderId("anthropic"), (claude,)
         )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("openai"), (sibling_configuration,)
+        )
         workflow = WorkflowRevision(_V3_DOCUMENT)
         _publish_output_schema(runtime)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
@@ -1998,6 +2001,9 @@ def test_published_configurations_are_listed_over_the_api(tmp_path: Path) -> Non
         assert isinstance(
             catalog.publish_agent_configuration_revision(second),
             AgentConfigurationRevisionCreated,
+        )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (first, second)
         )
         stored = catalog.list_agent_configuration_revisions(None, 1)
         assert isinstance(stored, AgentConfigurationRevisionPage)
