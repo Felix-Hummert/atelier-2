@@ -138,8 +138,10 @@ def test_serve_configures_json_logging_before_the_runtime_starts(
         del stream
         order.append("configure")
 
-    def fake_compose(settings: object) -> tuple[object, object]:
-        del settings
+    def fake_compose(
+        settings: object, *, close_runtime_at_shutdown: bool = False
+    ) -> tuple[object, object]:
+        del settings, close_runtime_at_shutdown
         order.append("compose")
         return object(), type("Runtime", (), {"close": lambda self: None})()
 
