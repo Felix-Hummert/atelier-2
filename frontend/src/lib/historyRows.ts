@@ -19,6 +19,7 @@ export type HistoryWorkItem = {
 
 export type HistoryRowResult =
   | { kind: "completed"; sentence: string | null }
+  | { kind: "omitted"; sentence: "answer-too-large" }
   | { kind: "failed"; nodeId: string; sentence: string | null };
 
 export type HistoryWhenDay =
@@ -96,6 +97,12 @@ function historyWorkItem(
 }
 
 function historyResult(run: RunV3): HistoryRowResult {
+  // A completed run whose answer was omitted for size (#1045) is a fact this
+  // row already knows without decoding anything: it never collapses into the
+  // same "not recorded" a run that wrote nothing would show.
+  if (run.answer?.kind === "omitted") {
+    return { kind: "omitted", sentence: "answer-too-large" };
+  }
   const sentence = historyResultSentence(run);
   if (run.state === "FAILED") {
     return { kind: "failed", nodeId: historyFailedNodeId(run), sentence };

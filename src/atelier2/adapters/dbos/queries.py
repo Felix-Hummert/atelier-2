@@ -20,7 +20,10 @@ from atelier2.adapters.dbos.agent_attempt_store import (
     load_output_schema_refusal_receipt,
     load_prior_output_schema_refusal_receipt,
 )
-from atelier2.adapters.dbos.artifact_store import read_stored_artifact
+from atelier2.adapters.dbos.artifact_store import (
+    read_stored_artifact,
+    read_stored_artifacts,
+)
 from atelier2.adapters.dbos.attention_events import load_attention_event_page
 from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
@@ -47,6 +50,7 @@ from atelier2.adapters.dbos.run_transitions import (
     validate_run_graph_binding,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
     agent_attempts,
     agent_receipts_v2,
     attempt_instants,
@@ -1215,22 +1219,42 @@ def _node_answer(
 
 
 def _run_terminal_results(
-    connection: Connection, ended_runs: Sequence[RunV3]
+    connection: Connection,
+    ended_runs: Sequence[RunV3],
+    graphs: Mapping[WorkflowRevisionHash, AnyWorkflowDocument],
 ) -> dict[str, tuple[NodeAnswer | None, NodeAnswer | None]]:
-    """Every ended run's own terminal answer and refusal, batched once per page (#1045).
+    """Every ended run's own terminal answer and refusal, batched once per page.
 
-    A page of History rows used to cost two statements per ended run (#1045
-    REVISE C1). Every ended run's terminal execution id is the same
+    A page of History rows used to cost at least two statements per ended run,
+    and every receiptless or refused row added one more on top of that (#1045
+    REVISE C1, twice). Every ended run's terminal execution id is the same
     deterministic identity `current_node_execution_id` already names on the
-    wire -- `current_node_id` at `current_round_ordinal` -- so this reads the
-    answer-bearing event and the terminal `node-receipt/v3` disposition each
-    in one statement over the whole set, keyed by that identity, and only
-    falls back to a per-execution read (`_refusal_output_without_terminal_receipt`)
-    for the executions a terminal receipt does not yet name -- the same rare
-    edge `_node_receipt_refusal_output` itself falls back for, never the common
-    case. `get_node_detail`'s own single-node route still resolves an artifact
-    per refused execution; a page's `answer` values never touch the artifact
-    store at all, and `refusal_output` only does for rows that actually refused.
+    wire -- `current_node_id` at `current_round_ordinal` -- so every source
+    below is read once for the whole page, keyed by that identity, and
+    assembled per run afterward with no further query:
+
+    - the answer-bearing event (`run_events`);
+    - the terminal `node-receipt/v3` disposition and reason;
+    - for an execution no terminal receipt names yet, its ordinal-one
+      `agent_attempts` row -- the node kind is read from `graphs`, already
+      parsed for this same page, never a second workflow-revision read;
+    - that attempt's own `agent_attempt_receipts_v3` row, when its node is an
+      agent node (only those ever write one);
+    - every artifact either refusal path names, in one final read keyed by
+      hash (`read_stored_artifacts`).
+
+    A node execution that wrote more than one answer-bearing event is durable
+    state disagreeing with itself -- the single-execution `_node_answer`'s own
+    `.one_or_none()` already refuses that loudly, and this batched read keeps
+    the same refusal rather than a dict silently keeping the last one seen.
+
+    This omits `load_output_schema_refusal_receipt`'s own re-verification of
+    an attempt's schema revision and receipt hash against its expectations
+    (`agent_attempt_store.py`): those defend the *live* repair path a fresh
+    attempt is armed from. This projection only shows a reader what a
+    finished run already wrote, and the one property that read depends on --
+    the artifact's own bytes hashing to its address -- is still checked by
+    `read_stored_artifacts`.
     """
     if not ended_runs:
         return {}
@@ -1258,7 +1282,12 @@ def _run_terminal_results(
             run_events.c.event_kind.in_(ANSWER_BEARING_EVENT_KINDS),
         )
     ):
-        answers_by_execution[str(record.node_execution_id)] = NodeAnswer(
+        execution_value = str(record.node_execution_id)
+        if execution_value in answers_by_execution:
+            raise RunTransitionConflict(
+                "a node execution has more than one answer-bearing event"
+            )
+        answers_by_execution[execution_value] = NodeAnswer(
             bytes(record.payload), Sha256Hash(str(record.payload_hash))
         )
 
@@ -1273,24 +1302,118 @@ def _run_terminal_results(
         )
     }
 
+    run_by_id = {run.run_id.value: run for run in ended_runs}
+    receiptless_execution_values = tuple(
+        execution.value
+        for execution in execution_by_run_id.values()
+        if execution.value not in receipts_by_execution
+    )
+
+    attempts_by_execution: dict[str, Mapping[Any, Any]] = {}
+    if receiptless_execution_values:
+        for record in connection.execute(
+            sa.select(
+                agent_attempts.c.node_execution_id,
+                agent_attempts.c.attempt_id,
+                agent_attempts.c.node_id,
+                agent_attempts.c.run_id,
+            ).where(
+                agent_attempts.c.node_execution_id.in_(receiptless_execution_values),
+                agent_attempts.c.attempt_ordinal == 1,
+            )
+        ).mappings():
+            attempts_by_execution[str(record["node_execution_id"])] = record
+
+    agent_attempt_id_by_execution: dict[str, str] = {}
+    for execution_value, attempt_record in attempts_by_execution.items():
+        run = run_by_id[str(attempt_record["run_id"])]
+        node = graphs[run.revision_hash].node(str(attempt_record["node_id"]))
+        if isinstance(node, AgentNodeV3):
+            agent_attempt_id_by_execution[execution_value] = str(
+                attempt_record["attempt_id"]
+            )
+
+    attempt_receipts_by_execution: dict[str, Mapping[Any, Any]] = {}
+    if agent_attempt_id_by_execution:
+        execution_by_attempt_id = {
+            attempt_id: execution_value
+            for execution_value, attempt_id in agent_attempt_id_by_execution.items()
+        }
+        for record in connection.execute(
+            sa.select(
+                agent_attempt_receipts_v3.c.attempt_id,
+                agent_attempt_receipts_v3.c.value_hash,
+                agent_attempt_receipts_v3.c.artifact_hash,
+            ).where(
+                agent_attempt_receipts_v3.c.attempt_id.in_(
+                    tuple(agent_attempt_id_by_execution.values())
+                )
+            )
+        ).mappings():
+            execution_value = execution_by_attempt_id[str(record["attempt_id"])]
+            attempt_receipts_by_execution[execution_value] = record
+
+    artifact_hashes: set[str] = set()
+    for receipt_record in receipts_by_execution.values():
+        disposition = PersistedReceiptDisposition(str(receipt_record.disposition))
+        if disposition is PersistedReceiptDisposition.SUCCEEDED:
+            continue
+        _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
+            str(receipt_record.reason)
+        )
+        if value_hash is not None and value_hash != Sha256Hash.of(b""):
+            artifact_hashes.add(value_hash.value)
+    for attempt_receipt in attempt_receipts_by_execution.values():
+        artifact_hash = attempt_receipt["artifact_hash"]
+        if (
+            artifact_hash is None
+            and str(attempt_receipt["value_hash"]) != Sha256Hash.of(b"").value
+        ):
+            raise RunTransitionConflict(
+                "nonempty output-schema refusal has no artifact"
+            )
+        if artifact_hash is not None:
+            artifact_hashes.add(str(artifact_hash))
+
+    artifacts_by_hash = read_stored_artifacts(
+        connection, tuple(ArtifactHash(value) for value in artifact_hashes)
+    )
+
+    def refusal_output_for(execution_value: str) -> NodeAnswer | None:
+        receipt_record = receipts_by_execution.get(execution_value)
+        if receipt_record is not None:
+            disposition = PersistedReceiptDisposition(str(receipt_record.disposition))
+            if disposition is PersistedReceiptDisposition.SUCCEEDED:
+                return None
+            _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
+                str(receipt_record.reason)
+            )
+            if value_hash is None:
+                return None
+            if value_hash == Sha256Hash.of(b""):
+                return NodeAnswer(b"", value_hash)
+            artifact = artifacts_by_hash.get(value_hash.value)
+            if artifact is None:
+                raise RuntimeError("refused node output artifact is missing")
+            text = artifact.content.decode("utf-8")
+            return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
+        attempt_receipt = attempt_receipts_by_execution.get(execution_value)
+        if attempt_receipt is None:
+            return None
+        value_hash = Sha256Hash(str(attempt_receipt["value_hash"]))
+        artifact_hash = attempt_receipt["artifact_hash"]
+        if artifact_hash is None:
+            return NodeAnswer(b"", value_hash)
+        artifact = artifacts_by_hash.get(str(artifact_hash))
+        if artifact is None:
+            raise RuntimeError("output-schema refusal artifact is missing")
+        text = artifact.content.decode("utf-8")
+        return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
+
     results: dict[str, tuple[NodeAnswer | None, NodeAnswer | None]] = {}
     for run_id, execution in execution_by_run_id.items():
         answer = answers_by_execution.get(execution.value)
-        receipt_record = receipts_by_execution.get(execution.value)
-        if receipt_record is None:
-            refusal_output = _refusal_output_without_terminal_receipt(
-                connection, execution
-            )
-        else:
-            disposition = PersistedReceiptDisposition(str(receipt_record.disposition))
-            refusal_output = (
-                None
-                if disposition is PersistedReceiptDisposition.SUCCEEDED
-                else _refusal_output_from_receipt_reason(
-                    connection, str(receipt_record.reason)
-                )
-            )
-        results[run_id] = (answer, refusal_output)
+        results[run_id] = (answer, refusal_output_for(execution.value))
     return results
 
 
@@ -2083,7 +2206,7 @@ class DbosQueries:
             for run in loaded_runs
             if isinstance(run, RunV3) and run.terminal_hash is not None
         )
-        terminal_results = _run_terminal_results(connection, ended_v3_runs)
+        terminal_results = _run_terminal_results(connection, ended_v3_runs, graphs)
 
         projections = []
         for run in loaded_runs:

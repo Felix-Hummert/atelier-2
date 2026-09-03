@@ -148,7 +148,7 @@ describe("projecting History's finished-run rows", () => {
     });
   });
 
-  it("reads a completed result with a null sentence when the row's answer was omitted for size (#1045)", () => {
+  it("names an omitted answer its own result kind, never the same as a run that wrote nothing (#1045)", () => {
     const [row] = projectHistoryRows(
       [
         v3Run({
@@ -157,7 +157,7 @@ describe("projecting History's finished-run rows", () => {
       ],
       null
     );
-    expect(row?.result).toEqual({ kind: "completed", sentence: null });
+    expect(row?.result).toEqual({ kind: "omitted", sentence: "answer-too-large" });
   });
 
   it("reads a failed result with its node id, deriving the sentence from refusal_output", () => {

@@ -41,6 +41,11 @@ export const historyPageCopy = {
    */
   notRecorded: "Not recorded",
   /**
+   * A completed row whose own answer the list omitted for size (#1045) --
+   * never `notRecorded`, which reads as a run that wrote nothing at all.
+   */
+  answerTooLarge: "Too large to show",
+  /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):
    * names why such a row still shows under a period chip that cannot measure
    * it, rather than leaving the chip's own honesty unexplained.

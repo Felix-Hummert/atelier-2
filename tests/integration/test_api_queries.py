@@ -22,7 +22,7 @@ from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.run_transitions import _insert_event, event_from_record
-from atelier2.adapters.dbos.runtime import create_canonical_engine
+from atelier2.adapters.dbos.runtime import DbosRuntime, create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     effect_intents,
@@ -49,6 +49,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     AgentAttemptId,
     AgentAttemptReplacement,
+    AgentExecutionResult,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -99,6 +100,14 @@ from atelier2.ports.workflow_revisions import (
     ReadUnavailable,
     WorkflowRevisionFound,
 )
+from tests.integration.test_v3_output_enforcement import (
+    THE_ANSWER_THE_SCHEMA_REFUSES,
+    armed_attempt,
+    repair_attempt,
+)
+from tests.integration.test_v3_output_enforcement import (
+    runtime as _output_enforcement_runtime,
+)
 from tests.scenarios.agents import (
     agent_attempt_execution,
     failing_agent_executor_factory,
@@ -114,6 +123,10 @@ from tests.scenarios.api import (
 )
 from tests.scenarios.runs import publish_v3_agent_bindings
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
+
+output_enforcement_runtime = _output_enforcement_runtime
+"""Re-bound so a test parameter of the same name resolves to this fixture,
+the same way `test_node_detail.py` re-binds `refusal_runtime`."""
 
 # A checkout the pool cannot serve at once is refused without waiting at all.
 # Zero is what makes the refusal a decision rather than an elapsed measurement,
@@ -1464,6 +1477,209 @@ def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empt
     )
     for unordered_run_id in run_ids[1:]:
         assert projections[unordered_run_id].orders == ()
+
+
+TERMINAL_RESULT_TABLES = (
+    "agent_attempt_receipts_v3",
+    "agent_attempts",
+    "artifacts",
+    "node_receipts_v3",
+    "run_events",
+)
+"""Every table the terminal answer/refusal batching reads (#1045 REVISE C1)."""
+
+
+def _terminal_result_reads(engine: Engine) -> dict[str, int]:
+    """How many SELECTs each terminal-result table costs one `list_runs` page."""
+
+    counts: dict[str, int] = dict.fromkeys(TERMINAL_RESULT_TABLES, 0)
+
+    def capture(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: object,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if not statement.lstrip().upper().startswith("SELECT"):
+            return
+        named = re.search(r"FROM ([a-zA-Z_0-9]+)", statement)
+        table = named.group(1) if named is not None else None
+        if table in counts:
+            counts[table] += 1
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        page = durable_queries(engine).list_runs(None, 100)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert isinstance(page, RunPage)
+    return counts
+
+
+def _seed_plain_answered_runs(engine: Engine, run_ids: tuple[RunId, ...]) -> None:
+    """Ended V3 runs that each wrote a real answer -- the page's common row."""
+
+    revision = WorkflowRevision(_v3_workflow_document(f"plain-{len(run_ids)}"))
+    _seed_runs(engine, tuple((run_id, revision) for run_id in run_ids))
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id.in_(tuple(run_id.value for run_id in run_ids)))
+            .values(state=RunState.COMPLETED.value, terminal_hash=_digest("plain-end"))
+        )
+        for run_id in run_ids:
+            payload = f'{{"answer":"{run_id.value}"}}'.encode()
+            _insert_event(
+                connection,
+                RunEvent(
+                    run_id,
+                    revision.revision_hash,
+                    1,
+                    "agent",
+                    NodeExecutionId.for_node(run_id, revision.revision_hash, "agent"),
+                    RunEventKind.AGENT_COMPLETED,
+                    payload,
+                ),
+            )
+
+
+def _seed_receiptless_ended_run(engine: Engine, run_id: RunId) -> None:
+    """An ended V3 run whose node names neither a receipt nor an attempt.
+
+    Not a state a settled run reaches in production -- the terminal
+    `node-receipt/v3` write and the run's own FAILED transition land in the
+    same repair (see `_run_terminal_results`'s own docstring) -- but it is
+    the exact shape the batched `agent_attempts` fallback read has to answer
+    honestly with `None` rather than a query per row, so it is written
+    directly here the same way `_seed_runs` writes every other shape this
+    file measures.
+    """
+
+    revision = WorkflowRevision(_v3_workflow_document(f"receiptless-{run_id.value}"))
+    _seed_runs(engine, ((run_id, revision),))
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(
+                state=RunState.FAILED.value,
+                terminal_hash=_digest(f"receiptless-end-{run_id.value}"),
+            )
+        )
+
+
+def test_terminal_results_cost_a_constant_number_of_statements_across_a_mixed_ended_page(
+    output_enforcement_runtime: DbosRuntime,
+) -> None:
+    """#1045 REVISE C1 (second delta): every path an ended run's terminal
+    answer or refusal can resolve through -- a real answer, a receipted
+    refusal with a kept artifact, and an ended run whose node names neither
+    a receipt nor an attempt -- reads its own table once for the whole page,
+    not once per row.
+
+    Growing the page's plain and receiptless rows moves none of the five
+    counts (asserted equal below, `fewer == more`): `run_events` and
+    `node_receipts_v3` each cost one statement over every ended execution,
+    and the new receiptless fallback (`_run_terminal_results`) costs one
+    `agent_attempts` lookup over every execution no terminal receipt names,
+    regardless of how many of either kind exist.
+
+    The named counts below are not all this change's own: the schema-refused
+    run's own *current* attempt already costs a handful of statements through
+    the pre-existing rail/cancellation projection (`_current_attempt_projection`
+    classifying its failure code), unrelated to terminal-result batching but
+    reading the same tables -- named here so a real regression in either path
+    still fails this test, and a page that grows why the count changed is
+    explained instead of silently rebaselined.
+    """
+
+    engine = output_enforcement_runtime.engine
+
+    # The one receipted-refusal-with-artifact row: two real schema refusals,
+    # driven through the exact production write path
+    # `test_two_schema_refusals_end_failed_under_output_schema_refused` already
+    # proves ends the run FAILED with a kept `node-receipt/v3` artifact.
+    first = armed_attempt(output_enforcement_runtime)
+    store = DbosAgentAttemptStore(
+        engine, output_enforcement_runtime.settings.application_version
+    )
+    store.complete_success(first, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES))
+    repair = repair_attempt(output_enforcement_runtime, first)
+    store.complete_success(repair, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES))
+
+    _seed_receiptless_ended_run(engine, RunId("receiptless-fixed"))
+    _seed_plain_answered_runs(engine, (RunId("plain-fixed-0"), RunId("plain-fixed-1")))
+
+    fewer = _terminal_result_reads(engine)
+
+    _seed_plain_answered_runs(
+        engine, tuple(RunId(f"plain-grown-{index}") for index in range(8))
+    )
+    _seed_receiptless_ended_run(engine, RunId("receiptless-grown"))
+
+    more = _terminal_result_reads(engine)
+
+    assert fewer == more
+    assert fewer == {
+        "agent_attempt_receipts_v3": 1,
+        "agent_attempts": 4,
+        "artifacts": 2,
+        "node_receipts_v3": 1,
+        "run_events": 1,
+    }
+
+
+def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrupt(
+    engine: Engine,
+) -> None:
+    """#1045 REVISE C1 (second delta): a duplicate answer-bearing event used
+    to be caught by `_node_answer`'s own `.one_or_none()`; the batched read
+    keeps the same refusal rather than a dict silently keeping the last one
+    seen. Two different answer-bearing kinds on one execution is the shape
+    that reaches this: the store's own unique index already refuses two rows
+    of the *same* kind on one execution.
+    """
+
+    revision = WorkflowRevision(_v3_workflow_document())
+    run_id = RunId("duplicate-answer")
+    _seed_runs(engine, ((run_id, revision),))
+    execution_id = NodeExecutionId.for_node(run_id, revision.revision_hash, "agent")
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(state=RunState.COMPLETED.value, terminal_hash=_digest("dup-end"))
+        )
+        _insert_event(
+            connection,
+            RunEvent(
+                run_id,
+                revision.revision_hash,
+                1,
+                "agent",
+                execution_id,
+                RunEventKind.AGENT_COMPLETED,
+                b'{"answer":"first"}',
+            ),
+        )
+        _insert_event(
+            connection,
+            RunEvent(
+                run_id,
+                revision.revision_hash,
+                2,
+                "agent",
+                execution_id,
+                RunEventKind.SUBWORKFLOW_COMPLETED,
+                b'{"answer":"second"}',
+            ),
+        )
+
+    result = durable_queries(engine).list_runs(None, 100)
+
+    assert isinstance(result, QueryDurableStateCorrupt)
 
 
 def test_run_page_batches_waiting_reconciliation_and_projects_command_owner_state(

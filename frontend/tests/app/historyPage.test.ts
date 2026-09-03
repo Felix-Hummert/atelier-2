@@ -263,6 +263,24 @@ describe("History shows only what has finished", () => {
     expect(result?.textContent).not.toContain(standingWords.done);
   });
 
+  it("names an omitted answer too large to show, never the same Not recorded a run that wrote nothing shows (#1045)", async () => {
+    openHistory({
+      completed: [
+        v3Run({
+          answer: { kind: "omitted", reason: "too_large", maximum_bytes: 49_152 }
+        })
+      ]
+    });
+
+    const row = await findHistoryCard(/Two agents in a line/);
+    expect(row.querySelector(".row-result")?.textContent).toContain(
+      wrapDisplayCopy(historyPageCopy.answerTooLarge)
+    );
+    expect(row.querySelector(".row-result")?.textContent).not.toContain(
+      wrapDisplayCopy(historyPageCopy.notRecorded)
+    );
+  });
+
   it("names the run's purpose as the workflow, never the order names", async () => {
     const run = v3Run({
       orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]

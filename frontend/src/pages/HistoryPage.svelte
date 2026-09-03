@@ -224,6 +224,8 @@
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
                   {failedResultCopy(row.result.nodeId, row.result.sentence)}
+                {:else if row.result.kind === "omitted"}
+                  {wrapDisplayCopy(historyPageCopy.answerTooLarge)}
                 {:else if row.result.sentence !== null}
                   {wrapDisplayCopy(row.result.sentence)}
                 {:else}
