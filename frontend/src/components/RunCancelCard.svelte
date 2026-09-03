@@ -11,6 +11,7 @@
   import { humanErrorMessage } from "../lib/humanRefusal";
   import { MutationJournal, type CancelMutation } from "../lib/mutationJournal";
   import { cancelConsequence, cancelReasonSentence, runPageCopy } from "../lib/runPageCopy";
+  import { runHasEnded } from "../lib/runState";
 
   /**
    * The one control that stops a running V3 agent (#439 P5).
@@ -45,13 +46,7 @@
   let confirmButton: HTMLButtonElement;
   let retryButton: HTMLButtonElement;
 
-  const TERMINAL_STATES: ReadonlySet<RunV3["state"]> = new Set([
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED"
-  ]);
-
-  $: terminal = TERMINAL_STATES.has(run.state);
+  $: terminal = runHasEnded(run.state);
   /**
    * The reason to spell out, or null to stay silent. `waiting-for-you` is
    * dropped because the run's standing word already reads "Waiting for you" and
@@ -88,7 +83,7 @@
     state: RunV3["state"],
     publicRunReference: string
   ): Promise<void> {
-    if (!TERMINAL_STATES.has(state)) return;
+    if (!runHasEnded(state)) return;
     const found = await loadPendingCancelForRun(mutationJournal, publicRunReference);
     if (found !== null) {
       await mutationJournal.discard(found.mutation_id);
