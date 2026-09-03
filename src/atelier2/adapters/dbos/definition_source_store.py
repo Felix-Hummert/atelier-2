@@ -37,6 +37,7 @@ from atelier2.adapters.dbos.catalog_store import (
     revision_owner,
 )
 from atelier2.adapters.dbos.schema import (
+    catalog_lineage_members,
     catalog_source_intakes,
     host_definition_source_revisions,
     host_definition_source_selections,
@@ -78,6 +79,7 @@ from atelier2.ports.definition_sources import (
     DefinitionSourceMissing,
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
+    PathAdopted,
     PathAlreadyInCatalog,
     PathIntaken,
     ReadDefinitionSourceResult,
@@ -188,12 +190,29 @@ class DbosDefinitionSources:
         published = PublishedRevision(RevisionKind.WORKFLOW, selected.revision.document)
         persist_workflow_publication(connection, selected.revision)
         previous = standing.get(selected.path)
-        admission = (
-            found_lineage_in(
+        adopted: CatalogLineageId | None = None
+        if previous is None:
+            admission = found_lineage_in(
                 connection, published, selected.display_name, actor, intaken_at
             )
-            if previous is None
-            else admit_member_in(
+            if (
+                isinstance(admission, CatalogAdmissionNameHeld)
+                and _lineage_source(connection, admission.holder) is None
+            ):
+                # #660 A3: nobody has ever fed this name's lineage from a
+                # source, so it is a manual import -- adopt it rather than
+                # refuse, becoming its new head and leaving its history alone.
+                adopted = admission.holder
+                admission = admit_member_in(
+                    connection,
+                    admission.holder,
+                    published,
+                    selected.display_name,
+                    actor,
+                    intaken_at,
+                )
+        else:
+            admission = admit_member_in(
                 connection,
                 _lineage_holding(connection, previous),
                 published,
@@ -201,7 +220,6 @@ class DbosDefinitionSources:
                 actor,
                 intaken_at,
             )
-        )
         match admission:
             case CatalogLineageFounded() | CatalogMemberAdmitted():
                 intake = SourceIntake(
@@ -215,6 +233,8 @@ class DbosDefinitionSources:
                     commit,
                 )
                 _insert_intake(connection, intake, actor, intaken_at)
+                if adopted is not None:
+                    return PathAdopted(intake, adopted)
                 return PathIntaken(intake)
             case CatalogAdmissionExisting(lineage, _, _, held_name):
                 # Founding reaches the lineage these exact bytes started, whatever
@@ -376,6 +396,40 @@ def _intake_from_record(record: Mapping[Any, Any]) -> SourceIntake:
         PublishedRevisionHash(str(record["revision_hash"])),
         SourceCommit(str(record["source_commit"])),
     )
+
+
+def _lineage_source(
+    connection: Connection, lineage_id: CatalogLineageId
+) -> DefinitionSourceId | None:
+    """The source that fed this lineage, or nothing when no source ever has.
+
+    A lineage a source founded or joined carries a `catalog_source_intakes`
+    row under every revision hash it holds as a member; a lineage a manual
+    import founded carries none. `#660` A3 lets the intake adopt a name-held
+    lineage only while this answers `None` -- once any source, this one
+    included, has fed it, adopting it again would let a name silently move
+    which lineage a path's own continuity means.
+    """
+
+    source_id = connection.scalar(
+        sa.select(catalog_source_intakes.c.source_id)
+        .select_from(
+            catalog_source_intakes.join(
+                catalog_lineage_members,
+                sa.and_(
+                    catalog_lineage_members.c.revision_hash
+                    == catalog_source_intakes.c.revision_hash,
+                    catalog_source_intakes.c.revision_kind
+                    == RevisionKind.WORKFLOW.value,
+                ),
+            )
+        )
+        .where(catalog_lineage_members.c.lineage_id == lineage_id.value)
+        .limit(1)
+    )
+    if source_id is None:
+        return None
+    return DefinitionSourceId(str(source_id))
 
 
 def _lineage_holding(

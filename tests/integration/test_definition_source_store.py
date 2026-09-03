@@ -41,6 +41,7 @@ from atelier2.adapters.dbos.starter import DbosWorkflowRevisionPublisher
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
+    CatalogLineage,
     CatalogLineageDisplayName,
     CatalogLineageFounded,
 )
@@ -911,6 +912,124 @@ def test_bytes_the_catalog_holds_under_another_name_refuse_the_whole_batch(
     refused = capsys.readouterr().err
     assert refused.startswith("refused workflows/z-last.yaml")
     assert "already belong to lineage" in refused
+    assert logical_dump(database) == settled
+
+
+def test_a_manually_imported_name_is_adopted_as_the_sources_new_head(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`#660` A3: the live deploy-intake belief this slice fixes.
+
+    Every repository workflow whose name a manual import once typed by hand
+    was refused; now the source revision becomes that lineage's new head, the
+    manual revision stays its history, and the name never changes lineage.
+    """
+
+    manual = workflow_named("build")
+    assert isinstance(
+        DbosCatalogStore(engine).add_workflow(
+            WorkflowRevision(manual),
+            CatalogLineageDisplayName("build"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-01T00:00:00Z"),
+        ),
+        CatalogLineageFounded,
+    )
+    repository = tmp_path / "definitions.git"
+    delivered = workflow_named("build") + b"\n"
+    commit = bare_repository_of(repository, {"workflows/build.yaml": delivered})
+    source_id = connect(database, repository)
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    manual_lineage = CatalogLineage(
+        RevisionKind.WORKFLOW, PublishedRevisionHash.of(manual)
+    ).lineage_id.value
+
+    reported = capsys.readouterr().out
+    assert commit in reported
+    assert reported.splitlines()[1:] == [
+        f"  published workflow workflows/build.yaml (adopted lineage {manual_lineage})"
+    ]
+    assert lineage_members(engine, "build") == [
+        PublishedRevisionHash.of(manual).value,
+        PublishedRevisionHash.of(delivered).value,
+    ]
+    assert recorded_intakes(engine) == [
+        (
+            source_id,
+            "workflows/build.yaml",
+            1,
+            PublishedRevisionHash.of(delivered).value,
+            commit,
+        )
+    ]
+    provenance = listed_provenance(engine)
+    assert provenance[PublishedRevisionHash.of(delivered).value] == RevisionProvenance(
+        DefinitionSourceId(source_id),
+        SourceCommit(commit),
+        RepositoryPath("workflows/build.yaml"),
+        CatalogActivatedAt(recorded_instant(engine, "workflows/build.yaml")),
+    )
+    assert provenance[PublishedRevisionHash.of(manual).value] is None
+
+
+def test_a_name_a_different_source_already_intook_still_refuses(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A lineage a source already feeds keeps its refusal for a second source."""
+
+    first_repository = tmp_path / "first.git"
+    bare_repository_of(
+        first_repository, {"workflows/build.yaml": workflow_named("build")}
+    )
+    assert intake(database, connect(database, first_repository)) == 0
+
+    second_repository = tmp_path / "second.git"
+    bare_repository_of(
+        second_repository,
+        {"workflows/build.yaml": workflow_named("build") + b"\n"},
+    )
+    source_id = connect(database, second_repository)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/build.yaml")
+    assert "already held by lineage" in refused
+    assert logical_dump(database) == settled
+
+
+def test_an_adopted_lineage_intake_is_idempotent_on_a_repeat_commit(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manual = workflow_named("build")
+    assert isinstance(
+        DbosCatalogStore(engine).add_workflow(
+            WorkflowRevision(manual),
+            CatalogLineageDisplayName("build"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-01T00:00:00Z"),
+        ),
+        CatalogLineageFounded,
+    )
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(
+        repository, {"workflows/build.yaml": workflow_named("build") + b"\n"}
+    )
+    source_id = connect(database, repository)
+    assert intake(database, source_id) == 0
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 0
+
+    assert [line.split() for line in capsys.readouterr().out.splitlines()[1:]] == [
+        ["present", "workflow", "workflows/build.yaml"]
+    ]
     assert logical_dump(database) == settled
 
 
