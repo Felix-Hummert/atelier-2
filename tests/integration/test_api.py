@@ -186,6 +186,9 @@ nodes:
     type: action
     operation: {{ref: open-pr, revision: {OPEN_PR_OPERATION.revision_hash.value}}}
     depends_on: [agent]
+    inputs:
+      - name: body
+        from: {{node: agent, output: request}}
   - id: wait
     type: wait
     prompt: Did the landing hold?
@@ -223,10 +226,10 @@ committed directly, because no runtime drives these runs.
 
 RECONCILED_LOGICAL_KEY = (
     "atelier2-node-effect-"
-    "aa4c4a4f6baad796aa6a13cbe2f722d0073e8e1cfabcc7535c35146aee46c65c"
+    "0e5d06176a9f5c2a7bfbdfb27107b55ec64252e54629a05030bc6da01b4a8a1a"
 )
 RECONCILED_REVISION_HASH = (
-    "db3ccb8440c207f544ff4c7c27e920c6ba1e0b22171748b144a5d316fc12751f"
+    "d3a30e9679b8e78e212aacd77993083330561cecae9ca7592e3e85c232bb05e5"
 )
 RECONCILED_REQUEST = (
     b'{"body":"\\"request\\"","head_branch":"atelier2-open-pr-8869ad22943e"}'

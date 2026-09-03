@@ -9,6 +9,7 @@ import pytest
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.evaluate_executability import (
+    EFFECT_SHAPED_TOOL_RESOLUTION_FIELD,
     DocumentNotExecutable,
     ExecutableDocument,
     ReferenceSettlementCache,
@@ -60,6 +61,10 @@ PUSH_GRANT = PublishedRevision(
         }
     ).encode(),
 )
+OPEN_PR_GRANT = PublishedRevision(
+    RevisionKind.TOOL,
+    json.dumps({"capability": ToolGrantCapability.OPEN_PR.value}).encode(),
+)
 NOT_A_GRANT = PublishedRevision(RevisionKind.TOOL, b"not even json")
 
 
@@ -80,6 +85,29 @@ nodes:
     instruction: Do the one thing this chain is for.
 """
         + tools.encode()
+        + declared_output()
+    )
+
+
+def two_tools_agent(first: PublishedRevision, second: PublishedRevision) -> bytes:
+    """One agent node pinning two `tools` entries, its structural count still allowed."""
+    return (
+        b"""format_version: 3
+name: One agent, two grants
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+    tools:
+      - {ref: first, revision: """
+        + first.revision_hash.value.encode()
+        + b"""}
+      - {ref: second, revision: """
+        + second.revision_hash.value.encode()
+        + b"""}
+"""
         + declared_output()
     )
 
@@ -314,3 +342,75 @@ def test_a_registry_that_cannot_answer_is_neither_executable_nor_refused(
     )
 
     assert evaluated == expected
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "shape", "registry"),
+    [
+        (GRANT, GRANT, "exec-shaped", Registry((ANY_JSON_SCHEMA, GRANT))),
+        (
+            PUSH_GRANT,
+            OPEN_PR_GRANT,
+            "effect-shaped",
+            Registry((ANY_JSON_SCHEMA, PUSH_GRANT, OPEN_PR_GRANT, PUSH_OPERATION)),
+        ),
+    ],
+    ids=["exec-shaped", "effect-shaped"],
+)
+@pytest.mark.proves("a-node-binds-one-exec-shaped-and-one-effect-shaped-grant-together")
+def test_two_grants_of_one_shape_on_one_node_are_refused_before_the_run_exists(
+    first: PublishedRevision, second: PublishedRevision, shape: str, registry: Registry
+) -> None:
+    """Which shape a pin is is only known once its published bytes are read, so
+    the conflict is named here rather than counted at the document's authored
+    form -- the binding-time twin of this same invariant lives in
+    `agent_effect_grants.py` and stays as the redemption-time guard."""
+    evaluated = evaluate_executability(
+        parse_workflow_document(two_tools_agent(first, second)), registry
+    )
+
+    assert isinstance(evaluated, DocumentNotExecutable), evaluated
+    assert evaluated.refusal is None
+    assert "implement" in evaluated.reason
+    assert shape in evaluated.reason
+
+
+def test_a_lone_effect_shaped_grant_keeps_its_authored_site() -> None:
+    """A node pinning its one historical grant, effect-shaped or not, resolves
+    exactly as it always did (#1101): only a *second*, exec-shaped grant beside
+    it moves the effect-shaped resolution off the authored `tools` site --
+    `bind_node_execution.py` still binds at most one id under that name.
+    """
+    evaluated = evaluate_executability(
+        parse_workflow_document(one_agent(PUSH_GRANT)),
+        Registry((ANY_JSON_SCHEMA, PUSH_GRANT, PUSH_OPERATION)),
+    )
+
+    assert isinstance(evaluated, ExecutableDocument), evaluated
+    tool = next(
+        entry for entry in evaluated.resolutions if entry.kind is RevisionKind.TOOL
+    )
+    assert tool.site.field == "tools"
+
+
+def test_the_effect_shaped_grant_of_a_two_grant_node_moves_off_the_tools_site() -> None:
+    """Beside an exec-shaped grant, the effect-shaped one's resolved site is
+    renamed so `bind_node_execution.py`'s durable request still finds exactly
+    one `tools` id -- the exec-shaped grant -- and the effect-shaped one is
+    read back from the immutable workflow revision instead (#1101).
+    """
+    evaluated = evaluate_executability(
+        parse_workflow_document(two_tools_agent(GRANT, PUSH_GRANT)),
+        Registry((ANY_JSON_SCHEMA, GRANT, PUSH_GRANT, PUSH_OPERATION)),
+    )
+
+    assert isinstance(evaluated, ExecutableDocument), evaluated
+    tools = {
+        entry.reference.ref: entry.site.field
+        for entry in evaluated.resolutions
+        if entry.kind is RevisionKind.TOOL
+    }
+    assert tools == {
+        "first": "tools",
+        "second": EFFECT_SHAPED_TOOL_RESOLUTION_FIELD,
+    }
