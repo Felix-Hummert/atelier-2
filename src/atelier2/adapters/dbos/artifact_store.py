@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
@@ -39,6 +41,38 @@ def read_stored_artifact(
             f"stored artifact {artifact_hash.value} does not hash to its address"
         )
     return stored
+
+
+def read_stored_artifacts(
+    connection: sa.Connection, artifact_hashes: Sequence[ArtifactHash]
+) -> dict[str, Artifact]:
+    """Every one of these addresses' artifacts, read in one statement.
+
+    The batched sibling of `read_stored_artifact`: a caller resolving more
+    than one artifact at once -- a page of terminal refusals (#1045) -- reads
+    them all here instead of once per address. Same corruption rule: a stored
+    row whose content disagrees with its own address raises rather than
+    answering it as that artifact. Keyed by the hash string rather than
+    `ArtifactHash` so a caller can look an entry up straight from a raw
+    column value with no re-wrapping.
+    """
+    if not artifact_hashes:
+        return {}
+    found: dict[str, Artifact] = {}
+    for record in connection.execute(
+        sa.select(artifacts.c.artifact_hash, artifacts.c.content).where(
+            artifacts.c.artifact_hash.in_(
+                tuple(value.value for value in artifact_hashes)
+            )
+        )
+    ):
+        stored = Artifact(bytes(record.content))
+        if stored.artifact_hash.value != str(record.artifact_hash):
+            raise RuntimeError(
+                f"stored artifact {record.artifact_hash} does not hash to its address"
+            )
+        found[str(record.artifact_hash)] = stored
+    return found
 
 
 def keep_artifact(

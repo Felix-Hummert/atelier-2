@@ -565,8 +565,20 @@ class AgentExecutorRegistry:
         evidence half (the reprobe exemption) asks `is_structurally_startable`
         directly instead.
         """
-        if not self.is_structurally_startable(key, capability):
-            return False
+        return self.is_structurally_startable(
+            key, capability
+        ) and self.has_valid_receipt(configuration_hash)
+
+    def has_valid_receipt(
+        self, configuration_hash: AgentConfigurationRevisionHash
+    ) -> bool:
+        """Whether live evidence alone would let this exact configuration start.
+
+        Asks only the receipt gate -- not structural availability, which
+        `is_structurally_startable` already answers on its own. A registry
+        built without a receipt gate always answers True, matching
+        `is_startable`'s own fallback when live evidence is not required.
+        """
         if self._receipt_gate is None:
             return True
         return self._receipt_gate.is_proven(configuration_hash)
