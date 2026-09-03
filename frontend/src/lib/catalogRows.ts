@@ -2,7 +2,7 @@ import type {
   AgentDefinitionRevisionListItem,
   WorkflowRevisionSummary
 } from "../api/client";
-import { catalogPageCopy } from "./catalogPageCopy";
+import { catalogPageCopy, workflowDetailCopy, type SourceFact } from "./catalogPageCopy";
 import type { CatalogNameState } from "./catalogName";
 import { catalogHeadsOf, isCatalogDisplayName } from "./catalogName";
 import { humanStartRefusal } from "./humanRefusal";
@@ -30,6 +30,14 @@ export interface CatalogWorkflowRow {
    */
   name: string;
   description: string | null;
+  /**
+   * Where this revision's bytes first entered the catalog from, for a
+   * revision a connected source delivered; `null` for a file dropped in by
+   * hand, the only way in before a Git link (#660) exists. Formatted by the
+   * one shared owner, `workflowDetailCopy.sourceFact`; `catalogRowFacts`
+   * decides whether the row wears it at all.
+   */
+  source: SourceFact | null;
   /**
    * `null` where this room cannot honestly answer: the catalog is asked by
    * name, and a document that declares none may still be an admitted member
@@ -80,13 +88,12 @@ export interface CatalogWorkflowTiles {
 /**
  * The facts that stand under an entry's name, in reading order.
  *
- * Provenance is the first of them and today always the same sentence: nothing
- * in this build records where bytes came from, and every published revision got
- * here by hand. When the Git link (#660) starts recording a source, ref, commit
- * and path, it replaces that one sentence -- the row's shape does not change.
+ * A row's source fact is the first of them, and `null` wears no chip at
+ * all: a file dropped in by hand names nothing, and a chip every card wears
+ * distinguishes nothing (#1112).
  */
-export function catalogRowFacts(): readonly string[] {
-  return [catalogPageCopy.provenanceManual];
+export function catalogRowFacts(source: SourceFact | null): readonly SourceFact[] {
+  return source === null ? [] : [source];
 }
 
 /**
@@ -116,6 +123,13 @@ export function catalogWorkflowRows(
       title: revision.name,
       name: revision.name,
       description: revision.description,
+      source:
+        revision.provenance === null || revision.provenance === undefined
+          ? null
+          : workflowDetailCopy.sourceFact(
+              revision.provenance.source_commit,
+              revision.provenance.source_path
+            ),
       state: workflowEntryState(revision, catalogByName),
       admittable: isAdmittable(revision),
       newerRevisionAvailable: index === 0 && isAdmittedName && row.revisions.length > 1

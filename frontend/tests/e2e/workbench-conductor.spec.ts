@@ -155,13 +155,24 @@ async function resetAndSeedConductor(page: Page): Promise<{ workflow_revision_ha
   return (await seeded.json()) as { workflow_revision_hash: string };
 }
 
-/** Opens the Workbench and sends the conversation's first message over the
- * real composer, the one act every driver test below needs proven live. */
-async function startConversationOverUi(page: Page, message: string): Promise<Locator> {
+/**
+ * Opens the Workbench and sends the conversation's first message over the
+ * real composer, the one act every driver test below needs proven live.
+ *
+ * Under load the fake executor's own subprocess step -- not the browser --
+ * is what can run long: a locator timeout dressed the wait for that as a
+ * render wait, and a loaded box paid for both together (CI red on #1070,
+ * #1073, #1074, #1086, #1087, always green on rerun -- #1093). This instead
+ * waits, bounded and loud, on the harness's own fence for the round the send
+ * just opened, then treats the DOM assertion as the short render proof it
+ * actually is.
+ */
+async function startConversationOverUi(page: Page, message: string, workflowRevisionHash: string): Promise<Locator> {
   await page.goto("/atelier/chat");
   await page.getByLabel(workbenchPageCopy.composerLabel).fill(message);
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
-  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 60_000 });
+  await waitForFreshConductorRound(page, workflowRevisionHash);
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 5_000 });
   const conversationLink = page.getByRole("link", { name: conductorChatCopy.openEpisode });
   await expect(conversationLink).toBeVisible();
   return conversationLink;
@@ -227,15 +238,68 @@ async function currentWaitExecutionId(
     const fence = await page.request.get(
       `/__e2e/current-wait-execution?public_run_reference=${encodeURIComponent(publicRunReference)}`
     );
-    expect(fence.status()).toBe(200);
+    expect(
+      fence.status(),
+      `run ${publicRunReference}: the harness's next-round fence answered HTTP ${fence.status()} (no fresh WAITING_INPUT yet)`
+    ).toBe(200);
     ({ expected_node_execution_id: expectedNodeExecutionId } = (await fence.json()) as {
       expected_node_execution_id: string;
     });
     if (settledPast !== undefined) {
-      expect(expectedNodeExecutionId).not.toBe(settledPast);
+      expect(
+        expectedNodeExecutionId,
+        `run ${publicRunReference}: the fence still names the already-answered round ${settledPast}`
+      ).not.toBe(settledPast);
     }
   }).toPass({ timeout: 30_000 });
   return expectedNodeExecutionId;
+}
+
+/**
+ * Waits, bounded and loud, for a conversation just started over the UI to
+ * settle at its own fresh wait -- the run reference is not yet known to a
+ * conversation that has no reply yet, so this rediscovers it on every retry
+ * (the durable WAITING_INPUT list carrying this conductor revision, the same
+ * lookup `retireReconciliationFixtures` already performs) and only then
+ * confirms the harness's own fence for it, both inside one bounded poll so
+ * this replaces the locator timeout it stands in for rather than stacking a
+ * second one on top of it. On timeout the failure names the revision, the
+ * run found so far (if any), and the last state this fence actually
+ * observed.
+ */
+async function waitForFreshConductorRound(
+  page: Page,
+  workflowRevisionHash: string
+): Promise<{ publicRunReference: string; expectedNodeExecutionId: string }> {
+  let publicRunReference = "";
+  let expectedNodeExecutionId = "";
+  await expect(async () => {
+    const waiting = await page.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
+    expect(waiting.status()).toBe(200);
+    const { items } = (await waiting.json()) as {
+      items: Array<{ public_run_reference: string; workflow_revision_hash: string }>;
+    };
+    const matches = items.filter((run) => run.workflow_revision_hash === workflowRevisionHash);
+    expect(
+      matches,
+      `revision ${workflowRevisionHash}: expected exactly one run waiting for input, found ${matches.length}`
+    ).toHaveLength(1);
+    const [match] = matches;
+    if (match === undefined) throw new Error(`revision ${workflowRevisionHash}: no matching run after the length check above`);
+    publicRunReference = match.public_run_reference;
+
+    const fence = await page.request.get(
+      `/__e2e/current-wait-execution?public_run_reference=${encodeURIComponent(publicRunReference)}`
+    );
+    expect(
+      fence.status(),
+      `run ${publicRunReference}: the harness's next-round fence answered HTTP ${fence.status()} (no fresh WAITING_INPUT yet)`
+    ).toBe(200);
+    ({ expected_node_execution_id: expectedNodeExecutionId } = (await fence.json()) as {
+      expected_node_execution_id: string;
+    });
+  }).toPass({ timeout: 55_000 });
+  return { publicRunReference, expectedNodeExecutionId };
 }
 
 /**
@@ -313,12 +377,19 @@ test("the composer stays honestly locked without a conductor, then starts one co
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
 
   // The first message starts exactly one loop run and becomes its first wait
-  // answer; the report returns through that run's full event stream.
-  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 60_000 });
+  // answer; the report returns through that run's full event stream. Waits on
+  // the harness's own fence first (see `startConversationOverUi`'s doc) --
+  // the render check below is then a short proof, not the wait itself.
+  const { publicRunReference, expectedNodeExecutionId: firstRoundExecutionId } = await waitForFreshConductorRound(
+    page,
+    seededConductor.workflow_revision_hash
+  );
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 5_000 });
   const conversationLink = page.getByRole("link", { name: conductorChatCopy.openEpisode });
   await expect(conversationLink).toBeVisible();
   await page.getByLabel(workbenchPageCopy.composerLabel).fill("Und noch eine Nachricht.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
+  await currentWaitExecutionId(page, publicRunReference, firstRoundExecutionId);
   // Two reply lines, counted by the text they carry. Not `{ exact: true }`:
   // Playwright's exact text match compares a whole element's text, and a
   // transcript line also carries its speaker label, so an exact match finds
@@ -326,7 +397,7 @@ test("the composer stays honestly locked without a conductor, then starts one co
   // element holding the reply is the line itself, which is what makes this a
   // count of lines.
   await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(2, {
-    timeout: 60_000
+    timeout: 5_000
   });
   // One run, one link: a second round adds a reply, never a second way to open
   // the same conversation.
@@ -631,8 +702,8 @@ test("many rounds stay one History row, and the round cap at 24 starts a new con
 }) => {
   test.setTimeout(180_000);
 
-  await resetAndSeedConductor(page);
-  const conversationLink = await startConversationOverUi(page, "Round 1.");
+  const seededConductor = await resetAndSeedConductor(page);
+  const conversationLink = await startConversationOverUi(page, "Round 1.", seededConductor.workflow_revision_hash);
   const run = await readConductorRun(page, await conversationRunReference(conversationLink));
 
   // Rounds 2-23 through the same production answer door the composer uses,
@@ -681,8 +752,8 @@ test("a second, conflicting answer that names an already-claimed round is refuse
 }) => {
   test.setTimeout(120_000);
 
-  await resetAndSeedConductor(page);
-  const conversationLink = await startConversationOverUi(page, "Round 1.");
+  const seededConductor = await resetAndSeedConductor(page);
+  const conversationLink = await startConversationOverUi(page, "Round 1.", seededConductor.workflow_revision_hash);
   const run = await readConductorRun(page, await conversationRunReference(conversationLink));
 
   // Round 2's real answer claims its execution id first.
@@ -769,8 +840,8 @@ test("cancel in wait ends the conversation, and the composer opens a new one ins
 }) => {
   test.setTimeout(120_000);
 
-  await resetAndSeedConductor(page);
-  const conversationLink = await startConversationOverUi(page, "Round 1.");
+  const seededConductor = await resetAndSeedConductor(page);
+  const conversationLink = await startConversationOverUi(page, "Round 1.", seededConductor.workflow_revision_hash);
   const publicRunReference = await conversationRunReference(conversationLink);
 
   await conversationLink.click();
@@ -809,7 +880,7 @@ test("a second tab reconstructs the same open conversation and starts nothing si
   test.setTimeout(120_000);
 
   const seededConductor = await resetAndSeedConductor(page);
-  const conversationLink = await startConversationOverUi(page, "Round 1.");
+  const conversationLink = await startConversationOverUi(page, "Round 1.", seededConductor.workflow_revision_hash);
   const publicRunReference = await conversationRunReference(conversationLink);
 
   const secondContext = await browser.newContext();
