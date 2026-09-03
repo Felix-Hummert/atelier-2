@@ -18,13 +18,6 @@ const widths = [
  * about the restart itself, not about the server's seeded state (#742: this
  * suite's server is shared across spec files that may run in any order).
  *
- * The proof stays off any page holding an open durable-event stream (a run
- * cockpit): the harness's graceful shutdown only disables
- * keep-alive on an in-flight connection, it never closes one still
- * streaming, so an open `EventSource` at the moment of the restart would
- * hang `/__e2e/recompose` forever. The Workbench holds no stream (#700
- * scope), so it is both the surface the issue names and a safe one.
- *
  * Which composer hint the Workbench starts on depends on whether an earlier
  * test in this run seeded a conductor -- not this test's question, and not
  * something it may assume either way (the suite runs one shared server, one
@@ -145,4 +138,35 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   await expect(notice).toBeHidden({ timeout: 20_000 });
   await expect(composerHint).toHaveText(healthyComposerHint ?? "");
   await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
+});
+
+/**
+ * A redeploy takes its open sockets with it, and the harness must too (#1114).
+ *
+ * Every room that listens holds a server-sent stream: the Workbench keeps
+ * `GET /events` open for as long as it is on screen (`lib/attentionHold.ts`),
+ * and a stream by its nature never finishes. Uvicorn's graceful shutdown waits
+ * out every live connection, so `/__e2e/recompose` used to park the whole
+ * shared harness on "Waiting for connections to close" until some later step
+ * happened to navigate the stream away -- a wedge every spec after it paid
+ * for. Nothing here closes the stream on the server's behalf: no navigation,
+ * no reload, no page close. The restart has to drop it itself.
+ */
+test("restarts under an open ear, with nothing but the restart to close the stream", async ({ page }) => {
+  test.setTimeout(120_000);
+
+  const attentionStreamOpened = page.waitForResponse(
+    (response) => response.url().endsWith("/atelier/api/v1/events") && response.ok()
+  );
+  await page.goto("/atelier/chat");
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await attentionStreamOpened;
+
+  const restarted = await page.request.post("/__e2e/recompose");
+  expect(restarted.status()).toBe(202);
+  const expectedGeneration = await restarted.text();
+
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
 });
