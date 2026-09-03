@@ -1861,12 +1861,24 @@ DECIDED_EXECUTABLE: dict[str, tuple[bytes, tuple[str, ...]]] = {
         ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
         ("implement",),
     ),
-    # `tools` joined it when an attempt began redeeming the grant a node pins.
-    # What the grant grants is the published revision's word, read where the
-    # reference is resolved; the count is all this pure reading can judge.
+    # `tools` joined it when an attempt began redeeming at most one exec-shaped
+    # and at most one effect-shaped grant a node pins. What each grant grants
+    # is the published revision's word, read where the reference is resolved;
+    # the count is all this pure reading can judge, so two pins are admitted
+    # here -- the finer rule that the two must differ in shape is a
+    # binding-time refusal once their resolved capabilities are known.
     "one pinned tool grant": (
         ONE_AGENT_DOCUMENT
         + b"    tools: [{ref: verify, revision: %s}]\n" % (b"c" * 64),
+        ("implement",),
+    ),
+    "two pinned tool grants": (
+        ONE_AGENT_DOCUMENT
+        + b"""    tools:
+      - {ref: verify, revision: %s}
+      - {ref: publish, revision: %s}
+"""
+        % (b"c" * 64, b"d" * 64),
         ("implement",),
     ),
     "an empty authored tools list": (
@@ -1909,6 +1921,23 @@ DECIDED_EXECUTABLE: dict[str, tuple[bytes, tuple[str, ...]]] = {
         TWO_AGENT_CHAIN + b"    family_differs_from: builder\n",
         ("review",),
     ),
+    # An Action's `body` input is read through the dependency closure ADR 0002
+    # already orders, not through an immediate `depends_on` edge -- a Wait may
+    # stand between the agent that produced the value and the Action that
+    # reads it (#1101).
+    "an action body input read through a wait": (
+        AGENT_THEN_WAIT_CHAIN
+        + b"""  - id: publish
+    type: action
+    operation: {ref: open-pr, revision: "%s"}
+    depends_on: [approve]
+    inputs:
+      - name: body
+        from: {node: implement, output: result}
+"""
+        % (b"e" * 64),
+        ("publish",),
+    ),
 }
 
 
@@ -1935,14 +1964,35 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     # empty list is a statement it obeys rather than one it drops, and it is
     # admitted below with the sources nothing binds yet still refused.
     "an empty authored skills list": ONE_AGENT_DOCUMENT + b"    skills: []\n",
-    "a second tool grant on one node": ONE_AGENT_DOCUMENT
+    "a third tool grant on one node": ONE_AGENT_DOCUMENT
     + b"""    tools:
       - {ref: verify, revision: %s}
       - {ref: publish, revision: %s}
+      - {ref: land, revision: %s}
 """
-    % (b"c" * 64, b"d" * 64),
+    % (b"c" * 64, b"d" * 64, b"e" * 64),
     "an empty authored context list": ONE_AGENT_DOCUMENT
     + b"    required_context: []\n",
+    # The retired rule: an Action's predecessor no longer binds implicitly.
+    # Every Action now declares a bound input form, or it is refused by name
+    # rather than started against an edge nobody wrote as an order (#1101).
+    "an action with no bound input form": ONE_AGENT_DOCUMENT
+    + b"""  - id: publish
+    type: action
+    operation: {ref: open-pr, revision: "%s"}
+    depends_on: [implement]
+"""
+    % (b"e" * 64),
+    "an action body input naming a wait, not an agent": AGENT_THEN_WAIT_CHAIN
+    + b"""  - id: publish
+    type: action
+    operation: {ref: open-pr, revision: "%s"}
+    depends_on: [approve]
+    inputs:
+      - name: body
+        from: {node: approve, output: result}
+"""
+    % (b"e" * 64),
     "a fan-out": TWO_AGENT_CHAIN
     + b"""  - id: document
     type: agent

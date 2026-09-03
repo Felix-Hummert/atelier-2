@@ -59,6 +59,9 @@ nodes:
     type: action
     operation: {{ref: open-pr, revision: {OPEN_PR_OPERATION.revision_hash.value}}}
     depends_on: [implement]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
   - id: approve
     type: wait
     prompt: Approve what the pull request shipped.
