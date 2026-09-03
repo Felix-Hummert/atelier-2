@@ -100,6 +100,9 @@ nodes:
       ref: open-pr
       revision: {OPEN_PR_OPERATION.revision_hash.value}
     depends_on: [implement]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
 """.encode()
 )
 V3_AGENT_OPEN_PR_DOCUMENT = (

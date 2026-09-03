@@ -84,6 +84,9 @@ nodes:
     type: action
     operation: {{ref: open-pr, revision: {operation_revision}}}
     depends_on: [implement]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
 """.encode()
     )
 

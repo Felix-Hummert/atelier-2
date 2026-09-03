@@ -4,7 +4,9 @@
   independent adversarial reviews (PASS on delta); see
   [PR #676](https://github.com/FlexOr2/atelier-2/pull/676). Acceptance decides the
   model, not its existence: decision 6 is the only place that says what is built,
-  and everything else here is proposed and claims nothing about the tree.
+  and everything else here is proposed and claims nothing about the tree. §6
+  amended 2026-09-02 (issue #660, "was ein Agent mitbekommt"); §5's grant count
+  amended 2026-09-03 (issue #1101, `MAXIMUM_REDEEMED_TOOL_GRANTS` 1 → 2).
 - Date: 2026-08-25
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
   (files in git are the source of truth; a run configuration pins exactly; no
@@ -253,6 +255,18 @@ Two constraints already bind and must not be quietly widened:
 one grant — and Claude Code's `mcp__<server>__<tool>` allowlist grammar, which is
 how an admitted server's tools are named and bounded.
 
+**Amendment 2026-09-03 (issue #1101, plan-reviewed on #819): a node pins up to
+two grants, one of each shape.** `MAXIMUM_REDEEMED_TOOL_GRANTS` rises 1 → 2: an
+Agent node may bind one **exec-shaped** grant, redeemed inside its own attempt,
+and one **effect-shaped** grant, redeemed after it succeeds, together. Two
+grants of the *same* shape stay refused — which shape a pin is is only known
+once its published bytes are read, so the refusal is named there rather than
+counted at the authored form: once at start, before the run exists, once its
+published capabilities resolve (`application/evaluate_executability.py`), and
+again at binding time as the redemption-time invariant
+(`adapters/dbos/agent_effect_grants.py`). The widening is in count, not in what
+one node may still contradict.
+
 **`.mcp.json` environment values are reference-only, and the reference form is
 defined rather than guessed.** A **reference** is a name whose value is fetched at
 use: an `${…}` placeholder the provider or runner substitutes from its own
@@ -347,6 +361,12 @@ The names below are proposed with the model; each joins the snake_case `*Refusal
 | An agent reaches tools or servers nobody granted | the node's grant decides, the file's `tools:` does not (§1); one node pins one grant (§5) |
 | A moved branch, force-push or deleted repository destroys a run's proof | the bytes live in `published_revisions` by hash (§3) |
 | Content arrives the operator never read and becomes the next binding's head | intake is a click; scanning writes nothing (§3) |
+
+**Amendment 2026-09-03 (issue #1101):** the covering control for "An agent
+reaches tools or servers nobody granted" is now: the node's grant decides, the
+file's `tools:` does not (§1); a node pins at most one exec-shaped and one
+effect-shaped grant, and the second grant of a shape is refused by resolved
+capability, at start and again at binding (§5, amended above).
 
 ## Consequences
 
