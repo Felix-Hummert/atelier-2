@@ -1945,6 +1945,9 @@ nodes:
     type: action
     operation: {ref: open-pr, revision: schema-operation}
     depends_on: [agent]
+    inputs:
+      - name: body
+        from: {node: agent, output: request}
 """
     )
     waiting_run_id = RunId("waiting")

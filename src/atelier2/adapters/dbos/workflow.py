@@ -12,7 +12,8 @@ from atelier2.adapters.dbos.advancer import (
     prepare_graph_action,
     prepare_graph_agent_open_pr,
     prepare_graph_agent_push,
-    read_pinned_tool_grant,
+    read_pinned_effect_tool_grant,
+    read_pinned_exec_tool_grant,
     redeem_agent_effect,
 )
 from atelier2.adapters.dbos.agent_attempt_store import (
@@ -147,7 +148,6 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
     ToolGrantCapability,
-    redeems_as_platform_effect,
 )
 from atelier2.contracts.workflows import (
     RunCompletes,
@@ -546,10 +546,7 @@ def _pinned_tool_grant(
     immutable graph where its effect is prepared, so the binding leaves it out
     rather than force it a `project_source` it has no use for.
     """
-    grant = read_pinned_tool_grant(session, node)
-    if grant is None or redeems_as_platform_effect(grant.capability):
-        return None
-    return grant
+    return read_pinned_exec_tool_grant(session, node)
 
 
 def _pinned_maximum_assistant_turns(
@@ -800,7 +797,7 @@ def register_durable_run_workflow(
         """
         grant = datasource.run_tx_step(
             {"name": "agent-effect-kind"},
-            lambda: read_pinned_tool_grant(
+            lambda: read_pinned_effect_tool_grant(
                 datasource.sql_session(),
                 load_graph(datasource.sql_session(), revision_hash).node(node_id),
             ),
