@@ -28,6 +28,7 @@
   } from "../lib/readResource";
   import { workflowPath } from "../lib/route";
   import { readEveryRevision } from "../lib/runPages";
+  import { matchesSearchTerm } from "../lib/searchTerm";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
@@ -252,12 +253,8 @@
     rows: readonly T[],
     term: string
   ): T[] {
-    const normalizedTerm = term.trim().toLocaleLowerCase();
-    if (normalizedTerm === "") return [...rows];
     return rows.filter((row) =>
-      [row.title, row.description, "provider" in row ? row.provider : ""]
-        .filter((value): value is string => value !== null)
-        .some((value) => value.toLocaleLowerCase().includes(normalizedTerm))
+      matchesSearchTerm([row.title, row.description, "provider" in row ? row.provider : ""], term)
     );
   }
 
