@@ -448,3 +448,34 @@ class SourceIntake:
             raise TypeError("a published revision hash must use its typed contract")
         if not isinstance(self.source_commit, SourceCommit):
             raise TypeError("a source commit must use its typed contract")
+
+
+@dataclass(frozen=True)
+class RevisionProvenance:
+    """Where one published revision's bytes first came in from.
+
+    Beside the identity, never part of it (ADR 0007): the same bytes stay one
+    revision however many sources carry them, and this says which delivery
+    brought them into the catalog first. The location and the ref are the
+    source's newest configuration rather than the one that delivered it, while
+    editing a registered selection is itself deferred; the commit and the path
+    are the delivery's own and never move.
+    """
+
+    source_id: DefinitionSourceId
+    location: RepositoryLocation
+    ref: RepositoryRef
+    commit: SourceCommit
+    path: RepositoryPath
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_id, DefinitionSourceId):
+            raise TypeError("a source id must use its typed contract")
+        if not isinstance(self.location, RepositoryLocation):
+            raise TypeError("a repository location must use its typed contract")
+        if not isinstance(self.ref, RepositoryRef):
+            raise TypeError("a repository ref must use its typed contract")
+        if not isinstance(self.commit, SourceCommit):
+            raise TypeError("a source commit must use its typed contract")
+        if not isinstance(self.path, RepositoryPath):
+            raise TypeError("a repository path must use its typed contract")

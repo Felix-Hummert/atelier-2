@@ -50,6 +50,11 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_REPOSITORY_LOCATION_CHARACTERS,
+    MAXIMUM_REPOSITORY_PATH_CHARACTERS,
+    MAXIMUM_REPOSITORY_REF_CHARACTERS,
+)
 from atelier2.contracts.host_configuration import (
     MAXIMUM_ACTIVE_PROJECT_SOURCES,
     MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
@@ -230,6 +235,13 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "QueueProjectPolicyResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "QueueProjectPolicyResource.automation_label": (
         MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS
+    ),
+    "WorkflowRevisionProvenanceResource.source_location": (
+        MAXIMUM_REPOSITORY_LOCATION_CHARACTERS
+    ),
+    "WorkflowRevisionProvenanceResource.source_ref": MAXIMUM_REPOSITORY_REF_CHARACTERS,
+    "WorkflowRevisionProvenanceResource.source_path": (
+        MAXIMUM_REPOSITORY_PATH_CHARACTERS
     ),
     "NodeRefusalOutputResource.value_base64": MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     "AssistantTurnEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,

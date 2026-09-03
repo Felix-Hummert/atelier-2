@@ -6,6 +6,10 @@ import re
 from dataclasses import dataclass
 
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_GIT_OBJECT_NAME_CHARACTERS,
+    MINIMUM_GIT_OBJECT_NAME_CHARACTERS,
+)
 from atelier2.contracts.hashing import SHA256_HEX_DIGEST
 from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
@@ -70,6 +74,11 @@ its Zod mirror cannot each pick a different one.
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
+SOURCE_COMMIT_PATTERN = (
+    f"^[0-9a-f]{{{MINIMUM_GIT_OBJECT_NAME_CHARACTERS},"
+    f"{MAXIMUM_GIT_OBJECT_NAME_CHARACTERS}}}$"
+)
+"""A git object name as its durable owner bounds it: SHA-1 or SHA-256, lowercase."""
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
 PUBLIC_PROJECT_REFERENCE_PATTERN = r"^project1\.[A-Za-z0-9_-]+$"
 PUBLIC_SOURCE_REFERENCE_PATTERN = r"^source1\.[A-Za-z0-9_-]+$"

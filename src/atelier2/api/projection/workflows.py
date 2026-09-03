@@ -17,6 +17,7 @@ from atelier2.api.wire.resources import (
     WorkflowLoopVerdictResourceV3,
     WorkflowNodePreviewResourceV3,
     WorkflowRevisionDetailResource,
+    WorkflowRevisionProvenanceResource,
     WorkflowRevisionSummaryResourceV2,
 )
 from atelier2.application.read_workflow_revisions import (
@@ -25,6 +26,7 @@ from atelier2.application.read_workflow_revisions import (
     WorkflowRevisionRead,
     WorkflowRevisionsDescribed,
 )
+from atelier2.contracts.definition_sources import RevisionProvenance
 from atelier2.contracts.effects import (
     EffectReceipt,
 )
@@ -168,6 +170,22 @@ def graph_resource(
     )
 
 
+def provenance_resource(
+    provenance: RevisionProvenance | None,
+) -> WorkflowRevisionProvenanceResource | None:
+    """Where a revision came in from, or nothing where no source delivered it."""
+
+    if provenance is None:
+        return None
+    return WorkflowRevisionProvenanceResource(
+        source_id=provenance.source_id.value,
+        source_location=provenance.location.value,
+        source_ref=provenance.ref.value,
+        source_commit=provenance.commit.value,
+        source_path=provenance.path.value,
+    )
+
+
 def workflow_revision_summary_resource(
     described: DescribedWorkflowRevision,
 ) -> WorkflowRevisionSummaryResourceV2:
@@ -181,6 +199,7 @@ def workflow_revision_summary_resource(
         not_executable_reason=described.not_executable_reason,
         name=graph.name,
         description=graph.description,
+        provenance=provenance_resource(described.provenance),
     )
 
 
@@ -207,6 +226,7 @@ def workflow_revision_detail_resource(
             read.not_executable_reason,
             read.wait_answer_classifications,
         ),
+        provenance=provenance_resource(read.provenance),
     )
 
 

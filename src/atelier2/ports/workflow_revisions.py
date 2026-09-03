@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.definition_sources import RevisionProvenance
 from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
@@ -75,7 +76,15 @@ class ProjectionLimitExceeded(ValueError):
 
 @dataclass(frozen=True)
 class WorkflowRevisionFound:
+    """One stored revision, with where its bytes first entered the catalog.
+
+    The origin travels with the single read for the same reason it travels
+    with a listed one: a detail view that had to ask a second door would
+    answer `null` wherever nobody asked.
+    """
+
     projection: WorkflowRevisionProjection
+    provenance: RevisionProvenance | None = None
 
 
 @dataclass(frozen=True)

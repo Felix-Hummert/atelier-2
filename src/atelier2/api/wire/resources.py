@@ -30,6 +30,7 @@ from atelier2.api.references import (
     PUBLIC_SOURCE_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
+    SOURCE_COMMIT_PATTERN,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -51,6 +52,11 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_REPOSITORY_LOCATION_CHARACTERS,
+    MAXIMUM_REPOSITORY_PATH_CHARACTERS,
+    MAXIMUM_REPOSITORY_REF_CHARACTERS,
 )
 from atelier2.contracts.host_configuration import (
     EXACT_MODEL_ID_PATTERN,
@@ -688,6 +694,25 @@ class WorkflowGraphResourceV3(ApiModel):
         return self
 
 
+class WorkflowRevisionProvenanceResource(ApiModel):
+    """Where a revision's bytes first entered the catalog from.
+
+    The commit and the path are the delivery's own; the location and the ref
+    are the source as it is configured now. A revision no definition source
+    delivered carries no provenance at all rather than empty strings.
+    """
+
+    source_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    source_location: str = Field(
+        min_length=1, max_length=MAXIMUM_REPOSITORY_LOCATION_CHARACTERS
+    )
+    source_ref: str = Field(min_length=1, max_length=MAXIMUM_REPOSITORY_REF_CHARACTERS)
+    source_commit: str = Field(pattern=SOURCE_COMMIT_PATTERN)
+    source_path: str = Field(
+        min_length=1, max_length=MAXIMUM_REPOSITORY_PATH_CHARACTERS
+    )
+
+
 class WorkflowRevisionSummaryResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
@@ -696,6 +721,7 @@ class WorkflowRevisionDetailResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
     graph: WorkflowGraphResourceV3
+    provenance: WorkflowRevisionProvenanceResource | None = None
 
 
 class CatalogNameResolutionResource(ApiModel):
@@ -836,6 +862,7 @@ class WorkflowRevisionSummaryResourceV2(ApiModel):
     not_executable_reason: str | None
     name: str
     description: str | None
+    provenance: WorkflowRevisionProvenanceResource | None = None
 
     @model_validator(mode="after")
     def validate_reason_shape(self) -> WorkflowRevisionSummaryResourceV2:

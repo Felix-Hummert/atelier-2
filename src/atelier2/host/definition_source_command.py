@@ -29,6 +29,11 @@ from atelier2.adapters.dbos.schema import UnsupportedSchemaVersion, initialize_s
 from atelier2.adapters.git_definition_source import GitDefinitionSource
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.limits import durable_projection_limit
+from atelier2.application.connect_definition_source import (
+    ConnectDefinitionSourceResult,
+    ConnectRefused,
+    connect_definition_source,
+)
 from atelier2.application.intake_definition_source import (
     DefinitionSourceIntaken,
     IntakeDefinitionSourceResult,
@@ -72,20 +77,13 @@ from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.host.run_command import catalog_activated_at
 from atelier2.host.serving import api_limits
 from atelier2.ports.definition_sources import (
-    DefinitionSourceReader,
     DefinitionSourceRegistered,
-    DefinitionSourceRegistrar,
     DefinitionSourceUnchanged,
-    DefinitionSourceUnreadable,
     PathAlreadyInCatalog,
     PathIntaken,
     SourceIntakeConflict,
     SourceIntakeRefused,
 )
-from atelier2.ports.durable_runs import (
-    DurableStateCorrupt as PortDurableStateCorrupt,
-)
-from atelier2.ports.durable_runs import DurableWriteUnavailable
 
 CONNECT_COMMAND = "connect"
 SCAN_COMMAND = "scan"
@@ -214,22 +212,17 @@ def _connect(parsed: argparse.Namespace) -> int:
             initialize_schema(engine)
         except UnsupportedSchemaVersion as refusal:
             raise _CommandRefused(str(refusal)) from refusal
-        return connect_definition_source(
+        result = connect_definition_source(
             configuration, GitDefinitionSource(), DbosDefinitionSources(engine)
         )
     finally:
         engine.dispose()
+    return _connect_report(result)
 
 
-def connect_definition_source(
-    configuration: DefinitionSourceConfiguration,
-    reader: DefinitionSourceReader,
-    registrar: DefinitionSourceRegistrar,
-) -> int:
-    """Verify the source answers, then record it, and say which of the two happened."""
+def _connect_report(result: ConnectDefinitionSourceResult) -> int:
+    """What the operator is told about a source this command just answered for."""
 
-    _verified(configuration, reader)
-    result = registrar.register(configuration)
     match result:
         case DefinitionSourceRegistered(registered):
             configured = registered.configuration
@@ -250,9 +243,11 @@ def connect_definition_source(
                 f"revision {standing.revision_number} is unchanged"
             )
             return 0
-        case DurableWriteUnavailable():
+        case ConnectRefused(refusal, detail):
+            return _refused(f"{refusal.value}: {detail}")
+        case WriteUnavailable():
             return _refused("the store could not be written")
-        case PortDurableStateCorrupt():
+        case DurableStateCorrupt():
             return _refused("the store holds a definition source it cannot read back")
         case _ as unreachable:
             assert_never(unreachable)
@@ -415,23 +410,6 @@ def _configured(parsed: argparse.Namespace) -> DefinitionSourceConfiguration:
         )
     except (TypeError, ValueError) as error:
         raise _CommandRefused(str(error)) from error
-
-
-def _verified(
-    configuration: DefinitionSourceConfiguration, reader: DefinitionSourceReader
-) -> None:
-    """Answer for the location and the ref before recording either.
-
-    Only those two: there is no disconnect yet, so a registration pointing at
-    no repository or no ref would stand forever -- while a selection that
-    matches nothing today is an ordinary thing to configure before the files
-    exist, and the scan is where it shows.
-    """
-
-    try:
-        reader.resolve(configuration)
-    except DefinitionSourceUnreadable as refused:
-        raise _CommandRefused(f"{refused.refusal.value}: {refused.detail}") from refused
 
 
 def _selection(declared: str) -> DefinitionSourceSelection:

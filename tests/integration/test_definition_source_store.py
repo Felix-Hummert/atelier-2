@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -36,6 +37,7 @@ from atelier2.adapters.dbos.schema import (
     initialize_schema,
     published_revisions,
 )
+from atelier2.adapters.dbos.starter import DbosWorkflowRevisionPublisher
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -53,11 +55,16 @@ from atelier2.contracts.definition_sources import (
     RepositoryLocation,
     RepositoryPath,
     RepositoryRef,
+    RevisionProvenance,
     SelectionPattern,
     SourceCommit,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.workflow_projections import (
+    DescribedWorkflowRevisionPage,
+    EnrichedPageBudget,
+)
 from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
 from atelier2.host import main
 from atelier2.ports.definition_sources import (
@@ -66,10 +73,13 @@ from atelier2.ports.definition_sources import (
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
 )
+from atelier2.ports.workflow_revisions import WorkflowRevisionFound
+from tests.scenarios.api import durable_queries
 from tests.scenarios.workflows import declared_output
 
 MAIN = "refs/heads/main"
 WORKFLOW_SELECTION = "workflows/*.yaml"
+PAGE_BUDGET = EnrichedPageBudget(maximum_nodes=1_000, maximum_document_bytes=1 << 20)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _AUTHORED_BY_THE_SCENARIO = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -172,12 +182,14 @@ def stored_intake(
     path: str,
     document: bytes,
     intake_number: int,
+    commit: str = "a" * 40,
+    intaken_at: str = "2026-09-02T00:00:00Z",
 ) -> None:
-    """One provenance row as the intake operation will write it.
+    """One provenance row as the intake operation writes it.
 
-    Written here rather than through an application door because the intake
-    operation is the next slice; what this slice owes is that a scan reads the
-    highest of these, and that is exactly what these rows let it be asked.
+    Written here rather than through the intake door where a scenario needs a
+    delivery that door cannot reach today -- two sources delivering one
+    revision -- and where only the row itself is what a reader is asked about.
     """
 
     published = PublishedRevisionHash.of(document)
@@ -198,9 +210,9 @@ def stored_intake(
                 intake_number=intake_number,
                 revision_kind=RevisionKind.WORKFLOW.value,
                 revision_hash=published.value,
-                source_commit="a" * 40,
+                source_commit=commit,
                 intaken_by="felix",
-                intaken_at="2026-09-02T00:00:00Z",
+                intaken_at=intaken_at,
             )
         )
 
@@ -900,3 +912,168 @@ def test_bytes_the_catalog_holds_under_another_name_refuse_the_whole_batch(
     assert refused.startswith("refused workflows/z-last.yaml")
     assert "already belong to lineage" in refused
     assert logical_dump(database) == settled
+
+
+def described_page(engine: Engine, limit: int = 50) -> DescribedWorkflowRevisionPage:
+    listed = durable_queries(engine).list_described_workflow_revisions(
+        None, limit, PAGE_BUDGET
+    )
+    assert isinstance(listed, DescribedWorkflowRevisionPage)
+    return listed
+
+
+def listed_provenance(engine: Engine) -> dict[str, RevisionProvenance | None]:
+    """Where each listed revision came from, as the described catalog answers it."""
+
+    return {
+        listed.projection.revision.revision_hash.value: listed.provenance
+        for listed in described_page(engine).items
+    }
+
+
+class ExecutedStatements:
+    """Every statement a real engine's cursor ran while this was listening."""
+
+    def __init__(self, engine: Engine) -> None:
+        self.statements: list[str] = []
+        event.listens_for(engine, "before_cursor_execute")(self._record)
+
+    def _record(
+        self, _connection: object, _cursor: object, statement: str, *_rest: object
+    ) -> None:
+        self.statements.append(statement)
+
+    @property
+    def selects(self) -> tuple[str, ...]:
+        return tuple(
+            statement
+            for statement in self.statements
+            if statement.lstrip().upper().startswith("SELECT")
+        )
+
+
+def test_the_described_catalog_names_the_source_an_intaken_revision_came_from(
+    tmp_path: Path, database: Path, engine: Engine
+) -> None:
+    """Whoever pulled a piece out of a source sees that on the revision itself."""
+
+    document = workflow_named("build")
+    repository = tmp_path / "definitions.git"
+    commit = bare_repository_of(repository, {"workflows/build.yaml": document})
+    source_id = connect(database, repository)
+    assert intake(database, source_id) == 0
+    authored_here = WorkflowRevision(workflow_named("authored-here"))
+    DbosWorkflowRevisionPublisher(engine).publish(authored_here)
+
+    provenance = listed_provenance(engine)
+
+    assert provenance[WorkflowRevision(document).revision_hash.value] == (
+        RevisionProvenance(
+            DefinitionSourceId(source_id),
+            RepositoryLocation(str(repository)),
+            RepositoryRef(MAIN),
+            SourceCommit(commit),
+            RepositoryPath("workflows/build.yaml"),
+        )
+    )
+    assert provenance[authored_here.revision_hash.value] is None
+
+
+def test_the_first_intake_of_one_revision_is_the_origin_it_keeps(
+    engine: Engine,
+) -> None:
+    """The same bytes may arrive twice; where they came from is where they began.
+
+    Written straight into the store because the schema permits what the intake
+    door does not reach today: one revision hash delivered by two sources, or at
+    two paths. What the catalog read may never do is answer with whichever row
+    the store happened to return first.
+    """
+
+    document = workflow_named("build")
+    DbosWorkflowRevisionPublisher(engine).publish(WorkflowRevision(document))
+    first = registration(location="/srv/first.git")
+    second = registration(location="/srv/second.git")
+    sources = DbosDefinitionSources(engine)
+    assert isinstance(sources.register(first), DefinitionSourceRegistered)
+    assert isinstance(sources.register(second), DefinitionSourceRegistered)
+    stored_intake(
+        engine,
+        second,
+        "flows/late.yaml",
+        document,
+        1,
+        commit="b" * 40,
+        intaken_at="2026-09-02T12:00:00Z",
+    )
+    stored_intake(
+        engine,
+        first,
+        "workflows/early.yaml",
+        document,
+        1,
+        commit="a" * 40,
+        intaken_at="2026-09-02T08:00:00Z",
+    )
+
+    assert listed_provenance(engine) == {
+        WorkflowRevision(document).revision_hash.value: RevisionProvenance(
+            first.source_id,
+            RepositoryLocation("/srv/first.git"),
+            RepositoryRef(MAIN),
+            SourceCommit("a" * 40),
+            RepositoryPath("workflows/early.yaml"),
+        )
+    }
+
+
+def test_the_same_commit_taken_in_again_leaves_the_origin_alone(
+    tmp_path: Path, database: Path, engine: Engine
+) -> None:
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"workflows/build.yaml": workflow_named("build")})
+    source_id = connect(database, repository)
+    assert intake(database, source_id) == 0
+    after_the_first = listed_provenance(engine)
+
+    assert intake(database, source_id) == 0
+
+    assert listed_provenance(engine) == after_the_first
+
+
+def test_one_revision_read_alone_names_the_origin_the_listing_names(
+    tmp_path: Path, database: Path, engine: Engine
+) -> None:
+    """A detail read that never joined the origin would answer null where a list does not."""
+
+    document = workflow_named("build")
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"workflows/build.yaml": document})
+    assert intake(database, connect(database, repository)) == 0
+    revision_hash = WorkflowRevision(document).revision_hash
+
+    found = durable_queries(engine).get_workflow_revision(revision_hash)
+
+    assert isinstance(found, WorkflowRevisionFound)
+    assert found.provenance == listed_provenance(engine)[revision_hash.value]
+
+
+def test_a_described_page_costs_one_statement_whatever_it_carries(
+    tmp_path: Path, database: Path, engine: Engine
+) -> None:
+    """The origin travels on the page's own statement, not on a read per revision."""
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(
+        repository,
+        {f"workflows/{name}.yaml": workflow_named(name) for name in ("a", "b", "c")},
+    )
+    assert intake(database, connect(database, repository)) == 0
+
+    assert {limit: _selects_listing(engine, limit) for limit in (1, 3)} == {1: 1, 3: 1}
+
+
+def _selects_listing(engine: Engine, limit: int) -> int:
+    executed = ExecutedStatements(engine)
+    assert len(described_page(engine, limit).items) == limit
+    return len(executed.selects)
