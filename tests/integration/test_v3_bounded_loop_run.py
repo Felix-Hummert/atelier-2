@@ -15,14 +15,12 @@ there. A loop whose own answer ends it earlier is the verdict-steered kind, and
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from threading import Event
 
 import pytest
 import sqlalchemy as sa
-from dbos import DBOS
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -95,6 +93,7 @@ from tests.scenarios.durable_state import (
     canonical_loopback_effects,
     canonical_runtime_settings,
 )
+from tests.scenarios.run_waiting import wait_for_workflow_completion
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
     LOOPED_LINE_DOCUMENT,
@@ -238,19 +237,18 @@ def finish_gated_node(
     execution = NodeExecutionId.for_node(
         run_id, workflow.revision_hash, node_id, round_ordinal
     )
-    DBOS.retrieve_workflow(node_workflow_id_for(execution)).get_result()
+    wait_for_workflow_completion(
+        node_workflow_id_for(execution),
+        f"the gated {node_id!r} node in round {round_ordinal}",
+    )
 
 
 def wait_for_output_schema_repair(
-    runtime: DbosRuntime,
     entered: Event,
     recording: RecordingAgentExecutorFactoryV2,
 ) -> None:
     wait_for_gated_entry(
-        runtime,
-        RUN,
-        entered,
-        "the output-schema repair never entered the provider boundary",
+        entered, "the output-schema repair never entered the provider boundary"
     )
     assert recording.opened is not None
     repair_request = recording.opened.requests[-1]
@@ -259,82 +257,32 @@ def wait_for_output_schema_repair(
         repair_request.request_hash,
         REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     )
-    DBOS.retrieve_workflow(replacement_workflow_id_for(repair_attempt)).get_result()
+    wait_for_workflow_completion(
+        replacement_workflow_id_for(repair_attempt),
+        "the output-schema repair",
+    )
 
 
 def start_and_run(runtime: DbosRuntime) -> WorkflowRevision:
     workflow = start_loop(runtime)
     runtime.launch()
-    wait_for_node_workflow_completion(
-        NodeExecutionId.for_node(
-            RUN,
-            workflow.revision_hash,
-            "review",
-            LOOPED_LINE_MAXIMUM_ROUNDS,
-        )
+    final_execution = NodeExecutionId.for_node(
+        RUN,
+        workflow.revision_hash,
+        "review",
+        LOOPED_LINE_MAXIMUM_ROUNDS,
+    )
+    wait_for_workflow_completion(
+        node_workflow_id_for(final_execution),
+        "the final round's review node",
     )
     return workflow
 
 
-def wait_for_node_workflow_completion(execution: NodeExecutionId) -> None:
-    deadline = time.monotonic() + 16
-    workflow_id = node_workflow_id_for(execution)
-    while time.monotonic() < deadline:
-        if DBOS.get_workflow_status(workflow_id) is not None:
-            DBOS.retrieve_workflow(workflow_id).get_result()
-            return
-        time.sleep(0.025)
-    raise AssertionError("the final round's node workflow was never created")
-
-
-def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
-    deadline = time.monotonic() + 16
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
-                )
-            )
-        if observed == state.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
-
-
-_GATED_ENTRY_STALL_SECONDS = 5.0
-_GATED_ENTRY_CEILING_SECONDS = 60.0
-
-
-def wait_for_gated_entry(
-    runtime: DbosRuntime, run_id: RunId, entered: Event, message: str
-) -> None:
-    """Wait for a gated node to reach the provider boundary.
-
-    A single fixed ceiling races against full parallel test load: the run's
-    earlier, unblocked rounds are real DBOS workflow work whose scheduling
-    can slow down without the run ever stalling. So the wait renews itself
-    for as long as the run keeps writing new durable events, and only gives
-    up once the store stops advancing (or a generous absolute ceiling is
-    reached, as a backstop against a genuine deadlock).
-    """
-    ceiling = time.monotonic() + _GATED_ENTRY_CEILING_SECONDS
-    stall_deadline = time.monotonic() + _GATED_ENTRY_STALL_SECONDS
-    observed_event_count = -1
-    while not entered.wait(timeout=0.05):
-        now = time.monotonic()
-        if now >= ceiling or now >= stall_deadline:
-            raise AssertionError(message)
-        with runtime.engine.connect() as connection:
-            event_count = connection.scalar(
-                sa.select(sa.func.count())
-                .select_from(run_events)
-                .where(run_events.c.run_id == run_id.value)
-            )
-        if event_count != observed_event_count:
-            observed_event_count = event_count
-            stall_deadline = time.monotonic() + _GATED_ENTRY_STALL_SECONDS
+def wait_for_gated_entry(entered: Event, message: str) -> None:
+    """Wait loudly for a gated node to reach the provider boundary."""
+    if not entered.wait(timeout=60):
+        raise AssertionError(message)
 
 
 def executions_of(workflow: WorkflowRevision) -> dict[str, tuple[str, int]]:
@@ -385,9 +333,7 @@ def test_a_live_second_round_and_its_healthy_peer_remain_readable(
     workflow = start_loop(started_runtime)
     start_healthy_peer(started_runtime)
     started_runtime.launch()
-    wait_for_gated_entry(
-        started_runtime, RUN, entered, "the loop never entered round two"
-    )
+    wait_for_gated_entry(entered, "the loop never entered round two")
     queries = durable_queries(started_runtime.engine)
     execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, "implement", 2)
 
@@ -438,9 +384,7 @@ def test_a_completed_three_round_loop_has_one_public_query_truth(
     recording.opened.command = command
     workflow = start_loop(started_runtime)
     started_runtime.launch()
-    wait_for_gated_entry(
-        started_runtime, RUN, entered, "the loop never entered its final node"
-    )
+    wait_for_gated_entry(entered, "the loop never entered its final node")
     finish_gated_node(RUN, workflow, "review", LOOPED_LINE_MAXIMUM_ROUNDS, release)
     queries = durable_queries(started_runtime.engine)
 
@@ -497,11 +441,9 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
     recording.opened.command = command
     workflow = start_loop(started_runtime)
     started_runtime.launch()
-    wait_for_gated_entry(
-        started_runtime, RUN, entered, "the loop never entered its failing round"
-    )
+    wait_for_gated_entry(entered, "the loop never entered its failing round")
     finish_gated_node(RUN, workflow, "implement", 2, release)
-    wait_for_output_schema_repair(started_runtime, replacement_entered, recording)
+    wait_for_output_schema_repair(replacement_entered, recording)
     queries = durable_queries(started_runtime.engine)
     execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, "implement", 2)
 
