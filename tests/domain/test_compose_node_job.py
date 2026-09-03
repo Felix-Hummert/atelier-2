@@ -55,14 +55,20 @@ def test_the_same_orders_compose_the_same_job_whatever_order_they_arrive_in() ->
     ) < node_job("Plate it.", supplied).index(ORDER_HEADING.format(name="side"))
 
 
-def test_only_a_declared_root_string_order_is_rendered_raw() -> None:
+def test_a_declared_root_string_order_renders_its_raw_text_verbatim() -> None:
+    """Since #1091, a `\"string\"`-typed order's stored bytes ARE its text.
+
+    `read_authored_instance_document` admits the order's raw UTF-8 text
+    directly, so there is no JSON-quoting layer left here to strip -- unlike a
+    JSON-typed order, whose stored bytes stay its literal JSON text.
+    """
     composed = node_job(
         "Review it.",
         (
             RunInput(
                 "diff",
                 SCHEMA,
-                b'"diff --git a/file.py b/file.py\\n+line"',
+                b"diff --git a/file.py b/file.py\n+line",
                 RunInputSchemaKind.PLAIN_STRING,
             ),
             RunInput("metadata", SCHEMA, b'{ "files": 1 }'),
@@ -83,14 +89,14 @@ def test_only_a_declared_root_string_order_is_rendered_raw() -> None:
     )
 
 
-def test_the_legacy_composition_keeps_declared_root_strings_json_encoded() -> None:
+def test_the_legacy_composition_also_renders_a_declared_root_strings_raw_text() -> None:
     composed = node_job(
         "Review it.",
         (
             RunInput(
                 "diff",
                 SCHEMA,
-                b'"diff --git a/file.py b/file.py\\n+line"',
+                b"diff --git a/file.py b/file.py\n+line",
                 RunInputSchemaKind.PLAIN_STRING,
             ),
         ),
@@ -101,7 +107,7 @@ def test_the_legacy_composition_keeps_declared_root_strings_json_encoded() -> No
         [
             "Review it.",
             ORDER_HEADING.format(name="diff"),
-            '"diff --git a/file.py b/file.py\\n+line"',
+            "diff --git a/file.py b/file.py\n+line",
         ]
     )
 
@@ -154,27 +160,35 @@ def test_node_job_refuses_every_version_and_repair_payload_mismatch(
         )
 
 
-def test_current_and_legacy_compositions_keep_their_exact_published_preimages() -> None:
+def test_current_and_legacy_compositions_agree_on_a_declared_root_strings_preimage() -> (
+    None
+):
+    """Since #1091, the two versions render an order identically.
+
+    They used to diverge because the current composition stripped a
+    JSON-quoting layer the legacy one kept; that layer no longer exists (a
+    `\"string\"`-typed order's stored bytes are already its raw text), so the
+    request hash a caller gets is the same under either name.
+    """
     supplied = (
         RunInput(
             "diff",
             SCHEMA,
-            b'"diff --git a/file.py b/file.py\\n+line"',
+            b"diff --git a/file.py b/file.py\n+line",
             RunInputSchemaKind.PLAIN_STRING,
         ),
     )
-
-    assert node_job(
-        "Review it.",
-        supplied,
-        composition_version=NodeJobCompositionVersion.LEGACY,
-    ).encode("utf-8") == (
-        b'Review it.\n\n--- order: diff ---\n\n"diff --git a/file.py b/file.py\\n+line"'
-    )
-    assert node_job(
-        "Review it.",
-        supplied,
-        composition_version=NodeJobCompositionVersion.CURRENT,
-    ).encode("utf-8") == (
+    expected_preimage = (
         b"Review it.\n\n--- order: diff ---\n\ndiff --git a/file.py b/file.py\n+line"
     )
+
+    for composition_version in (
+        NodeJobCompositionVersion.LEGACY,
+        NodeJobCompositionVersion.CURRENT,
+    ):
+        assert (
+            node_job(
+                "Review it.", supplied, composition_version=composition_version
+            ).encode("utf-8")
+            == expected_preimage
+        )
