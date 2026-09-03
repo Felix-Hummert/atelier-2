@@ -31,6 +31,34 @@ number is never reused and never renumbered.
 - [ADR 0018: An imported plugin stays provider-bound and is passed through whole; neutrality lives in the role and its casting](0018-plugin-intake-and-neutral-roles.md)
 - [ADR 0019: The workshop is four rooms built from four blocks under one rule against restating; Mockup v8 is the gestalt owner](0019-workshop-target-picture.md)
 
+## How to read a record
+
+A record is a protocol, not a running contract: its text says what was decided
+on the date it names, and it is read that way.
+
+What holds today has its own owner, and precedence is decided **per question,
+not globally**: [docs/PRODUCT.md](../PRODUCT.md) owns what exists,
+`docs/requirements` owns intended behaviour, and `docs/product/` owns landed
+detail. On those questions they are right. The record keeps the *why* — the
+technical choice it made and the reasoning behind it — until an amendment
+changes it.
+
+A decision is therefore never rewritten **silently**. A later ruling that
+changes what a record decided lands as a dated amendment, naming its
+authority, placed **beside the passage it changes** — at the end of the
+record only when the amendment changes the record as a whole — and the
+record's `Status`/`Date` header is corrected to point a reader at it (ADR
+0011, 0013, 0018 and 0019 already amend this way). AGENTS.md's rule to delete
+documentation that no longer matches the code does not reach a record
+corrected this way: an amended, dated fact is not stale, it is current, and
+staying byte-identical outside its amendment is how a reader trusts every
+other date in it.
+
+Where a record only restates a rule another document owns, a link to that
+document replaces the restatement (AGENTS.md: "Do not duplicate guidance.
+Update the owner."). Removing a restatement is not a technical decision, so it
+takes no amendment — only the record's own decisions do.
+
 Each record carries its own status, and this index deliberately does not repeat
 it, because a second copy of a status is the next thing to go stale. How much of
 a record has been built is implementation status and belongs to
