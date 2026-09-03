@@ -3,6 +3,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { decodePublicRunReference } from "../../src/api/client";
+import { humanProblemDetail } from "../../src/lib/humanRefusal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
@@ -665,13 +666,19 @@ test("many rounds stay one History row, and the round cap at 24 starts a new con
   await expect(newConversationLink).toHaveCount(1);
   expect(await conversationRunReference(newConversationLink)).not.toBe(run.publicRunReference);
 
-  // The 24-round, now-finished conversation is one History row, not 24.
+  // The 24-round, now-finished conversation is one History row, not 24 --
+  // identified by its own run's link (HistoryPage.svelte), never merely by
+  // the workflow name every conductor row shares.
   await page.goto("/atelier/history");
-  await expect(page.locator(".history-row").filter({ hasText: "conductor" })).toHaveCount(1);
+  const historyRow = page.locator(".history-row").filter({
+    has: page.locator(`a[href="/atelier/runs/${run.publicRunReference}"]`)
+  });
+  await expect(historyRow).toHaveCount(1);
 });
 
-test("a second, conflicting answer that names an already-claimed round is refused, and the accepted message stays part of the one conversation", async ({
-  page
+test("a second, conflicting answer that names an already-claimed round is refused at the surface, and the accepted message stays part of the one conversation", async ({
+  page,
+  browser
 }) => {
   test.setTimeout(120_000);
 
@@ -684,8 +691,11 @@ test("a second, conflicting answer that names an already-claimed round is refuse
 
   // A second, differently-worded answer naming that same, already-claimed
   // execution id -- the overlapping-retry shape #658 names ("ein
-  // wiederholter Runde-1-Retry" landing on the wrong round) -- must be
-  // refused rather than silently rewriting what round 2 said.
+  // wiederholter Runde-1-Retry" landing on the wrong round) -- is refused.
+  // Pinned exactly rather than "any refusal": #658 names this collision as
+  // deserving its own 409 conflict, not the generic corrupt-store refusal
+  // the store actually returns today, so a repair that narrows this to a
+  // real conflict code fails this assertion loudly instead of going unseen.
   const overlappingRetry = await page.request.post(`/atelier/api/v1/runs/${run.publicRunReference}/answers`, {
     headers: { "content-type": "application/json" },
     data: {
@@ -696,8 +706,9 @@ test("a second, conflicting answer that names an already-claimed round is refuse
       answer_base64: Buffer.from(JSON.stringify("Stale retry that must be refused.")).toString("base64")
     }
   });
-  expect(overlappingRetry.ok()).toBe(false);
-  expect([200, 202]).not.toContain(overlappingRetry.status());
+  expect(overlappingRetry.status()).toBe(500);
+  const overlappingProblem = (await overlappingRetry.json()) as { type: string; detail: string };
+  expect(overlappingProblem.type).toBe("urn:atelier2:problem:v1:durable-state-corrupt");
 
   // The accepted round-2 answer stays exactly where it landed; the refused
   // retry never wrote itself into the conversation at all.
@@ -705,6 +716,53 @@ test("a second, conflicting answer that names an already-claimed round is refuse
   await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(2, { timeout: 60_000 });
   await expect(page.getByText("Round 2, the real answer.")).toBeVisible();
   await expect(page.getByText("Stale retry that must be refused.")).toHaveCount(0);
+
+  // The same collision, driven from the browser itself (#1062: "am Browser
+  // gezeigt"): a second tab resolves the same running conversation and, once
+  // round 3 is open (the reload above already proved it), races the first
+  // tab to answer it. The loser's composer must show a refusal -- computed
+  // by the same production reader the app itself uses
+  // (`humanProblemDetail`, `frontend/src/lib/humanRefusal.ts`) from the wire
+  // problem just pinned above, never a copy of its English retyped here.
+  const refusalSentence = humanProblemDetail({
+    type: "urn:atelier2:problem:v1:durable-state-corrupt",
+    detail: overlappingProblem.detail
+  });
+  const secondContext = await browser.newContext();
+  try {
+    const secondPage = await secondContext.newPage();
+    await secondPage.goto("/atelier/chat");
+    await expect(secondPage.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(2, { timeout: 20_000 });
+
+    const firstMessage = "Tab one races round three.";
+    const secondMessage = "Tab two races round three.";
+    await page.getByLabel(workbenchPageCopy.composerLabel).fill(firstMessage);
+    await secondPage.getByLabel(workbenchPageCopy.composerLabel).fill(secondMessage);
+    // Fired together, not awaited one after the other: the race this proves
+    // is between two clicks a few milliseconds apart, not between a click and
+    // the real agent round each tab's own reactive stream would otherwise
+    // have time to observe first.
+    await Promise.all([
+      page.getByRole("button", { name: workbenchPageCopy.send }).click(),
+      secondPage.getByRole("button", { name: workbenchPageCopy.send }).click()
+    ]);
+
+    await expect(async () => {
+      const firstRefused = await page.getByText(refusalSentence).count();
+      const secondRefused = await secondPage.getByText(refusalSentence).count();
+      expect(firstRefused + secondRefused).toBe(1);
+    }).toPass({ timeout: 30_000 });
+
+    // Exactly one of the two racing messages became round 3's durable
+    // answer; the transcript never carries both.
+    await page.reload();
+    await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(3, { timeout: 60_000 });
+    const firstLanded = await page.getByText(firstMessage).count();
+    const secondLanded = await page.getByText(secondMessage).count();
+    expect(firstLanded + secondLanded).toBe(1);
+  } finally {
+    await secondContext.close();
+  }
 });
 
 test("cancel in wait ends the conversation, and the composer opens a new one instead of continuing it", async ({
