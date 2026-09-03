@@ -1,26 +1,21 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { CockpitApi, NodeDetail, RunV3 } from "../api/client";
+  import type { CockpitApi, RunV3 } from "../api/client";
   import LoadingState from "../components/LoadingState.svelte";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { shortPublicRunReference } from "../lib/fingerprint";
   import {
     HISTORY_PERIOD_DAYS,
     hasTimestamplessRows,
-    historyResultNodeId,
     historyWhenLabel,
     historyWorkItemLabel,
     projectHistoryRows,
     withinHistoryPeriod,
     type HistoryRow,
-    type HistoryRowExtras,
-    type HistoryWhenDay,
-    type HistoryWorkItem
+    type HistoryWhenDay
   } from "../lib/historyRows";
-  import { historyOutcome } from "../lib/historyOutcome";
   import { historyPageCopy, periodChipLabel } from "../lib/historyPageCopy";
   import {
     beginRead,
@@ -31,13 +26,8 @@
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
   import { standingWords } from "../lib/runState";
-  import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
-  import {
-    trackerItemHref,
-    workItemReferenceFromJob,
-    type TrackerSourceConnection
-  } from "../lib/trackerItem";
+  import type { TrackerSourceConnection } from "../lib/trackerItem";
   import { ageLabel, exactLocal } from "../lib/when";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
 
@@ -48,23 +38,15 @@
 
   interface HistorySnapshot {
     runs: RunV3[];
-    workflowNames: ReadonlyMap<string, string>;
   }
 
   type HistoryReadFailure =
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
 
-  type ExtrasLoad =
-    | { status: "loading" }
-    | { status: "settled"; extras: HistoryRowExtras }
-    | { status: "unavailable" };
-
   let history: RetainedRead<HistorySnapshot, HistoryReadFailure> =
     retainedRead<HistorySnapshot, HistoryReadFailure>();
   const now = new Date();
-  let extrasLoadByReference: Map<string, ExtrasLoad> = new Map();
-  let extrasToken = 0;
   let sourceConnection: TrackerSourceConnection | null = null;
 
   onMount(() => {
@@ -91,17 +73,9 @@
         return;
       }
       const runs = [...completed.runs, ...failed.runs];
-      const workflowNames = await workflowNamesOf(runs, (hash) =>
-        cockpitApi.getWorkflowRevision(hash)
-      );
       sourceConnection = await sourcePromise;
       if (history.generation !== begun.generation) return;
-      history = confirmRead(history, begun.generation, { runs, workflowNames });
-      if (history.generation !== begun.generation) return;
-      const visible = projectHistoryRows(runs, workflowNames).filter((row) =>
-        withinHistoryPeriod(row, now)
-      );
-      void settleExtras(visible);
+      history = confirmRead(history, begun.generation, { runs });
     } catch {
       history = failRead(history, begun.generation, {
         kind: "unavailable",
@@ -125,89 +99,14 @@
     }
   }
 
-  async function settleExtras(rows: HistoryRow[]): Promise<void> {
-    const token = ++extrasToken;
-    extrasLoadByReference = new Map(
-      rows.map((row) => [row.run.public_run_reference, { status: "loading" as const }])
-    );
-    const loads = await Promise.all(
-      rows.map(async (row) => {
-        const load = await extrasForRow(row);
-        return [row.run.public_run_reference, load] as const;
-      })
-    );
-    if (token !== extrasToken) return;
-    extrasLoadByReference = new Map(loads);
-  }
-
-  async function extrasForRow(
-    row: HistoryRow
-  ): Promise<{ status: "settled"; extras: HistoryRowExtras } | { status: "unavailable" }> {
-    try {
-      const detail = await cockpitApi.getNodeDetail(
-        row.run.public_run_reference,
-        historyResultNodeId(row.run)
-      );
-      return {
-        status: "settled",
-        extras: {
-          workItem: workItemFromDetail(detail),
-          resultSentence: resultSentenceFromDetail(row.workflowName, row.result.kind, detail)
-        }
-      };
-    } catch {
-      return { status: "unavailable" };
-    }
-  }
-
-  function workItemFromDetail(detail: NodeDetail | null | undefined): HistoryWorkItem | null {
-    if (detail == null || detail.job_base64 == null || detail.job_base64.length === 0) {
-      return null;
-    }
-    const job = decodeUtf8Base64(detail.job_base64);
-    if (job == null) return null;
-    const reference = workItemReferenceFromJob(job);
-    if (reference === null) return null;
-    return {
-      reference,
-      title: null,
-      href: trackerItemHref(reference, sourceConnection)
-    };
-  }
-
-  function resultSentenceFromDetail(
-    workflowName: string,
-    kind: HistoryRow["result"]["kind"],
-    detail: NodeDetail | null | undefined
-  ): string | null {
-    if (detail == null) return null;
-    const encoded =
-      kind === "failed" ? detail.refusal_output?.value_base64 : detail.answer?.value_base64;
-    if (encoded == null || encoded.length === 0) return null;
-    const decoded = decodeUtf8Base64(encoded);
-    if (decoded == null || decoded.length === 0) return null;
-    return historyOutcome(workflowName, decoded);
-  }
-
-  function settledExtrasByReference(
-    loads: ReadonlyMap<string, ExtrasLoad>
-  ): ReadonlyMap<string, HistoryRowExtras> {
-    return new Map(
-      [...loads].flatMap(([reference, load]) =>
-        load.status === "settled" ? [[reference, load.extras] as const] : []
-      )
-    );
-  }
-
   function whenDayText(day: HistoryWhenDay): string {
     if (day.kind === "today") return wrapDisplayCopy(historyPageCopy.today);
     if (day.kind === "yesterday") return wrapDisplayCopy(historyPageCopy.yesterday);
     return day.weekday;
   }
 
-  function failedResultCopy(nodeId: string, sentence: string | null, settled: boolean): string {
+  function failedResultCopy(nodeId: string, sentence: string | null): string {
     const standing = wrapDisplayCopy(standingWords.failed);
-    if (!settled) return standing;
     if (sentence !== null) return `${standing} — ${wrapDisplayCopy(sentence)}`;
     return `${standing} · ${nodeId}`;
   }
@@ -223,10 +122,9 @@
     return `${row.workflowName} ${shortPublicRunReference(row.run.public_run_reference)}`;
   }
 
-  $: extrasByReference = settledExtrasByReference(extrasLoadByReference);
   $: rows = history.confirmed === null
     ? []
-    : projectHistoryRows(history.confirmed.runs, history.confirmed.workflowNames, extrasByReference);
+    : projectHistoryRows(history.confirmed.runs, sourceConnection);
   $: visibleRows = rows.filter((row) => withinHistoryPeriod(row, now));
   $: showTimestamplessHint = hasTimestamplessRows(visibleRows);
   $: hasWorkItem = visibleRows.some((row) => row.workItem !== null);
@@ -278,7 +176,6 @@
       </div>
       <ul class="history-rows">
         {#each visibleRows as row (row.run.public_run_reference)}
-          {@const extras = extrasLoadByReference.get(row.run.public_run_reference)}
           <li>
             <div
               class="history-row history-row-{row.result.kind}"
@@ -326,17 +223,13 @@
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
-                  {failedResultCopy(row.result.nodeId, row.result.sentence, extras?.status === "settled")}
-                {:else if extras?.status === "unavailable"}
-                  {wrapDisplayCopy(historyPageCopy.couldNotLoad)}
-                {:else if extras?.status === "settled"}
-                  {#if row.result.sentence !== null}
-                    {wrapDisplayCopy(row.result.sentence)}
-                  {:else}
-                    {wrapDisplayCopy(historyPageCopy.notRecorded)}
-                  {/if}
+                  {failedResultCopy(row.result.nodeId, row.result.sentence)}
+                {:else if row.result.kind === "omitted"}
+                  {wrapDisplayCopy(historyPageCopy.answerTooLarge)}
+                {:else if row.result.sentence !== null}
+                  {wrapDisplayCopy(row.result.sentence)}
                 {:else}
-                  <LoadingState label={wrapDisplayCopy(historyPageCopy.looking)} compact />
+                  {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
               <span class="row-duration">
