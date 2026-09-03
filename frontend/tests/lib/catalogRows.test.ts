@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type {
   AgentDefinitionRevisionListItem,
+  WorkflowRevisionProvenance,
   WorkflowRevisionSummary
 } from "../../src/api/client";
 import type { CatalogNameState } from "../../src/lib/catalogName";
@@ -31,6 +32,16 @@ function summary(overrides: Partial<WorkflowRevisionSummary> = {}): WorkflowRevi
 
 function admitted(revisionHash: string): Record<string, CatalogNameState> {
   return { [NAME]: { kind: "admitted", revisionHash, lineageId: "e".repeat(64) } };
+}
+
+function provenance(overrides: Partial<WorkflowRevisionProvenance> = {}): WorkflowRevisionProvenance {
+  return {
+    source: "source1.git-abc123",
+    source_commit: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    source_path: "workflows/iterate-code.yaml",
+    intaken_at: "2026-08-27T10:00:00Z",
+    ...overrides
+  };
 }
 
 describe("what the catalog says about a workflow", () => {
@@ -84,6 +95,15 @@ describe("what the catalog says about a workflow", () => {
     const [row] = catalogWorkflowRows([summary()], {});
 
     expect(row?.name).toBe(NAME);
+  });
+
+  it("carries a revision's own source as a plain fact, and no source at all as null", () => {
+    const [manual] = catalogWorkflowRows([summary()], {});
+    expect(manual?.provenance).toBeNull();
+
+    const sourced = provenance();
+    const [row] = catalogWorkflowRows([summary({ provenance: sourced })], {});
+    expect(row?.provenance).toEqual(sourced);
   });
 
   it("offers no admission for a title the catalog grammar refuses", () => {
@@ -186,7 +206,13 @@ describe("what the catalog says about an agent", () => {
 });
 
 describe("the facts under an entry's name", () => {
-  it("names provenance without putting a machine fingerprint on the card", () => {
-    expect(catalogRowFacts()).toEqual([catalogPageCopy.provenanceManual]);
+  it("wears no provenance pill for a revision dropped in by hand, since every card would then wear the same one", () => {
+    expect(catalogRowFacts(null)).toEqual([]);
+  });
+
+  it("names a connected source's commit and path, shortening the commit to git's own prefix", () => {
+    const facts = catalogRowFacts(provenance({ source_commit: "a".repeat(40), source_path: "flows/build.yaml" }));
+
+    expect(facts).toEqual([catalogPageCopy.provenanceSource("a".repeat(8), "flows/build.yaml")]);
   });
 });

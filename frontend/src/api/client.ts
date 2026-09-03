@@ -2349,6 +2349,9 @@ export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
 export type WorkflowRevisionSummary = z.infer<
   typeof workflowRevisionSummarySchema
 >;
+export type WorkflowRevisionProvenance = z.infer<
+  typeof workflowRevisionProvenanceSchema
+>;
 export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
 export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
 export type LibraryRecognition = z.infer<typeof libraryRecognitionSchema>;

@@ -109,7 +109,9 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
     catalogPageCopy.kindWorkflow
   );
   await expect(entry(page, workflowName)).toBeVisible();
-  await expect(entry(page, workflowName).getByText(catalogPageCopy.provenanceManual)).toBeVisible();
+  // A file dropped in by hand carries no source, so its card wears no
+  // provenance pill -- a chip every card wore would distinguish nothing.
+  await expect(entry(page, workflowName).locator(".tile-pill:not(.tile-status)")).toHaveCount(0);
 
   await importInto(page, `${agentName}.agent.md`, agentFile(agentName), catalogPageCopy.kindAgent);
   await expect(entry(page, agentName)).toBeVisible();

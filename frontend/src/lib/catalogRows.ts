@@ -1,5 +1,6 @@
 import type {
   AgentDefinitionRevisionListItem,
+  WorkflowRevisionProvenance,
   WorkflowRevisionSummary
 } from "../api/client";
 import { catalogPageCopy } from "./catalogPageCopy";
@@ -30,6 +31,13 @@ export interface CatalogWorkflowRow {
    */
   name: string;
   description: string | null;
+  /**
+   * Where this revision's bytes first entered the catalog from -- `null` for
+   * a file dropped in by hand, the only way in before a Git link (#660)
+   * exists. The row carries the raw fact; `catalogRowFacts` decides what a
+   * card says about it.
+   */
+  provenance: WorkflowRevisionProvenance | null;
   /**
    * `null` where this room cannot honestly answer: the catalog is asked by
    * name, and a document that declares none may still be an admitted member
@@ -80,13 +88,17 @@ export interface CatalogWorkflowTiles {
 /**
  * The facts that stand under an entry's name, in reading order.
  *
- * Provenance is the first of them and today always the same sentence: nothing
- * in this build records where bytes came from, and every published revision got
- * here by hand. When the Git link (#660) starts recording a source, ref, commit
- * and path, it replaces that one sentence -- the row's shape does not change.
+ * Provenance is the first of them, and today the catalog genuinely holds two
+ * kinds: a revision a connected source delivered names where it came from
+ * (commit and path), and one dropped in by hand names nothing, because a
+ * chip every card wears distinguishes nothing (#1112). An agent row never
+ * carries a source at all -- it is always passed `null`.
  */
-export function catalogRowFacts(): readonly string[] {
-  return [catalogPageCopy.provenanceManual];
+export function catalogRowFacts(
+  provenance: WorkflowRevisionProvenance | null
+): readonly string[] {
+  if (provenance === null) return [];
+  return [catalogPageCopy.provenanceSource(provenance.source_commit, provenance.source_path)];
 }
 
 /**
@@ -116,6 +128,7 @@ export function catalogWorkflowRows(
       title: revision.name,
       name: revision.name,
       description: revision.description,
+      provenance: revision.provenance ?? null,
       state: workflowEntryState(revision, catalogByName),
       admittable: isAdmittable(revision),
       newerRevisionAvailable: index === 0 && isAdmittedName && row.revisions.length > 1
