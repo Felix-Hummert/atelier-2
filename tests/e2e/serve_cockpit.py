@@ -231,6 +231,14 @@ _E2E_OBSERVED_REVISION = ObservedWorkItemRevision(
 # TIMEOUT_SECONDS; git capture of the pinned project under CI CPU
 # pressure owns this bound (issue #747 c2).
 GENERATION_DRAIN_SECONDS = 60.0
+# A restart stands in for a redeploy's process kill, which takes its open
+# sockets with it. Uvicorn instead waits out every live connection, and a
+# server-sent stream never ends on its own -- so a bare `should_exit` parked
+# the whole harness on "Waiting for connections to close" for as long as any
+# page held `GET /events` open (issue #1114). This is the grace an ordinary
+# in-flight request gets before the restart drops the sockets anyway; uvicorn
+# reads it as whole seconds.
+RESTART_CONNECTION_GRACE_SECONDS = 1
 # The fake conductor's fixed round report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
 # doors-armed conductor would return -- same vector, unbilled.
@@ -1564,6 +1572,7 @@ def main() -> None:
                     harness,
                     host=settings.host,
                     port=settings.port,
+                    timeout_graceful_shutdown=RESTART_CONNECTION_GRACE_SECONDS,
                 )
             )
             server.run()
