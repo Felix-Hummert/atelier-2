@@ -79,7 +79,13 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     PerformedEffect,
 )
-from atelier2.contracts.executions import RunEventKind, logical_effect_key_for_node
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    SubmitWaitAnswerRequest,
+    WaitAnswerActor,
+    logical_effect_key_for_node,
+)
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_forks import RunForkCommandId, successor_run_id_for
@@ -106,9 +112,11 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.runs import submit_wait_answer
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/open-pr")
+TRANSITIVE_RUN = RunId("v3/open-pr/transitive")
 TREE = json.dumps({"files": {"hello.txt": "from the builder"}}).encode("utf-8")
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 OPEN_PR_DOCUMENT = json.dumps({"operation": AdapterOperationName.OPEN_PR.value}).encode(
@@ -262,6 +270,9 @@ nodes:
     type: action
     operation: {{ref: open-pr, revision: {operation_hash}}}
     depends_on: [implement]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
 """.encode()
         + (
             b"""  - id: review
@@ -280,6 +291,93 @@ nodes:
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+    )
+
+
+def publish_transitive_line(
+    runtime: DbosRuntime,
+) -> tuple[WorkflowRevision, AgentBindingSet]:
+    """A builder's output opens a pull request behind review then a Wait.
+
+    `_action_predecessor` is retired: the Action's `body` input names
+    `implement` by its own output, not `approve`'s immediate `depends_on`
+    edge, and `graph_action_intent` still reads it through the dependency
+    closure the review and the Wait stand inside of (#1101).
+    """
+    catalog_store = DbosCatalogStore(runtime.engine)
+    for revision in (
+        ANY_JSON_SCHEMA,
+        PublishedRevision(RevisionKind.ADAPTER_OPERATION, OPEN_PR_DOCUMENT),
+    ):
+        published = catalog_store.publish_revision(revision)
+        assert isinstance(
+            published, (PublishedRevisionCreated, PublishedRevisionExisting)
+        ), published
+    operation_hash = PublishedRevision(
+        RevisionKind.ADAPTER_OPERATION, OPEN_PR_DOCUMENT
+    ).revision_hash.value
+    catalog = DbosAgentConfigurationCatalog(
+        runtime.engine, runtime.agent_executor_registry
+    )
+    auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
+    assert isinstance(
+        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+    )
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("exact/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    assert isinstance(
+        catalog.publish_agent_configuration_revision(configuration),
+        AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
+    )
+    document = (
+        b"""format_version: 3
+name: A builder's output opens a pull request behind review and a wait
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Write the tree this chain lands.
+"""
+        + declared_output()
+        + b"""  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Judge the tree the builder wrote.
+    depends_on: [implement]
+"""
+        + declared_output()
+        + b"""  - id: approve
+    type: wait
+    prompt: Release the reviewed candidate?
+    depends_on: [review]
+"""
+        + declared_output(ANY_JSON_SCHEMA, "approval")
+        + f"""  - id: publish
+    type: action
+    operation: {{ref: open-pr, revision: {operation_hash}}}
+    depends_on: [approve]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
+""".encode()
+    )
+    workflow = WorkflowRevision(document)
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    return workflow, AgentBindingSet(
+        (
+            AgentBinding(AgentRole("builder"), configuration.revision_hash),
+            AgentBinding(AgentRole("reviewer"), configuration.revision_hash),
+        )
     )
 
 
@@ -938,3 +1036,58 @@ def test_a_v3_agent_then_action_opens_one_pull_request_through_the_github_adapte
     node = api.get(f"{API_PREFIX}/runs/{public_ref}/nodes/implement")
     assert node.status_code == 200, node.text
     assert CANARY_TOKEN not in node.text
+
+
+@pytest.mark.proves(
+    "an-open-pr-action-reads-the-builders-output-through-review-and-a-wait"
+)
+def test_open_pr_reads_the_builders_output_through_review_and_a_wait(
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+) -> None:
+    """The retired immediate-predecessor rule is not needed: review and a Wait
+    stand between the builder and the Action, and the Action still reads the
+    builder's own output through the dependency closure that orders them.
+    """
+    started_runtime, github, _listing, _atelier_sqlite = runtime
+    workflow, bindings = publish_transitive_line(started_runtime)
+    starter = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    )
+    started = starter.start_published(
+        StartPublishedRunRequestV2(TRANSITIVE_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+    started_runtime.launch()
+    wait_for_state(started_runtime, RunState.WAITING_INPUT, TRANSITIVE_RUN)
+
+    submit_wait_answer(
+        started_runtime.engine,
+        started_runtime.settings.application_version,
+        SubmitWaitAnswerRequest(
+            TRANSITIVE_RUN,
+            workflow.revision_hash,
+            "approve",
+            NodeExecutionId.for_node(TRANSITIVE_RUN, workflow.revision_hash, "approve"),
+            WaitAnswerActor.OPERATOR,
+            b'{"released": true}',
+        ),
+    )
+    wait_for_state(started_runtime, RunState.COMPLETED, TRANSITIVE_RUN)
+
+    recorded = github.recorded_pull_requests()
+    assert len(recorded) == 1
+    with started_runtime.engine.connect() as connection:
+        intent = intent_snapshot_from_record(
+            connection.execute(
+                sa.select(effect_intents).where(
+                    effect_intents.c.run_id == TRANSITIVE_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        ).intent
+    assert body_carries_request_hash(
+        recorded[0].body, intent.request.request_hash.value
+    )

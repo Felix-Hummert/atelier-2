@@ -272,6 +272,9 @@ nodes:
     type: action
     operation: {{ref: open-pr, revision: {open_pr_operation.revision_hash.value}}}
     depends_on: [implement]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
 """.encode()
     )
     workflow = WorkflowRevision(document)

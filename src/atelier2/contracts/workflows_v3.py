@@ -1503,20 +1503,24 @@ declared description and needs no separate runtime action.
 `inputs` left this list when the start began binding one: it is admitted per
 source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an
 order the graph declares has an owner at the start today. `tools` left it the
-same way: an attempt now redeems the grant a node pins, one grant at a time, and
-`MAXIMUM_REDEEMED_TOOL_GRANTS` is where that "one" is refused rather than
-silently narrowed. `budget` left it when the start began binding the pin: the
-published revision is resolved like a schema or a tool grant, and the attempt
-reads the turn bound those bytes named.
+same way: an attempt now redeems at most one exec-shaped and at most one
+effect-shaped grant a node pins, and `MAXIMUM_REDEEMED_TOOL_GRANTS` is where a
+third pin is refused rather than silently narrowed. `budget` left it when the
+start began binding the pin: the published revision is resolved like a schema
+or a tool grant, and the attempt reads the turn bound those bytes named.
 """
 
-MAXIMUM_REDEEMED_TOOL_GRANTS = 1
-"""How many tool grants one node may pin, because an attempt redeems that many.
+MAXIMUM_REDEEMED_TOOL_GRANTS = 2
+"""How many tool grants one node may pin: at most one exec-shaped, at most one
+effect-shaped, because an attempt redeems one of each shape.
 
-A redemption leaves exactly one receipt per node execution, so a second grant on
-the same node would either go unredeemed or answer for the first. Which of the
-two happened is not something an author should have to guess, so the document is
-refused by the count it wrote.
+A redemption leaves exactly one receipt per shape per node execution, so a
+second grant of the same shape on one node would either go unredeemed or
+answer for the first. Which capability a pin names is only known once its
+published bytes are read, though, and this reading has no registry to ask --
+so the document alone can only refuse a third pin outright; the finer rule
+that the two bound grants must be one of each shape is a binding-time refusal
+once their resolved capabilities are known (`agent_effect_grants.py`).
 """
 
 AGENT_OUTPUT_SHAPE_UNAVAILABLE = "agent-output-shape-unavailable"
@@ -1698,12 +1702,61 @@ def _unbound_wait_forms(graph: WorkflowGraphV3) -> str | None:
     return None
 
 
+ACTION_BODY_INPUT_NAME = "body"
+"""The one input name a transitive Action reads its whole request body from.
+
+An Action that composes its request from one upstream agent's own output
+declares exactly this input, and no other: `graph_action_intent` reads it
+through the same output store any other reader uses, ordered by the
+dependency closure ADR 0002 already proves rather than by an immediate
+`depends_on` edge -- review and a Wait may stand between the two.
+"""
+
+DOCUMENTATION_RELEASE_ACTION_INPUT_NAMES = frozenset(
+    {"work_item", "candidate", "approved_verdict"}
+)
+"""The other authored Action input shape this effect path still binds.
+
+A documentation release (#642 P3) reads its three graph inputs by name rather
+than one upstream node's output -- an independently reviewed order, not a
+builder's transitive result -- so it keeps its own closed name set rather than
+being read as an unbound `body` line.
+"""
+
+
+def action_body_source(node: ActionNodeV3) -> NodeOutputSource | None:
+    """The single upstream output this Action's `body` input names, or None.
+
+    An Action with a bound body input reads exactly one node's output as its
+    whole request body; any other input shape -- none, several, a differently
+    named entry, or `body` naming anything but a node output -- returns None,
+    so the caller refuses it rather than guessing which source was meant.
+    """
+    if [entry.name for entry in node.inputs] != [ACTION_BODY_INPUT_NAME]:
+        return None
+    (entry,) = node.inputs
+    return entry.source if isinstance(entry.source, NodeOutputSource) else None
+
+
+def is_documentation_release_action_form(node: ActionNodeV3) -> bool:
+    """Whether this Action declares exactly the documentation-release input shape."""
+    names = {entry.name for entry in node.inputs}
+    return names == DOCUMENTATION_RELEASE_ACTION_INPUT_NAMES and all(
+        isinstance(entry.source, GraphInputSource) for entry in node.inputs
+    )
+
+
 def _unbound_action_forms(graph: WorkflowGraphV3) -> str | None:
     """What an authored Action node declares that this effect path does not bind.
 
-    An Action with inputs composes an operation-specific request from those
-    declared sources. The predecessor-output form remains the legacy form for
-    an Action that declares no inputs.
+    Two authored request shapes are bound: a documentation release's three
+    graph inputs (#642 P3), and a transitive line's single `body` input read
+    from one upstream agent's own output through the dependency closure that
+    already orders it (ADR 0002). Every other declared input shape -- no input
+    at all, a receipt or context source, more than one input, or `body` naming
+    anything but an Agent's output -- is refused by name, because the old rule
+    that an Action's predecessor must itself be an immediate Agent is retired
+    with it rather than kept beside it.
     """
     for node in graph.nodes:
         if not isinstance(node, ActionNodeV3):
@@ -1713,25 +1766,28 @@ def _unbound_action_forms(graph: WorkflowGraphV3) -> str | None:
                 f"outputs on action node {node.id!r} that nothing hands on; "
                 "the effect receipt is the Action's result"
             )
-        if node.inputs:
+        if is_documentation_release_action_form(node):
             continue
-        if len(node.depends_on) != 1:
-            return f"action node {node.id!r} has no single Agent predecessor"
-        predecessor = graph.node(node.depends_on[0])
-        if not isinstance(predecessor, AgentNodeV3):
-            return f"action node {node.id!r} predecessor is not an Agent"
+        body_source = action_body_source(node)
+        if body_source is None:
+            return f"action node {node.id!r} declares no bound input form"
+        if not isinstance(graph.node(body_source.node), AgentNodeV3):
+            return (
+                f"action node {node.id!r} reads {ACTION_BODY_INPUT_NAME!r} from "
+                f"{body_source.node!r}, which is not an Agent"
+            )
     return None
 
 
 def _unredeemed_tool_grants(graph: WorkflowGraphV3) -> str | None:
     """What an authored `tools` entry pins that no attempt of this run redeems.
 
-    `tools` left the blanket refusal when an attempt began redeeming the grant a
-    node pins: the revision is resolved before the run exists, read as a grant
-    where it is pinned, and the redemption leaves its own durable receipt. What
-    the grant grants is decided by the published revision rather than here, so
-    the only part of the form this pure reading can judge is how many were
-    written -- and more than one is refused by its count.
+    `tools` left the blanket refusal when an attempt began redeeming the grants a
+    node pins: each revision is resolved before the run exists, read as a grant
+    where it is pinned, and the redemption leaves its own durable receipt. What a
+    grant grants is decided by the published revision rather than here, so the
+    only part of the form this pure reading can judge is how many were written
+    -- and more than `MAXIMUM_REDEEMED_TOOL_GRANTS` is refused by its count.
     """
     for node in graph.nodes:
         if not isinstance(node, AgentNodeV3):
@@ -1739,7 +1795,7 @@ def _unredeemed_tool_grants(graph: WorkflowGraphV3) -> str | None:
         if len(node.tools) > MAXIMUM_REDEEMED_TOOL_GRANTS:
             return (
                 f"{len(node.tools)} tool grants on node {node.id!r}, and one "
-                "attempt redeems one grant"
+                f"attempt redeems at most {MAXIMUM_REDEEMED_TOOL_GRANTS}"
             )
     return None
 

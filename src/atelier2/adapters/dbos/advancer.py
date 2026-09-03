@@ -11,7 +11,10 @@ from atelier2.adapters.dbos.agent_effect_grants import (
     push_atelier_commit_capability_for,
 )
 from atelier2.adapters.dbos.agent_effect_grants import (
-    read_pinned_tool_grant as read_agent_pinned_tool_grant,
+    read_pinned_effect_tool_grant as read_agent_pinned_effect_tool_grant,
+)
+from atelier2.adapters.dbos.agent_effect_grants import (
+    read_pinned_exec_tool_grant as read_agent_pinned_exec_tool_grant,
 )
 from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
@@ -79,12 +82,15 @@ from atelier2.contracts.work_items import (
     read_work_item_order_document,
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
+from atelier2.contracts.workflows import producing_round
 from atelier2.contracts.workflows_v3 import (
+    DOCUMENTATION_RELEASE_ACTION_INPUT_NAMES,
     ActionNodeV3,
     AgentNodeV3,
-    AnyWorkflowDocument,
     AnyWorkflowDocumentNode,
     GraphInputSource,
+    action_body_source,
+    is_documentation_release_action_form,
 )
 from atelier2.ports.agent_tool_effects import (
     AgentToolEffectPending,
@@ -117,7 +123,7 @@ def graph_action_intent(
         or not isinstance(action, ActionNodeV3)
     ):
         raise RunEffectConflict("effect requires the current STARTED Action")
-    if action.inputs:
+    if is_documentation_release_action_form(action):
         return _documentation_release_action_intent(
             session,
             run_id,
@@ -126,14 +132,24 @@ def graph_action_intent(
             effect_adapter_bindings,
             project_id,
         )
-    predecessor = _action_predecessor(graph, action)
+    body_source = action_body_source(action)
+    if body_source is None:
+        raise RunEffectConflict("Action declares no bound input form")
+    predecessor = graph.node(body_source.node)
+    if not isinstance(predecessor, AgentNodeV3):
+        raise RunEffectConflict("Action body input names no Agent output")
+    producing = producing_round(
+        graph, action.id, predecessor.id, run.current_round_ordinal
+    )
+    if producing is None:
+        raise RunEffectConflict("Action body input names an output not yet written")
     payload = load_node_output_payload(
         session,
         run_id,
         revision_hash,
         graph,
         predecessor.id,
-        run.current_round_ordinal,
+        producing,
     )
     operation = _operation_for(session, action.operation)
     effect_adapter_binding = _binding_for(effect_adapter_bindings, operation.operation)
@@ -145,7 +161,7 @@ def graph_action_intent(
                 run_id,
                 revision_hash,
                 predecessor,
-                run.current_round_ordinal,
+                producing,
                 project_id,
             )
         else:
@@ -260,8 +276,7 @@ def _documentation_release_orders(
         for entry in action.inputs
         if isinstance(entry.source, GraphInputSource)
     }
-    required = {"candidate", "approved_verdict", "work_item"}
-    if set(sources) != required:
+    if set(sources) != DOCUMENTATION_RELEASE_ACTION_INPUT_NAMES:
         raise RunEffectConflict(
             "documentation release Action declares work_item, candidate and "
             "approved_verdict"
@@ -358,23 +373,37 @@ def prepared_effect_intent(session: Any, intent: EffectIntent) -> EffectIntentSn
     )
 
 
-def read_pinned_tool_grant(
+def read_pinned_exec_tool_grant(
     session: Any, node: AnyWorkflowDocumentNode
 ) -> DeclaredToolGrant | None:
-    """The grant this node pinned, read from the revision the document pins by hash.
+    """The exec-shaped grant this node pinned, read from the revision it names.
 
     A V3 `tools` entry pins its published revision by that revision's own hash,
     so reading the registry under it is reading exactly what the run
     configuration froze rather than resolving a second time. The bytes are
     immutable and were already read as a grant when the run was bound; a
     registry that cannot answer for them now contradicts a run that has already
-    started. Both redemption paths read the grant here -- the binding to carry
-    an exec-shaped one, the effect preparation to open a pull request for an
-    effect-shaped one -- so the two never read it two different ways.
+    started. This is the binding's own read -- an exec-shaped grant is carried
+    in the durable binding and redeemed inside the attempt's own lease.
     """
     if not isinstance(node, AgentNodeV3):
         return None
-    return read_agent_pinned_tool_grant(session, node)
+    return read_agent_pinned_exec_tool_grant(session, node)
+
+
+def read_pinned_effect_tool_grant(
+    session: Any, node: AnyWorkflowDocumentNode
+) -> DeclaredToolGrant | None:
+    """The effect-shaped grant this node pinned, read from the revision it names.
+
+    Same door as `read_pinned_exec_tool_grant`, for the other shape: an
+    effect-shaped grant carries no `project_source` and is read straight from
+    the immutable graph where its effect is prepared, after the attempt has
+    already succeeded.
+    """
+    if not isinstance(node, AgentNodeV3):
+        return None
+    return read_agent_pinned_effect_tool_grant(session, node)
 
 
 def legacy_agent_effect_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, ...]:
@@ -481,7 +510,7 @@ def graph_agent_open_pr_intent(
     it deterministic, collision-free, and distinct from the key an Action of the
     same operation would derive from its own node.
     """
-    grant = read_pinned_tool_grant(
+    grant = read_pinned_effect_tool_grant(
         session, load_graph(session, revision_hash).node(node_id)
     )
     if open_pr_capability_for(grant) is None:
@@ -558,7 +587,7 @@ def prepare_graph_agent_push(
     """Prepare the exact candidate publication earned by a pinned push grant."""
 
     node = load_graph(session, revision_hash).node(node_id)
-    grant = read_pinned_tool_grant(session, node)
+    grant = read_pinned_effect_tool_grant(session, node)
     if push_atelier_commit_capability_for(grant) is None:
         return None
     assert grant is not None and grant.operation is not None
@@ -649,17 +678,6 @@ def _agent_output(session: Any, execution_id: NodeExecutionId) -> bytes:
     if Sha256Hash.of(payload).value != record.output_hash:
         raise RunEffectConflict("agent output binding changed")
     return payload
-
-
-def _action_predecessor(
-    graph: AnyWorkflowDocument, action: ActionNodeV3
-) -> AgentNodeV3:
-    if len(action.depends_on) != 1:
-        raise RunEffectConflict("Action predecessor is not an Agent")
-    predecessor = graph.node(action.depends_on[0])
-    if not isinstance(predecessor, AgentNodeV3):
-        raise RunEffectConflict("Action predecessor is not an Agent")
-    return predecessor
 
 
 def _confirmed_push_branch(

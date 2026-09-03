@@ -212,6 +212,9 @@ def action_document() -> bytes:
       ref: open-pr
       revision: {OPEN_PR_OPERATION.revision_hash.value}
     depends_on: [{NODE}]
+    inputs:
+      - name: body
+        from: {{node: {NODE}, output: plan}}
 """.encode()
     )
 
