@@ -29,6 +29,7 @@ from atelier2.adapters.dbos.runtime import (
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
+    host_model_registry_entries,
     run_agent_bindings,
     run_events,
     runs,
@@ -1098,6 +1099,9 @@ def test_list_publication_and_start_share_the_current_registry_decision(
         publish_checked_model_registry(
             runtime.engine, ProviderId("anthropic"), (claude,)
         )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("openai"), (sibling_configuration,)
+        )
         workflow = WorkflowRevision(_V3_DOCUMENT)
         _publish_output_schema(runtime)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
@@ -1139,6 +1143,63 @@ def test_list_publication_and_start_share_the_current_registry_decision(
                 )
                 == 0
             )
+    finally:
+        runtime.close()
+
+
+def test_a_tampered_model_registry_entry_answers_durable_state_corrupt_over_http(
+    tmp_path: Path,
+) -> None:
+    """A registry row whose bytes disagree with its own revision hash fails loud.
+
+    The listing now reads the model registry to compute `model_registered`;
+    a row corrupted beneath it must surface as the durable-state-corrupt
+    problem the rest of the catalog already answers with, never a bare
+    internal error.
+    """
+
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "claude-registry-corrupt", b"build"
+    )
+    runtime = _runtime(tmp_path, (factory,))
+    runtime.initialize_storage()
+    client = _api_client(runtime)
+    try:
+        catalog = DbosAgentConfigurationCatalog(
+            runtime.engine, runtime.agent_executor_registry
+        )
+        auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        )
+        configuration = AgentConfigurationRevision(
+            "opus",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(configuration),
+            AgentConfigurationRevisionCreated,
+        )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (configuration,)
+        )
+        with runtime.engine.begin() as connection:
+            connection.execute(
+                sa.text("DROP TRIGGER host_model_registry_entries_no_update")
+            )
+            connection.execute(
+                host_model_registry_entries.update().values(model_id="tampered-model")
+            )
+
+        response = client.get(API_PREFIX + "/agent-configuration-revisions")
+
+        assert response.status_code == 500
+        assert response.json()["type"].endswith("durable-state-corrupt")
     finally:
         runtime.close()
 
@@ -1998,6 +2059,9 @@ def test_published_configurations_are_listed_over_the_api(tmp_path: Path) -> Non
         assert isinstance(
             catalog.publish_agent_configuration_revision(second),
             AgentConfigurationRevisionCreated,
+        )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (first, second)
         )
         stored = catalog.list_agent_configuration_revisions(None, 1)
         assert isinstance(stored, AgentConfigurationRevisionPage)

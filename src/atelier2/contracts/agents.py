@@ -234,37 +234,66 @@ class AgentConfigurationRevision:
         )
 
 
+class AgentConfigurationNotStartableReason(StrEnum):
+    """Why a listed configuration cannot start right now, named for the wire.
+
+    One canonical vocabulary: `api/wire/resources.py`'s `not_startable_reason`
+    Literal and this enum's values read identically, because a caller reads
+    the reason from the wire and this is the one place it is decided.
+    """
+
+    AGENT_EXECUTOR_BINDING_UNAVAILABLE = "agent-executor-binding-unavailable"
+    MODEL_NOT_REGISTERED = "model-not-registered"
+    PROVIDER_PROBE_RECEIPT_MISSING = "provider-probe-receipt-missing"
+
+
 @dataclass(frozen=True)
 class AgentConfigurationRevisionListItem:
     """A listed immutable configuration with the host's current startability.
 
-    Two independent questions, not one: `startable` is the receipt-gated
-    answer an ordinary start and the cockpit's own Start button both act on --
-    it must keep agreeing with the start door. `structurally_startable` asks
-    only whether a factory is registered, available, and declares the
-    capability, with no live evidence asked at all; a live canary's own
-    discovery reads that one, because it exists to produce the evidence
-    `startable` is missing and could never find itself through a question
-    that already requires it. `startable` implies `structurally_startable` --
-    evidence proves nothing about a configuration whose executor cannot run.
+    Three independent judgments feed one fixed precedence -- the same order a
+    start itself would meet the same three refusals in.
+    `structurally_startable` asks only whether a factory is registered,
+    available, and declares the capability, with no live evidence asked at
+    all. `model_registered` asks the same registry lookup a start's cast
+    makes for an explicit override (`cast_unbound_roles`): does the model
+    registry still point at this exact configuration hash for its provider
+    and model, or has a newer revision superseded it. `has_valid_receipt` is
+    the live evidence one provider probe leaves behind. `startable` and
+    `not_startable_reason` are computed from these three, never stored
+    independently, so the two can never disagree.
     """
 
     revision: AgentConfigurationRevision
     auth_profile: AuthProfileRevision
-    startable: bool
     structurally_startable: bool
+    model_registered: bool
+    has_valid_receipt: bool
 
     def __post_init__(self) -> None:
-        if (
-            type(self.startable) is not bool
-            or type(self.structurally_startable) is not bool
+        for name, value in (
+            ("structurally_startable", self.structurally_startable),
+            ("model_registered", self.model_registered),
+            ("has_valid_receipt", self.has_valid_receipt),
         ):
-            raise TypeError("agent configuration startability must be a bool")
-        if self.startable and not self.structurally_startable:
-            raise ValueError(
-                "agent configuration startability cannot hold without its own "
-                "structural startability"
+            if type(value) is not bool:
+                raise TypeError(f"agent configuration {name} must be a bool")
+
+    @property
+    def not_startable_reason(self) -> AgentConfigurationNotStartableReason | None:
+        if not self.structurally_startable:
+            return (
+                AgentConfigurationNotStartableReason.AGENT_EXECUTOR_BINDING_UNAVAILABLE
             )
+        if not self.model_registered:
+            return AgentConfigurationNotStartableReason.MODEL_NOT_REGISTERED
+        if not self.has_valid_receipt:
+            return AgentConfigurationNotStartableReason.PROVIDER_PROBE_RECEIPT_MISSING
+        return None
+
+    @property
+    def startable(self) -> bool:
+        return self.not_startable_reason is None
 
 
 @dataclass(frozen=True)
