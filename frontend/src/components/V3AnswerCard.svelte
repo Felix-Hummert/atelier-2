@@ -43,12 +43,14 @@
    * How the waiting node's own schema classifies its answer (#553).
    *
    * `boolean` and `enum` render as decision buttons that send an exact JSON
-   * value the click itself decides, never text a person typed; `free` is
-   * every other schema shape, including one this build has not yet resolved
-   * -- the composer falls back to the textarea it always had, so an
-   * unclassified wait is no worse than before.
+   * value the click itself decides, never text a person typed; `string` and
+   * `free` both render the textarea this card always had -- `string` sends
+   * what was typed verbatim (`onAnswer`'s caller reads this same `answerKind`
+   * to decide, #1091), `free` still JSON-encodes it, and an unclassified wait
+   * (this build has not yet resolved its schema) is `free`, no worse than
+   * before.
    */
-  export let answerKind: "boolean" | "enum" | "free" = "free";
+  export let answerKind: "boolean" | "enum" | "string" | "free" = "free";
   /** The enum's own members, each already the exact JSON text a click sends. Present only when `answerKind` is `enum`. */
   export let answerValues: readonly string[] = [];
 

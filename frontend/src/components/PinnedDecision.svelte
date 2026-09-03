@@ -56,7 +56,7 @@
     | { state: "loading" }
     | {
         state: "ready";
-        kind: "boolean" | "enum" | "free";
+        kind: "boolean" | "enum" | "string" | "free";
         values: readonly string[];
         role: string | null;
       }
@@ -179,6 +179,7 @@
     }
   }
 
+  /** Always a boolean or enum's own exact JSON text, never a string-schema wait (#1091). */
   async function decide(answer: string): Promise<void> {
     waitFailureMessage = null;
     waitBusy = true;
@@ -190,7 +191,8 @@
         run.workflow_revision_hash,
         run.current_node_id,
         nodeExecutionId,
-        answer
+        answer,
+        false
       );
       pendingWait = mutation;
       waitAccepted = false;

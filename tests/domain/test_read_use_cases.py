@@ -480,6 +480,48 @@ def test_a_schema_document_is_validated_at_most_once_across_two_separate_reads(
     assert validated <= 1
 
 
+def test_a_wait_answer_schema_classifies_string_for_a_plain_string_schema() -> None:
+    """A `type: string` schema with no `enum` is the raw-text wait a composer
+    sends verbatim, never JSON-quoted (#1091's dogfood defect)."""
+    schema = PublishedRevision(
+        RevisionKind.SCHEMA, b'{"type": "string", "minLength": 1}'
+    )
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+
+    result = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(result, WorkflowRevisionRead)
+    assert result.wait_answer_classifications == (
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="string"),
+    )
+
+
+def test_a_wait_answer_schema_classifies_enum_over_string_when_a_schema_names_both() -> (
+    None
+):
+    """An `enum` on a `type: string` schema still classifies `enum`, the more
+    specific answer -- `string` names only a schema with no closed member set."""
+    schema = PublishedRevision(
+        RevisionKind.SCHEMA, b'{"type": "string", "enum": ["ship", "hold"]}'
+    )
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+
+    result = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(result, WorkflowRevisionRead)
+    assert result.wait_answer_classifications == (
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID, kind="enum", values=('"ship"', '"hold"')
+        ),
+    )
+
+
 def test_a_resolver_answering_a_different_revision_than_pinned_is_not_cached() -> None:
     """#937 round 4 review finding 2: the cache is keyed by the *requested* hash,
     so a resolver whose answer names a different revision must be refused

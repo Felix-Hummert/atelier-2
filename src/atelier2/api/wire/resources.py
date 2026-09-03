@@ -539,19 +539,23 @@ class WaitAnswerSchemaResourceV3(ApiModel):
     of the top level to classify it). `kind` names only what that top level
     itself says -- `boolean` where it names `type: boolean`, `enum` where it
     names `enum` (`values` then carries the author's own members, each the
-    exact JSON text that member already is) -- and `free` for every other
-    shape this excerpt declines to guess at, including one it cannot resolve
-    or read at all. A schema a document names but this build cannot yet see
-    is not durable corruption: a document may name a schema published after
-    itself, exactly as `WorkflowDeclaredOrderResourceV3` echoes its own hull
-    unresolved, so an unreadable schema classifies `free` rather than refusing
-    the whole graph over a reference nothing has bound yet.
+    exact JSON text that member already is), `string` where it names
+    `type: string` and no `enum` -- the one kind whose composer must send the
+    typed text verbatim rather than a JSON-encoded string
+    (`schemas_v3.instance_for_schema` is the one door that reads it that way)
+    -- and `free` for every other shape this excerpt declines to guess at,
+    including one it cannot resolve or read at all. A schema a document names
+    but this build cannot yet see is not durable corruption: a document may
+    name a schema published after itself, exactly as
+    `WorkflowDeclaredOrderResourceV3` echoes its own hull unresolved, so an
+    unreadable schema classifies `free` rather than refusing the whole graph
+    over a reference nothing has bound yet.
     """
 
     node_id: str = Field(min_length=1)
     # Python cannot call this field `schema`: BaseModel already owns that name.
     schema_reference: WorkflowDeclaredSchemaResourceV3 = Field(alias="schema")
-    kind: Literal["boolean", "enum", "free"]
+    kind: Literal["boolean", "enum", "string", "free"]
     values: tuple[str, ...] | None = None
     """The author's own `enum` members, present exactly when `kind` is `enum`."""
 

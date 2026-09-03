@@ -365,12 +365,9 @@ def read_instance_document(
             InstanceRefusal.INSTANCE_TOO_LARGE,
             f"{len(instance)} bytes exceeds {maximum_bytes}",
         )
-    try:
-        text = instance.decode("utf-8")
-    except UnicodeDecodeError as broken:
-        return InstanceRefused(InstanceRefusal.INSTANCE_NOT_UTF8, broken.reason)
-    if text.startswith(_BYTE_ORDER_MARK):
-        return InstanceRefused(InstanceRefusal.INSTANCE_CARRIES_BYTE_ORDER_MARK)
+    text = _decoded_text(instance)
+    if isinstance(text, InstanceRefused):
+        return text
     decoded = _decoded_json(text)
     if isinstance(decoded, SchemaRefused):
         return _as_instance_refusal(decoded)
@@ -438,18 +435,38 @@ def instance_for_schema(instance: bytes, schema: Schema) -> JsonValue | Instance
     by a caller, because the `"string"` branch has no JSON decode step left to
     judge them.
     """
-    try:
-        text = instance.decode("utf-8")
-    except UnicodeDecodeError as broken:
-        return InstanceRefused(InstanceRefusal.INSTANCE_NOT_UTF8, broken.reason)
-    if text.startswith(_BYTE_ORDER_MARK):
-        return InstanceRefused(InstanceRefusal.INSTANCE_CARRIES_BYTE_ORDER_MARK)
+    text = _decoded_text(instance)
+    if isinstance(text, InstanceRefused):
+        return text
     if isinstance(schema, dict) and schema.get("type") == "string":
         return text
     decoded = _decoded_json(text)
     if isinstance(decoded, SchemaRefused):
         return _as_instance_refusal(decoded)
     return decoded.value
+
+
+def _decoded_text(instance: bytes) -> str | InstanceRefused:
+    """The exact UTF-8 text `instance`'s bytes are, or the refusal naming where they break.
+
+    Shared by every instance reader that must decode bytes to text before doing
+    anything else with them (`read_instance_document`, `instance_for_schema`):
+    invalid UTF-8 names the exact byte offset it broke at
+    (`UnicodeDecodeError.start`), because the ruled sentence for this refusal
+    is the place, not only the reason -- a person cannot fix "invalid start
+    byte" without knowing where in the artifact it is. A byte-order mark is
+    refused by its own name, never silently stripped.
+    """
+    try:
+        text = instance.decode("utf-8")
+    except UnicodeDecodeError as broken:
+        return InstanceRefused(
+            InstanceRefusal.INSTANCE_NOT_UTF8,
+            f"{broken.reason} at byte {broken.start}",
+        )
+    if text.startswith(_BYTE_ORDER_MARK):
+        return InstanceRefused(InstanceRefusal.INSTANCE_CARRIES_BYTE_ORDER_MARK)
+    return text
 
 
 # Where a JSON document may begin. A declared value the profile admits is an

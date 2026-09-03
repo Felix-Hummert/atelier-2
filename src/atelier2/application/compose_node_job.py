@@ -29,9 +29,19 @@ OUTPUT_SCHEMA_REPAIR_HEADING = "--- repair: declared output schema ---"
 
 
 class NodeJobCompositionVersion(StrEnum):
-    """The three rendering rules whose bytes have identified agent attempts."""
+    """The two rendering identities whose bytes have identified agent attempts.
 
-    LEGACY = "json-orders/v1"
+    `CURRENT` and `OUTPUT_SCHEMA_REPAIR` render every order identically
+    (`_render_order`); `OUTPUT_SCHEMA_REPAIR` differs only by the repair
+    section it appends. A third value, `LEGACY` (`json-orders/v1`), once
+    rendered a declared-root-string order as its still-JSON-quoted stored
+    bytes; #1091 made every order's stored bytes the exact text a reader
+    should see, so the rule it distinguished no longer exists. Atelier is a
+    prototype and owes no compatibility with an attempt composed under it: an
+    in-flight pre-#1091 attempt now reads as durable corruption rather than
+    reconstructing under a second rule (`docs/PRODUCT.md`).
+    """
+
     CURRENT = "declared-root-strings/v2"
     OUTPUT_SCHEMA_REPAIR = "declared-root-strings-with-repair/v3"
 

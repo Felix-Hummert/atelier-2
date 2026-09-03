@@ -420,7 +420,8 @@
         run.workflow_revision_hash,
         run.current_node_id,
         nodeExecutionId,
-        typed
+        typed,
+        currentWaitAnswerSchema?.kind === "string"
       );
       pendingWait = mutation;
       waitAccepted = false;

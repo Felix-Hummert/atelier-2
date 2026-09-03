@@ -106,15 +106,16 @@ export type JsonSchemaDocument = z.infer<typeof jsonSchemaDocumentSchema>;
  * may without evaluating it. `kind` is `boolean` only where the schema's own
  * top level names `type: boolean`, `enum` only where it names `enum` (with
  * `values` the author's own members, each already the exact JSON text a
- * decision sends), and `free` for every other shape -- including a schema the
- * server's own excerpt has not yet resolved, which is this build's answer for
- * every node today (#553 names the resolving use case as a follow-up).
+ * decision sends), `string` only where it names `type: string` and no
+ * `enum` -- the one kind whose composer must send typed text verbatim
+ * (`waitAnswer.ts`, #1091) -- and `free` for every other shape, including a
+ * schema the server's own excerpt has not yet resolved.
  */
 const waitAnswerSchemaV3Schema = z
   .object({
     node_id: z.string().min(1),
     schema: workflowDeclaredSchemaSchema,
-    kind: z.enum(["boolean", "enum", "free"]),
+    kind: z.enum(["boolean", "enum", "string", "free"]),
     values: z.array(z.string()).nullable(),
   })
   .strict()

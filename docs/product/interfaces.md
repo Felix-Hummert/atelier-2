@@ -92,7 +92,9 @@ the author's own `schema: {ref, revision}` hull, a published schema or budget
 revision names its own kind, and material published as an artifact is ordered
 under the address the publication answered. A machine consumer assembles each
 request out of fields the answers before it named, without a translation table
-of its own.
+of its own. An order or wait answer whose schema's top-level `type` is
+`string` carries its raw UTF-8 text as the value; every other schema carries a
+JSON document.
 
 The stdio MCP `start_run` tool accepts artifact and work-item orders only;
 inline orders remain an HTTP-only form until their retirement is a later slice.

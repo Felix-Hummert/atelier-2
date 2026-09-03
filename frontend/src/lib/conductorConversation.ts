@@ -30,6 +30,12 @@ export type ConductorTranscript = {
 
 const CONDUCTOR_WAIT_NODE_ID = "next_message";
 const CONDUCTOR_AGENT_NODE_ID = "conduct";
+/**
+ * The conductor's own fixed document fact (`CONDUCTOR_MESSAGE_SCHEMA`,
+ * `host/conductor_workflow.py`): `{type: "string", minLength: 1}`, so every
+ * operator message is a string-schema wait answer, sent verbatim (#1091).
+ */
+const CONDUCTOR_MESSAGE_IS_STRING_SCHEMA = true;
 export const conductorConversationCopy = {
   emptyDescription: "The conductor is ready for the first message.",
   composerHint: "The conductor is listening. Your next message begins the conversation.",
@@ -169,7 +175,8 @@ export async function answerConductorWait(
     run.workflow_revision_hash,
     run.current_node_id,
     run.current_node_execution_id,
-    typed
+    typed,
+    CONDUCTOR_MESSAGE_IS_STRING_SCHEMA
   );
   return deliverWaitAnswer(cockpitApi, mutationJournal, mutation);
 }

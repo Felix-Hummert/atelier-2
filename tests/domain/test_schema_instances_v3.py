@@ -459,6 +459,26 @@ def test_an_authored_string_schema_value_still_refuses_broken_bytes(
     assert verdict.refusal is expected
 
 
+def test_an_invalid_utf8_refusal_names_the_broken_byte_offset() -> None:
+    """The ruled sentence is the place, not only the reason: a person cannot fix
+    "invalid start byte" without knowing where in the artifact it broke."""
+    verdict = read_instance_document(
+        b'{"name": "stir \xff gently", "portions": 1}', A_MEAL
+    )
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is InstanceRefusal.INSTANCE_NOT_UTF8
+    assert verdict.subject == "invalid start byte at byte 15"
+
+
+def test_an_authored_string_schema_refusal_also_names_the_broken_byte_offset() -> None:
+    verdict = read_authored_instance_document(b"stir \xff gently", A_NONEMPTY_STRING)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is InstanceRefusal.INSTANCE_NOT_UTF8
+    assert verdict.subject == "invalid start byte at byte 5"
+
+
 def test_instance_for_schema_is_the_one_dispatch_both_checks_agree_are_bound() -> None:
     """The decode-only unit `read_authored_instance_document` is built on.
 

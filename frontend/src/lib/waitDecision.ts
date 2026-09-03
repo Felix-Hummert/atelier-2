@@ -12,7 +12,7 @@ export function decisionLabel(jsonEncoded: string): string {
 
 /** The confirmed answer's human words, or null where the schema carries no boolean/enum reading. */
 export function confirmedDecisionLabel(
-  answerKind: "boolean" | "enum" | "free",
+  answerKind: "boolean" | "enum" | "string" | "free",
   pendingAnswer: string,
   answerYesLabel: string,
   answerNoLabel: string

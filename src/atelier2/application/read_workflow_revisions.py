@@ -79,7 +79,7 @@ class WaitAnswerClassification:
     """
 
     node_id: str
-    kind: Literal["boolean", "enum", "free"]
+    kind: Literal["boolean", "enum", "string", "free"]
     values: tuple[str, ...] | None = None
 
 
@@ -240,6 +240,14 @@ def _classify_wait_answer(
     hull unresolved on the wire. Each of those four reasons classifies `free`,
     the honest little this reader can say, rather than refuse the whole read
     over a reference nothing has bound yet.
+
+    `string` names the one other shape a composer must read differently:
+    where the schema's own top level is exactly `type: string` and it names
+    no `enum` (an `enum` still classifies `enum`, the more specific answer),
+    the value a person types *is* the answer with no JSON-quoting layer
+    around it (`schemas_v3.instance_for_schema` is the one door that reads it
+    that way) -- a wire consumer that did not know this would keep asking a
+    person to type `"ok"` quotes and all.
     """
     schema = _resolved_schema_document(node.outputs[0].schema_reference, resolver)
     if isinstance(schema, (ReadUnavailable, DurableStateCorrupt)):
@@ -254,6 +262,8 @@ def _classify_wait_answer(
                 return WaitAnswerClassification(
                     node.id, "enum", cast(tuple[str, ...], tuple(encoded))
                 )
+        elif schema.get("type") == "string":
+            return WaitAnswerClassification(node.id, "string")
     return WaitAnswerClassification(node.id, "free")
 
 

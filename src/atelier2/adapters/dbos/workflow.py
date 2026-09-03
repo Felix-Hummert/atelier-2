@@ -97,7 +97,6 @@ from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
 from atelier2.application.cancel_runner_attempt import cancel_runner_attempt
-from atelier2.application.compose_node_job import NodeJobCompositionVersion
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.application.execute_agent_attempt_on_runner import (
     ExecuteAgentAttemptOnRunnerOutcome,
@@ -401,11 +400,11 @@ class ReconstructedAgentAttempt:
     carrier: AgentExecutorCarrier
 
 
-def _reconstructed_agent_job_candidates(
+def _reconstructed_agent_repair_job(
     datasource: SQLAlchemyDatasource,
     attempt: AgentAttempt,
     round_ordinal: int,
-) -> tuple[str | None, str | None]:
+) -> str | None:
     """Read and compose a repair only when its durable refusal receipt exists.
 
     Ordinal two predates schema repair: cancellation also mints one replacement.
@@ -414,7 +413,7 @@ def _reconstructed_agent_job_candidates(
     access their datasource through that boundary.
     """
 
-    def load() -> tuple[str | None, str | None]:
+    def load() -> str | None:
         session = datasource.sql_session()
         graph = load_graph(session, attempt.workflow_revision_hash)
         node = graph.node(attempt.node_id)
@@ -438,7 +437,7 @@ def _reconstructed_agent_job_candidates(
                 raise RunTransitionConflict(
                     "repair receipt belongs to a node that is not an agent node"
                 )
-            return None, None
+            return None
         receipt = load_prior_output_schema_refusal_receipt(
             session,
             target_attempt_id=attempt.attempt_id,
@@ -448,6 +447,8 @@ def _reconstructed_agent_job_candidates(
                 node.outputs[0].schema_reference.revision
             ),
         )
+        if receipt is None:
+            return None
         orders, results = _node_material(
             session,
             attempt.run_id,
@@ -456,32 +457,17 @@ def _reconstructed_agent_job_candidates(
             node,
             round_ordinal,
         )
-        repair_job = (
-            None
-            if receipt is None
-            else compose_agent_node_job_for_attempt(
-                node,
-                orders,
-                results,
-                base_composition_version=NodeJobCompositionVersion.CURRENT,
-                target_node_execution_id=attempt.node_execution_id,
-                target_attempt_ordinal=attempt.attempt_ordinal,
-                prior_refusal_receipt=receipt,
-            ).decode("utf-8")
-        )
-        legacy_job = compose_agent_node_job_for_attempt(
+        return compose_agent_node_job_for_attempt(
             node,
             orders,
             results,
-            base_composition_version=NodeJobCompositionVersion.LEGACY,
             target_node_execution_id=attempt.node_execution_id,
             target_attempt_ordinal=attempt.attempt_ordinal,
-            prior_refusal_receipt=None,
+            prior_refusal_receipt=receipt,
         ).decode("utf-8")
-        return repair_job, legacy_job
 
     return cast(
-        tuple[str | None, str | None],
+        str | None,
         datasource.run_tx_step({"name": "reconstruct-agent-job"}, load),
     )
 
@@ -511,10 +497,8 @@ def reconstruct_agent_attempt(
     )
     if not isinstance(binding, AgentNodeBindingV2):
         raise RunTransitionConflict("durable attempt is not a V2 agent node")
-    repair_job: str | None = None
-    legacy_job: str | None = None
     if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
-        repair_job, legacy_job = _reconstructed_agent_job_candidates(
+        repair_job = _reconstructed_agent_repair_job(
             datasource, attempt, binding.round_ordinal
         )
         if repair_job is not None:
@@ -533,20 +517,6 @@ def reconstruct_agent_attempt(
         operational_identity,
         declared_capabilities,
     )
-    if (
-        request.request_hash != attempt.request_hash
-        and repair_job is None
-        and legacy_job is not None
-    ):
-        binding = replace(binding, job=legacy_job)
-        request = agent_execution_request_v2(
-            binding,
-            attempt.run_id,
-            attempt.workflow_revision_hash,
-            attempt.node_id,
-            operational_identity,
-            declared_capabilities,
-        )
     if (
         request.node_execution_id != attempt.node_execution_id
         or request.request_hash != attempt.request_hash
