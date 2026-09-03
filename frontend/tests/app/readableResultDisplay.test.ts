@@ -32,6 +32,7 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
     run_id: "v3/conductor-episode",
     public_run_reference: publicReference,
     workflow_revision_hash: digest,
+    workflow_name: "conductor episode",
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],

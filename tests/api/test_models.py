@@ -123,6 +123,7 @@ def a_run(**overrides: object) -> dict[str, object]:
         "run_id": "run",
         "public_run_reference": "run1.cnVu",
         "workflow_revision_hash": HASH,
+        "workflow_name": "workflow",
         "agent_binding_set_hash": HASH,
         "run_configuration_revision_hash": HASH,
         "agent_bindings": (),
