@@ -48,6 +48,7 @@ from atelier2.adapters.github.effects import (
     ReviewedDocumentationPublisher,
     ReviewedDocumentationPublisherFactory,
 )
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agents import (
@@ -100,6 +101,7 @@ from atelier2.ports.agent_configurations import (
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableRunCreated,
+    StartPublishedRunRequestV2,
     StartPublishedRunRequestV3,
 )
 from atelier2.ports.effects import EffectAdapterRegistration, EffectAdapterRegistry
@@ -169,6 +171,133 @@ def _repositories(root: Path) -> tuple[Path, Path, str]:
     _git(root, "init", "--bare", "--quiet", str(remote))
     _git(project, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
     return project, remote, base
+
+
+@pytest.mark.proves("a-node-binds-one-exec-shaped-and-one-effect-shaped-grant-together")
+def test_a_node_binding_both_grant_shapes_together_starts_a_run(
+    tmp_path: Path,
+) -> None:
+    """The first Done-when sentence of #1101, pinned at run level: a node pins
+    `run-project-verification` (exec-shaped) and `push-atelier-commit`
+    (effect-shaped) together in one workflow revision, and a run starts with
+    it. The cheapest proof of that -- a start, not a launch -- next to the
+    scenario that exercises `push-atelier-commit` end to end.
+    """
+    push_operation = PublishedRevision(
+        RevisionKind.ADAPTER_OPERATION,
+        json.dumps(
+            {
+                "operation": AdapterOperationName.PUSH_ATELIER_COMMIT.value,
+                "author": {"name": "Atelier Agent", "email": "agent@example.test"},
+                "committer": {"name": "Atelier Core", "email": "core@example.test"},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode(),
+    )
+    push_grant = PublishedRevision(
+        RevisionKind.TOOL,
+        json.dumps(
+            {
+                "capability": ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
+                "operation": {
+                    "ref": "push-atelier-commit",
+                    "revision": push_operation.revision_hash.value,
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode(),
+    )
+    verification_grant = PublishedRevision(
+        RevisionKind.TOOL,
+        json.dumps(
+            {"capability": ToolGrantCapability.RUN_PROJECT_VERIFICATION.value},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode(),
+    )
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "two-grant-shapes-start-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "effects.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        (RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-operation", b""),),
+    )
+    runtime.initialize_storage()
+    try:
+        store = DbosCatalogStore(runtime.engine)
+        for revision in (
+            ANY_JSON_SCHEMA,
+            push_operation,
+            push_grant,
+            verification_grant,
+        ):
+            published = store.publish_revision(revision)
+            assert isinstance(
+                published, (PublishedRevisionCreated, PublishedRevisionExisting)
+            ), published
+
+        catalog = DbosAgentConfigurationCatalog(
+            runtime.engine, runtime.agent_executor_registry
+        )
+        auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
+        assert isinstance(
+            catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        )
+        configuration = AgentConfigurationRevision(
+            "opus",
+            auth.revision_hash,
+            AgentExecutorRevision("exact/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(configuration),
+            AgentConfigurationRevisionCreated,
+        )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("exact"), (configuration,)
+        )
+
+        document = (
+            f"""format_version: 3
+name: One node pinning both grant shapes
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Verify and push, with both grants pinned on one node.
+    tools:
+      - {{ref: run-project-verification, revision: {verification_grant.revision_hash.value}}}
+      - {{ref: push-atelier-commit, revision: {push_grant.revision_hash.value}}}
+""".encode()
+            + declared_output()
+        )
+        workflow = WorkflowRevision(document)
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+        bindings = AgentBindingSet(
+            (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+        )
+
+        started = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(
+                RunId("v3/two-grant-shapes"), workflow.revision_hash, bindings
+            )
+        )
+    finally:
+        runtime.close()
+
+    assert isinstance(started, DurableRunCreated), started
 
 
 def _publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
@@ -272,6 +401,9 @@ nodes:
     type: action
     operation: {{ref: open-pr, revision: {open_pr_operation.revision_hash.value}}}
     depends_on: [implement]
+    inputs:
+      - name: body
+        from: {{node: implement, output: result}}
 """.encode()
     )
     workflow = WorkflowRevision(document)
