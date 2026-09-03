@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import sqlalchemy as sa
@@ -36,6 +37,7 @@ from atelier2.adapters.dbos.schema import (
     run_inputs_v3,
     runs,
 )
+from atelier2.adapters.yaml_workflows import WorkflowFormatNotExecutable
 from atelier2.contracts.adapter_operations_v3 import (
     AdapterOperationAccepted,
     AdapterOperationName,
@@ -414,8 +416,16 @@ def legacy_agent_effect_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, 
     a receipt exists, or wait there for reconciliation. A completed or advanced
     agent execution without the receipt that now authorizes its advance is
     therefore a persisted pre-change shape, not recoverable current work.
+
+    A run's revision can also carry a shape this build's parser no longer
+    executes at all -- persisted before a later format tightening retired it,
+    the same tightening `parse_executable_workflow_document` enforces at start
+    (`DurableRunFormatNotExecutable`). That revision is not one this sweep can
+    read at all, so it is named retired-shape and skipped rather than let its
+    parse refusal abort the whole sweep and take live serving down with it.
     """
 
+    logger = logging.getLogger("atelier2")
     with engine.connect() as connection:
         records = connection.execute(
             sa.select(runs).where(
@@ -426,7 +436,16 @@ def legacy_agent_effect_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, 
         for record in records:
             run_id = RunId(str(record["run_id"]))
             revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
-            graph = load_graph(connection, revision_hash)
+            try:
+                graph = load_graph(connection, revision_hash)
+            except WorkflowFormatNotExecutable:
+                logger.warning(
+                    "skipping retired-shape workflow revision %s for run %s: no "
+                    "runtime executes this format any more",
+                    revision_hash.value,
+                    run_id.value,
+                )
+                continue
             current_node_id = str(record["current_node_id"])
             current_round_ordinal = int(record["current_round_ordinal"])
             current_node = graph.node(current_node_id)

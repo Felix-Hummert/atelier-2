@@ -89,7 +89,12 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_forks import RunForkCommandId, successor_run_id_for
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -108,6 +113,7 @@ from atelier2.ports.published_revisions import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
+    answering_each_execution,
     launching,
     publish_checked_model_registry,
 )
@@ -118,6 +124,15 @@ from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 RUN = RunId("v3/open-pr")
 TRANSITIVE_RUN = RunId("v3/open-pr/transitive")
 TREE = json.dumps({"files": {"hello.txt": "from the builder"}}).encode("utf-8")
+REVIEWERS_VERDICT = json.dumps(
+    {"verdict": "approved by the reviewer, not the builder"}
+).encode("utf-8")
+"""The reviewer's own output -- distinct bytes from `TREE`, the builder's own.
+
+The Action's `body` input must be traced to `implement`'s output specifically,
+not to whichever agent happened to run last (#1101): identical output would
+let a wrong dependency-closure read pass unnoticed.
+"""
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 OPEN_PR_DOCUMENT = json.dumps({"operation": AdapterOperationName.OPEN_PR.value}).encode(
     "utf-8"
@@ -217,6 +232,37 @@ def _runtime_for(
         (recording,),
     )
     return started, github, listing
+
+
+def _transitive_line_runtime_for(
+    root: Path, github_database: Path
+) -> tuple[DbosRuntime, CountingGitHubEffectAdapterFactory]:
+    """`_runtime_for`'s twin for the builder-then-reviewer line: the two agents
+    answer with distinct bytes, so a body traced to the wrong one is caught.
+    """
+    recording = RecordingAgentExecutorFactoryV2(
+        "exact",
+        "exact/v1",
+        "exact-operation",
+        b"",
+        command=answering_each_execution(
+            {
+                ("implement", FIRST_ROUND_ORDINAL): TREE,
+                ("review", FIRST_ROUND_ORDINAL): REVIEWERS_VERDICT,
+            }
+        ),
+    )
+    github = CountingGitHubEffectAdapterFactory(github_database)
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "v3-open-pr-transitive-test",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
+        github,
+        (recording,),
+    )
+    return started, github
 
 
 def publish_line(
@@ -1042,52 +1088,66 @@ def test_a_v3_agent_then_action_opens_one_pull_request_through_the_github_adapte
     "an-open-pr-action-reads-the-builders-output-through-review-and-a-wait"
 )
 def test_open_pr_reads_the_builders_output_through_review_and_a_wait(
-    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+    tmp_path: Path,
 ) -> None:
     """The retired immediate-predecessor rule is not needed: review and a Wait
     stand between the builder and the Action, and the Action still reads the
-    builder's own output through the dependency closure that orders them.
+    builder's own output through the dependency closure that orders them --
+    not merely a shared idempotency marker both agents would carry alike
+    (#1101). `implement` and `review` answer with distinct bytes so the
+    recorded body can be traced to the builder's own, and not the reviewer's.
     """
-    started_runtime, github, _listing, _atelier_sqlite = runtime
-    workflow, bindings = publish_transitive_line(started_runtime)
-    starter = DbosDurableRunStarter(
-        started_runtime.engine,
-        started_runtime.settings,
-        started_runtime.agent_executor_registry,
+    started_runtime, github = _transitive_line_runtime_for(
+        tmp_path, tmp_path / "github.sqlite"
     )
-    started = starter.start_published(
-        StartPublishedRunRequestV2(TRANSITIVE_RUN, workflow.revision_hash, bindings)
-    )
-    assert isinstance(started, DurableRunCreated)
-    started_runtime.launch()
-    wait_for_state(started_runtime, RunState.WAITING_INPUT, TRANSITIVE_RUN)
+    started_runtime.initialize_storage()
+    try:
+        workflow, bindings = publish_transitive_line(started_runtime)
+        starter = DbosDurableRunStarter(
+            started_runtime.engine,
+            started_runtime.settings,
+            started_runtime.agent_executor_registry,
+        )
+        started = starter.start_published(
+            StartPublishedRunRequestV2(TRANSITIVE_RUN, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        started_runtime.launch()
+        wait_for_state(started_runtime, RunState.WAITING_INPUT, TRANSITIVE_RUN)
 
-    submit_wait_answer(
-        started_runtime.engine,
-        started_runtime.settings.application_version,
-        SubmitWaitAnswerRequest(
-            TRANSITIVE_RUN,
-            workflow.revision_hash,
-            "approve",
-            NodeExecutionId.for_node(TRANSITIVE_RUN, workflow.revision_hash, "approve"),
-            WaitAnswerActor.OPERATOR,
-            b'{"released": true}',
-        ),
-    )
-    wait_for_state(started_runtime, RunState.COMPLETED, TRANSITIVE_RUN)
+        submit_wait_answer(
+            started_runtime.engine,
+            started_runtime.settings.application_version,
+            SubmitWaitAnswerRequest(
+                TRANSITIVE_RUN,
+                workflow.revision_hash,
+                "approve",
+                NodeExecutionId.for_node(
+                    TRANSITIVE_RUN, workflow.revision_hash, "approve"
+                ),
+                WaitAnswerActor.OPERATOR,
+                b'{"released": true}',
+            ),
+        )
+        wait_for_state(started_runtime, RunState.COMPLETED, TRANSITIVE_RUN)
 
-    recorded = github.recorded_pull_requests()
-    assert len(recorded) == 1
-    with started_runtime.engine.connect() as connection:
-        intent = intent_snapshot_from_record(
-            connection.execute(
-                sa.select(effect_intents).where(
-                    effect_intents.c.run_id == TRANSITIVE_RUN.value
+        recorded = github.recorded_pull_requests()
+        assert len(recorded) == 1
+        with started_runtime.engine.connect() as connection:
+            intent = intent_snapshot_from_record(
+                connection.execute(
+                    sa.select(effect_intents).where(
+                        effect_intents.c.run_id == TRANSITIVE_RUN.value
+                    )
                 )
-            )
-            .mappings()
-            .one()
-        ).intent
+                .mappings()
+                .one()
+            ).intent
+    finally:
+        started_runtime.close()
+
     assert body_carries_request_hash(
         recorded[0].body, intent.request.request_hash.value
     )
+    assert TREE.decode("utf-8") in recorded[0].body
+    assert REVIEWERS_VERDICT.decode("utf-8") not in recorded[0].body

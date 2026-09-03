@@ -11,7 +11,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/1101"
 
 [[sentence]]
 id = "a-node-binds-one-exec-shaped-and-one-effect-shaped-grant-together"
-text = "An Agent node pins at most one exec-shaped and at most one effect-shaped tool grant together and both resolve from the run's durable binding; two grants of the same shape on one node are refused by name once their published capabilities are read, before either is redeemed."
+text = "An Agent node pins at most one exec-shaped and at most one effect-shaped tool grant together and both resolve from the run's durable binding; two grants of the same shape on one node are refused by name once their published capabilities are read, before the run exists."
 
 [[sentence]]
 id = "an-open-pr-action-reads-the-builders-output-through-review-and-a-wait"
