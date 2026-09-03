@@ -96,12 +96,28 @@ of its own.
 
 The stdio MCP `start_run` tool accepts artifact and work-item orders only;
 inline orders remain an HTTP-only form until their retirement is a later slice.
-`publish_artifact` accepts at most 1,047,552 Base64 characters, or 785,664
-decoded bytes: the artifact store permits 1,048,576 bytes, but Base64 and the
-JSON-RPC request envelope must fit the 1,048,576-byte MCP line cap (1,024 bytes
-are reserved for that envelope). Publishing material and starting a run are two
-calls. If the start is refused or fails, its already-published immutable
-artifact remains reusable and no run exists.
+Publishing material and starting a run are two calls. If the start is refused or
+fails, its already-published immutable artifact remains reusable and no run
+exists.
+
+`publish_artifact` names its material one of two ways. `content_base64` carries
+bytes the caller is composing in the call itself and accepts at most 1,047,552
+Base64 characters, or 785,664 decoded bytes: the artifact store permits
+1,048,576 bytes, but Base64 and the JSON-RPC request envelope must fit the
+1,048,576-byte MCP line cap (1,024 bytes are reserved for that envelope).
+`path` names material that is already a file on the machine the stdio child runs
+on -- the child has the same loopback trust as the browser there, so it reads
+the file itself and posts those exact bytes, and nothing large has to be
+reproduced inside a tool call. It carries the whole 1,048,576-byte store bound,
+and a path that is not absolute, is missing, is not a regular file, cannot be
+read, or exceeds that bound is refused by name before anything is sent. Naming
+both sources, or neither, is refused the same way. `GET /artifacts/{hash}`
+answers the exact bytes as `application/octet-stream`, with a typed refusal for
+an address nobody published; MCP mirrors it as `read_artifact`, which answers
+the address and the bytes as Base64 and refuses an answer that does not hash to
+the address it asked for. A run's own result is readable the same way: the
+terminal hash a run resource carries, and the `output_base64` its
+`/runs/{ref}/events` stream carries, both name material this door reads back.
 
 A described listing and a single revision read both name where a revision's
 bytes came in from: `provenance` carries the source's public `source1.`
