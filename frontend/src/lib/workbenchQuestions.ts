@@ -31,6 +31,18 @@ export const workbenchQuestions = {
   answerDecision: {
     id: "answer-decision",
     question: "Can I answer, or send again, a decision that waits on me?"
+  },
+  discardPoisonedJournalDoor: {
+    id: "discard-poisoned-journal-door",
+    question: "Can I open the one door out of a poisoned remembered-sendings journal?"
+  },
+  discardPoisonedJournalConfirm: {
+    id: "discard-poisoned-journal-confirm",
+    question: "Can I confirm forgetting the poisoned remembered-sendings journal?"
+  },
+  discardPoisonedJournalCancel: {
+    id: "discard-poisoned-journal-cancel",
+    question: "Can I cancel and leave the poisoned remembered-sendings journal as it was?"
   }
 } as const;
 

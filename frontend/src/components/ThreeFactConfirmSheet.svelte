@@ -23,6 +23,11 @@
   export let failure: string | null = null;
   export let onConfirm: () => void;
   export let onDismiss: () => void;
+  /** Extra attributes the confirm/cancel buttons carry -- e.g. a caller's own
+   * control-inventory tag. The catalog's retire card, this shape's other
+   * caller, leaves both at their default `{}`. */
+  export let confirmAttributes: Record<string, string> = {};
+  export let cancelAttributes: Record<string, string> = {};
 
   let dialogElement: globalThis.HTMLDialogElement;
   let cancelButton: HTMLButtonElement;
@@ -74,10 +79,17 @@
     <p class="failure" role="alert">{wrapDisplayCopy(failure)}</p>
   {/if}
   <footer>
-    <button class="danger" type="button" disabled={submitting} onclick={onConfirm}>
+    <button class="danger" type="button" disabled={submitting} onclick={onConfirm} {...confirmAttributes}>
       {wrapDisplayCopy(confirmLabel)}
     </button>
-    <button bind:this={cancelButton} class="quiet" type="button" disabled={submitting} onclick={dismiss}>
+    <button
+      bind:this={cancelButton}
+      class="quiet"
+      type="button"
+      disabled={submitting}
+      onclick={dismiss}
+      {...cancelAttributes}
+    >
       {wrapDisplayCopy(cancelLabel)}
     </button>
   </footer>

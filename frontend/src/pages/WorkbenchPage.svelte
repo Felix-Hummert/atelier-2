@@ -720,6 +720,9 @@
       message=""
       actionLabel={wrapDisplayCopy(journalPoisonedCopy.door)}
       onAction={openDiscardConfirm}
+      actionAttributes={{
+        [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalDoor.id
+      }}
     />
   {:else}
 

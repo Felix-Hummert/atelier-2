@@ -7,8 +7,15 @@ import { journalPoisonedCopy } from "../../src/lib/journalPoisonedCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { MUTATION_JOURNAL_STORAGE_KEY } from "../../src/lib/storageKeys";
+import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { waitingInputRun } from "../support/runV3";
+import {
+  describeWorkbenchControl,
+  questionForWorkbenchControl,
+  workbenchInteractiveSelector,
+  workbenchStageSelector
+} from "../support/workbenchControls";
 
 /**
  * A poisoned mutation journal shows one honest sentence and one door on the
@@ -101,6 +108,23 @@ describe("a poisoned mutation journal on the Workbench", () => {
     expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();
   });
 
+  it("inventories the poisoned notice's door and, once open, the discard sheet's confirm and cancel -- the whole poisoned room is still the control inventory's, not a silent exemption", async () => {
+    sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
+    openWorkbench();
+    await screen.findByText(journalPoisonedCopy.sentence);
+    expectWorkbenchControlsAreInventoried([workbenchQuestions.discardPoisonedJournalDoor.id]);
+
+    await fireEvent.click(screen.getByRole("button", { name: journalPoisonedCopy.door }));
+    await screen.findByRole("dialog", { name: journalPoisonedCopy.confirmLabel });
+    // The poisoned notice stays mounted behind the sheet -- `journalPoisoned`
+    // does not change when the sheet opens -- so its door is still counted.
+    expectWorkbenchControlsAreInventoried([
+      workbenchQuestions.discardPoisonedJournalDoor.id,
+      workbenchQuestions.discardPoisonedJournalConfirm.id,
+      workbenchQuestions.discardPoisonedJournalCancel.id
+    ]);
+  });
+
   it("the door opens the retire card's own three facts plus the raw stored text behind a Technical reveal, and confirming heals the room without a reload", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
     openWorkbench();
@@ -174,4 +198,19 @@ describe("a poisoned mutation journal on the Workbench", () => {
     expect(screen.getByText(journalPoisonedCopy.sentence)).toBeTruthy();
     expect(sessionStorage.getItem(MUTATION_JOURNAL_STORAGE_KEY)).toBe("{");
   });
+
+  function expectWorkbenchControlsAreInventoried(expected: readonly string[]): void {
+    const stage = document.querySelector(workbenchStageSelector);
+    if (stage === null) {
+      throw new Error("the Workbench stage is missing");
+    }
+    const present = [...stage.querySelectorAll(workbenchInteractiveSelector)].map((element) => {
+      const found = questionForWorkbenchControl(element);
+      if (found === null) {
+        throw new Error(`unmapped Workbench control: ${describeWorkbenchControl(element)}`);
+      }
+      return found.id;
+    });
+    expect(new Set(present)).toEqual(new Set(expected));
+  }
 });

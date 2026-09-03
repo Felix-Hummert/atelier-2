@@ -2,6 +2,7 @@
   import ThreeFactConfirmSheet from "./ThreeFactConfirmSheet.svelte";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
+  import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
 
   /**
    * The one confirmation a poisoned mutation journal's door opens (#914,
@@ -13,6 +14,11 @@
    * (issue #914 line 12). `raw` is read once by the caller, before this
    * sheet ever opens, so the same bytes shown here are the ones the caller's
    * post-discard receipt measures.
+   *
+   * The confirm and cancel buttons carry the Workbench's own
+   * `data-workbench-question` tag directly -- this sheet has one caller
+   * today (the Workbench), so it owns that inventory rather than routing the
+   * attributes through its parent.
    */
   export let raw: string;
   export let submitting = false;
@@ -43,6 +49,12 @@
   {failure}
   {onConfirm}
   {onDismiss}
+  confirmAttributes={{
+    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalConfirm.id
+  }}
+  cancelAttributes={{
+    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalCancel.id
+  }}
 >
   <details class="technical">
     <summary>{wrapDisplayCopy(journalPoisonedCopy.technical)}</summary>
