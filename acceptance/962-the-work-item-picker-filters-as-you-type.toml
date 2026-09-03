@@ -1,0 +1,6 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/962"
+
+[[sentence]]
+id = "the-work-item-picker-filters-by-number-and-title-and-says-when-nothing-matches"
+text = "Der Work-Item-Wähler filtert beim Tippen nach Nummer und Titel und sagt, wenn nichts passt."
