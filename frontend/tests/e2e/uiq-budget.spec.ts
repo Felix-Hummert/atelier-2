@@ -467,10 +467,10 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     await openWorkbench(page);
     // A fresh page load resolves the conductor's own connection, and
     // restores its already-started run, asynchronously; typing before that
-    // settles would either find Send still disabled or race a second run
-    // into existence instead of continuing the one from the last viewport.
-    // Send is enabled while the connection is still `reading` too, so the
-    // connected composer hint is the actual signal that resolution finished.
+    // settles would either find Send disabled (locked while "reading",
+    // #1103, #1114) or race a second run into existence instead of
+    // continuing the one from the last viewport. The connected composer hint
+    // is the actual signal that resolution finished.
     await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible({
       timeout: 20_000
     });
