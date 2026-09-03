@@ -683,7 +683,11 @@ immediately before the update, then hands the verified commit to
 `scripts/serve_live_update.sh`. That script owns the fast-forward to the
 verified commit and remains the one owner of build, backup, migration,
 restart, and post-update health verification; the watcher never moves the
-checkout itself.
+checkout itself. The watcher runs the **target commit's own**
+`serve_live_update.sh` (materialised via `git show` into a temporary file
+inside the checkout, then removed), never the copy already on disk, because
+Git replaces a tracked file by unlink-and-create and a shell that already
+opened the old file would otherwise keep reading it for the rest of the run.
 
 Queued or running GitHub checks wait for another tick. No reported checks wait
 for up to 30 minutes after the commit; after that they count as red. A busy run

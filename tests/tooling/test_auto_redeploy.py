@@ -38,7 +38,19 @@ def run_git(repository: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-def install_serve_live_update_stub(scripts_directory: Path) -> None:
+def install_serve_live_update_stub(
+    scripts_directory: Path, *, marker: str = ""
+) -> None:
+    # `marker` lets a test install a second, observably different revision of
+    # this stub as a later commit — proving which commit's script actually
+    # ran, the way test_the_target_commits_own_serve_live_update_script_runs
+    # does below.
+    marker_write = (
+        f'Path(os.environ["ATELIER2_TEST_SERVE_SCRIPT_MARKER_FILE"])'
+        f'.write_text({marker!r}, encoding="utf-8")\n'
+        if marker
+        else ""
+    )
     write_stub(
         scripts_directory / "serve_live_update.sh",
         """\
@@ -80,6 +92,9 @@ subprocess.run(
 Path(os.environ["ATELIER2_TEST_SERVED_COMMIT_FILE"]).write_text(
     target_commit, encoding="utf-8"
 )
+"""
+        + marker_write
+        + """\
 print(f"serve live update: now serves {target_commit}")
 if os.environ.get("ATELIER2_TEST_UPDATE_INTAKE_REFUSED") == "1":
     print("serve live update: WORKFLOW INTAKE REFUSED", file=sys.stderr)
@@ -310,6 +325,17 @@ class AutoRedeployHarness:
         run_git(self.origin, "commit", "--quiet", "--message", "update payload")
         return run_git(self.origin, "rev-parse", "HEAD")
 
+    def commit_new_serve_live_update(self, marker: str) -> str:
+        # The deploy checkout stays on the commit cloned in create(); only
+        # this new commit's git object carries the marker-writing revision,
+        # so a marker file proves the watcher ran the TARGET commit's script.
+        install_serve_live_update_stub(self.origin / "scripts", marker=marker)
+        run_git(self.origin, "add", "--all")
+        run_git(
+            self.origin, "commit", "--quiet", "--message", "update serve_live_update.sh"
+        )
+        return run_git(self.origin, "rev-parse", "HEAD")
+
     def seed_served_commit(self, commit: str | None = None) -> str:
         served_commit = commit or run_git(self.origin, "rev-parse", "HEAD")
         self.served_commit_file.write_text(served_commit, encoding="utf-8")
@@ -398,6 +424,29 @@ def test_a_green_commit_is_handed_to_the_loopback_update_without_the_watcher_mov
     assert harness.state("auto-redeploy.failures") == 0
     assert harness.state("auto-redeploy.busy") == 0
     assert not list(harness.git_admin_directory.glob("*deployed*"))
+
+
+def test_the_target_commits_own_serve_live_update_script_runs_not_the_stale_checkout_copy(
+    tmp_path: Path,
+) -> None:
+    # Git replaces a tracked file by unlink-then-create: a shell that already
+    # opened the deploy checkout's serve_live_update.sh keeps reading the OLD
+    # bytes until it exits. The deploy checkout here is never fast-forwarded
+    # before invocation, so its on-disk serve_live_update.sh is still the
+    # revision with no marker-writing logic at all; only the fetched target
+    # commit's git object carries the marker. A marker file appearing proves
+    # the watcher ran the TARGET commit's script, not the stale checkout copy.
+    harness = AutoRedeployHarness.create(tmp_path)
+    harness.seed_served_commit()
+    marker_file = tmp_path / "new-script-marker.txt"
+    target_commit = harness.commit_new_serve_live_update(marker="new script ran")
+
+    completed = harness.run(ATELIER2_TEST_SERVE_SCRIPT_MARKER_FILE=str(marker_file))
+
+    assert completed.returncode == 0, completed.stderr
+    assert marker_file.read_text(encoding="utf-8") == "new script ran"
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == target_commit
+    assert harness.served_commit_file.read_text(encoding="utf-8") == target_commit
 
 
 def test_busy_checks_cover_every_run_state_before_and_after_the_github_checks(
