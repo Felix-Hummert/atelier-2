@@ -3,11 +3,12 @@ import type {
   AgentConfigurationRevisionPage,
   AuthProfileRevision,
   AuthProfileRevisionPage,
-  RunV3,
+  RunListRow,
   RunPage,
   WorkflowRevisionPage,
   WorkflowRevisionSummary
 } from "../api/client";
+import { runListRowReference } from "./runList";
 
 /**
  * Every run the durable list holds, read page by page.
@@ -28,8 +29,8 @@ import type {
  * take the surface down instead of letting it report what went wrong.
  */
 export type RunReading =
-  | { complete: true; runs: RunV3[] }
-  | { complete: false; runs: RunV3[]; unreadable: string };
+  | { complete: true; runs: RunListRow[] }
+  | { complete: false; runs: RunListRow[]; unreadable: string };
 
 export type RevisionReading =
   | { complete: true; revisions: WorkflowRevisionSummary[] }
@@ -55,7 +56,7 @@ export async function readEveryRun(
       const page = await listRuns(after);
       return { items: page.items, next: page.next_after };
     },
-    (run) => run.public_run_reference
+    runListRowReference
   );
   return read.complete
     ? { complete: true, runs: read.items }

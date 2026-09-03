@@ -41,7 +41,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.run_projections import RunPage
+from atelier2.contracts.run_projections import RunPage, RunProjection
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -51,7 +51,9 @@ from atelier2.contracts.runs import (
 from atelier2.host.logging import PROCESS_LOGGER_NAME, configure_process_logging
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionExisting,
     AuthProfileRevisionCreated,
+    AuthProfileRevisionExisting,
 )
 from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import (
@@ -131,12 +133,20 @@ def _digest(value: str) -> str:
 
 
 def _bind_builder(runtime: DbosRuntime) -> AgentBindingSet:
+    """The one builder binding every seeded historic run shares.
+
+    Publishing is content-addressed, so a second seeded run republishing the
+    same authored bytes is an idempotent republish (`*Existing`), not a
+    conflict -- exactly the standing a caller who already holds this binding
+    meets on every call after the first.
+    """
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
     )
     auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
     assert isinstance(
-        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        catalog.publish_auth_profile_revision(auth),
+        (AuthProfileRevisionCreated, AuthProfileRevisionExisting),
     )
     configuration = AgentConfigurationRevision(
         "opus",
@@ -147,7 +157,7 @@ def _bind_builder(runtime: DbosRuntime) -> AgentBindingSet:
     )
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
-        AgentConfigurationRevisionCreated,
+        (AgentConfigurationRevisionCreated, AgentConfigurationRevisionExisting),
     )
     return AgentBindingSet(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
@@ -155,6 +165,13 @@ def _bind_builder(runtime: DbosRuntime) -> AgentBindingSet:
 
 
 def _seed_historic_run(runtime: DbosRuntime, run_id: RunId) -> WorkflowRevision:
+    """One durable run on the shared historic revision, safe to call per run.
+
+    Several seeded runs share one workflow revision the same way several real
+    runs do: the revision row is inserted once and reused, while everything
+    keyed by the run itself -- its own row, its bootstrap workflow id, its
+    agent binding row -- is written fresh for every call.
+    """
     with pytest.raises(WorkflowFormatNotExecutable):
         parse_executable_workflow_document(HISTORIC_V3_DOCUMENT)
     parse_workflow_document(HISTORIC_V3_DOCUMENT)
@@ -162,13 +179,19 @@ def _seed_historic_run(runtime: DbosRuntime, run_id: RunId) -> WorkflowRevision:
     bindings = _bind_builder(runtime)
     configuration_hash = _digest(f"configuration-{run_id.value}")
     with runtime.engine.begin() as connection:
-        connection.execute(
-            workflow_revisions.insert(),
-            {
-                "revision_hash": revision.revision_hash.value,
-                "document": revision.document,
-            },
-        )
+        already_seeded = connection.execute(
+            sa.select(sa.literal(True)).where(
+                workflow_revisions.c.revision_hash == revision.revision_hash.value
+            )
+        ).scalar_one_or_none()
+        if already_seeded is None:
+            connection.execute(
+                workflow_revisions.insert(),
+                {
+                    "revision_hash": revision.revision_hash.value,
+                    "document": revision.document,
+                },
+            )
         connection.execute(
             run_configuration_revisions.insert(),
             {
@@ -180,7 +203,7 @@ def _seed_historic_run(runtime: DbosRuntime, run_id: RunId) -> WorkflowRevision:
             runs.insert(),
             {
                 "run_id": run_id.value,
-                "bootstrap_workflow_id": "historic-workflow",
+                "bootstrap_workflow_id": f"historic-workflow-{run_id.value}",
                 "revision_hash": revision.revision_hash.value,
                 "workflow_format_version": 3,
                 "agent_binding_set_hash": bindings.binding_set_hash.value,
@@ -225,18 +248,33 @@ def test_a_historic_v3_run_lists_even_when_today_would_refuse_to_start_it(
     assert isinstance(found, RunFound)
     assert found.projection.run.run_id == run_id
     assert isinstance(page, RunPage)
-    assert [item.run.run_id for item in page.runs] == [run_id]
+    assert all(isinstance(row, RunProjection) for row in page.runs)
+    assert [row.run.run_id for row in page.runs if isinstance(row, RunProjection)] == [
+        run_id
+    ]
 
 
-def test_a_corrupt_run_list_logs_the_reason_it_refused(
+def test_a_corrupt_run_becomes_a_defective_row_beside_its_healthy_neighbours(
     runtime: DbosRuntime, process_log: io.StringIO
 ) -> None:
-    run_id = RunId("poison-row")
-    _seed_historic_run(runtime, run_id)
+    """A run list answers for every entry it can (#1042).
+
+    Two healthy runs sit either side of one whose own projection cannot be
+    told; the page still answers 200, the healthy rows read as they always
+    have, and the corrupt one is told apart as a defective row instead of
+    dragging the whole page down to a 500. A single-run read of that same run
+    stays fail-loud: there it is one run, and 500 is the honest answer.
+    """
+    healthy_first = RunId("run-a-healthy")
+    healthy_second = RunId("run-c-healthy")
+    poison_id = RunId("run-b-poison")
+    _seed_historic_run(runtime, healthy_first)
+    _seed_historic_run(runtime, poison_id)
+    _seed_historic_run(runtime, healthy_second)
     with runtime.engine.begin() as connection:
         connection.execute(
             sa.update(runs)
-            .where(runs.c.run_id == run_id.value)
+            .where(runs.c.run_id == poison_id.value)
             .values(current_node_id="missing-node")
         )
     client = TestClient(
@@ -252,25 +290,38 @@ def test_a_corrupt_run_list_logs_the_reason_it_refused(
 
     listed = client.get(API_PREFIX + "/runs?limit=5")
     inspected = client.get(
-        API_PREFIX + "/runs/" + encode_public_run_reference(RunId("poison-row"))
+        API_PREFIX + "/runs/" + encode_public_run_reference(poison_id)
     )
 
-    assert listed.status_code == 500
-    assert listed.json()["type"].endswith("durable-state-corrupt")
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    assert [item["kind"] for item in items] == ["run", "defective", "run"]
+    assert [item["run"]["run_id"] for item in items if item["kind"] == "run"] == [
+        healthy_first.value,
+        healthy_second.value,
+    ]
+    defective = next(item for item in items if item["kind"] == "defective")
+    assert defective["public_run_reference"] == encode_public_run_reference(poison_id)
+    assert defective["problem_code"] == "durable-state-corrupt"
+    assert "absent" in defective["detail"].lower()
     assert inspected.status_code == 500
     assert inspected.json()["type"].endswith("durable-state-corrupt")
-    events = {
-        record["event"]: record for record in _json_records(process_log.getvalue())
-    }
-    listed_log = events["run_list_projection_corrupt"]
-    inspected_log = events["run_get_projection_corrupt"]
-    poison_id = RunId("poison-row")
-    assert listed_log["level"] == "error"
+    logged = _json_records(process_log.getvalue())
+    row_log = next(
+        record
+        for record in logged
+        if record["event"] == "run_list_projection_corrupt"
+        and record.get("run_id") == poison_id.value
+    )
+    inspected_log = next(
+        record for record in logged if record["event"] == "run_get_projection_corrupt"
+    )
+    assert row_log["level"] == "error"
+    assert "absent" in str(row_log["exception"]).lower()
     assert inspected_log["level"] == "error"
     assert inspected_log["run_id"] == poison_id.value
     assert inspected_log["public_run_reference"] == encode_public_run_reference(
         poison_id
     )
     assert poison_id.value in str(inspected_log["message"])
-    assert "absent" in str(listed_log["exception"]).lower()
     assert "absent" in str(inspected_log["exception"]).lower()

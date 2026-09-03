@@ -228,7 +228,9 @@ def test_fork_reuses_only_the_strict_prefix_and_executes_from_the_target(
         assert (
             listed.status_code == detail.status_code == origin_detail.status_code == 200
         )
-        listed_by_id = {item["run_id"]: item for item in listed.json()["items"]}
+        listed_by_id = {
+            item["run"]["run_id"]: item["run"] for item in listed.json()["items"]
+        }
         assert listed_by_id[successor.value] == detail.json()
         assert listed_by_id[RUN.value] == origin_detail.json()
         assert detail.json()["node_rail"][0]["reused_from_run_reference"] == (

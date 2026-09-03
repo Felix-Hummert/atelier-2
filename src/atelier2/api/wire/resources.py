@@ -26,6 +26,7 @@ from atelier2.api.references import (
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
+    MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     PUBLIC_SOURCE_REFERENCE_PATTERN,
@@ -1407,8 +1408,40 @@ class RunResourceV3(ApiModel):
         return self
 
 
+class RunListRowResource(ApiModel):
+    """A listed row for one run whose own projection could be told."""
+
+    kind: Literal["run"]
+    run: RunResourceV3
+
+
+class DefectiveRunRowResource(ApiModel):
+    """A listed row for a run whose own projection failed (#1042).
+
+    The other rows on the same page prove nothing about this one: a list
+    dies for none of them just because this run's own projection could not
+    be told, so this is the row it becomes instead. `problem_code` is the
+    closed, typed reason; `detail` is the store's own reason for it, at the
+    level of detail its process journal has always logged for the same
+    failure.
+    """
+
+    kind: Literal["defective"]
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    problem_code: Literal["durable-state-corrupt"]
+    detail: str = Field(
+        min_length=1, max_length=MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS
+    )
+
+
+AnyRunListRowResource = Annotated[
+    RunListRowResource | DefectiveRunRowResource,
+    Field(discriminator="kind"),
+]
+
+
 class VersionedRunPageResource(ApiModel):
-    items: tuple[RunResourceV3, ...]
+    items: tuple[AnyRunListRowResource, ...]
     next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
 
 

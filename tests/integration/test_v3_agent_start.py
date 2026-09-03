@@ -501,7 +501,9 @@ def test_the_public_start_route_answers_a_v3_revision_with_its_run_resource(
     listed = durable_api_client(runtime).get(API_PREFIX + "/runs")
     assert listed.status_code == 200
     listed_run = next(
-        item for item in listed.json()["items"] if item["run_id"] == RUN.value
+        item["run"]
+        for item in listed.json()["items"]
+        if item["run"]["run_id"] == RUN.value
     )
     assert listed_run["started_at"] == answered["started_at"]
     assert listed_run["ended_at"] is None

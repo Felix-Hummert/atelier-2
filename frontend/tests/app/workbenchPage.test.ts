@@ -19,6 +19,8 @@ import {
 import { FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
 import {
+  defectiveRunRow,
+  runRow,
   startedRun,
   waitingInput,
   waitingInputRun,
@@ -374,7 +376,7 @@ describe("the workbench conductor conversation", () => {
   /** Only the run this room already knows about, and only for the state it is served under. */
   function listRunsForConductor(run: RunV3 | null): CockpitApi["listRuns"] {
     return vi.fn(async (_after?: string, state?: string) => ({
-      items: run !== null && (state === undefined || state === run.state) ? [run] : [],
+      items: run !== null && (state === undefined || state === run.state) ? [runRow(run)] : [],
       next_after: null
     }));
   }
@@ -668,7 +670,9 @@ describe("the workbench conductor conversation", () => {
 describe("the workbench is the room the workshop opens on", () => {
   function listRunsByState(runs: readonly RunV3[]) {
     return vi.fn(async (_after?: string, state?: string) => ({
-      items: state === undefined ? [...runs] : runs.filter((run) => run.state === state),
+      items: (state === undefined ? runs : runs.filter((run) => run.state === state)).map(
+        runRow
+      ),
       next_after: null
     }));
   }
@@ -701,14 +705,17 @@ describe("the workbench is the room the workshop opens on", () => {
         if (state === "WAITING_INPUT") {
           return after === undefined
             ? {
-                items: [waitingInputRun({ public_run_reference: "run1.Yg" })],
+                items: [runRow(waitingInputRun({ public_run_reference: "run1.Yg" }))],
                 next_after: PAGE_CURSORS[0] ?? null
               }
-            : { items: [waitingInputRun({ public_run_reference: "run1.YQ" })], next_after: null };
+            : {
+                items: [runRow(waitingInputRun({ public_run_reference: "run1.YQ" }))],
+                next_after: null
+              };
         }
         if (state === "WAITING_RECONCILIATION") {
           return {
-            items: [waitingReconciliationRun({ public_run_reference: "run1.Yw" })],
+            items: [runRow(waitingReconciliationRun({ public_run_reference: "run1.Yw" }))],
             next_after: null
           };
         }
@@ -744,6 +751,38 @@ describe("the workbench is the room the workshop opens on", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/runs/run1.YQ"));
   });
 
+  it("shows a run whose own projection failed as a defective row beside its healthy neighbours (#1042)", async () => {
+    openRoom([], {
+      listRuns: vi.fn(async (_after?: string, state?: string) => ({
+        items:
+          state === "STARTED"
+            ? [
+                runRow(startedRun({ public_run_reference: "run1.YQ", run_id: "rebuild the index" })),
+                defectiveRunRow({
+                  public_run_reference: "run1.Yg",
+                  detail: "run current node is absent from its workflow graph"
+                })
+              ]
+            : [],
+        next_after: null
+      }))
+    });
+    const { screen, within } = testingLibrary;
+
+    // The healthy neighbour still opens its graph -- one row's own defect
+    // never dims the ones beside it.
+    expect((await screen.findByRole("link", { name: /rebuild the index/ })).isConnected).toBe(true);
+
+    const defectiveList = await screen.findByRole("list", {
+      name: workbenchPageCopy.defectiveRunsLabel
+    });
+    expect(within(defectiveList).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(defectiveList).getByText(workbenchPageCopy.defectiveRunTitle)).toBeTruthy();
+    // Nothing here opens: there is no graph this room can show for a run it
+    // could not read.
+    expect(within(defectiveList).queryByRole("link")).toBeNull();
+  });
+
   // The three state lists are asked at once and answered separately, so a run
   // that opens a wait while the started list is still on the wire comes back in
   // two of them.
@@ -752,18 +791,22 @@ describe("the workbench is the room the workshop opens on", () => {
       listRuns: vi.fn(async (_after?: string, state?: string) => {
         if (state === "STARTED") {
           return {
-            items: [startedRun({ public_run_reference: "run1.YQ", run_id: "moving run" })],
+            items: [
+              runRow(startedRun({ public_run_reference: "run1.YQ", run_id: "moving run" }))
+            ],
             next_after: null
           };
         }
         if (state === "WAITING_INPUT") {
           return {
             items: [
-              waitingInputRun({
-                public_run_reference: "run1.YQ",
-                run_id: "moving run",
-                state_version: 2
-              })
+              runRow(
+                waitingInputRun({
+                  public_run_reference: "run1.YQ",
+                  run_id: "moving run",
+                  state_version: 2
+                })
+              )
             ],
             next_after: null
           };

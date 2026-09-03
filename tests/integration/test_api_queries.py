@@ -108,6 +108,7 @@ from tests.scenarios.api import (
     api_ports,
     durable_queries,
     event_poll_backoff,
+    healthy_runs,
     permissive_projection_limit,
     stream_page_reader,
     stream_run_projection,
@@ -1168,7 +1169,7 @@ def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
     while True:
         page = queries.list_runs(after, 1)
         assert isinstance(page, RunPage)
-        found.extend(projection.run.run_id for projection in page.runs)
+        found.extend(projection.run.run_id for projection in healthy_runs(page))
         if page.next_after is None:
             break
         after = page.next_after
@@ -1178,7 +1179,7 @@ def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
     missing_boundary = RunId("m")
     after_missing = queries.list_runs(missing_boundary, 100)
     assert isinstance(after_missing, RunPage)
-    assert tuple(item.run.run_id for item in after_missing.runs) == tuple(
+    assert tuple(item.run.run_id for item in healthy_runs(after_missing)) == tuple(
         run_id
         for run_id in expected
         if run_id.value.encode("utf-8") > missing_boundary.value.encode("utf-8")
@@ -1196,7 +1197,10 @@ def test_list_runs_answers_only_the_named_state(engine: Engine) -> None:
     completed = durable_queries(engine).list_runs(None, 100, RunState.COMPLETED)
 
     assert isinstance(started, RunPage)
-    assert {projection.run.run_id for projection in started.runs} == {first, second}
+    assert {projection.run.run_id for projection in healthy_runs(started)} == {
+        first,
+        second,
+    }
     assert isinstance(completed, RunPage)
     assert completed.runs == ()
 
@@ -1223,7 +1227,7 @@ def test_the_run_list_route_filters_by_state_and_names_an_unknown_one(
     refused = client.get(API_PREFIX + "/runs", params={"state": "NOT_A_STATE"})
 
     assert listed.status_code == 200
-    assert {item["run_id"] for item in listed.json()["items"]} == {
+    assert {item["run"]["run_id"] for item in listed.json()["items"]} == {
         first.value,
         second.value,
     }
@@ -1458,7 +1462,9 @@ def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empt
     assert isinstance(page, RunPage)
     assert len(order_selects) == 1
     assert "run_inputs_v3.run_id IN" in order_selects[0]
-    projections = {projection.run.run_id: projection for projection in page.runs}
+    projections = {
+        projection.run.run_id: projection for projection in healthy_runs(page)
+    }
     assert projections[ordered_run_id].orders == (
         RunInput("headline", PublishedRevisionHash(schema_hash), order_value),
     )
@@ -1641,7 +1647,9 @@ nodes:
     assert len(intent_selects) == 1
     assert "effect_intents.logical_key IN" in intent_selects[0]
     assert "effect_intents.run_id IN" not in intent_selects[0]
-    projections = {projection.run.run_id: projection for projection in page.runs}
+    projections = {
+        projection.run.run_id: projection for projection in healthy_runs(page)
+    }
     waiting = projections[waiting_run_id].reconciliation
     owned = projections[owned_run_id].reconciliation
     assert waiting is not None

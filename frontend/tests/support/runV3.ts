@@ -1,5 +1,7 @@
 import type {
+  DefectiveRunRow,
   RunCancellability,
+  RunListRow,
   RunNotCancellableReason,
   RunV3,
   WorkflowRevisionDetail
@@ -145,6 +147,22 @@ export function completedRun(changes: Partial<RunV3> = {}): RunV3 {
     latest_event_cursor: eventCursor(5),
     ...changes
   });
+}
+
+/** A healthy row on a run list page, wrapping any of the run builders above. */
+export function runRow(run: RunV3): RunListRow {
+  return { kind: "run", run };
+}
+
+/** A listed run whose own projection failed (#1042), the other row shape. */
+export function defectiveRunRow(changes: Partial<DefectiveRunRow> = {}): DefectiveRunRow {
+  return {
+    kind: "defective",
+    public_run_reference: publicReference,
+    problem_code: "durable-state-corrupt",
+    detail: "run current node is absent from its workflow graph",
+    ...changes
+  };
 }
 
 type EventIdentity = Partial<{

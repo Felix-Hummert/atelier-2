@@ -15,6 +15,7 @@ import {
   completedRun,
   publicReference,
   revisionHash,
+  runRow,
   startedRun,
   waitingInputRun,
   waitingReconciliationRun,
@@ -44,7 +45,7 @@ function open(pathname: string) {
   return render(App, {
     props: {
       cockpitApi: cockpitApiStub({
-        listRuns: vi.fn(async () => ({ items: [startedRun()], next_after: null })),
+        listRuns: vi.fn(async () => ({ items: [runRow(startedRun())], next_after: null })),
         getRun: vi.fn(async () => startedRun()),
         getWorkflowRevision: vi.fn(async () => workflowRevision()),
         openRunEvents: feed.open
@@ -56,7 +57,9 @@ function open(pathname: string) {
 
 function listRunsByState(runs: RunV3[]) {
   return vi.fn(async (_after?: string, state?: string) => ({
-    items: state === undefined ? runs : runs.filter((run) => run.state === state),
+    items: (state === undefined ? runs : runs.filter((run) => run.state === state)).map(
+      runRow
+    ),
     next_after: null
   }));
 }
@@ -222,7 +225,7 @@ describe("core surfaces read owned display strings", () => {
     openWorkbenchPseudoLocale(
       vi.fn(async (after?: string, state?: string) => {
         if (state === "STARTED" && after === undefined) {
-          return { items: [startedRun()], next_after: "run1.bmV4dA" };
+          return { items: [runRow(startedRun())], next_after: "run1.bmV4dA" };
         }
         if (state === "STARTED") throw new Error("later page detail");
         return { items: [], next_after: null };

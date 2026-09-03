@@ -3,6 +3,7 @@
 
   import {
     type CockpitApi,
+    type DefectiveRunRow,
     type RunEvent,
     type RunEventSubscription,
     type RunV3
@@ -45,6 +46,7 @@
   } from "../lib/conductorEpisode";
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { shortPublicRunReference } from "../lib/fingerprint";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import type { MutationJournal } from "../lib/mutationJournal";
   import {
@@ -57,7 +59,7 @@
   } from "../lib/readResource";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
-  import { newestReadOfEachRun, resolveWorkflowName } from "../lib/runList";
+  import { newestReadOfEachRun, resolveWorkflowName, splitRunListRows } from "../lib/runList";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { loadPendingWaitAnswer } from "../lib/waitAnswerDelivery";
   import { humanMove, runHasEnded, runStanding, standingMarks } from "../lib/runState";
@@ -95,6 +97,8 @@
 
   type WorkbenchRuns = {
     runs: RunV3[];
+    /** Runs whose own projection failed (#1042): read apart, shown apart. */
+    defective: DefectiveRunRow[];
     /** Null when the described catalog could not be read this round: enrichment, not a gate. */
     workflowNames: ReadonlyMap<string, string | null> | null;
   };
@@ -306,10 +310,9 @@
             revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name])
           )
         : null;
-      confirm(begun.generation, {
-        runs: newestReadOfEachRun(runReadings.flatMap((reading) => reading.runs)),
-        workflowNames
-      });
+      const rows = newestReadOfEachRun(runReadings.flatMap((reading) => reading.runs));
+      const { runs, defective } = splitRunListRows(rows);
+      confirm(begun.generation, { runs, defective, workflowNames });
     } catch {
       live = failRead(live, begun.generation, {
         kind: "unavailable",
@@ -566,6 +569,8 @@
       at: run.current_node_id,
       move: humanMove(run.state)
     }));
+  /** Runs whose own projection failed (#1042): named, never folded into an empty shelf. */
+  $: defective = snapshot?.defective ?? [];
 </script>
 
 <section class="workbench surface" aria-labelledby="workbench-title">
@@ -650,6 +655,25 @@
               <span class="living-move">{wrapDisplayCopy(row.move)} →</span>
             {/if}
           </a>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  <!-- A run whose own projection failed (#1042): named apart from the shelf
+       it moves runs it could read on, never folded into an empty state and
+       never opened -- there is no graph this room can show for it. -->
+  {#if defective.length > 0}
+    <ul class="living-shelf" aria-label={wrapDisplayCopy(workbenchPageCopy.defectiveRunsLabel)}>
+      {#each defective as row (row.public_run_reference)}
+        <li class="living-row living-row-defective">
+          <span class="living-mark" aria-hidden="true">◇</span>
+          <span class="living-name">{wrapDisplayCopy(workbenchPageCopy.defectiveRunTitle)}</span>
+          <span class="living-at">{shortPublicRunReference(row.public_run_reference)}</span>
+          <details class="living-defective-detail">
+            <summary>{wrapDisplayCopy(workbenchPageCopy.defectiveRunDetail)}</summary>
+            <code>{row.detail}</code>
+          </details>
         </li>
       {/each}
     </ul>
@@ -833,6 +857,34 @@
 
   .living-row-waiting .living-mark {
     color: var(--signal-attention-mark);
+  }
+
+  /* Quiet everywhere but the one shape and colour that carry the failure
+     itself (HEART): the brick mark and border, nothing else raised. */
+  .living-row-defective {
+    border-color: var(--signal-failure);
+  }
+
+  .living-row-defective .living-mark {
+    color: var(--signal-failure);
+  }
+
+  .living-defective-detail {
+    flex-basis: 100%;
+    font-size: var(--text-xs);
+  }
+
+  .living-defective-detail summary {
+    display: flex;
+    align-items: center;
+    min-height: var(--tap);
+    cursor: pointer;
+    color: var(--ink-dim);
+  }
+
+  .living-defective-detail code {
+    display: block;
+    overflow-wrap: anywhere;
   }
 
   .living-name {

@@ -1992,7 +1992,13 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
         assert retry.status_code == 200
         assert found.status_code == 200
         assert page.status_code == 200
-        assert created.json() == retry.json() == found.json() == page.json()["items"][0]
+        assert (
+            created.json()
+            == retry.json()
+            == found.json()
+            == page.json()["items"][0]["run"]
+        )
+        assert page.json()["items"][0]["kind"] == "run"
         assert created.json()["workflow_format_version"] == 3
         assert created.json()["agent_bindings"] == [
             {

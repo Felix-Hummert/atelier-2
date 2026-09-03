@@ -36,6 +36,7 @@ from atelier2.api.references import (
     MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
+    MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS,
 )
 from atelier2.api.wire import events, library, requests, resources
 from atelier2.contracts.agent_definitions import (
@@ -253,6 +254,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     ),
     "ProviderTerminalRefusalEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
     "UnrecognisedProviderOutputEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    "DefectiveRunRowResource.detail": MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS,
 }
 
 

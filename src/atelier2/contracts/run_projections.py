@@ -233,9 +233,40 @@ class RunProjection:
         return self.agent_attempts[-1] if self.agent_attempts else None
 
 
+class RunProjectionProblemCode(StrEnum):
+    """Why one listed run's own projection could not be told.
+
+    Closed to what the store can actually distinguish today (#1042): every
+    exception the query layer refuses a single run's projection for is durable
+    state a reader cannot make sense of, the same fact `durable-state-corrupt`
+    already names for a single-run read. One code, not one per exception
+    class -- a second value earns its place only once a caller needs to react
+    to a cause differently from this one.
+    """
+
+    DURABLE_STATE_CORRUPT = "durable-state-corrupt"
+
+
+@dataclass(frozen=True)
+class DefectiveRunProjection:
+    """One listed run whose own projection failed, told instead of hidden.
+
+    A run list answers for every entry it can, not for the whole page at
+    once: the other rows prove nothing about this one, so a run whose
+    projection cannot be told becomes this row instead of taking the page
+    down with it (#1042). `detail` is the store's own reason, already the
+    level of detail its process journal has always logged for the same
+    failure -- never the run's own durable bytes.
+    """
+
+    run_id: RunId
+    problem_code: RunProjectionProblemCode
+    detail: str
+
+
 @dataclass(frozen=True)
 class RunPage:
-    runs: tuple[RunProjection, ...]
+    runs: tuple[RunProjection | DefectiveRunProjection, ...]
     next_after: RunId | None
 
 

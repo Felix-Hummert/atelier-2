@@ -39,6 +39,15 @@ export const workbenchPageCopy = {
   runsUnavailable: "Workbench runs unavailable",
   runsLabel: "workbench runs",
   workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",
+  /**
+   * A run whose own projection failed (#1042) reads as this quiet row, not
+   * as an empty shelf and not as the whole room failing: the other runs
+   * beside it read fine, and this is the one honest thing left to say about
+   * the run that does not.
+   */
+  defectiveRunsLabel: "Runs that could not be read",
+  defectiveRunTitle: "Could not be read",
+  defectiveRunDetail: "Technical detail",
 
   transcriptLabel: "Conversation",
   emptyTitle: "Nothing said yet",

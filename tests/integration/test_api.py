@@ -1201,7 +1201,7 @@ def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
         assert client.get(f"/atelier/api/v1/runs/{reference}").json() == created.json()
 
     listed = client.get("/atelier/api/v1/runs?limit=100").json()["items"]
-    assert [item["run_id"] for item in listed] == sorted(
+    assert [item["run"]["run_id"] for item in listed] == sorted(
         run_ids, key=lambda value: value.encode("utf-8")
     )
 
@@ -1297,14 +1297,14 @@ def test_http_run_pages_follow_exact_utf8_order_and_every_exclusive_cursor(
         response = client.get("/atelier/api/v1/runs", params=parameters)
         assert response.status_code == 200
         page = response.json()
-        assert [item["run_id"] for item in page["items"]] == [expected_run_id]
+        assert [item["run"]["run_id"] for item in page["items"]] == [expected_run_id]
         expected_next = (
             encode_public_run_reference(RunId(expected_run_id))
             if index < len(expected) - 1
             else None
         )
         assert page["next_after"] == expected_next
-        found.append(page["items"][0]["run_id"])
+        found.append(page["items"][0]["run"]["run_id"])
         after = page["next_after"]
 
     assert tuple(found) == expected
@@ -1318,7 +1318,7 @@ def test_http_run_pages_follow_exact_utf8_order_and_every_exclusive_cursor(
         },
     )
     assert boundary_page.status_code == 200
-    assert [item["run_id"] for item in boundary_page.json()["items"]] == [
+    assert [item["run"]["run_id"] for item in boundary_page.json()["items"]] == [
         "nul\0run",
         "slash/run",
         "zeta",

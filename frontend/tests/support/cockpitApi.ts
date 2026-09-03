@@ -1,6 +1,7 @@
 import { vi, type Mock } from "vitest";
 
 import type { CockpitApi, RunEventHandlers, RunPage, RunV3 } from "../../src/api/client";
+import { runRow } from "./runV3";
 
 /**
  * One owner for the CockpitApi test double: when the port grows a method, the
@@ -100,7 +101,7 @@ export function pagedListRuns(
     const page = pages[index] ?? [];
     const next = PAGE_CURSORS[index];
     return {
-      items: [...page],
+      items: page.map(runRow),
       next_after: index + 1 < pages.length && next !== undefined ? next : null
     };
   });
@@ -109,5 +110,5 @@ export function pagedListRuns(
 /** A listRuns double whose cursor never advances -- the durable defect a client must not spin on. */
 export function repeatingCursorListRuns(page: readonly RunV3[]): ListRunsDouble {
   const repeated = PAGE_CURSORS[0] ?? null;
-  return vi.fn(async () => ({ items: [...page], next_after: repeated }));
+  return vi.fn(async () => ({ items: page.map(runRow), next_after: repeated }));
 }

@@ -17,7 +17,13 @@ import { historyWhenLabel } from "../../src/lib/historyRows";
 import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
-import { completedRun, publicReference, revisionHash, workflowRevision } from "../support/runV3";
+import {
+  completedRun,
+  publicReference,
+  revisionHash,
+  runRow,
+  workflowRevision
+} from "../support/runV3";
 
 function failedRun(changes: Partial<RunV3> = {}): RunV3 {
   return { ...completedRun(changes), state: "FAILED" };
@@ -179,7 +185,9 @@ function openHistory(
 ) {
   window.history.replaceState(null, "", "/atelier/history");
   const listRuns = vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
-    items: state === "FAILED" ? runsByState.failed ?? [] : runsByState.completed ?? [],
+    items: (state === "FAILED" ? runsByState.failed ?? [] : runsByState.completed ?? []).map(
+      runRow
+    ),
     next_after: null
   }));
   return render(App, {

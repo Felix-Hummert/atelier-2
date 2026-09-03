@@ -365,9 +365,17 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
     assert schema["paths"][API_PREFIX + "/runs"]["get"]["responses"]["200"]["content"][
         "application/json"
     ]["schema"] == {"$ref": "#/components/schemas/VersionedRunPageResource"}
-    assert schema["components"]["schemas"]["VersionedRunPageResource"]["properties"][
-        "items"
-    ]["items"] == {"$ref": "#/components/schemas/RunResourceV3"}
+    run_row_items = schema["components"]["schemas"]["VersionedRunPageResource"][
+        "properties"
+    ]["items"]["items"]
+    assert run_row_items["discriminator"]["propertyName"] == "kind"
+    assert {item["$ref"] for item in run_row_items["oneOf"]} == {
+        "#/components/schemas/RunListRowResource",
+        "#/components/schemas/DefectiveRunRowResource",
+    }
+    assert schema["components"]["schemas"]["RunListRowResource"]["properties"][
+        "run"
+    ] == {"$ref": "#/components/schemas/RunResourceV3"}
     graph = schema["components"]["schemas"]["WorkflowRevisionDetailResource"][
         "properties"
     ]["graph"]

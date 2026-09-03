@@ -5,12 +5,16 @@ import {
   newestActivityFirst,
   newestReadOfEachRun,
   runActivityAt,
+  runListRowReference,
+  splitRunListRows,
   workflowNamesOf
 } from "../../src/lib/runList";
 import {
+  defectiveRunRow,
   notCancellableBlock,
   publicReference,
   revisionHash,
+  runRow,
   startedRun
 } from "../support/runV3";
 
@@ -221,8 +225,8 @@ describe("the project run list reads published workflow names", () => {
  */
 describe("one entry per run, across separately answered reads", () => {
   it("keeps the higher state version when two reads answer with the same run", () => {
-    const opened = v3Run({ state: "WAITING_INPUT", state_version: 2 });
-    const earlier = v3Run({ state: "STARTED", state_version: 1 });
+    const opened = runRow(v3Run({ state: "WAITING_INPUT", state_version: 2 }));
+    const earlier = runRow(v3Run({ state: "STARTED", state_version: 1 }));
 
     expect(newestReadOfEachRun([earlier, opened])).toEqual([opened]);
     // Whichever read is drained first, the fresher truth is the one kept.
@@ -230,13 +234,43 @@ describe("one entry per run, across separately answered reads", () => {
   });
 
   it("keeps every distinct run, in the order it was first read", () => {
-    const first = v3Run({ public_run_reference: "run1.YQ" });
-    const second = v3Run({ public_run_reference: "run1.Yg" });
+    const first = runRow(v3Run({ public_run_reference: "run1.YQ" }));
+    const second = runRow(v3Run({ public_run_reference: "run1.Yg" }));
 
     expect(newestReadOfEachRun([first, second])).toEqual([first, second]);
   });
 
   it("answers an empty reading with an empty list rather than inventing a row", () => {
     expect(newestReadOfEachRun([])).toEqual([]);
+  });
+
+  it("prefers a run resource over a defective row for the same reference (#1042)", () => {
+    const defective = defectiveRunRow({ public_run_reference: publicReference });
+    const healthy = runRow(v3Run({ public_run_reference: publicReference }));
+
+    expect(newestReadOfEachRun([defective, healthy])).toEqual([healthy]);
+    // Whichever read is drained first, the more informative row is kept.
+    expect(newestReadOfEachRun([healthy, defective])).toEqual([healthy]);
+  });
+});
+
+describe("splitting a run list page into its two row shapes (#1042)", () => {
+  it("separates a defective row from its healthy neighbours", () => {
+    const first = v3Run({ run_id: "healthy-a", public_run_reference: "run1.YQ" });
+    const second = v3Run({ run_id: "healthy-b", public_run_reference: "run1.Yg" });
+    const defective = defectiveRunRow({ public_run_reference: "run1.Yw" });
+
+    const split = splitRunListRows([runRow(first), defective, runRow(second)]);
+
+    expect(split.runs).toEqual([first, second]);
+    expect(split.defective).toEqual([defective]);
+  });
+
+  it("names the run either row shape refers to", () => {
+    const healthy = runRow(v3Run({ public_run_reference: "run1.YQ" }));
+    const defective = defectiveRunRow({ public_run_reference: "run1.Yg" });
+
+    expect(runListRowReference(healthy)).toBe("run1.YQ");
+    expect(runListRowReference(defective)).toBe("run1.Yg");
   });
 });

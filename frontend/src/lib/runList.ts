@@ -1,4 +1,4 @@
-import type { RunV3, WorkflowRevisionDetail } from "../api/client";
+import type { DefectiveRunRow, RunListRow, RunV3, WorkflowRevisionDetail } from "../api/client";
 import { parseUtc } from "./when";
 
 /**
@@ -31,23 +31,61 @@ function activityMs(run: RunV3): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+/** The run a listed row names, healthy or defective alike (#1042). */
+export function runListRowReference(row: RunListRow): string {
+  return row.kind === "run" ? row.run.public_run_reference : row.public_run_reference;
+}
+
 /**
  * One entry per run, keeping the fresher read of it.
  *
  * A surface that asks several state lists at one moment gets them answered
  * separately, so a run that moves between two of those answers -- a wait that
- * opens while the started list is still on the wire -- comes back in both. The
- * higher `state_version` is the run's truth; the room shows it once.
+ * opens while the started list is still on the wire -- comes back in both. A
+ * run resource always outranks a defective row for the same reference: it is
+ * strictly the more informative read. Between two run resources, the higher
+ * `state_version` is the run's truth; between two defective rows, the later
+ * read stands, in the absence of any state to compare.
  */
-export function newestReadOfEachRun(runs: readonly RunV3[]): RunV3[] {
-  const newest = new Map<string, RunV3>();
-  for (const run of runs) {
-    const known = newest.get(run.public_run_reference);
-    if (known === undefined || known.state_version <= run.state_version) {
-      newest.set(run.public_run_reference, run);
+export function newestReadOfEachRun(rows: readonly RunListRow[]): RunListRow[] {
+  const newest = new Map<string, RunListRow>();
+  for (const row of rows) {
+    const known = newest.get(runListRowReference(row));
+    if (known === undefined || rowSupersedes(known, row)) {
+      newest.set(runListRowReference(row), row);
     }
   }
   return [...newest.values()];
+}
+
+function rowSupersedes(known: RunListRow, candidate: RunListRow): boolean {
+  if (known.kind === "defective") return true;
+  if (candidate.kind === "defective") return false;
+  return known.run.state_version <= candidate.run.state_version;
+}
+
+/**
+ * The healthy runs and the defective rows of one read, told apart (#1042).
+ *
+ * Every reader downstream of the durable list -- the pinned decisions, the
+ * living shelf, History -- already reasons about a run's own fields, so this
+ * is where the union the wire answers with splits into the two shapes that
+ * reasoning can use, once, rather than in every reader.
+ */
+export function splitRunListRows(rows: readonly RunListRow[]): {
+  runs: RunV3[];
+  defective: DefectiveRunRow[];
+} {
+  const runs: RunV3[] = [];
+  const defective: DefectiveRunRow[] = [];
+  for (const row of rows) {
+    if (row.kind === "run") {
+      runs.push(row.run);
+    } else {
+      defective.push(row);
+    }
+  }
+  return { runs, defective };
 }
 
 /**

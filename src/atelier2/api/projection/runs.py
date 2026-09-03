@@ -15,6 +15,7 @@ from atelier2.api.wire.resources import (
     AgentBindingResourceV2,
     AssistantTurnEventResource,
     AttemptTranscriptResource,
+    DefectiveRunRowResource,
     NodeAnswerResource,
     NodeDetailResource,
     NodeProvenanceResource,
@@ -27,6 +28,7 @@ from atelier2.api.wire.resources import (
     RunCancellabilityResource,
     RunForkOriginResource,
     RunForkSuccessorResource,
+    RunListRowResource,
     RunNotCancellableReasonName,
     RunOrderResource,
     RunResourceV3,
@@ -61,6 +63,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_projections import (
+    DefectiveRunProjection,
     NodeDetail,
     PublicAgentAttemptState,
     RunCancellationRefusal,
@@ -272,6 +275,26 @@ def run_resource(projection: RunProjection) -> RunResourceV3:
         else projection.started_at.value,
         ended_at=None if projection.ended_at is None else projection.ended_at.value,
     )
+
+
+def run_list_row_resource(
+    row: RunProjection | DefectiveRunProjection,
+) -> RunListRowResource | DefectiveRunRowResource:
+    """One listed row, whichever of the two shapes its own projection earned.
+
+    A listing answers for every run it can, so the row a corrupt entry
+    becomes is told apart from a run resource by `kind` rather than left for
+    a reader to infer from missing fields (#1042).
+    """
+
+    if isinstance(row, DefectiveRunProjection):
+        return DefectiveRunRowResource(
+            kind="defective",
+            public_run_reference=encode_public_run_reference(row.run_id),
+            problem_code=cast(Literal["durable-state-corrupt"], row.problem_code.value),
+            detail=row.detail,
+        )
+    return RunListRowResource(kind="run", run=run_resource(row))
 
 
 def node_detail_resource(detail: NodeDetail) -> NodeDetailResource:

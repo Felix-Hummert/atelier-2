@@ -31,7 +31,7 @@
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
   import { standingWords } from "../lib/runState";
-  import { workflowNamesOf } from "../lib/runList";
+  import { splitRunListRows, workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
   import {
     trackerItemHref,
@@ -90,7 +90,12 @@
         });
         return;
       }
-      const runs = [...completed.runs, ...failed.runs];
+      // A defective row (#1042) has no rendering here yet -- History shows
+      // the runs whose projection could be told and silently omits the rest,
+      // never claiming a run it cannot read finished cleanly. Showing that
+      // row itself is a named gap, owned by #1042's own body, not a claim
+      // this page makes today.
+      const { runs } = splitRunListRows([...completed.runs, ...failed.runs]);
       const workflowNames = await workflowNamesOf(runs, (hash) =>
         cockpitApi.getWorkflowRevision(hash)
       );

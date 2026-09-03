@@ -1064,9 +1064,46 @@ export const nodeDetailSchema = z
 
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 
+/**
+ * `MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS` (`api/references.py`), mirrored
+ * here as a plain number the way every other server-owned wire bound already
+ * is on this side.
+ */
+export const MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512;
+
+const runListRowSchema = z
+  .object({
+    kind: z.literal("run"),
+    run: runV3Schema,
+  })
+  .strict();
+
+/**
+ * One listed run whose own projection failed, told apart from a run instead
+ * of hidden (#1042). The other rows on the same page prove nothing about
+ * this one, so a run list answers with this row rather than refusing the
+ * whole page for the sake of one entry.
+ */
+const defectiveRunRowSchema = z
+  .object({
+    kind: z.literal("defective"),
+    public_run_reference: publicRunReference,
+    problem_code: z.literal("durable-state-corrupt"),
+    detail: z.string().min(1).max(MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS),
+  })
+  .strict();
+
+export const runListRowUnionSchema = z.discriminatedUnion("kind", [
+  runListRowSchema,
+  defectiveRunRowSchema,
+]);
+
+export type RunListRow = z.infer<typeof runListRowUnionSchema>;
+export type DefectiveRunRow = z.infer<typeof defectiveRunRowSchema>;
+
 export const runPageSchema = z
   .object({
-    items: z.array(runV3Schema),
+    items: z.array(runListRowUnionSchema),
     next_after: publicRunReference.nullable(),
   })
   .strict();
