@@ -5,7 +5,7 @@ import type {
   WorkflowRevisionSummary
 } from "../../src/api/client";
 import type { CatalogNameState } from "../../src/lib/catalogName";
-import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import { catalogPageCopy, workflowDetailCopy } from "../../src/lib/catalogPageCopy";
 import {
   catalogAgentRows,
   catalogRowFacts,
@@ -31,6 +31,18 @@ function summary(overrides: Partial<WorkflowRevisionSummary> = {}): WorkflowRevi
 
 function admitted(revisionHash: string): Record<string, CatalogNameState> {
   return { [NAME]: { kind: "admitted", revisionHash, lineageId: "e".repeat(64) } };
+}
+
+function provenance(
+  overrides: Partial<NonNullable<WorkflowRevisionSummary["provenance"]>> = {}
+): NonNullable<WorkflowRevisionSummary["provenance"]> {
+  return {
+    source: "source1.git-abc123",
+    source_commit: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    source_path: "workflows/iterate-code.yaml",
+    intaken_at: "2026-08-27T10:00:00Z",
+    ...overrides
+  };
 }
 
 describe("what the catalog says about a workflow", () => {
@@ -84,6 +96,17 @@ describe("what the catalog says about a workflow", () => {
     const [row] = catalogWorkflowRows([summary()], {});
 
     expect(row?.name).toBe(NAME);
+  });
+
+  it("computes a connected source's display fact, shortening the commit to git's own prefix, and no source at all as null", () => {
+    const [manual] = catalogWorkflowRows([summary()], {});
+    expect(manual?.source).toBeNull();
+
+    const sourced = provenance({ source_commit: "a".repeat(40), source_path: "flows/build.yaml" });
+    const [row] = catalogWorkflowRows([summary({ provenance: sourced })], {});
+    expect(row?.source).toEqual(
+      workflowDetailCopy.sourceFact(sourced.source_commit, sourced.source_path)
+    );
   });
 
   it("offers no admission for a title the catalog grammar refuses", () => {
@@ -186,7 +209,13 @@ describe("what the catalog says about an agent", () => {
 });
 
 describe("the facts under an entry's name", () => {
-  it("names provenance without putting a machine fingerprint on the card", () => {
-    expect(catalogRowFacts()).toEqual([catalogPageCopy.provenanceManual]);
+  it("wears no provenance pill for a row with no source fact", () => {
+    expect(catalogRowFacts(null)).toEqual([]);
+  });
+
+  it("names the row's own source fact first", () => {
+    const fact = workflowDetailCopy.sourceFact("a".repeat(40), "flows/build.yaml");
+
+    expect(catalogRowFacts(fact)).toEqual([fact]);
   });
 });

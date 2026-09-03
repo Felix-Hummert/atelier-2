@@ -54,6 +54,7 @@
   };
 
   let fileInput: HTMLInputElement;
+  let importButton: HTMLButtonElement;
   let importResult: ImportResult | null = null;
   let isDropTarget = false;
   let activeGroup: CatalogGroup = "all";
@@ -155,6 +156,18 @@
 
   function openFilePicker(): void {
     fileInput.click();
+  }
+
+  /**
+   * The sheet closes onto the door that opened it (REQ-UIQ-05): the native
+   * file chooser sits between the Import button and the sheet's own mount,
+   * so a browser's own focus restoration would land back on the hidden file
+   * input rather than the visible button. This room names the button
+   * explicitly instead of trusting that gap to resolve itself.
+   */
+  function closeImportSheet(): void {
+    importResult = null;
+    importButton.focus();
   }
 
   async function recognizeFile(file: ImportFile): Promise<void> {
@@ -278,7 +291,7 @@
   />
   <header class="surface-head catalog-head">
     <h1 id="catalog-title">{wrapDisplayCopy(catalogPageCopy.title)}</h1>
-    <button type="button" onclick={openFilePicker}>
+    <button type="button" bind:this={importButton} onclick={openFilePicker}>
       {wrapDisplayCopy(catalogPageCopy.import)}
     </button>
   </header>
@@ -311,7 +324,7 @@
               title={row.title}
               ariaLabel={wrapDisplayCopy(row.title)}
               description={row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}
-              provenance={catalogRowFacts()}
+              provenance={catalogRowFacts(row.source)}
               href={workflowPath(row.name)}
               status={workflowTileStatus(row)}
               onOpen={navigate}
@@ -330,7 +343,7 @@
               title={row.title}
               ariaLabel={wrapDisplayCopy(row.title)}
               description={row.description}
-              provenance={catalogRowFacts()}
+              provenance={[]}
               provider={wrapDisplayCopy(row.provider)}
             />
           {/each}
@@ -365,7 +378,7 @@
       recognitionProblem={importResult.problem}
       recognitionFailure={importResult.failure}
       add={addLibraryDocument}
-      onClose={() => { importResult = null; }}
+      onClose={closeImportSheet}
     />
   {/if}
 </section>
