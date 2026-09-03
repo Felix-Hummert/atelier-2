@@ -224,9 +224,24 @@ else
 fi
 target_commit="$(git -C "${repository}" rev-parse HEAD)" \
   || fail "the fast-forwarded deploy commit is unreadable"
+# A `merge --ff-only` to a commit the checkout already contains is a silent
+# no-op (HEAD does not move), so a checkout already at or ahead of a
+# requested older commit would otherwise fall through and serve whatever
+# newer commit HEAD already sits at -- diverging from the commit the caller
+# (auto_redeploy.sh's green-ancestor walk) verified and journaled.
+[[ -z "${requested_target_commit}" || "${target_commit}" == "${requested_target_commit}" ]] \
+  || fail "the checkout is ahead of ${requested_target_commit}; refusing to deploy ${target_commit}"
 
 prepare_root_package || fail "the root package.json safety check refused the update"
-build_checkout || fail "the new checkout could not be built; the live serve was not stopped"
+build_checkout || {
+  # The live serve is still untouched at this point (systemctl stop runs
+  # only below), so resetting the checkout back is a plain, safe git
+  # operation -- it leaves no failed target fast-forwarded into main for the
+  # next tick to trip over.
+  git -C "${repository}" reset --hard "${previous_commit}" \
+    || fail "the new checkout could not be built, and resetting it back to ${previous_commit} also failed; the live serve was not stopped, but the checkout is left inconsistent"
+  fail "the new checkout could not be built; reset the checkout back to ${previous_commit}; the live serve was not stopped"
+}
 
 log "stopping atelier2-serve.service"
 systemctl --user stop "${serve_unit}" \
