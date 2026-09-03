@@ -62,10 +62,16 @@ if command == "git":
             raise SystemExit(1)
     elif git_arguments[:3] == ["merge", "--ff-only", "--quiet"]:
         requested = git_arguments[3]
-        if requested != state["target_commit"]:
-            raise SystemExit(f"unexpected fast-forward target: {requested}")
-        state["head"] = requested
-        save()
+        if state.get("checkout_already_ahead"):
+            # Real `merge --ff-only` silently no-ops when the checkout is
+            # already at or ahead of the requested commit: HEAD stays where
+            # it is instead of raising.
+            pass
+        else:
+            if requested != state["target_commit"]:
+                raise SystemExit(f"unexpected fast-forward target: {requested}")
+            state["head"] = requested
+            save()
     elif git_arguments == ["ls-files", "--error-unmatch", "--", "package.json"]:
         if not state["package_tracked"]:
             raise SystemExit(1)
@@ -523,6 +529,27 @@ def test_refuses_a_target_not_reachable_from_origin_main(tmp_path: Path) -> None
     )
 
 
+def test_a_checkout_already_ahead_of_the_requested_target_refuses_the_deploy(
+    tmp_path: Path,
+) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    ahead_commit = "9" * 40
+    requested_target_commit = str(harness.state()["target_commit"])
+    harness.configure(head=ahead_commit, checkout_already_ahead=True)
+
+    completed = harness.run(target_commit=requested_target_commit)
+
+    assert completed.returncode != 0
+    assert (
+        f"the checkout is ahead of {requested_target_commit}; "
+        f"refusing to deploy {ahead_commit}" in completed.stderr
+    )
+    assert harness.state()["head"] == ahead_commit
+    assert not any(
+        call[0] in {"uv", "npm", "systemctl"} for call in harness.invocations()
+    )
+
+
 def test_failed_migration_rolls_back_to_served_commit_not_checkout_head(
     tmp_path: Path,
 ) -> None:
@@ -727,6 +754,7 @@ def test_missing_frontend_artifact_refuses_before_stopping_the_serve(
     tmp_path: Path,
 ) -> None:
     harness = UpdateHarness.create(tmp_path)
+    previous_commit = str(harness.state()["head"])
     harness.configure(write_dist=False)
 
     completed = harness.run()
@@ -735,6 +763,10 @@ def test_missing_frontend_artifact_refuses_before_stopping_the_serve(
     assert "frontend/dist/index.html is missing or empty" in completed.stderr
     assert harness.state()["serve_started"] is True
     assert not any(call[0] == "systemctl" for call in harness.invocations())
+    # build_checkout failed after main had already fast-forwarded past the
+    # broken target; the checkout must not be left sitting on it.
+    assert harness.state()["head"] == previous_commit
+    assert f"reset the checkout back to {previous_commit}" in completed.stderr
 
 
 def test_backup_failure_rolls_back_to_the_previous_build_after_health_confirms_it(
