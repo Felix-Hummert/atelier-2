@@ -80,6 +80,7 @@ class FakeHttp:
     server_down: bool = False
     configuration_answer: bytes | None = None
     configuration_unavailable: bool = False
+    configuration_refusal: str | None = None
     catalog_unavailable: bool = False
     health_unavailable: bool = False
     health_refusal: str | None = None
@@ -87,15 +88,10 @@ class FakeHttp:
     health_source_commit: str = SOURCE_COMMIT
     configuration_pages: tuple[bytes, ...] | None = None
     node_detail_transcript_events: tuple[dict[str, object], ...] | None = None
-    superseded_configuration_hashes: frozenset[str] = frozenset()
-    model_registry_unavailable: bool = False
-    model_registry_refusal: str | None = None
-    model_registry_answer_override: bytes | None = None
     calls: list[tuple[str, str, bytes | None]] = field(default_factory=list)
     workflow_hashes: list[str] = field(default_factory=list)
     run_reads: int = 0
     configuration_page_reads: int = 0
-    model_registry_reads: int = 0
     catalog_hashes: dict[str, str] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -132,6 +128,10 @@ class FakeHttp:
         if path.startswith("/agent-configuration-revisions"):
             if self.configuration_unavailable:
                 raise ProviderCanaryServerUnavailable("configuration listing timed out")
+            if self.configuration_refusal is not None:
+                raise ProviderCanaryHttpRefused(
+                    self.configuration_refusal, "configuration listing refused"
+                )
             if self.configuration_answer is not None:
                 return self.configuration_answer
             if self.configuration_pages is not None:
@@ -139,24 +139,6 @@ class FakeHttp:
                 self.configuration_page_reads += 1
                 return page
             return encoded(items=self.configurations, next_after_revision_hash=None)
-        if path.startswith("/model-registries/"):
-            self.model_registry_reads += 1
-            if self.model_registry_unavailable:
-                raise ProviderCanaryServerUnavailable("model registry timed out")
-            if self.model_registry_refusal is not None:
-                raise ProviderCanaryHttpRefused(
-                    self.model_registry_refusal, "model registry refused"
-                )
-            if self.model_registry_answer_override is not None:
-                return self.model_registry_answer_override
-            provider_id = path.rsplit("/", 1)[-1]
-            registered = tuple(
-                config
-                for config in self.configurations
-                if config["agent_configuration_revision_hash"]
-                not in self.superseded_configuration_hashes
-            )
-            return model_registry_answer(registered, provider_id)
         if path.startswith("/workflow-revisions/by-name/"):
             if self.catalog_unavailable:
                 raise ProviderCanaryServerUnavailable("workflow catalog timed out")
@@ -221,29 +203,6 @@ class FakeHttp:
 
 def encoded(**document: object) -> bytes:
     return json.dumps(document).encode()
-
-
-def model_registry_answer(
-    configurations: tuple[dict[str, object], ...], provider_id: str
-) -> bytes:
-    entries = tuple(
-        {
-            "model_id": config["model"],
-            "agent_configuration_revision_hash": config[
-                "agent_configuration_revision_hash"
-            ],
-            "source": "operator",
-            "provider_check": "checked",
-        }
-        for config in configurations
-        if config["provider_id"] == provider_id
-    )
-    return encoded(
-        provider_id=provider_id,
-        revision_number=1,
-        model_registry_revision_hash="9" * 64,
-        entries=entries,
-    )
 
 
 def run_resource(run_id: str, workflow_hash: str, state: str) -> RunResourceV3:
@@ -316,7 +275,6 @@ def configuration(
     executor: str = "claude-subscription/v1",
     capability: str = "headless",
     configuration_hash: str = CONFIGURATION_HASH,
-    model: str = "provider-model",
     startable: bool = True,
     structurally_startable: bool = True,
 ) -> dict[str, object]:
@@ -328,7 +286,7 @@ def configuration(
         else "provider-probe-receipt-missing"
     )
     return {
-        "model": model,
+        "model": "provider-model",
         "auth_profile_revision_hash": "e" * 64,
         "executor_revision": executor,
         "provider_id": provider,
@@ -341,25 +299,15 @@ def configuration(
     }
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CANARY_WORKFLOW_SOURCE_DIRECTORY = PROJECT_ROOT / "workflows"
-
-
 @pytest.fixture
 def workflow_directory(tmp_path: Path) -> Path:
-    """The real deployed canary documents, copied so a test can mutate them.
-
-    A cast check now parses this directory's bytes (`_workflow_graph`), so a
-    placeholder document without a declared role would refuse every
-    candidate. Copying the committed production files keeps the fixture
-    honest without duplicating their structure by hand.
-    """
-
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     for name in ("headless", "workspace-tools", "atelier-doors"):
-        source = CANARY_WORKFLOW_SOURCE_DIRECTORY / f"provider-canary-{name}.yaml"
-        (workflows / f"provider-canary-{name}.yaml").write_bytes(source.read_bytes())
+        (workflows / f"provider-canary-{name}.yaml").write_text(
+            f"format_version: 3\nname: provider-canary-{name}\n",
+            encoding="utf-8",
+        )
     return workflows
 
 
@@ -495,88 +443,33 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     }
 
 
-def test_discovery_selects_a_structurally_startable_vector_whose_receipt_is_foreign(
+def test_the_vector_cap_applies_after_filtering_not_before(
     tmp_path: Path, workflow_directory: Path
 ) -> None:
-    """The self-healing property #942 claimed and this slice makes real.
+    """51 raw candidates, one the service marks not startable: 50 attempts.
 
-    A redeploy invalidates every receipt by `source_commit`: the listing
-    answers `startable: false` for every vector, exactly as it would the
-    morning after. Discovery reads `structurally_startable` instead, so it
-    still finds the full vector set, still starts each one through the
-    exemption, and still writes it a fresh receipt -- restoring ordinary
-    startability without a human touching anything.
+    The cap is checked against the filtered vector count, never the raw
+    listing count -- a listing this size with exactly one non-startable
+    configuration must attempt every genuine vector, not fail loud over a
+    limit it never actually reached.
     """
 
-    http = FakeHttp(
-        (
-            configuration(startable=False, structurally_startable=True),
-            configuration(
-                provider="xai",
-                executor="grok-subscription-tools/v1",
-                capability="headless_with_tools",
-                configuration_hash="f" * 64,
-                startable=False,
-                structurally_startable=True,
-            ),
-        ),
-        workflow_directory,
+    first_page = tuple(
+        configuration(configuration_hash=f"{number:064x}")
+        for number in range(PROVIDER_CANARY_MAXIMUM_VECTORS)
     )
+    not_startable = configuration(
+        configuration_hash="f" * 64, startable=False, structurally_startable=True
+    )
+    http = FakeHttp((*first_page, not_startable), workflow_directory)
     state_directory = tmp_path / "state"
 
     report = execute_provider_canaries(
         settings(workflow_directory, state_directory), http=http, clock=FakeClock()
     )
 
-    start_bodies = [
-        body for _method, path, body in http.calls if path == "/runs" and body
-    ]
-    assert len(start_bodies) == 2
-    assert report.attempted == 2
+    assert report.attempted == PROVIDER_CANARY_MAXIMUM_VECTORS
     assert report.failed == 0
-    receipts = read_receipts(state_directory)
-    assert len(receipts) == 2
-    assert {receipt.result for receipt in receipts} == {ProviderProbeResult.SUCCEEDED}
-
-
-def test_discovery_excludes_a_configuration_the_model_registry_no_longer_points_to(
-    tmp_path: Path, workflow_directory: Path
-) -> None:
-    """A structurally startable but superseded revision is not a vector.
-
-    The model registry now points at a newer revision for the same model; a
-    start would refuse the old hash's cast (`starter.py:
-    _cast_against_model_configuration` / `cast_unbound_roles`, ADR 0019) before
-    any process runs -- `uncast-agent-roles` -- so discovery must never choose
-    it either. `structurally_startable` alone cannot see this: the executor is
-    registered, only the registry pointer moved.
-    """
-
-    superseded_hash = "1" * 64
-    http = FakeHttp(
-        (
-            configuration(configuration_hash=superseded_hash),
-            configuration(),
-        ),
-        workflow_directory,
-        superseded_configuration_hashes=frozenset({superseded_hash}),
-    )
-    state_directory = tmp_path / "state"
-
-    report = execute_provider_canaries(
-        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
-    )
-
-    assert any(
-        method == "GET" and path == "/model-registries/anthropic"
-        for method, path, _body in http.calls
-    )
-    assert report.attempted == 1
-    assert report.failed == 0
-    (receipt,) = read_receipts(state_directory)
-    assert receipt.configuration_hash == AgentConfigurationRevisionHash(
-        CONFIGURATION_HASH
-    )
 
 
 @pytest.mark.parametrize(
@@ -587,37 +480,30 @@ def test_discovery_excludes_a_configuration_the_model_registry_no_longer_points_
         ("unavailable", "server-unavailable"),
     ),
 )
-def test_a_failed_judgment_read_fails_closed_and_costs_one_call_per_provider(
+def test_a_failed_startability_read_fails_closed_and_reads_once(
     tmp_path: Path,
     workflow_directory: Path,
     failure_mode: str,
     expected_problem: str,
 ) -> None:
-    """The judgment read (the model registry a cast check asks) is fail-closed.
+    """The listing's own `startable` field is the sole judgment source.
 
-    A refusal, a malformed answer, or an unreachable registry each abort the
+    A refusal, a malformed answer, or an unreachable service each abort the
     whole run loud before any vector is admitted -- no POST /runs, every
-    live receipt untouched -- and the registry is asked once per distinct
-    provider even though two candidates here share it, never once per
-    candidate.
+    live receipt untouched -- and the listing is read exactly once, never
+    retried.
     """
 
     state_directory = tmp_path / "state"
     destination = write_live_success(state_directory)
     previous = destination.read_bytes()
-    http = FakeHttp(
-        (
-            configuration(),
-            configuration(configuration_hash="f" * 64, model="provider-model-2"),
-        ),
-        workflow_directory,
-    )
+    http = FakeHttp((configuration(),), workflow_directory)
     if failure_mode == "refused":
-        http.model_registry_refusal = "agent-executor-binding-unavailable"
+        http.configuration_refusal = "agent-executor-binding-unavailable"
     elif failure_mode == "malformed":
-        http.model_registry_answer_override = b"not-json"
+        http.configuration_answer = b"not-json"
     else:
-        http.model_registry_unavailable = True
+        http.configuration_unavailable = True
 
     with pytest.raises(ProviderCanaryDiscoveryFailed, match=expected_problem):
         execute_provider_canaries(
@@ -626,14 +512,21 @@ def test_a_failed_judgment_read_fails_closed_and_costs_one_call_per_provider(
 
     assert destination.read_bytes() == previous
     assert not any(method == "POST" for method, _path, _body in http.calls)
-    assert http.model_registry_reads == 1
+    assert (
+        sum(
+            1
+            for method, path, _body in http.calls
+            if method == "GET" and path.startswith("/agent-configuration-revisions")
+        )
+        == 1
+    )
 
 
-def test_a_timed_out_judgment_read_fails_closed_before_any_start(
+def test_a_timed_out_startability_read_fails_closed_before_any_start(
     tmp_path: Path, workflow_directory: Path
 ) -> None:
-    """A discovery deadline exceeded while reading the model registry still
-    fails the whole run loud, before any vector is admitted."""
+    """A discovery deadline exceeded while reading the listing still fails
+    the whole run loud, before any vector is admitted."""
 
     state_directory = tmp_path / "state"
     destination = write_live_success(state_directory)
@@ -641,10 +534,10 @@ def test_a_timed_out_judgment_read_fails_closed_before_any_start(
     delegate = FakeHttp((configuration(),), workflow_directory)
     clock = FakeClock()
 
-    class SlowRegistryHttp:
+    class SlowConfigurationHttp:
         def get(self, path: str, *, timeout_seconds: float) -> bytes:
             answer = delegate.get(path, timeout_seconds=timeout_seconds)
-            if path.startswith("/model-registries/"):
+            if path.startswith("/agent-configuration-revisions"):
                 clock.elapsed += PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS + 1
             return answer
 
@@ -657,13 +550,13 @@ def test_a_timed_out_judgment_read_fails_closed_before_any_start(
             media_type: str = "application/json",
         ) -> bytes:
             raise AssertionError(
-                "no start should be attempted after a timed-out judgment read"
+                "no start should be attempted after a timed-out startability read"
             )
 
     with pytest.raises(ProviderCanaryDiscoveryFailed, match="discovery-timeout"):
         execute_provider_canaries(
             settings(workflow_directory, state_directory),
-            http=SlowRegistryHttp(),
+            http=SlowConfigurationHttp(),
             clock=clock,
         )
 
@@ -671,13 +564,11 @@ def test_a_timed_out_judgment_read_fails_closed_before_any_start(
     assert not any(method == "POST" for method, _path, _body in delegate.calls)
 
 
-def test_discovery_finds_nothing_for_a_vector_whose_executor_is_unavailable(
+def test_discovery_finds_nothing_for_a_vector_the_service_marks_not_startable(
     tmp_path: Path, workflow_directory: Path
 ) -> None:
-    """The other half of the same answer: `structurally_startable: false`
-    still refuses discovery -- no run, canary included, could ever produce
-    evidence for an executor that was never registered or was marked
-    unavailable."""
+    """`startable: false` refuses discovery -- the canary asks the live
+    service's own judgment and derives nothing of its own from it."""
 
     http = FakeHttp(
         (configuration(startable=False, structurally_startable=False),),
@@ -850,31 +741,12 @@ def test_a_failed_run_whose_transcript_names_a_provider_refusal_gets_its_own_cod
 
 
 def test_an_unreadable_local_workflow_replaces_the_live_success_receipt(
-    tmp_path: Path, workflow_directory: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, workflow_directory: Path
 ) -> None:
-    """A workflow unreadable only at attempt time still fails that one vector.
-
-    Discovery already reads this same file once, to ask the cast judgment;
-    this drops it out from under the canary only after that read succeeds,
-    so the failure this test pins is `_execute_vector`'s own -- distinct
-    from a whole-discovery `workflow-unreadable` abort.
-    """
-
     state_directory = tmp_path / "state"
     write_live_success(state_directory)
     http = FakeHttp((configuration(),), workflow_directory)
-    workflow_path = workflow_directory / "provider-canary-headless.yaml"
-    original_read_bytes = Path.read_bytes
-    reads = {"count": 0}
-
-    def flaky_read_bytes(self: Path) -> bytes:
-        if self == workflow_path:
-            reads["count"] += 1
-            if reads["count"] > 1:
-                raise OSError("workflow vanished between discovery and attempt")
-        return original_read_bytes(self)
-
-    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    (workflow_directory / "provider-canary-headless.yaml").unlink()
 
     report = execute_provider_canaries(
         settings(workflow_directory, state_directory),
@@ -988,8 +860,6 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
             answer = encoded(
                 items=(configuration(),), next_after_revision_hash=None
             ).decode()
-        elif full_url.endswith("/model-registries/anthropic"):
-            answer = model_registry_answer((configuration(),), "anthropic").decode()
         elif full_url.endswith(f"/workflow-revisions/by-name/{workflow_name}"):
             answer = CatalogNameResolutionResource(
                 display_name=workflow_name,
@@ -1074,8 +944,6 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
             )
         elif "/agent-configuration-revisions?" in full_url:
             answer = encoded(items=(configuration(),), next_after_revision_hash=None)
-        elif full_url.endswith("/model-registries/anthropic"):
-            answer = model_registry_answer((configuration(),), "anthropic")
         elif full_url.endswith(f"/workflow-revisions/by-name/{workflow_name}"):
             answer = (
                 CatalogNameResolutionResource(
@@ -1131,20 +999,16 @@ def test_discovery_limits_are_loud_and_receipt_neutral(
         )
         expected_problem = "too-many-configuration-pages"
     else:
-        # Every one of these must be genuinely startable (its own registered
-        # model), so the cap is exercised on the filtered vector count, not
-        # the raw candidate count -- filtering runs before the cap applies.
         first_page = tuple(
-            configuration(
-                configuration_hash=f"{number:064x}", model=f"provider-model-{number}"
-            )
+            configuration(configuration_hash=f"{number:064x}")
             for number in range(PROVIDER_CANARY_MAXIMUM_VECTORS)
         )
-        extra = configuration(configuration_hash="f" * 64, model="provider-model-extra")
-        http.configurations = (*first_page, extra)
         http.configuration_pages = (
             encoded(items=first_page, next_after_revision_hash="e" * 64),
-            encoded(items=(extra,), next_after_revision_hash=None),
+            encoded(
+                items=(configuration(configuration_hash="f" * 64),),
+                next_after_revision_hash=None,
+            ),
         )
         expected_problem = "too-many-provider-vectors"
 
@@ -1167,7 +1031,7 @@ def test_overall_deadline_bounds_cumulative_work_and_never_enters_later_vector(
     delegate = FakeHttp(
         (
             configuration(),
-            configuration(configuration_hash="f" * 64, model="provider-model-2"),
+            configuration(configuration_hash="f" * 64),
         ),
         workflow_directory,
     )

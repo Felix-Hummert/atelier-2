@@ -1,26 +1,22 @@
 """Run the configured live provider vectors and leave bounded proof behind.
 
 The served agent-configuration list is the deployment's answer about which
-exact provider/executor/configuration vectors are structurally startable now
--- a factory registered, available, and declaring the capability, with no
-live evidence asked at all. A vector still needs one more thing a start would
-also demand: `cast_unbound_roles` (ADR 0019 SS3), the exact function
-`starter.py:_cast_against_model_configuration` calls, must resolve the bound
-role for the locally deployed canary workflow without an uncast reason --
-proof that the model registry still points to that exact configuration hash,
-under the same uniqueness and per-role family rules a start enforces. This
-client fetches the model registry once per distinct candidate provider and
-asks that shared function locally, rather than re-deriving its judgment, then
-resolves the matching admitted workflow, starts one fresh run with the listed
-configuration hash, and polls the public run resource to a terminal state. It
-owns no provider process and opens no store.
+exact provider/executor/configuration vectors are startable right now --
+the live judgment a start itself would make, computed by the deployment's
+own atomic snapshot (registries, defaults, receipts, everything
+`resolve_start_bindings.py` asks). This client reads that field and derives
+nothing of its own: no local registry fetch, no local cast, no parse of the
+repository's workflow bytes -- only the served answer can never drift from
+what a real start would decide. It then resolves the matching admitted
+workflow, starts one fresh run with the listed configuration hash, and polls
+the public run resource to a terminal state. It owns no provider process and
+opens no store.
 
-Discovery is receipt-neutral: health, the bounded configuration list, each
-candidate provider's model registry, and all distinct admitted workflow names
-must resolve before any vector becomes an attempt. Discovery refusal is
-visible through the process exit and journal and leaves every last-known
-vector receipt byte-identical. Once one vector enters
-execution, its outcome replaces that vector's secret-free
+Discovery is receipt-neutral: health, the bounded configuration list, and all
+distinct admitted workflow names must resolve before any vector becomes an
+attempt. Discovery refusal is visible through the process exit and journal
+and leaves every last-known vector receipt byte-identical. Once one vector
+enters execution, its outcome replaces that vector's secret-free
 ``provider-probe-receipt/v1`` beneath the operator's XDG state directory. The
 durable run remains the evidence owner; a receipt carries only its identities
 and terminal hash, or a bounded problem code. Replacement is a same-directory
@@ -63,10 +59,6 @@ from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
 )
-from atelier2.adapters.yaml_workflows import (
-    InvalidWorkflowDocument,
-    parse_workflow_document,
-)
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.wire.resources import (
@@ -74,29 +66,12 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionPageResource,
     CatalogNameResolutionResource,
     HealthResource,
-    ModelRegistryRevisionResource,
     NodeDetailResource,
     RunResourceV3,
 )
-from atelier2.application.resolve_start_bindings import (
-    cast_unbound_roles,
-    undeclared_agent_role_refusal,
-)
 from atelier2.contracts.agent_transcripts import TranscriptEventKind
-from atelier2.contracts.agents import (
-    AgentBinding,
-    AgentBindingSet,
-    AgentConfigurationRevisionHash,
-    AgentRole,
-    ProviderId,
-)
+from atelier2.contracts.agents import AgentConfigurationRevisionHash
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.host_configuration import (
-    ModelRegistryEntry,
-    ModelRegistryEntrySource,
-    ModelRegistryRevision,
-    ProviderModelCheck,
-)
 from atelier2.contracts.provider_probe_receipts import (
     _SOURCE_COMMIT as PROVIDER_PROBE_SOURCE_COMMIT_FORMAT,
 )
@@ -111,7 +86,6 @@ from atelier2.contracts.provider_probe_receipts import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
-from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.host.address import ADDRESSABLE_SCHEMES, DEFAULT_SERVICE_URL
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
@@ -137,19 +111,11 @@ PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS = (
 )
 PROVIDER_CANARY_STATE_RELATIVE_PATH = Path("atelier2/provider-probes/live")
 
-_MODEL_REGISTRY_PATH_PREFIX = "/model-registries"
-"""The relative path host clients use, mirroring the served route without
-`API_PREFIX`. `host/run_command.py` owns the sibling constants this module
-already imports (`AGENT_CONFIGURATION_PATH`, `WORKFLOW_REVISION_PATH`,
-`RUN_PATH`); this one stays local because the canary is its only host caller.
-"""
-
 _MAXIMUM_PROBLEM_RESPONSE_BYTES = 4_096
 
 _health_resource = TypeAdapter(HealthResource)
 _configuration_page_resource = TypeAdapter(AgentConfigurationRevisionPageResource)
 _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
-_model_registry_resource = TypeAdapter(ModelRegistryRevisionResource)
 _run_resource = TypeAdapter[RunResourceV3](RunResourceV3)
 _node_detail_resource = TypeAdapter[NodeDetailResource](NodeDetailResource)
 
@@ -477,10 +443,7 @@ def execute_provider_canaries(
                 "the service health source commit cannot identify receipt provenance"
             )
         vectors = _configured_vectors(
-            client,
-            settings.workflow_directory,
-            clock=canary_clock,
-            deadline=discovery_deadline,
+            client, clock=canary_clock, deadline=discovery_deadline
         )
         if not vectors:
             raise ProviderCanaryDiscoveryFailed(
@@ -508,10 +471,6 @@ def execute_provider_canaries(
         raise ProviderCanaryDiscoveryFailed(
             f"server-answer-unreadable: {unreadable}"
         ) from unreadable
-    except ProviderCanaryWorkflowUnreadable as unreadable:
-        raise ProviderCanaryDiscoveryFailed(
-            f"workflow-unreadable: {unreadable}"
-        ) from unreadable
     failures: list[ProviderCanaryFailure] = []
     for vector in vectors:
         _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
@@ -531,14 +490,11 @@ def execute_provider_canaries(
 
 def _configured_vectors(
     client: ProviderCanaryHttp,
-    workflow_directory: Path,
     *,
     clock: ProviderCanaryClock,
     deadline: float,
 ) -> tuple[_CanaryVector, ...]:
-    candidates: list[
-        tuple[AgentConfigurationRevisionListItemResource, _CanaryVector]
-    ] = []
+    vectors: list[_CanaryVector] = []
     after: str | None = None
     for page_number in range(1, PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES + 1):
         query = urlencode(
@@ -558,185 +514,43 @@ def _configured_vectors(
             ),
             "agent-configuration page",
         )
-        # `structurally_startable`, not `startable`: discovery must find a
-        # vector whose only problem is the receipt this very run would write.
-        # Selecting on `startable` here would be the same surface-vs-start-door
-        # divergence this gate exists to close, running the other way -- the
-        # listing saying "not startable" while the one run that could produce
-        # the missing evidence is refused from ever finding it. A configuration
-        # a start could not cast (a superseded registry pointer among other
-        # reasons) is filtered separately below, by asking the start's own
-        # judgment -- never the raw vector-count cap, which only applies once
-        # that filter has run.
-        candidates.extend(
-            (item, vector)
+        # `startable`: the live judgment a start itself would make for this
+        # exact configuration (registry pointer, receipt evidence, and
+        # everything else `resolve_start_bindings.py` asks), computed by the
+        # deployment's own snapshot. Discovery reads this field and derives
+        # nothing of its own -- no local registry fetch, no local cast, no
+        # parse of the repository's workflow bytes -- so it can never drift
+        # from what a real start would decide.
+        #
+        # Named gap: `startable` is receipt-gated
+        # (`ports/agent_executions.py::ProviderProbeReceiptGate.is_proven`)
+        # and invalidates on every redeploy's new `source_commit`. A real
+        # start still admits a `reprobe_exempt` canary workflow through that
+        # gate (`resolve_start_bindings.resolve_start_bindings`), but this
+        # listing field does not encode that exemption, so a redeploy can
+        # make every configuration read `startable: false` here at once --
+        # discovery then finds nothing to reprobe, and the self-healing
+        # property #942 established is lost until an operator (or the
+        # exemption reaching this field) restores it.
+        vectors.extend(
+            vector
             for item in page.items
-            if item.structurally_startable
-            and (vector := _canary_vector(item)) is not None
+            if item.startable and (vector := _canary_vector(item)) is not None
         )
+        if len(vectors) > PROVIDER_CANARY_MAXIMUM_VECTORS:
+            raise ProviderCanaryDiscoveryFailed(
+                "too-many-provider-vectors: the service listed more than "
+                f"{PROVIDER_CANARY_MAXIMUM_VECTORS} known startable provider vectors"
+            )
         after = page.next_after_revision_hash
         if after is None:
-            return _startable_vectors(
-                candidates, client, workflow_directory, clock=clock, deadline=deadline
-            )
+            return tuple(vectors)
         if page_number == PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES:
             raise ProviderCanaryDiscoveryFailed(
                 "too-many-configuration-pages: the service requires more than "
                 f"{PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES} configuration pages"
             )
     raise AssertionError("bounded configuration pagination did not terminate")
-
-
-def _startable_vectors(
-    candidates: list[tuple[AgentConfigurationRevisionListItemResource, _CanaryVector]],
-    client: ProviderCanaryHttp,
-    workflow_directory: Path,
-    *,
-    clock: ProviderCanaryClock,
-    deadline: float,
-) -> tuple[_CanaryVector, ...]:
-    """Keep only the candidates the start's own judgment would also cast.
-
-    This asks exactly what a start asks -- `cast_unbound_roles` (ADR 0019
-    SS3), the function `starter.py:_cast_against_model_configuration` calls
-    -- against the model registry fetched once per distinct candidate
-    provider (never per candidate) and the locally deployed canary workflow
-    graph, rather than a parallel re-implementation of the registry pointer,
-    its cross-provider uniqueness, or any per-role family constraint.
-    """
-
-    registries = tuple(
-        registry
-        for registry in (
-            _model_registry(client, provider_id, clock=clock, deadline=deadline)
-            for provider_id in dict.fromkeys(
-                item.provider_id for item, _vector in candidates
-            )
-        )
-        if registry is not None
-    )
-    graphs_by_workflow_name = {
-        workflow_name: _workflow_graph(workflow_directory, workflow_name)
-        for workflow_name in dict.fromkeys(
-            vector.workflow_name for _item, vector in candidates
-        )
-    }
-    startable = tuple(
-        vector
-        for item, vector in candidates
-        if _is_startable(
-            item, vector, graphs_by_workflow_name[vector.workflow_name], registries
-        )
-    )
-    if len(startable) > PROVIDER_CANARY_MAXIMUM_VECTORS:
-        raise ProviderCanaryDiscoveryFailed(
-            "too-many-provider-vectors: the service listed more than "
-            f"{PROVIDER_CANARY_MAXIMUM_VECTORS} known startable provider vectors"
-        )
-    return startable
-
-
-def _is_startable(
-    item: AgentConfigurationRevisionListItemResource,
-    vector: _CanaryVector,
-    graph: WorkflowGraphV3,
-    registries: tuple[ModelRegistryRevision, ...],
-) -> bool:
-    """One configuration, judged exactly as `starter.py:_start` judges it.
-
-    Same fixed order: an undeclared role refuses first
-    (`undeclared_agent_role_refusal`), then `cast_unbound_roles` resolves the
-    bound role against the registry -- the registry pointer, its uniqueness
-    across every fetched provider, and any per-role family constraint the
-    graph declares, all in the one shared function.
-    """
-
-    requested = AgentBindingSet(
-        (AgentBinding(AgentRole(PROVIDER_CANARY_ROLE), vector.configuration_hash),)
-    )
-    if undeclared_agent_role_refusal(graph, requested) is not None:
-        return False
-    resolved = cast_unbound_roles(
-        graph,
-        requested,
-        None,
-        registries,
-        {vector.configuration_hash: (item.provider_id, item.model)},
-    )
-    return not resolved.uncast_roles
-
-
-def _model_registry(
-    client: ProviderCanaryHttp,
-    provider_id: str,
-    *,
-    clock: ProviderCanaryClock,
-    deadline: float,
-) -> ModelRegistryRevision | None:
-    """The one provider's model registry a start's cast would read, or none.
-
-    A provider with no published registry offers no eligible candidate to
-    `cast_unbound_roles` either way, so a missing registry is silently empty
-    rather than a discovery failure -- every other refusal still fails loud.
-    """
-
-    try:
-        registry = _decoded(
-            _model_registry_resource,
-            _get_before_deadline(
-                client,
-                f"{_MODEL_REGISTRY_PATH_PREFIX}/{quote(provider_id, safe='')}",
-                clock=clock,
-                deadline=deadline,
-                timeout_error=_discovery_timeout,
-            ),
-            "model registry",
-        )
-    except ProviderCanaryHttpRefused as refused:
-        if refused.problem_code == "model-registry-missing":
-            return None
-        raise
-    return ModelRegistryRevision(
-        ProviderId(registry.provider_id),
-        registry.revision_number,
-        tuple(
-            ModelRegistryEntry(
-                entry.model_id,
-                AgentConfigurationRevisionHash(entry.agent_configuration_revision_hash),
-                ModelRegistryEntrySource(entry.source),
-                ProviderModelCheck(entry.provider_check),
-            )
-            for entry in registry.entries
-        ),
-    )
-
-
-def _workflow_graph(workflow_directory: Path, workflow_name: str) -> WorkflowGraphV3:
-    """The locally deployed graph a cast check reads -- never the admitted hash.
-
-    Hash identity against the admitted revision remains `_execute_vector`'s
-    concern at attempt time; this only needs the graph's declared roles and
-    family constraints, read once per distinct workflow name.
-    """
-
-    workflow_path = workflow_directory / f"{workflow_name}.yaml"
-    try:
-        document = workflow_path.read_bytes()
-    except OSError as unreadable:
-        raise ProviderCanaryWorkflowUnreadable(
-            f"could not read {workflow_path}: {unreadable}"
-        ) from unreadable
-    try:
-        graph = parse_workflow_document(document)
-    except InvalidWorkflowDocument as invalid:
-        raise ProviderCanaryWorkflowUnreadable(
-            f"{workflow_path} does not parse as a workflow document: {invalid}"
-        ) from invalid
-    if not isinstance(graph, WorkflowGraphV3):
-        raise ProviderCanaryWorkflowUnreadable(
-            f"{workflow_path} is not a V3 workflow document"
-        )
-    return graph
 
 
 def _resolve_admitted_workflows(

@@ -704,13 +704,13 @@ same pinned interpreter and lock path that `serve-live.sh` uses. It asks that
 running instance for its currently startable agent configurations, runs the
 matching headless, workspace-tools, or atelier-doors workflow once with each
 exact configuration hash, and refuses an admitted workflow whose hash differs
-from the deploy checkout. A configuration is a vector only when it is both
-structurally startable (its executor is registered) and one a start would
-actually cast: the same `cast_unbound_roles` judgment a start calls, asked
-locally against the model registry and the deployed workflow graph, so a
-superseded revision -- kept only for history -- is never probed. Discovery is
-capped at four configuration pages, 50 known startable vectors, and 300
-seconds. All distinct admitted workflow names
+from the deploy checkout. A configuration is a vector only when the listing's
+own `startable` field says so -- the live judgment the deployment's atomic
+snapshot already computed, the same one a start reads; discovery derives
+nothing of its own from it, so a superseded revision or one still missing
+live evidence is never probed. Discovery is capped at four configuration
+pages, 50 known startable vectors, and 300 seconds. All distinct admitted
+workflow names
 resolve before any vector starts. Each run then has a 300-second terminal
 deadline, while the complete process has a 15,300-second deadline enforced by
 both the runner and its systemd unit. Every HTTP call has a 30-second cap reduced
