@@ -95,6 +95,17 @@ export const workflowDetailCopy = {
   graphUnavailable: "This revision's graph cannot be drawn here.",
   workflowRevision: "Workflow revision",
   sealsWorkflowRevision: "the published workflow revision",
+  // A revision's format, straight from its own document -- the mockup's
+  // "workflow/v3" (v8 :1528), never a bare number a reader has to place.
+  format: "Format",
+  formatVersion: (version: number) => `workflow/v${version}`,
+  // Where this revision's bytes first entered the catalog: the honest wire
+  // facts (commit, path), never the opaque `source1.` reference a person
+  // cannot read (#1077). A file-imported revision carries no provenance at
+  // all, so this row is absent for it -- no "Manual import" placeholder,
+  // unlike the catalog card's own `provenanceManual` sentence.
+  source: "Source",
+  sourceFact: (commit: string, path: string) => `${commit} · ${path}`,
   orders: "Orders",
   noOrders: "No orders declared.",
   schema: "Schema",
