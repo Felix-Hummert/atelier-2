@@ -66,6 +66,7 @@ function v3Revision(name = "Two agents in a line", hash = revisionHash): Workflo
   return {
     workflow_revision_hash: hash,
     document_base64: "",
+    provenance: null,
     graph: {
       workflow_format_version: 3,
       executable: true,

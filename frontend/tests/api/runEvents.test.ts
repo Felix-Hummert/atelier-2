@@ -78,6 +78,7 @@ describe("native durable event transport", () => {
       jsonResponse({
         workflow_revision_hash: other,
         document_base64: "",
+        provenance: null,
         graph: {
           workflow_format_version: 3,
           executable: true,

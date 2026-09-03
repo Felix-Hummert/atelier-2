@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from atelier2.contracts.definition_sources import RevisionProvenance
 from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 
@@ -46,6 +47,21 @@ class EnrichedPageBudget:
 
 
 @dataclass(frozen=True)
+class ListedWorkflowRevision:
+    """One revision on a page, and where its bytes first entered the catalog.
+
+    `provenance` is None for a revision no definition source delivered -- a
+    document published through the catalog's own door (ADR 0007) -- which is
+    the honest answer rather than an origin invented to fill the field. It sits
+    here rather than on `WorkflowRevisionProjection` because a run's bound
+    revision is read through that same projection and owes no reader an origin.
+    """
+
+    projection: WorkflowRevisionProjection
+    provenance: RevisionProvenance | None = None
+
+
+@dataclass(frozen=True)
 class DescribedWorkflowRevisionPage:
     """Revisions together with the documents they were published as, parsed.
 
@@ -54,5 +70,5 @@ class DescribedWorkflowRevisionPage:
     both cases and never has to learn which bound stopped it.
     """
 
-    items: tuple[WorkflowRevisionProjection, ...]
+    items: tuple[ListedWorkflowRevision, ...]
     next_after: WorkflowRevisionHash | None
