@@ -1,6 +1,5 @@
 import type {
   AgentDefinitionRevisionListItem,
-  WorkflowRevisionProvenance,
   WorkflowRevisionSummary
 } from "../api/client";
 import { catalogPageCopy } from "./catalogPageCopy";
@@ -32,12 +31,13 @@ export interface CatalogWorkflowRow {
   name: string;
   description: string | null;
   /**
-   * Where this revision's bytes first entered the catalog from -- `null` for
-   * a file dropped in by hand, the only way in before a Git link (#660)
-   * exists. The row carries the raw fact; `catalogRowFacts` decides what a
-   * card says about it.
+   * What a card says about where this revision's bytes first entered the
+   * catalog from -- `<8-hex commit> · <path>` for a revision a connected
+   * source delivered, `null` for a file dropped in by hand, the only way in
+   * before a Git link (#660) exists. Formatted here, once, so the page only
+   * renders; `catalogRowFacts` decides whether the row wears it at all.
    */
-  provenance: WorkflowRevisionProvenance | null;
+  sourceLabel: string | null;
   /**
    * `null` where this room cannot honestly answer: the catalog is asked by
    * name, and a document that declares none may still be an admitted member
@@ -88,17 +88,12 @@ export interface CatalogWorkflowTiles {
 /**
  * The facts that stand under an entry's name, in reading order.
  *
- * Provenance is the first of them, and today the catalog genuinely holds two
- * kinds: a revision a connected source delivered names where it came from
- * (commit and path), and one dropped in by hand names nothing, because a
- * chip every card wears distinguishes nothing (#1112). An agent row never
- * carries a source at all -- it is always passed `null`.
+ * A row's source label is the first of them, and `null` wears no chip at
+ * all: a file dropped in by hand names nothing, and a chip every card wears
+ * distinguishes nothing (#1112).
  */
-export function catalogRowFacts(
-  provenance: WorkflowRevisionProvenance | null
-): readonly string[] {
-  if (provenance === null) return [];
-  return [catalogPageCopy.provenanceSource(provenance.source_commit, provenance.source_path)];
+export function catalogRowFacts(sourceLabel: string | null): readonly string[] {
+  return sourceLabel === null ? [] : [sourceLabel];
 }
 
 /**
@@ -128,7 +123,13 @@ export function catalogWorkflowRows(
       title: revision.name,
       name: revision.name,
       description: revision.description,
-      provenance: revision.provenance ?? null,
+      sourceLabel:
+        revision.provenance === null || revision.provenance === undefined
+          ? null
+          : catalogPageCopy.provenanceSource(
+              revision.provenance.source_commit,
+              revision.provenance.source_path
+            ),
       state: workflowEntryState(revision, catalogByName),
       admittable: isAdmittable(revision),
       newerRevisionAvailable: index === 0 && isAdmittedName && row.revisions.length > 1
