@@ -101,6 +101,17 @@ are reserved for that envelope). Publishing material and starting a run are two
 calls. If the start is refused or fails, its already-published immutable
 artifact remains reusable and no run exists.
 
+A described listing and a single revision read both name where a revision's
+bytes came in from: `provenance` carries the source's public `source1.`
+reference and the commit, path and instant of the *first* intake that delivered
+those bytes, so a later delivery of the same bytes never rewrites their origin.
+It carries only what was true at that intake — where the source points today is
+configuration a later connect may change, so no location or ref travels here,
+and a resource answering for the source itself is a later slice. A revision
+published through the catalog's own door carries no `provenance` at all.
+Definition sources themselves stay a command-line surface: connecting, scanning
+and taking one in have no HTTP route.
+
 [ADR 0003](../decisions/0003-http-api.md) owns the API and resume
 contract.
 

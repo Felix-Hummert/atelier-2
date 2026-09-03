@@ -6,6 +6,11 @@ import re
 from dataclasses import dataclass
 
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
+from atelier2.contracts.definition_sources import (
+    MAXIMUM_GIT_OBJECT_NAME_CHARACTERS,
+    MINIMUM_GIT_OBJECT_NAME_CHARACTERS,
+    DefinitionSourceId,
+)
 from atelier2.contracts.hashing import SHA256_HEX_DIGEST
 from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
@@ -70,6 +75,11 @@ its Zod mirror cannot each pick a different one.
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
+SOURCE_COMMIT_PATTERN = (
+    f"^[0-9a-f]{{{MINIMUM_GIT_OBJECT_NAME_CHARACTERS},"
+    f"{MAXIMUM_GIT_OBJECT_NAME_CHARACTERS}}}$"
+)
+"""A git object name as its durable owner bounds it: SHA-1 or SHA-256, lowercase."""
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
 PUBLIC_PROJECT_REFERENCE_PATTERN = r"^project1\.[A-Za-z0-9_-]+$"
 PUBLIC_SOURCE_REFERENCE_PATTERN = r"^source1\.[A-Za-z0-9_-]+$"
@@ -158,6 +168,27 @@ MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS = len(
     encode_public_source_reference(
         ProjectSourceId("ffffffff-ffff-ffff-ffff-ffffffffffff")
     )
+)
+
+
+def encode_public_definition_source_reference(source_id: DefinitionSourceId) -> str:
+    """The reference a reader is given for a registered definition source.
+
+    The `source1.` shape a project source connection already answers with,
+    because both name "a source this instance is wired to" to the same reader,
+    and the durable id stays off the wire either way. The two payloads cannot
+    be confused -- a project source id is a UUID, a definition source id a
+    SHA-256 digest -- and no decoder joins this one because no request names a
+    definition source: the command line takes the durable id, and the wire only
+    ever answers with this.
+    """
+
+    encoded = base64.urlsafe_b64encode(source_id.value.encode("ascii")).decode("ascii")
+    return _PUBLIC_SOURCE_REFERENCE_PREFIX + encoded.rstrip("=")
+
+
+MAXIMUM_PUBLIC_DEFINITION_SOURCE_REFERENCE_CHARACTERS = len(
+    encode_public_definition_source_reference(DefinitionSourceId("f" * 64))
 )
 
 
