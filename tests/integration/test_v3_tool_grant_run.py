@@ -18,7 +18,6 @@ wrote, beside an agent receipt whose provider bytes are untouched by any of it.
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -42,6 +41,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptState
 from atelier2.contracts.agents import (
@@ -57,7 +57,7 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import NodeExecutionId, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_records_v3 import (
@@ -84,6 +84,10 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.projects import declaring_verification, git_project
+from tests.scenarios.run_waiting import (
+    wait_for_run_state,
+    wait_for_workflow_completion,
+)
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/redeems-its-grant")
@@ -301,20 +305,24 @@ def publish_granted_node(
     return workflow, bindings, grant.revision_hash.value
 
 
-def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
-    deadline = time.monotonic() + 20
-    observed = ""
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
-                )
+def wait_for_failed_run_after_node_completion(
+    runtime: DbosRuntime,
+    run_id: RunId,
+    workflow: WorkflowRevision,
+) -> None:
+    wait_for_workflow_completion(
+        node_workflow_id_for(
+            NodeExecutionId.for_node(run_id, workflow.revision_hash, "implement")
+        ),
+        f"the implement node for run {run_id.value!r} to finish",
+    )
+    with runtime.engine.connect() as connection:
+        observed = str(
+            connection.scalar(
+                sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
             )
-        if observed == state.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
+        )
+    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
 
 
 @pytest.mark.proves("a-granted-node-gets-its-project-verification-run-and-proven")
@@ -333,7 +341,7 @@ def test_a_granted_node_runs_the_projects_verification_and_leaves_the_proof(
     assert isinstance(started, DurableRunCreated)
 
     started_runtime.launch()
-    wait_for_state(started_runtime, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, RUN, RunState.COMPLETED)
 
     with started_runtime.engine.connect() as connection:
         redemption = (
@@ -405,7 +413,7 @@ def test_a_completed_verification_tool_node_can_be_forked_without_an_effect_rece
         DurableRunCreated,
     )
     started_runtime.launch()
-    wait_for_state(started_runtime, RunState.COMPLETED)
+    wait_for_run_state(started_runtime.engine, RUN, RunState.COMPLETED)
 
     forked = starter.fork_run(
         ForkRunRequest(RUN, "verification-is-not-an-effect", "implement")
@@ -443,19 +451,7 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
     assert isinstance(started, DurableRunCreated)
 
     started_runtime.launch()
-    deadline = time.monotonic() + 20
-    observed = ""
-    while time.monotonic() < deadline:
-        with started_runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == FAILED_RUN.value)
-                )
-            )
-        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
-            break
-        time.sleep(0.025)
-    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+    wait_for_failed_run_after_node_completion(started_runtime, FAILED_RUN, workflow)
 
     with started_runtime.engine.connect() as connection:
         attempt = (
@@ -543,19 +539,7 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
     assert isinstance(started, DurableRunCreated)
 
     started_runtime.launch()
-    deadline = time.monotonic() + 20
-    observed = ""
-    while time.monotonic() < deadline:
-        with started_runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == TIMEOUT_RUN.value)
-                )
-            )
-        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
-            break
-        time.sleep(0.025)
-    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+    wait_for_failed_run_after_node_completion(started_runtime, TIMEOUT_RUN, workflow)
 
     with started_runtime.engine.connect() as connection:
         attempt = (
@@ -672,19 +656,7 @@ def test_an_attempt_that_could_not_keep_its_work_says_so_in_its_node_receipt(
     assert isinstance(started, DurableRunCreated)
 
     started_runtime.launch()
-    deadline = time.monotonic() + 20
-    observed = ""
-    while time.monotonic() < deadline:
-        with started_runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == UNKEPT_RUN.value)
-                )
-            )
-        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
-            break
-        time.sleep(0.025)
-    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+    wait_for_failed_run_after_node_completion(started_runtime, UNKEPT_RUN, workflow)
 
     with started_runtime.engine.connect() as connection:
         attempt = (
@@ -783,19 +755,7 @@ def test_a_check_that_said_no_decides_the_ending_even_when_the_work_is_lost(
     assert isinstance(started, DurableRunCreated)
 
     started_runtime.launch()
-    deadline = time.monotonic() + 20
-    observed = ""
-    while time.monotonic() < deadline:
-        with started_runtime.engine.connect() as connection:
-            observed = str(
-                connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == BOTH_LOST_RUN.value)
-                )
-            )
-        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
-            break
-        time.sleep(0.025)
-    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+    wait_for_failed_run_after_node_completion(started_runtime, BOTH_LOST_RUN, workflow)
 
     with started_runtime.engine.connect() as connection:
         attempt = (
