@@ -16,6 +16,13 @@ readonly blocking_run_state="STARTED"
 readonly blocking_run_page_limit=5
 readonly check_run_lookup_timeout_seconds=60
 readonly check_run_appearance_grace_seconds=1800
+# Bounded so a long gap since the last deploy never turns one tick into an
+# unbounded git-log walk plus unbounded GitHub API calls: #1118 observed
+# merges landing roughly every 15 minutes against ~15-minute CI, so only a
+# handful of commits are normally in flight at once. 20 first-parent commits
+# comfortably covers a merge burst several times that size while keeping
+# each tick's worst-case GitHub lookups bounded.
+readonly green_ancestor_search_depth=20
 readonly github_repository="repos/FlexOr2/atelier-2"
 # Must match serve_live_update.sh's own intake_refused_exit_code: the deploy
 # still succeeded (the new commit is served), only a workflow intake was
@@ -328,6 +335,64 @@ remote_check_status() {
   fi
 }
 
+# Walks ${1}'s first-parent history newest-first, bounded to
+# green_ancestor_search_depth commits, classifying each with
+# remote_check_status until the first green commit or the window is
+# exhausted. A red or still-waiting commit blocks nothing behind it -- HEAD
+# wins when it is green, and a green ancestor deploys while a still-waiting
+# HEAD catches up on a later tick. Sets green_ancestor_commit to the newest
+# green commit found (empty when none was), green_ancestor_saw_waiting to
+# whether any skipped commit was still waiting (so the caller can tell
+# "nothing ready yet" from "everything examined is red"), and
+# green_ancestor_error on failure. Called directly, never via `$(...)`: a
+# command substitution would run this in a subshell, silently discarding
+# every one of those global assignments once it exits.
+green_ancestor_commit=""
+green_ancestor_saw_waiting=false
+green_ancestor_error=""
+find_newest_green_ancestor() {
+  local newest_commit="$1"
+  local candidates candidate commit_timestamp check_status
+  if ! candidates="$(git -C "${repository}" log --first-parent --format=%H \
+    -n "${green_ancestor_search_depth}" "${newest_commit}" 2>&1)"; then
+    green_ancestor_error="cannot list first-parent history from ${newest_commit}: ${candidates}"
+    return 1
+  fi
+  while IFS= read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    if ! commit_timestamp="$(git -C "${repository}" show -s --format=%ct "${candidate}" 2>&1)"; then
+      green_ancestor_error="cannot read commit time for ${candidate}: ${commit_timestamp}"
+      return 1
+    fi
+    if ! [[ "${commit_timestamp}" =~ ^[0-9]+$ ]]; then
+      green_ancestor_error="commit ${candidate} has invalid commit time ${commit_timestamp}"
+      return 1
+    fi
+    if ! check_status="$(remote_check_status "${candidate}" "${commit_timestamp}")"; then
+      green_ancestor_error="cannot establish check-run status for ${candidate}: ${check_status}"
+      return 1
+    fi
+    case "${check_status}" in
+      green)
+        green_ancestor_commit="${candidate}"
+        return 0
+        ;;
+      waiting\ *)
+        green_ancestor_saw_waiting=true
+        log_debug "checks for ${candidate} are still waiting: ${check_status}"
+        ;;
+      failed\ *)
+        log_debug "checks for ${candidate} are not green: ${check_status}"
+        ;;
+      *)
+        green_ancestor_error="unexpected check-run classification for ${candidate}: ${check_status}"
+        return 1
+        ;;
+    esac
+  done <<<"${candidates}"
+  return 0
+}
+
 exec 200>"${lock_file}"
 if ! flock -n 200; then
   log_debug "another auto-redeploy tick is already running"
@@ -337,8 +402,8 @@ fi
 if ! fetch_output="$(git -C "${repository}" fetch --quiet "${deploy_remote}" "${deploy_branch}" 2>&1)"; then
   refuse_tick "git fetch failed" "cannot fetch ${deploy_remote}/${deploy_branch}: ${fetch_output}"
 fi
-if ! target_commit="$(git -C "${repository}" rev-parse --verify FETCH_HEAD 2>&1)"; then
-  refuse_tick "fetched commit is unreadable" "cannot resolve the fetched ${deploy_remote}/${deploy_branch}: ${target_commit}"
+if ! newest_commit="$(git -C "${repository}" rev-parse --verify FETCH_HEAD 2>&1)"; then
+  refuse_tick "fetched commit is unreadable" "cannot resolve the fetched ${deploy_remote}/${deploy_branch}: ${newest_commit}"
 fi
 
 if ! read_served_health; then
@@ -348,9 +413,9 @@ if [[ "${served_status}" != "serving" ]]; then
   refuse_tick "served health is not serving" "served health reports ${served_status@Q}, not serving"
 fi
 
-if [[ "${served_commit}" == "${target_commit}" ]]; then
+if [[ "${served_commit}" == "${newest_commit}" ]]; then
   reset_counters
-  log_debug "already current at ${target_commit}; nothing to deploy"
+  log_debug "already current at ${newest_commit}; nothing to deploy"
   exit 0
 fi
 
@@ -375,29 +440,41 @@ if [[ -n "${deferring_runs}" ]]; then
   exit 0
 fi
 
-if ! commit_timestamp="$(git -C "${repository}" show -s --format=%ct "${target_commit}" 2>&1)"; then
-  refuse_tick "commit time is unreadable" "cannot read the fetched commit time: ${commit_timestamp}"
+if ! find_newest_green_ancestor "${newest_commit}"; then
+  refuse_tick "GitHub check status is unreadable" "${green_ancestor_error}"
 fi
-if ! [[ "${commit_timestamp}" =~ ^[0-9]+$ ]]; then
-  refuse_tick "commit time is invalid" "fetched commit has invalid commit time ${commit_timestamp@Q}"
-fi
-if ! check_status="$(remote_check_status "${target_commit}" "${commit_timestamp}")"; then
-  refuse_tick "GitHub check status is unreadable" "cannot establish check-run status for ${target_commit}: ${check_status}"
-fi
-case "${check_status}" in
-  green)
-    ;;
-  waiting\ *)
-    log_debug "checks for ${target_commit} are still waiting: ${check_status}"
+
+if [[ -z "${green_ancestor_commit}" ]]; then
+  if [[ "${green_ancestor_saw_waiting}" == true ]]; then
+    log_debug "no green commit within the last ${green_ancestor_search_depth} first-parent commits from ${newest_commit}; still waiting"
     exit 0
-    ;;
-  failed\ *)
-    refuse_tick "GitHub checks are red" "checks for ${target_commit} are not green: ${check_status}"
-    ;;
-  *)
-    refuse_tick "GitHub check status is unknown" "unexpected check-run classification for ${target_commit}: ${check_status}"
-    ;;
-esac
+  fi
+  refuse_tick "GitHub checks are red" "no green commit within the last ${green_ancestor_search_depth} first-parent commits from ${newest_commit}"
+fi
+
+# merge-base --is-ancestor exits 0 (ancestor), 1 (not an ancestor), or >1 on
+# a read failure such as an unreadable object -- that last case must never
+# read as "not an ancestor, deploy it", or a served commit git could not even
+# inspect gets silently treated as safe to skip past.
+is_ancestor_status=0
+git -C "${repository}" merge-base --is-ancestor "${green_ancestor_commit}" "${served_commit}" \
+  || is_ancestor_status=$?
+if ((is_ancestor_status > 1)); then
+  refuse_tick "ancestry check is unreadable" "cannot determine whether ${green_ancestor_commit} is an ancestor of served commit ${served_commit} (git merge-base --is-ancestor exited ${is_ancestor_status})"
+fi
+if ((is_ancestor_status == 0)); then
+  reset_counters
+  if [[ "${green_ancestor_commit}" != "${newest_commit}" ]]; then
+    log_warning "HEAD ${newest_commit} is still waiting or red, and its newest green ancestor ${green_ancestor_commit} is already served; nothing to deploy"
+  else
+    log_debug "newest green ancestor ${green_ancestor_commit} is already served; nothing to deploy"
+  fi
+  exit 0
+fi
+target_commit="${green_ancestor_commit}"
+if [[ "${target_commit}" != "${newest_commit}" ]]; then
+  log_info "HEAD ${newest_commit} still waiting or red; deploying newest green ancestor ${target_commit}"
+fi
 
 if ! deferring_runs="$(blocking_runs)"; then
   refuse_tick "run state is unreadable before update" "cannot establish whether runs are active immediately before update: ${deferring_runs}"
