@@ -461,7 +461,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
   const seeded = await page.request.post("/__e2e/seed-conductor");
   expect(seeded.ok()).toBeTruthy();
 
-  for (const viewport of VIEWPORTS) {
+  for (const [index, viewport] of VIEWPORTS.entries()) {
     await page.setViewportSize(viewport);
     await startWaitRun(page, `uiq/waiting-${suffix}-${viewport.width}`, waitRevision);
     await openWorkbench(page);
@@ -470,8 +470,14 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     // settles would either find Send disabled (locked while "reading",
     // #1103, #1114) or race a second run into existence instead of
     // continuing the one from the last viewport. The connected composer hint
-    // is the actual signal that resolution finished.
-    await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible({
+    // is the actual signal that resolution finished -- the first viewport's
+    // message is the conversation's own first round, so it still "begins"
+    // it, but the reload before every later viewport replays that round's
+    // events, so the composer already carries `composerHintOngoing` by then
+    // (`connectedComposerHint`, WorkbenchPage.svelte).
+    const resolvedComposerHint =
+      index === 0 ? conductorConversationCopy.composerHint : conductorConversationCopy.composerHintOngoing;
+    await expect(page.getByText(resolvedComposerHint)).toBeVisible({
       timeout: 20_000
     });
     await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled({
