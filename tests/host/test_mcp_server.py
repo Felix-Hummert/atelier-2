@@ -5,11 +5,12 @@ from __future__ import annotations
 import base64
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+from pathlib import Path
 from threading import Thread
 from typing import Any, Self
 from urllib.error import HTTPError
@@ -34,7 +35,7 @@ from atelier2.api.wire.resources import (
     VersionedWorkflowRevisionPageResource,
     WorkflowRevisionSummaryResourceV2,
 )
-from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, Artifact
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.mcp_command import (
@@ -47,6 +48,9 @@ from atelier2.host.mcp_command import (
     write_message,
 )
 from atelier2.host.mcp_tools import (
+    ARTIFACT_CONTENT_BASE64_FIELD,
+    ARTIFACT_HASH_FIELD,
+    ARTIFACT_PATH_FIELD,
     JSONRPC_VERSION,
     MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS,
     MAXIMUM_MCP_ARTIFACT_BYTES,
@@ -57,6 +61,7 @@ from atelier2.host.mcp_tools import (
     METHOD_INITIALIZED,
     METHOD_TOOLS_CALL,
     METHOD_TOOLS_LIST,
+    McpRefusal,
     McpToolName,
     tool_definitions,
 )
@@ -477,23 +482,67 @@ def test_answer_wait_schema_is_derived_from_the_http_request_resource() -> None:
     )
 
 
-def test_publish_artifact_schema_declares_its_named_mcp_payload_limit() -> None:
-    publish = next(
+def published_tool(name: McpToolName) -> dict[str, Any]:
+    return next(
         definition
         for definition in tool_definitions()
-        if definition["name"] == McpToolName.PUBLISH_ARTIFACT.value
+        if definition["name"] == name.value
     )
+
+
+def test_publish_artifact_schema_declares_its_named_mcp_payload_limit() -> None:
+    publish = published_tool(McpToolName.PUBLISH_ARTIFACT)
 
     description = publish["description"]
-    content = publish["inputSchema"]["properties"]["content_base64"]["description"]
+    content = publish["inputSchema"]["properties"][ARTIFACT_CONTENT_BASE64_FIELD][
+        "description"
+    ]
 
     assert str(MAXIMUM_MCP_ARTIFACT_BYTES) in description
-    assert "mcp-artifact-payload-too-large" in description
+    assert McpRefusal.ARTIFACT_PAYLOAD_TOO_LARGE.value in description
     assert str(MAXIMUM_MCP_ARTIFACT_BYTES) in content
     assert (
-        publish["inputSchema"]["properties"]["content_base64"]["maxLength"]
+        publish["inputSchema"]["properties"][ARTIFACT_CONTENT_BASE64_FIELD]["maxLength"]
         == MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS
     )
+
+
+def test_publish_artifact_text_says_which_source_a_caller_should_name() -> None:
+    """A caller choosing between the two modes reads the choice from the tool."""
+
+    publish = published_tool(McpToolName.PUBLISH_ARTIFACT)
+    description = publish["description"]
+    named_path = publish["inputSchema"]["properties"][ARTIFACT_PATH_FIELD]
+
+    assert f"Use {ARTIFACT_PATH_FIELD} when the material is already a file" in (
+        description
+    )
+    assert (
+        f"Use {ARTIFACT_CONTENT_BASE64_FIELD} only for material you are composing"
+        in (description)
+    )
+    assert McpRefusal.ARTIFACT_SOURCE_AMBIGUOUS.value in description
+    assert str(MAXIMUM_ARTIFACT_BYTES) in description
+    assert "Absolute path of a regular file" in named_path["description"]
+    assert str(MAXIMUM_ARTIFACT_BYTES) in named_path["description"]
+    assert "required" not in publish["inputSchema"]
+
+
+def test_read_artifact_asks_for_the_address_the_publication_answered() -> None:
+    read = published_tool(McpToolName.READ_ARTIFACT)
+    asked = read["inputSchema"]["properties"][ARTIFACT_HASH_FIELD]
+
+    assert read["inputSchema"]["required"] == [ARTIFACT_HASH_FIELD]
+    assert (
+        asked["pattern"]
+        == (
+            ArtifactResource.model_json_schema()["properties"][ARTIFACT_HASH_FIELD][
+                "pattern"
+            ]
+        )
+    )
+    assert ARTIFACT_CONTENT_BASE64_FIELD in read["description"]
+    assert McpRefusal.ARTIFACT_ANSWER_TOO_LARGE.value in read["description"]
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")
@@ -984,6 +1033,215 @@ def test_a_refused_artifact_is_the_same_problem_on_both_paths(
     assert payload["type"].endswith(code)
 
 
+LOCAL_MATERIAL = bytes(range(256)) * 400
+"""Material of a size a caller cannot retype into a tool call, on disk."""
+
+
+def local_material_file(directory: Path) -> Path:
+    published = directory / "diff.patch"
+    published.write_bytes(LOCAL_MATERIAL)
+    return published
+
+
+def artifact_answers(content: bytes) -> dict[tuple[str, str], list[Answer]]:
+    """One content-addressed door: the address these bytes hash to answers them."""
+
+    address = Artifact(content).artifact_hash.value
+    return {
+        ("POST", ARTIFACTS_PATH): [
+            Answer(
+                ArtifactResource(artifact_hash=address).model_dump_json().encode(),
+                status=HTTPStatus.CREATED,
+            )
+        ],
+        ("GET", f"{ARTIFACTS_PATH}/{address}"): [
+            Answer(content, media_type=OCTET_STREAM_MEDIA_TYPE)
+        ],
+    }
+
+
+@pytest.mark.proves("mcp-and-http-never-diverge")
+def test_publish_artifact_from_a_path_posts_the_files_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    """A file on this machine reaches the door as itself, not as a retyped string."""
+
+    named = local_material_file(tmp_path)
+    with ScriptedService(artifact_answers(LOCAL_MATERIAL)) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            payload, is_error = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value,
+                {ARTIFACT_PATH_FIELD: str(named)},
+            )
+            http_json(
+                "POST",
+                service.url + ARTIFACTS_PATH,
+                LOCAL_MATERIAL,
+                content_type=OCTET_STREAM_MEDIA_TYPE,
+            )
+        finally:
+            client.close()
+
+    posted = [call.body for call in service.calls if call.path == ARTIFACTS_PATH]
+    assert not is_error
+    assert posted == [LOCAL_MATERIAL, LOCAL_MATERIAL]
+    assert payload == {
+        ARTIFACT_HASH_FIELD: Artifact(LOCAL_MATERIAL).artifact_hash.value
+    }
+
+
+def test_publish_artifact_follows_a_link_to_the_regular_file_it_names(
+    tmp_path: Path,
+) -> None:
+    """A link is not a second kind of material: what it names decides."""
+
+    named = local_material_file(tmp_path)
+    link = tmp_path / "linked.patch"
+    link.symlink_to(named)
+    with ScriptedService(artifact_answers(LOCAL_MATERIAL)) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            payload, is_error = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value,
+                {ARTIFACT_PATH_FIELD: str(link)},
+            )
+        finally:
+            client.close()
+
+    assert not is_error
+    assert payload == {
+        ARTIFACT_HASH_FIELD: Artifact(LOCAL_MATERIAL).artifact_hash.value
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        {},
+        {
+            ARTIFACT_PATH_FIELD: "/absolute/material",
+            ARTIFACT_CONTENT_BASE64_FIELD: "bWF0ZXJpYWw=",
+        },
+    ),
+    ids=("neither", "both"),
+)
+def test_publish_artifact_needs_exactly_one_source_and_asks_before_http(
+    session: tuple[ScriptedService, StdioMcpSession], arguments: dict[str, str]
+) -> None:
+    service, client = session
+
+    payload, is_error = client.call_tool(McpToolName.PUBLISH_ARTIFACT.value, arguments)
+
+    assert is_error
+    assert str(payload["error"]).startswith(McpRefusal.ARTIFACT_SOURCE_AMBIGUOUS.value)
+    assert service.calls == []
+
+
+def oversized_file(directory: Path) -> str:
+    oversized = directory / "oversized.patch"
+    oversized.write_bytes(b"x" * (MAXIMUM_ARTIFACT_BYTES + 1))
+    return str(oversized)
+
+
+UNUSABLE_PATHS: dict[str, tuple[Callable[[Path], str], McpRefusal]] = {
+    "missing": (
+        lambda directory: str(directory / "never-written.patch"),
+        McpRefusal.ARTIFACT_PATH_NOT_FOUND,
+    ),
+    "directory": (str, McpRefusal.ARTIFACT_PATH_NOT_A_REGULAR_FILE),
+    "relative": (
+        lambda directory: "relative/material.patch",
+        McpRefusal.ARTIFACT_PATH_NOT_ABSOLUTE,
+    ),
+    "too-large": (oversized_file, McpRefusal.ARTIFACT_PATH_TOO_LARGE),
+}
+
+
+@pytest.mark.parametrize(
+    "unusable", tuple(UNUSABLE_PATHS.values()), ids=tuple(UNUSABLE_PATHS)
+)
+def test_publish_artifact_refuses_an_unusable_path_by_name_before_http(
+    session: tuple[ScriptedService, StdioMcpSession],
+    tmp_path: Path,
+    unusable: tuple[Callable[[Path], str], McpRefusal],
+) -> None:
+    service, client = session
+    write, expected = unusable
+
+    payload, is_error = client.call_tool(
+        McpToolName.PUBLISH_ARTIFACT.value, {ARTIFACT_PATH_FIELD: write(tmp_path)}
+    )
+
+    assert is_error
+    assert str(payload["error"]).startswith(expected.value)
+    assert service.calls == []
+
+
+@pytest.mark.proves("mcp-and-http-never-diverge")
+def test_read_artifact_answers_the_exact_bytes_under_the_asked_address() -> None:
+    address = Artifact(LOCAL_MATERIAL).artifact_hash.value
+    with ScriptedService(artifact_answers(LOCAL_MATERIAL)) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            payload, is_error = client.call_tool(
+                McpToolName.READ_ARTIFACT.value, {ARTIFACT_HASH_FIELD: address}
+            )
+        finally:
+            client.close()
+
+    assert not is_error
+    assert payload[ARTIFACT_HASH_FIELD] == address
+    assert (
+        base64.standard_b64decode(str(payload[ARTIFACT_CONTENT_BASE64_FIELD]))
+        == LOCAL_MATERIAL
+    )
+
+
+@pytest.mark.proves("mcp-and-http-never-diverge")
+def test_read_artifact_returns_the_services_problem_for_an_unknown_address() -> None:
+    address = Artifact(b"never published").artifact_hash.value
+    asked = f"{ARTIFACTS_PATH}/{address}"
+    with ScriptedService({("GET", asked): [problem_answer("artifact-not-found")]}) as (
+        service
+    ):
+        client = StdioMcpSession(service.url)
+        try:
+            http_status, http_body = http_json("GET", service.url + asked)
+            payload, is_error = client.call_tool(
+                McpToolName.READ_ARTIFACT.value, {ARTIFACT_HASH_FIELD: address}
+            )
+        finally:
+            client.close()
+
+    assert is_error
+    assert http_status == HTTPStatus.NOT_FOUND
+    assert payload == http_body
+    assert str(payload["type"]).endswith("artifact-not-found")
+
+
+def test_read_artifact_refuses_bytes_that_do_not_hash_to_the_asked_address() -> None:
+    """A content-addressed read that trusted the answer could hand over anything."""
+
+    address = Artifact(LOCAL_MATERIAL).artifact_hash.value
+    asked = f"{ARTIFACTS_PATH}/{address}"
+    with ScriptedService(
+        {("GET", asked): [Answer(b"other bytes", media_type=OCTET_STREAM_MEDIA_TYPE)]}
+    ) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            payload, is_error = client.call_tool(
+                McpToolName.READ_ARTIFACT.value, {ARTIFACT_HASH_FIELD: address}
+            )
+        finally:
+            client.close()
+
+    assert is_error
+    assert str(payload["error"]).startswith(
+        McpRefusal.ARTIFACT_ANSWER_NOT_ITS_ADDRESS.value
+    )
+
+
 def test_invalid_artifact_base64_is_a_local_transport_refusal(
     session: tuple[ScriptedService, StdioMcpSession],
 ) -> None:
@@ -994,8 +1252,9 @@ def test_invalid_artifact_base64_is_a_local_transport_refusal(
     )
 
     assert is_error
-    assert "error" in payload
-    assert "base64" in str(payload["error"]).lower()
+    assert str(payload["error"]).startswith(
+        McpRefusal.ARTIFACT_CONTENT_NOT_BASE64.value
+    )
     assert not any(call.path == ARTIFACTS_PATH for call in service.calls)
 
 

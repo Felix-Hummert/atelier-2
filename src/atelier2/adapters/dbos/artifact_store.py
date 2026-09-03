@@ -74,6 +74,16 @@ class DbosArtifactStore:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
+    def read_artifact(self, artifact_hash: ArtifactHash) -> Artifact | None:
+        """The material one address names, on a connection of its own.
+
+        A caller holding only an address decides nothing else at the same time,
+        so this read opens its own connection instead of joining the serialized
+        transaction publication needs.
+        """
+        with self._engine.connect() as connection:
+            return read_stored_artifact(connection, artifact_hash)
+
     def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
         try:
             with canonical_write_transaction(self._engine) as connection:

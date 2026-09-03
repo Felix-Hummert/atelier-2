@@ -9,7 +9,7 @@ has the same trust as the browser on loopback, and it refuses any other
 service address rather than inventing a credential.
 
 The official MCP SDK is a multi-transport server (SSE, HTTP sessions,
-resources, prompts). This slice is stdio JSON-RPC for five tools. A
+resources, prompts). This slice is stdio JSON-RPC for six tools. A
 dependency would add a second HTTP stack beside FastAPI without removing a
 hard problem this door has. Protocol tokens live with the tools; the
 newline-delimited JSON-RPC line protocol lives here.
@@ -27,6 +27,8 @@ import json
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from stat import S_ISREG
 from typing import IO, Any, assert_never
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -48,6 +50,7 @@ from atelier2.api.wire.resources import (
     RunResourceV3,
     VersionedWorkflowRevisionPageResource,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, ArtifactHash
 from atelier2.contracts.executions import WaitAnswerActor
 from atelier2.host.address import (
     ADDRESSABLE_SCHEMES,
@@ -55,6 +58,9 @@ from atelier2.host.address import (
     is_loopback_service_url,
 )
 from atelier2.host.mcp_tools import (
+    ARTIFACT_CONTENT_BASE64_FIELD,
+    ARTIFACT_HASH_FIELD,
+    ARTIFACT_PATH_FIELD,
     JSONRPC_VERSION,
     MAXIMUM_MCP_ARTIFACT_BYTES,
     MAXIMUM_MCP_INPUT_LINE_BYTES,
@@ -65,7 +71,9 @@ from atelier2.host.mcp_tools import (
     METHOD_PING,
     METHOD_TOOLS_CALL,
     METHOD_TOOLS_LIST,
+    McpRefusal,
     McpToolName,
+    artifact_content_answer,
     catalog_listing_resource,
     problem_payload,
     tool_definitions,
@@ -110,24 +118,18 @@ class McpServiceRefusal(Exception):
     """The operator named a service this process will not speak to."""
 
 
-class McpArtifactPayloadTooLarge(UnusableRunOrder):
-    """The decoded artifact cannot fit the bounded MCP JSON-RPC request."""
+class McpLocalRefusal(UnusableRunOrder):
+    """A refusal this child decides itself, before any service is asked.
 
-    def __init__(self, decoded_bytes: int) -> None:
+    The refusal is named by the adapter's own vocabulary rather than spelled
+    into a message, so a caller reads the same token the tool text promised.
+    """
+
+    def __init__(self, refusal: McpRefusal, detail: str | None = None) -> None:
         super().__init__(
-            "mcp-artifact-payload-too-large: "
-            f"{decoded_bytes} decoded bytes exceeds {MAXIMUM_MCP_ARTIFACT_BYTES}"
+            refusal.value if detail is None else f"{refusal.value}: {detail}"
         )
-
-
-class McpStartRunOrderRefusal(UnusableRunOrder):
-    """An MCP start order is outside this door's artifact/work-item subset."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "mcp-start-run-order-invalid: each order must be exactly "
-            "{name, artifact_hash} or {name, work_item}"
-        )
+        self.refusal = refusal
 
 
 @dataclass(frozen=True)
@@ -277,6 +279,7 @@ def _tool_handlers() -> dict[McpToolName, ToolHandler]:
         McpToolName.RUN_STATUS: run_status,
         McpToolName.ANSWER_WAIT: answer_wait,
         McpToolName.PUBLISH_ARTIFACT: publish_artifact,
+        McpToolName.READ_ARTIFACT: read_artifact,
     }
 
 
@@ -395,13 +398,31 @@ def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any
 
 
 def publish_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
-    content = _artifact_bytes(arguments.get("content_base64"))
+    content = _artifact_content(arguments)
     published = _decoded(
         _artifact_resource,
         _post_octet_stream(_api_url(service_url) + ARTIFACT_PATH, content),
         "an artifact",
     )
     return published.model_dump(mode="json")
+
+
+def read_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    asked = _required_text(arguments, ARTIFACT_HASH_FIELD)
+    content = _get_octet_stream(
+        f"{_api_url(service_url)}{ARTIFACT_PATH}/{quote(asked, safe='')}"
+    )
+    if ArtifactHash.of(content).value != asked:
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_ANSWER_NOT_ITS_ADDRESS,
+            f"the service answered bytes that do not hash to {asked}",
+        )
+    if len(content) > MAXIMUM_MCP_ARTIFACT_BYTES:
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_ANSWER_TOO_LARGE,
+            f"{len(content)} bytes exceeds {MAXIMUM_MCP_ARTIFACT_BYTES}",
+        )
+    return artifact_content_answer(asked, content)
 
 
 def _resolve_listed_name(api: str, name: str) -> CatalogNameResolutionResource | None:
@@ -437,14 +458,14 @@ def _orders(raw: object) -> tuple[SuppliedStartOrder, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise McpStartRunOrderRefusal()
+        raise _start_run_order_refusal()
     try:
         return tuple(
             _supplied_start_order(_start_run_order.validate_python(item))
             for item in raw
         )
     except ValidationError as error:
-        raise McpStartRunOrderRefusal() from error
+        raise _start_run_order_refusal() from error
 
 
 def _supplied_start_order(
@@ -459,18 +480,96 @@ def _supplied_start_order(
             assert_never(unreachable)
 
 
+def _start_run_order_refusal() -> McpLocalRefusal:
+    return McpLocalRefusal(
+        McpRefusal.START_RUN_ORDER_INVALID,
+        "each order must be exactly {name, artifact_hash} or {name, work_item}",
+    )
+
+
+def _artifact_content(arguments: Mapping[str, Any]) -> bytes:
+    """The exact bytes to publish, from the one source this call named."""
+
+    inline = arguments.get(ARTIFACT_CONTENT_BASE64_FIELD)
+    named_path = arguments.get(ARTIFACT_PATH_FIELD)
+    if (inline is None) == (named_path is None):
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_SOURCE_AMBIGUOUS,
+            f"name exactly one of {ARTIFACT_CONTENT_BASE64_FIELD} or "
+            f"{ARTIFACT_PATH_FIELD}",
+        )
+    if named_path is not None:
+        return _artifact_file_bytes(named_path)
+    return _artifact_bytes(inline)
+
+
 def _artifact_bytes(raw: object) -> bytes:
     # MCP JSON cannot carry octet-stream; the HTTP door still takes the bytes.
     if not isinstance(raw, str):
-        raise UnusableRunOrder("content_base64 must be a string")
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_CONTENT_NOT_BASE64,
+            f"{ARTIFACT_CONTENT_BASE64_FIELD} must be a string",
+        )
     try:
         content = base64.b64decode(raw, validate=True)
     except binascii.Error as error:
-        raise UnusableRunOrder(
-            f"content_base64 is not standard Base64 of the exact bytes: {error}"
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_CONTENT_NOT_BASE64,
+            f"{ARTIFACT_CONTENT_BASE64_FIELD} is not standard Base64 of the "
+            f"exact bytes: {error}",
         ) from error
     if len(content) > MAXIMUM_MCP_ARTIFACT_BYTES:
-        raise McpArtifactPayloadTooLarge(len(content))
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_PAYLOAD_TOO_LARGE,
+            f"{len(content)} decoded bytes exceeds {MAXIMUM_MCP_ARTIFACT_BYTES}",
+        )
+    return content
+
+
+def _artifact_file_bytes(raw: object) -> bytes:
+    """The exact bytes of one local file, refused by name before any request.
+
+    This child runs on the machine that named the path and with the trust the
+    browser already has there, so reading the file is the same act as the
+    caller reading it -- what it will not do is guess: the path is absolute,
+    the file is regular, and it fits the store's bound, or nothing is sent.
+    """
+
+    if not isinstance(raw, str) or not raw:
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_PATH_NOT_ABSOLUTE,
+            f"{ARTIFACT_PATH_FIELD} must be a nonempty absolute path",
+        )
+    named = Path(raw)
+    if not named.is_absolute():
+        raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_ABSOLUTE, raw)
+    try:
+        described = named.stat()
+    except FileNotFoundError as missing:
+        raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_FOUND, raw) from missing
+    except OSError as unreadable:
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_PATH_UNREADABLE, f"{raw}: {unreadable.strerror}"
+        ) from unreadable
+    if not S_ISREG(described.st_mode):
+        raise McpLocalRefusal(McpRefusal.ARTIFACT_PATH_NOT_A_REGULAR_FILE, raw)
+    if described.st_size > MAXIMUM_ARTIFACT_BYTES:
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_PATH_TOO_LARGE,
+            f"{described.st_size} bytes exceeds {MAXIMUM_ARTIFACT_BYTES}",
+        )
+    try:
+        content = named.read_bytes()
+    except OSError as unreadable:
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_PATH_UNREADABLE, f"{raw}: {unreadable.strerror}"
+        ) from unreadable
+    # The file may have grown between the bound it was measured against and now.
+    if len(content) > MAXIMUM_ARTIFACT_BYTES:
+        raise McpLocalRefusal(
+            McpRefusal.ARTIFACT_PATH_TOO_LARGE,
+            f"{len(content)} bytes exceeds {MAXIMUM_ARTIFACT_BYTES}",
+        )
     return content
 
 
@@ -533,6 +632,12 @@ def _post_octet_stream(url: str, payload: bytes) -> bytes:
 
 def _get(url: str) -> bytes:
     return _read(Request(url, method="GET", headers={"accept": JSON_MEDIA_TYPE}))
+
+
+def _get_octet_stream(url: str) -> bytes:
+    return _read(
+        Request(url, method="GET", headers={"accept": OCTET_STREAM_MEDIA_TYPE})
+    )
 
 
 def _read(request: Request) -> bytes:

@@ -19,6 +19,8 @@ from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import (
     API_PREFIX,
+    ARTIFACT_PATH,
+    ARTIFACTS_PATH,
     ATTENTION_EVENT_PATH,
     CANCELLATION_PATH,
     EVENT_PATH,
@@ -105,7 +107,8 @@ NODE_DETAIL_PATH = API_PREFIX + "/runs/{public_ref}/nodes/{node_id}"
 
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
-    API_PREFIX + "/artifacts",
+    ARTIFACTS_PATH,
+    ARTIFACT_PATH,
     API_PREFIX + "/auth-profile-revisions",
     API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/schema-revisions",
@@ -175,8 +178,13 @@ EXPECTED_ROUTE_SEQUENCE = (
     ),
     (
         "POST",
-        API_PREFIX + "/artifacts",
+        ARTIFACTS_PATH,
         "publish_artifact_route",
+    ),
+    (
+        "GET",
+        ARTIFACT_PATH,
+        "read_artifact_route",
     ),
     (
         "POST",
@@ -305,7 +313,8 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/auth-profile-revisions", "get"): {"200"},
     (API_PREFIX + "/agent-configuration-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-configuration-revisions", "get"): {"200"},
-    (API_PREFIX + "/artifacts", "post"): {"200", "201"},
+    (ARTIFACTS_PATH, "post"): {"200", "201"},
+    (ARTIFACT_PATH, "get"): {"200"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/schema-revisions/{schema_revision_hash}", "get"): {"200"},
     (API_PREFIX + "/tool-grant-revisions", "post"): {"200", "201"},
