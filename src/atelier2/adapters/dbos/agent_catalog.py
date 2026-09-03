@@ -30,6 +30,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevisionHash,
     ProviderId,
 )
+from atelier2.contracts.host_configuration import ModelRegistryBytesDisagree
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.ports.agent_configurations import (
     AgentConfigurationCatalog,
@@ -298,7 +299,7 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                 )
         except (OperationalError, PoolTimeoutError):
             return CatalogReadUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
+        except (ValueError, RuntimeError, DatabaseError, ModelRegistryBytesDisagree):
             return DurableStateCorrupt()
 
     def list_auth_profile_revisions(
