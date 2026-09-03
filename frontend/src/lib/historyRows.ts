@@ -1,6 +1,8 @@
 import type { RunV3 } from "../api/client";
-import { newestActivityFirst, resolveWorkflowName, runActivityAt } from "./runList";
-import { trackerItemLabel } from "./trackerItem";
+import { decodeUtf8Base64 } from "./exactBytes";
+import { historyOutcome } from "./historyOutcome";
+import { newestActivityFirst, runActivityAt } from "./runList";
+import { trackerItemHref, trackerItemLabel, type TrackerSourceConnection } from "./trackerItem";
 import { parseUtc } from "./when";
 
 /** The window the silent period chip names by default (mockup v5 §05: "7 days"). */
@@ -15,13 +17,9 @@ export type HistoryWorkItem = {
   href: string | null;
 };
 
-export type HistoryRowExtras = {
-  workItem: HistoryWorkItem | null;
-  resultSentence: string | null;
-};
-
 export type HistoryRowResult =
   | { kind: "completed"; sentence: string | null }
+  | { kind: "omitted"; sentence: "answer-too-large" }
   | { kind: "failed"; nodeId: string; sentence: string | null };
 
 export type HistoryWhenDay =
@@ -36,17 +34,12 @@ export type HistoryWhenLabel = {
 
 export type HistoryRow = {
   run: RunV3;
-  /**
-   * The purpose of a History row is the workflow: the name
-   * `resolveWorkflowName` already owns, including its honest run-id fallback.
-   * Never joined order names -- those are input-parameter labels, not what
-   * the run was for.
-   */
+  /** The purpose of a History row is the workflow the row's own run names (#1045). */
   workflowName: string;
   /**
-   * The run's work item: reference plus enrichment title when the extras
-   * supply one. Never derived from order names, job prose, or a guessed
-   * title. Null when no work item hangs on the run.
+   * The run's work item: reference plus enrichment title when a real source
+   * connection can resolve one. Never derived from order names, job prose,
+   * or a guessed title. Null when no work item hangs on the run.
    */
   workItem: HistoryWorkItem | null;
   result: HistoryRowResult;
@@ -61,70 +54,85 @@ export type HistoryRow = {
  *
  * Only COMPLETED and FAILED runs become a row: this is what "ist gelaufen"
  * (has run) means for History, unlike the Workbench, which still holds a run
- * that moves or waits. The name comes from the one join owner
- * (`runList.ts`'s `resolveWorkflowName`), including its honest run-id
- * fallback -- not a second implementation of the same lookup.
+ * that moves or waits. Every fact a row shows -- workflow, work item,
+ * terminal result -- is read straight off the run the list already returned
+ * (#1045): no second request per row and no second request per revision hash.
  */
 export function projectHistoryRows(
   runs: readonly RunV3[],
-  workflowNames: ReadonlyMap<string, string | null> | null,
-  extrasByReference?: ReadonlyMap<string, HistoryRowExtras>
+  sourceConnection: TrackerSourceConnection | null
 ): HistoryRow[] {
   const finished = runs.filter((run) => run.state === "COMPLETED" || run.state === "FAILED");
-  return newestActivityFirst(finished).map((run) =>
-    presentHistoryRow(run, workflowNames, extrasByReference?.get(run.public_run_reference))
-  );
+  return newestActivityFirst(finished).map((run) => presentHistoryRow(run, sourceConnection));
 }
 
 export function presentHistoryRow(
   run: RunV3,
-  workflowNames: ReadonlyMap<string, string | null> | null,
-  extras?: HistoryRowExtras | null
+  sourceConnection: TrackerSourceConnection | null
 ): HistoryRow {
   return {
     run,
-    workflowName: resolveWorkflowName(run, workflowNames),
-    workItem: historyWorkItem(extras),
-    result: historyResult(run, extras?.resultSentence ?? null),
+    workflowName: run.workflow_name,
+    workItem: historyWorkItem(run, sourceConnection),
+    result: historyResult(run),
     span: historySpan(run),
     activityAt: runActivityAt(run)
   };
 }
 
-/** Reference as a link label: grammar, plus title only when extras supplied one. */
+/** Reference as a link label: grammar, plus title only when enrichment supplied one. */
 export function historyWorkItemLabel(item: HistoryWorkItem): string {
   const grammar = trackerItemLabel(item.reference);
   if (item.title !== null && item.title.length > 0) return `${grammar} ${item.title}`;
   return grammar;
 }
 
-function historyWorkItem(extras?: HistoryRowExtras | null): HistoryWorkItem | null {
-  const workItem = extras?.workItem;
-  if (workItem == null || workItem.reference.length === 0) return null;
-  return workItem;
+function historyWorkItem(
+  run: RunV3,
+  sourceConnection: TrackerSourceConnection | null
+): HistoryWorkItem | null {
+  const reference = run.work_item_reference;
+  if (reference == null) return null;
+  return { reference, title: null, href: trackerItemHref(reference, sourceConnection) };
 }
 
-function historyResult(run: RunV3, sentence: string | null): HistoryRowResult {
+function historyResult(run: RunV3): HistoryRowResult {
+  // A completed run whose answer was omitted for size (#1045) is a fact this
+  // row already knows without decoding anything: it never collapses into the
+  // same "not recorded" a run that wrote nothing would show.
+  if (run.answer?.kind === "omitted") {
+    return { kind: "omitted", sentence: "answer-too-large" };
+  }
+  const sentence = historyResultSentence(run);
   if (run.state === "FAILED") {
     return { kind: "failed", nodeId: historyFailedNodeId(run), sentence };
   }
   return { kind: "completed", sentence };
 }
 
-function historySpan(run: RunV3): { startedAt: string; endedAt: string } | null {
-  if (run.started_at == null || run.ended_at == null) return null;
-  return { startedAt: run.started_at, endedAt: run.ended_at };
+function historyResultSentence(run: RunV3): string | null {
+  const encoded =
+    run.state === "FAILED"
+      ? run.refusal_output?.value_base64
+      : answerValueBase64(run.answer);
+  if (encoded == null || encoded.length === 0) return null;
+  const decoded = decodeUtf8Base64(encoded);
+  if (decoded == null || decoded.length === 0) return null;
+  return historyOutcome(run.workflow_name, decoded);
 }
 
 /**
- * The node whose extras History fetches for the Result cell.
- *
- * Failed runs use the failed-node helper; a completed run names the node by
- * `current_node_id`.
+ * The row's own accepted answer bytes, or none for a run that named none and
+ * for one whose value the list omitted for size (#1045) -- honest, since a
+ * derived sentence needs the actual bytes and this row was never given them.
  */
-export function historyResultNodeId(run: RunV3): string {
-  if (run.state === "FAILED") return historyFailedNodeId(run);
-  return run.current_node_id;
+function answerValueBase64(answer: RunV3["answer"]): string | undefined {
+  return answer?.kind === "value" ? answer.value_base64 : undefined;
+}
+
+function historySpan(run: RunV3): { startedAt: string; endedAt: string } | null {
+  if (run.started_at == null || run.ended_at == null) return null;
+  return { startedAt: run.started_at, endedAt: run.ended_at };
 }
 
 /**

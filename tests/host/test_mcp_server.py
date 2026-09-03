@@ -303,6 +303,7 @@ def started_run() -> RunResourceV3:
         run_id="named-run",
         public_run_reference=PUBLIC_RUN_REFERENCE,
         workflow_revision_hash=REVISION_HASH,
+        workflow_name=WORKFLOW_NAME,
         agent_binding_set_hash=BINDING_SET_HASH,
         run_configuration_revision_hash=CONFIGURATION_HASH,
         agent_bindings=(),
@@ -332,6 +333,7 @@ def waiting_run() -> RunResourceV3:
         run_id="named-run",
         public_run_reference=PUBLIC_RUN_REFERENCE,
         workflow_revision_hash=REVISION_HASH,
+        workflow_name=WORKFLOW_NAME,
         agent_binding_set_hash=BINDING_SET_HASH,
         run_configuration_revision_hash=CONFIGURATION_HASH,
         agent_bindings=(),
@@ -1315,6 +1317,27 @@ def test_read_artifact_refuses_bytes_that_do_not_hash_to_the_asked_address() -> 
     assert str(payload["error"]).startswith(
         McpRefusal.ARTIFACT_ANSWER_NOT_ITS_ADDRESS.value
     )
+
+
+def test_read_artifact_refuses_bytes_too_large_for_the_mcp_line() -> None:
+    """The store's bound and this stdio line's bound differ: a correctly
+    addressed artifact the store happily holds can still be too large for
+    this door to hand back over a single JSON-RPC line."""
+
+    oversized = bytes(MAXIMUM_MCP_ARTIFACT_BYTES + 1)
+    assert len(oversized) <= MAXIMUM_ARTIFACT_BYTES
+    address = Artifact(oversized).artifact_hash.value
+    with ScriptedService(artifact_answers(oversized)) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            payload, is_error = client.call_tool(
+                McpToolName.READ_ARTIFACT.value, {ARTIFACT_HASH_FIELD: address}
+            )
+        finally:
+            client.close()
+
+    assert is_error
+    assert str(payload["error"]).startswith(McpRefusal.ARTIFACT_ANSWER_TOO_LARGE.value)
 
 
 def test_invalid_artifact_base64_is_a_local_transport_refusal(
