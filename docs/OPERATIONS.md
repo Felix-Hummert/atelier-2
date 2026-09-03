@@ -848,10 +848,10 @@ This script does not alter a running Serve, download during `serve`, or resolve
 the executable path from admission. Those remain later slices of the toolchain
 item.
 
-## Connect a git definition source and see where it stands
+## Connect a git definition source, see where it stands, and take it in
 
-Two offline commands against a store that already exists. Neither publishes
-anything, and `serve` performs neither at startup: a newer version of a
+Three offline commands against a store that already exists. Only `intake`
+publishes, and `serve` performs none of them at startup: a newer version of a
 workflow enters the catalog because the operator asked for it.
 
 ```bash
@@ -886,16 +886,42 @@ nothing at all, so a scan never changes what a run would use.
 
 The location must *be* the repository -- a bare repository, a checkout, or a
 linked worktree. A directory that merely lies inside one is refused, because
-reading it would read a repository the operator never named. Both commands
-refuse before writing anything, in one closed vocabulary:
+reading it would read a repository the operator never named. All three
+commands refuse before writing anything, in one closed vocabulary:
 `definition_source_unreachable`, `_ref_unresolved`, `_layout_unrecognized`,
 `_selection_ambiguous`, `_path_escapes_repository`, `_no_selected_files`,
 `_symlink_selected`, `_gitlink_selected`. A selected file the publication door
 would refuse is reported in that door's own words, and stops the scan.
 
-Taking content in is a separate operation and is not built yet. Private
-repositories, project-scoped registration, disconnecting a source, and the
-catalog's own Connect and Pull buttons are named absences, not oversights.
+```bash
+atelier2 definition-source intake --database /path/to/atelier.sqlite \
+    --source-id <id> --actor felix
+```
+
+`intake` takes one commit of the source into the catalog. It reads the same
+files `scan` reads, then publishes every one of them, admits it under the name
+its document authored, and records where it came from -- source, commit and
+path -- in one transaction. A refusal anywhere in the batch writes nothing at
+all, so a failed intake leaves the catalog exactly as it was.
+
+It prints the commit followed by one word per path: `published` when the bytes
+entered the catalog, and `present` when the catalog already held them under the
+name they author, which is why taking the same commit in twice writes no second
+row. `refused` names the one path that stopped the whole batch: an authored
+`name` outside the catalog's `[a-z][a-z0-9._-]*`, a name another lineage
+already holds, bytes that already belong to another lineage -- including the
+same bytes catalogued under a different name -- or a retired lineage. Pass
+`--source-position <commit>` to take in exactly the commit a scan showed; a ref
+that moved in between is refused rather than published unseen.
+
+A path that is taken in a second time joins the lineage its earlier revision
+belongs to, so an edited file becomes the next revision of the same catalog
+entry and the revision before it stays exactly what it was. Continuity is the
+repository path, never the authored name: renaming a file in the source starts
+a new lineage.
+
+Private repositories, project-scoped registration, disconnecting a source, and
+the catalog's own Connect and Pull buttons are named absences, not oversights.
 
 ## Raise an older store
 

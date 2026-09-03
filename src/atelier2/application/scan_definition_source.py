@@ -13,6 +13,11 @@ publication door's own words rather than renamed here.
 
 That it writes nothing is the shape of what it is handed: the durable side it
 takes is `DefinitionSourceRegistry`, which has no door that writes.
+
+What it validated is part of what it answers, because an intake of the scanned
+commit needs exactly those bytes. Reaching for them again would read a source
+that may have moved between the two reads, and would publish a commit nobody
+was shown.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typing import assert_never
 
 from atelier2.application.publish_workflow_revision import (
     PublicationInvalid,
+    PublishableWorkflow,
     WorkflowPublicationLimits,
     read_publishable_workflow,
 )
@@ -79,11 +85,17 @@ class ScannedPath:
 
 @dataclass(frozen=True)
 class DefinitionSourceScanned:
-    """One write-free reading of a registered source."""
+    """One write-free reading of a registered source.
+
+    `carried` holds every path the commit serves, validated once, in the order
+    the source served them. A path the source stopped carrying is in `paths`
+    and not here: there are no bytes to hold for it.
+    """
 
     revision: DefinitionSourceRevision
     commit: SourceCommit
     paths: tuple[ScannedPath, ...]
+    carried: Mapping[RepositoryPath, PublishableWorkflow]
 
 
 @dataclass(frozen=True)
@@ -145,25 +157,28 @@ def scan_definition_source(
         scanned = reader.scan(revision.configuration)
     except DefinitionSourceUnreadable as refused:
         return ScanRefused(refused.refusal, refused.detail)
-    published = _published_hashes(scanned.files, parser, limits)
-    if isinstance(published, ScannedDocumentInvalid):
-        return published
+    carried = _validated(scanned.files, parser, limits)
+    if isinstance(carried, ScannedDocumentInvalid):
+        return carried
     intaken = sources.latest_intakes(source_id)
     if isinstance(intaken, DurableWriteUnavailable):
         return ReadUnavailable()
     if isinstance(intaken, PortDurableStateCorrupt):
         return DurableStateCorrupt()
     return DefinitionSourceScanned(
-        revision, scanned.commit, _compared(scanned.files, published, intaken)
+        revision,
+        scanned.commit,
+        _compared(scanned.files, carried, intaken),
+        carried,
     )
 
 
-def _published_hashes(
+def _validated(
     files: tuple[SelectedFile, ...],
     parser: WorkflowDocumentParser,
     limits: WorkflowPublicationLimits,
-) -> Mapping[RepositoryPath, PublishedRevisionHash] | ScannedDocumentInvalid:
-    """The identity every selected file would publish under, or the first refusal.
+) -> Mapping[RepositoryPath, PublishableWorkflow] | ScannedDocumentInvalid:
+    """Every selected file put through the intake door, or the first refusal.
 
     The whole scan stops at one refused file rather than reporting the rest:
     an intake of this commit would refuse the batch whole, and a scan that
@@ -171,22 +186,30 @@ def _published_hashes(
     will not do.
     """
 
-    hashes: dict[RepositoryPath, PublishedRevisionHash] = {}
+    read: dict[RepositoryPath, PublishableWorkflow] = {}
     for selected in files:
         publishable = read_publishable_workflow(selected.document, parser, limits)
         if isinstance(publishable, PublicationInvalid):
             return ScannedDocumentInvalid(
                 selected.path, publishable.detail, publishable.refusal
             )
-        hashes[selected.path] = PublishedRevisionHash(
-            publishable.revision.revision_hash.value
-        )
-    return hashes
+        read[selected.path] = publishable
+    return read
+
+
+def published_hash(publishable: PublishableWorkflow) -> PublishedRevisionHash:
+    """The catalog identity of bytes the workflow door already accepted.
+
+    One derivation for the scan that compares it and the intake that admits
+    under it, so the two can never name one file by two hashes.
+    """
+
+    return PublishedRevisionHash(publishable.revision.revision_hash.value)
 
 
 def _compared(
     files: tuple[SelectedFile, ...],
-    published: Mapping[RepositoryPath, PublishedRevisionHash],
+    carried: Mapping[RepositoryPath, PublishableWorkflow],
     intaken: Mapping[RepositoryPath, SourceIntake],
 ) -> tuple[ScannedPath, ...]:
     """Every path the source carries, then every path only the catalog holds.
@@ -196,21 +219,23 @@ def _compared(
     (`#660` ruled lines 7 and 17).
     """
 
-    carried = tuple(
+    served = tuple(
         ScannedPath(
             selected.path,
             selected.selection.kind,
-            _freshness(published[selected.path], intaken.get(selected.path)),
-            published[selected.path],
+            _freshness(
+                published_hash(carried[selected.path]), intaken.get(selected.path)
+            ),
+            published_hash(carried[selected.path]),
         )
         for selected in files
     )
     absent = tuple(
         ScannedPath(path, intake.revision_kind, PathFreshness.SOURCE_ABSENT, None)
         for path, intake in sorted(intaken.items(), key=lambda item: item[0].value)
-        if path not in published
+        if path not in carried
     )
-    return carried + absent
+    return served + absent
 
 
 def _freshness(
