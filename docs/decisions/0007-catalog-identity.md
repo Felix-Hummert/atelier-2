@@ -3,10 +3,13 @@
 - Status: ACCEPTED 2026-08-16 — acceptance authority: operator ruling
   [#63](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307533025), clarified
   by [the prototype-store ruling](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307545004):
-  build and isolated proof are authorized, the proven prototype store may replace its
-  predecessor, and unattended arming remains gated. [PRODUCT.md](../PRODUCT.md) owns
-  current implementation status
-- Date: 2026-08-15
+  build and isolated proof are authorized under [docs/PRODUCT.md](../PRODUCT.md)
+  § Stage: prototype, and unattended arming remains gated. [PRODUCT.md](../PRODUCT.md)
+  owns current implementation status
+- Date: 2026-08-15, amended 2026-09-03
+  ([#976](https://github.com/FlexOr2/atelier-2/issues/976)): the
+  composed-preview clause in "Required proofs for implementation" is retired,
+  per the amendment beside it
 - Depends on: [ADR 0001](0001-durable-runtime.md),
   [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md)
   (ACCEPTED), and **ADR 0006 amendment A1** below, which acceptance of this record
@@ -774,6 +777,15 @@ invented to fill the row.
   projected state is the latest entry. Renaming changes no revision hash, no lineage id and
   no bound run; advancing a head leaves every published run configuration, run snapshot,
   receipt and composed preview hash unchanged.
+  **2026-09-03 amendment (operator delegation to the head as product owner, issue
+  [#976](https://github.com/FlexOr2/atelier-2/issues/976)): the composed-preview
+  clause above is retired.**
+  [#450](https://github.com/FlexOr2/atelier-2/issues/450)/[#977](https://github.com/FlexOr2/atelier-2/issues/977)
+  tore down the composed preview this bullet also named as unchanged by a rename;
+  it reached no entry point of the build and was deleted rather than wired. What
+  the bullet proves for run configuration, run snapshot and receipt still holds.
+  See the matching amendment in [ADR 0006](0006-node-vocabulary.md#the-conductor-is-a-client-and-one-composed-preview-is-the-truth)
+  for where today's truth lives.
 - **Ambiguity:** a display name of exactly 64 lowercase hexadecimal characters is refused at
   admission and at rename, and `resolve_name` therefore reads every 64-hex input as a lineage
   id and every other input as a display name — proven with a name and a lineage id that would

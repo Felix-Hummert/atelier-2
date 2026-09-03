@@ -60,6 +60,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHas
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
+    ListedWorkflowRevision,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
@@ -690,7 +691,10 @@ def test_a_described_page_resolves_every_reference_inside_one_session() -> None:
     first_item = _wait_revision_projection(schema_one.revision_hash.value)
     second_item = _wait_revision_projection(schema_two.revision_hash.value)
     queries = ScriptedQueries(
-        DescribedWorkflowRevisionPage((first_item, second_item), None)
+        DescribedWorkflowRevisionPage(
+            (ListedWorkflowRevision(first_item), ListedWorkflowRevision(second_item)),
+            None,
+        )
     )
     resolver = ScriptedSessionResolver(PublishedRevisionFound(schema_one))
 

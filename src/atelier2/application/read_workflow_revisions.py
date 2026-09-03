@@ -25,6 +25,7 @@ from atelier2.application.refusals import (
     ReadUnavailable,
 )
 from atelier2.application.resolve_references import cached_schema_document
+from atelier2.contracts.definition_sources import RevisionProvenance
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaRefused
@@ -88,11 +89,14 @@ class WorkflowRevisionRead:
 
     `not_executable_reason` is None exactly when the start path would admit
     the document as published; otherwise it carries that path's own words.
+    `provenance` is where the bytes first entered the catalog, and is None for
+    a revision no definition source delivered.
     """
 
     projection: WorkflowRevisionProjection
     not_executable_reason: str | None
     wait_answer_classifications: tuple[WaitAnswerClassification, ...] = ()
+    provenance: RevisionProvenance | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,7 @@ class DescribedWorkflowRevision:
 
     projection: WorkflowRevisionProjection
     not_executable_reason: str | None
+    provenance: RevisionProvenance | None = None
 
 
 @dataclass(frozen=True)
@@ -153,8 +158,10 @@ def get_workflow_revision(
     answer schema reads through the same resolver.
     """
     match queries.get_workflow_revision(revision_hash):
-        case WorkflowRevisionFound(projection):
-            return describe_workflow_revision(projection, resolver)
+        case WorkflowRevisionFound(projection, provenance):
+            return describe_workflow_revision(
+                projection, resolver, provenance=provenance
+            )
         case WorkflowRevisionMissing():
             return WorkflowRevisionNotFound()
         case PortReadUnavailable(detail):
@@ -171,6 +178,7 @@ def describe_workflow_revision(
     projection: WorkflowRevisionProjection,
     resolver: PublishedRevisionResolver,
     settlements: ReferenceSettlementCache | None = None,
+    provenance: RevisionProvenance | None = None,
 ) -> WorkflowRevisionRead | ReadUnavailable | DurableStateCorrupt:
     """What this build says about one stored revision: the read's and the publication's answer alike.
 
@@ -194,7 +202,9 @@ def describe_workflow_revision(
     classifications = _wait_answer_classifications(projection.graph, resolver)
     if isinstance(classifications, (ReadUnavailable, DurableStateCorrupt)):
         return classifications
-    return WorkflowRevisionRead(projection, not_executable_reason, classifications)
+    return WorkflowRevisionRead(
+        projection, not_executable_reason, classifications, provenance
+    )
 
 
 def _wait_answer_classifications(
@@ -363,15 +373,17 @@ def list_described_workflow_revisions(
             settlements: ReferenceSettlementCache = {}
             with resolver.resolver_session() as page_resolver:
                 described: list[DescribedWorkflowRevision] = []
-                for projection in items:
+                for listed in items:
                     read = describe_workflow_revision(
-                        projection, page_resolver, settlements
+                        listed.projection, page_resolver, settlements
                     )
                     if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
                         return read
                     described.append(
                         DescribedWorkflowRevision(
-                            projection, read.not_executable_reason
+                            listed.projection,
+                            read.not_executable_reason,
+                            listed.provenance,
                         )
                     )
                 return WorkflowRevisionsDescribed(tuple(described), next_after)

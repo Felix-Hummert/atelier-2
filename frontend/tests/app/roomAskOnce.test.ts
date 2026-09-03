@@ -151,6 +151,7 @@ function historyRevision(): WorkflowRevisionDetail {
   return {
     workflow_revision_hash: revisionHash,
     document_base64: "",
+    provenance: null,
     graph: {
       workflow_format_version: 3,
       executable: true,
@@ -191,7 +192,8 @@ function catalogRevision(index: number): WorkflowRevisionSummary {
     executable: true,
     not_executable_reason: null,
     name: `wf${index}`,
-    description: "build"
+    description: "build",
+    provenance: null
   };
 }
 
