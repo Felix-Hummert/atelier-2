@@ -114,7 +114,7 @@ describe("the workbench door", () => {
     // No invented answer, no pretence that anything started, and no internal
     // vision or issue number leaked into the operator's own conversation
     // (Adressaten-Regel, operator ruling 23.08.).
-    const answer = within(transcript).getByText(workbenchPageCopy.conductorAbsent);
+    const answer = within(transcript).getByText(workbenchPageCopy.conductorConnectionUnknown);
     expect(answer.textContent).not.toMatch(/#\d/);
   });
 
@@ -155,7 +155,7 @@ describe("the workbench door", () => {
     const transcript = screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
     expect(within(transcript).getByText(/Finish the preview door/).isConnected).toBe(true);
     expect(
-      within(transcript).getByText(workbenchPageCopy.conductorAbsent).isConnected
+      within(transcript).getByText(workbenchPageCopy.conductorConnectionUnknown).isConnected
     ).toBe(true);
   });
 
@@ -806,8 +806,55 @@ describe("the workbench conductor conversation", () => {
         expect.stringContaining("/atelier/settings")
       );
 
-      expect(document.querySelector(".composer-hint")?.textContent).toBe(
-        "The next canary run or a Settings change re-arms it."
+      // The empty room's own card already names the reason: HEART's "a state
+      // is shown, never restated" leaves the composer hint silent here
+      // rather than repeating the same sentence a second time on one screen
+      // (#1103).
+      expect(document.querySelector(".composer-hint")).toBeNull();
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+    });
+
+    it("names the not-startable reason in the composer hint once a message already turned the room away from its empty card", async () => {
+      const workflowResolution = {
+        display_name: "conductor",
+        lineage_id: "7".repeat(64),
+        workflow_revision_hash: conductorRevisionHash,
+        revision_number: 1
+      };
+      openChat({
+        ...notStartableOverrides(),
+        // The connection's first read cannot be told apart from a real
+        // outage yet ("unreadable"), so the composer is not locked and a
+        // message can land; only the *second* read -- run again once the
+        // connection recovers -- resolves the real "not-startable" reason.
+        getRevisionByName: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("network hiccup"))
+          .mockResolvedValue(workflowResolution)
+      });
+      const { screen, within } = testingLibrary;
+      await screen.findByRole("heading", { name: "Workbench" });
+      await screen.findByText(conductorChatCopy.connectionUnknown);
+
+      await say("Is anyone there?");
+      const transcript = screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
+      expect(
+        within(transcript).getByText(workbenchPageCopy.conductorConnectionUnknown).isConnected
+      ).toBe(true);
+
+      reportConnectionLost();
+      reportConnectionRestored();
+
+      await screen.findByText(/Your conductor \(claude-opus-5\) cannot start right now/);
+      // The conversation already holds turns, so the empty room's card never
+      // mounts here -- the composer hint is the one place left standing to
+      // carry the reason, and it names it on its own.
+      expect(document.querySelector(".workbench-empty")).toBeNull();
+      expect(document.querySelector(".composer-hint")?.textContent).toMatch(
+        /Your conductor \(claude-opus-5\) cannot start right now/
       );
       expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
         "disabled",

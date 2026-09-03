@@ -281,8 +281,19 @@ test("captures every surface at both widths", async ({ page }) => {
   // person, held in the open-decisions region so it never scrolls away (#580).
   await expect(page.getByRole("heading", { name: "The review is green. Merge this, or name the blocking defect." })).toBeVisible();
   await shoot(page, "workbench-needs-you");
+
+  // A sent message needs a real conductor to send into (#1103): without one
+  // the composer stays honestly locked, so this shot's own subject -- a
+  // message that was said -- seeds the production conductor catalog the
+  // same way `workbench-conductor.spec.ts` does, then reloads to resolve the
+  // connection fresh.
+  const seeded = await page.request.post("/__e2e/seed-conductor");
+  expect(seeded.ok()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
   await page.getByLabel(workbenchPageCopy.composerLabel).fill("Finish the preview door and fix the wait bug, in parallel.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
+  await expect(page.locator(".conversation-line-house")).toBeVisible({ timeout: 20_000 });
   await shoot(page, "workbench-said");
 
   await page.goto("/atelier/catalog/iterate-code");

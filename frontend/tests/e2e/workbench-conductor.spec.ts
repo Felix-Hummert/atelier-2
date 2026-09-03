@@ -273,7 +273,7 @@ async function answerConductorRoundDirectly(
   return expectedNodeExecutionId;
 }
 
-test("a message meets the honest refusal without a conductor, then starts one conversation run", async ({ page }) => {
+test("the composer stays honestly locked without a conductor, then starts one conversation run", async ({ page }) => {
   test.setTimeout(120_000);
 
   // This suite shares one server across every spec file (#742): a conductor
@@ -288,14 +288,13 @@ test("a message meets the honest refusal without a conductor, then starts one co
     expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
   }).toPass({ timeout: 20_000 });
 
-  // Before any conductor exists: the composer says so, and a sent message
-  // gets the standing honest answer -- nothing pretends to listen.
+  // Before any conductor exists: the composer says so and Send is visibly
+  // locked (#1103) -- nothing pretends to listen, and nothing accepts a
+  // message it would silently swallow.
   await page.goto("/atelier/chat");
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
   await expect(page.getByText(workbenchPageCopy.composerHint)).toBeVisible();
-  await page.getByLabel(workbenchPageCopy.composerLabel).fill("Hallo, hört mir jemand zu?");
-  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
-  await expect(page.getByText(workbenchPageCopy.conductorAbsent)).toBeVisible();
+  await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeDisabled();
   await photograph(page, "workbench-not-connected");
 
   // The harness publishes the production conductor catalog: schemas, the

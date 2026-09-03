@@ -452,11 +452,25 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
   await startHeldRun(page, runningName, `uiq/running-${suffix}`);
   const waitRevision = await publishWaitWorkflow(page, waitingName, DECISION_QUESTION);
   const catalogSchemaHash = await publishSchema(page, "true");
+  // The send-a-message task below needs a real conductor to send into
+  // (#1103): without one the composer stays honestly locked and Enter does
+  // nothing, so this budget seeds the production conductor catalog the same
+  // way `workbench-conductor.spec.ts` does. A server-side publish, not a
+  // browser action, so it costs neither a click nor a glance.
+  const seeded = await page.request.post("/__e2e/seed-conductor");
+  expect(seeded.ok()).toBeTruthy();
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
     await startWaitRun(page, `uiq/waiting-${suffix}-${viewport.width}`, waitRevision);
     await openWorkbench(page);
+    // A fresh page load resolves the conductor's own connection, and
+    // restores its already-started run, asynchronously; typing before that
+    // settles would either find Send still disabled or race a second run
+    // into existence instead of continuing the one from the last viewport.
+    await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled({
+      timeout: 20_000
+    });
 
     const composer = page.getByLabel(workbenchPageCopy.composerLabel);
     const sendGlances = [composer];

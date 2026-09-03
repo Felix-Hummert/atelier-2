@@ -280,11 +280,9 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
         | None
     )
     provider_probe_problem_code: str | None = Field(
-        default=None, pattern=PROVIDER_PROBE_PROBLEM_CODE_PATTERN
+        pattern=PROVIDER_PROBE_PROBLEM_CODE_PATTERN
     )
-    provider_probe_observed_at: str | None = Field(
-        default=None, pattern=RECORDED_AT_PATTERN
-    )
+    provider_probe_observed_at: str | None = Field(pattern=RECORDED_AT_PATTERN)
 
     @model_validator(mode="after")
     def validates_startability_pair(self) -> AgentConfigurationRevisionListItemResource:

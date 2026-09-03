@@ -60,20 +60,25 @@ export const workbenchPageCopy = {
   composerLabel: "Message",
   send: "Send",
   /**
-   * The one honest sentence the ear carries while no conductor exists at all,
-   * or its own read failed (HEART, "The ear"): it says plainly that words are
-   * not yet turned into runs, without a second button that duplicates a door.
+   * The one honest sentence the ear carries while no conductor exists at all
+   * (HEART, "The ear"): Send is visibly locked for this state (#1103), so the
+   * sentence names that instead of promising a kept-but-unsent word.
    */
-  composerHint: "No conductor is connected yet, so your words are kept here but start nothing.",
+  composerHint: "No conductor is connected yet, so Send stays locked. Start work from the Catalog instead.",
   /**
-   * The reply every sent message gets while no conductor is connected. The
-   * standing hint already carries "no conductor is connected yet", so the reply
-   * drops that duplicated lead and keeps only its two unique truths: nothing
-   * was started, and the message was not thrown away. "Until you reload" is the
+   * The reply every sent message gets while the conductor's own connection
+   * could not yet be read one way or the other -- "reading" (the read is
+   * still in flight) or "unreadable" (the read itself failed). Those are the
+   * only two states this can still reach: "absent", "unbound" and
+   * "not-startable" (#1103) each carry a real reason and lock the composer
+   * before a message can be sent at all, so this sentence stays deliberately
+   * reason-agnostic rather than claiming "no conductor is connected" -- for
+   * "reading" that would be a guess, and for "unreadable" it would be a fact
+   * this room does not actually hold. "Until you reload" is the
    * conversation's real boundary: it survives in-app rail navigation (the
    * module that owns it outlives the page component) but not a reload.
    */
-  conductorAbsent:
+  conductorConnectionUnknown:
     "Nothing was started. Your message is kept in this conversation until you reload the page.",
 
   /**
@@ -101,12 +106,31 @@ export const workbenchPageCopy = {
     modelId: string,
     reason: ConductorNotStartableReason,
     probeFailedAgo: string | null
-  ): string =>
-    `Your conductor (${modelId}) cannot start right now: ${notStartableReasonClause(reason, probeFailedAgo)}. ${notStartableDoorClause(reason)}`,
-  /** The composer's own short reminder for the same state, beside the disabled Send. */
-  composerHintNotStartable: (reason: ConductorNotStartableReason): string =>
-    notStartableDoorClause(reason)
+  ): string => notStartableSentence(modelId, reason, probeFailedAgo),
+  /**
+   * The composer's own reminder for the same state, beside the disabled
+   * Send -- built the same way as `emptyDescriptionNotStartable` so it names
+   * the reason on its own wherever it is the only place carrying it (a
+   * conversation already holds turns once "not-startable" is reached after
+   * "reading"/"unreadable" resolved it). The Workbench only renders this
+   * hint in that situation: while the empty room's own card is also on
+   * screen it already names the same reason, and HEART's "a state is shown,
+   * never restated" gives that sentence exactly one place rather than two.
+   */
+  composerHintNotStartable: (
+    modelId: string,
+    reason: ConductorNotStartableReason,
+    probeFailedAgo: string | null
+  ): string => notStartableSentence(modelId, reason, probeFailedAgo)
 } as const;
+
+function notStartableSentence(
+  modelId: string,
+  reason: ConductorNotStartableReason,
+  probeFailedAgo: string | null
+): string {
+  return `Your conductor (${modelId}) cannot start right now: ${notStartableReasonClause(reason, probeFailedAgo)}. ${notStartableDoorClause(reason)}`;
+}
 
 function notStartableReasonClause(
   reason: ConductorNotStartableReason,

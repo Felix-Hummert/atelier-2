@@ -781,9 +781,20 @@
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
     {:else if conductorLink.kind === "unbound"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHintUnbound(conductorLink.role))}</p>
-    {:else if conductorLink.kind === "not-startable"}
+    {:else if conductorLink.kind === "not-startable" && conversationTranscript.length > 0}
+      <!-- The empty room's own card already names this exact reason (below,
+           `emptyDescriptionNotStartable`) whenever the conversation is empty;
+           this hint only repeats it when that card is not on screen -- a
+           not-startable conductor reached after "reading"/"unreadable" had
+           already taken a locally-answered turn (#1103). -->
       <p class="composer-hint">
-        {wrapDisplayCopy(workbenchPageCopy.composerHintNotStartable(conductorLink.notStartableReason))}
+        {wrapDisplayCopy(
+          workbenchPageCopy.composerHintNotStartable(
+            conductorLink.modelId,
+            conductorLink.notStartableReason,
+            probeFailedAgo
+          )
+        )}
       </p>
     {:else if conductorLink.kind === "unreadable"}
       <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.connectionUnknown)}</p>

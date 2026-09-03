@@ -25,19 +25,32 @@ const widths = [
  * hang `/__e2e/recompose` forever. The Workbench holds no stream (#700
  * scope), so it is both the surface the issue names and a safe one.
  *
- * Which composer hint the Workbench starts on depends on whether an earlier
- * test in this run seeded a conductor -- not this test's question, and not
- * something it may assume either way (the suite runs one shared server, one
- * worker, in no particular file order). What this test does own is that the
- * hint returns to that exact same honest sentence once the connection
- * recovers, not merely to *something other than* the restart line -- a
- * composer stuck naming a read that "could not be read" would still pass a
- * weaker check (the live bug this test now pins). A full-app restart proven
- * recoverable here leaves the server equally healthy for whatever spec runs
- * next, in whatever order that is.
+ * A locked composer (#1103) makes "Send starts and returns enabled" a real
+ * assertion about the conductor's own connection state, not merely about the
+ * restart -- so this test can no longer stay agnostic to whether an earlier
+ * spec in this shared server (#742: one server, one worker, no particular
+ * file order) left a conductor seeded. It resets to the harness's cold-boot
+ * baseline and seeds the production conductor catalog itself, the same two
+ * calls `workbench-conductor.spec.ts` uses, before the restart under proof:
+ * a known "connected" precondition, regardless of what ran before it. What
+ * this test owns is that the hint returns to that exact same honest sentence
+ * once the connection recovers, not merely to *something other than* the
+ * restart line -- a composer stuck naming a read that "could not be read"
+ * would still pass a weaker check (the live bug this test now pins). A full
+ * app restart proven recoverable here leaves the server equally healthy for
+ * whatever spec runs next, in whatever order that is.
  */
 test("shows the calm restart line on the open workbench, and clears it on its own with no reload", async ({ page }) => {
   test.setTimeout(120_000);
+
+  const reset = await page.request.post("/__e2e/recompose?reset=true");
+  expect(reset.status()).toBe(202);
+  const resetGeneration = await reset.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(resetGeneration);
+  }).toPass({ timeout: 20_000 });
+  const seeded = await page.request.post("/__e2e/seed-conductor");
+  expect(seeded.ok()).toBeTruthy();
 
   await page.goto("/atelier/chat");
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
