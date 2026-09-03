@@ -54,3 +54,8 @@ nodes:
       ref: open-pr
       revision: "420440a07ba8d6f2ba953d02e50d3889a4128ce42fe3e8562fead9523e341f37"
     depends_on: [implement]
+    inputs:
+      - name: body
+        from:
+          node: implement
+          output: result
