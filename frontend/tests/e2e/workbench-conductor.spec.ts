@@ -169,6 +169,11 @@ async function resetAndSeedConductor(page: Page): Promise<{ workflow_revision_ha
  */
 async function startConversationOverUi(page: Page, message: string, workflowRevisionHash: string): Promise<Locator> {
   await page.goto("/atelier/chat");
+  // The connection read spans several round trips (`resolveConductorConnection`,
+  // conductorEpisode.ts); Send stays locked until it resolves (#1103, #1114),
+  // so this waits for the connected hint -- proof the room is done reading,
+  // not merely that the button happens to look clickable.
+  await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible();
   await page.getByLabel(workbenchPageCopy.composerLabel).fill(message);
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
   await waitForFreshConductorRound(page, workflowRevisionHash);
@@ -337,7 +342,7 @@ async function answerConductorRoundDirectly(
   return expectedNodeExecutionId;
 }
 
-test("a message meets the honest refusal without a conductor, then starts one conversation run", async ({ page }) => {
+test("the composer stays honestly locked without a conductor, then starts one conversation run", async ({ page }) => {
   test.setTimeout(120_000);
 
   // This suite shares one server across every spec file (#742): a conductor
@@ -352,14 +357,13 @@ test("a message meets the honest refusal without a conductor, then starts one co
     expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
   }).toPass({ timeout: 20_000 });
 
-  // Before any conductor exists: the composer says so, and a sent message
-  // gets the standing honest answer -- nothing pretends to listen.
+  // Before any conductor exists: the composer says so and Send is visibly
+  // locked (#1103) -- nothing pretends to listen, and nothing accepts a
+  // message it would silently swallow.
   await page.goto("/atelier/chat");
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
   await expect(page.getByText(workbenchPageCopy.composerHint)).toBeVisible();
-  await page.getByLabel(workbenchPageCopy.composerLabel).fill("Hallo, hört mir jemand zu?");
-  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
-  await expect(page.getByText(workbenchPageCopy.conductorAbsent)).toBeVisible();
+  await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeDisabled();
   await photograph(page, "workbench-not-connected");
 
   // The harness publishes the production conductor catalog: schemas, the
@@ -436,6 +440,13 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
     expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
   }).toPass({ timeout: 20_000 });
   await retireReconciliationFixtures(page);
+  // A conductor is now required to unlock Send at all (#1103): the fixture's
+  // own message below needs somewhere to land, and the conductor's own run
+  // never joins these six -- the pinned rail filters it out by reference
+  // (WorkbenchPage.svelte).
+  const seeded = await page.request.post("/__e2e/seed-conductor");
+  expect(seeded.ok()).toBeTruthy();
+  const seededConductor = (await seeded.json()) as { workflow_revision_hash: string };
 
   const schema = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },
@@ -573,8 +584,16 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
   expect(compactRail.beyondFoldControlCount).toBeGreaterThanOrEqual(1);
   expect(compactRail.canScroll).toBe(true);
 
+  // The connection read spans several round trips (#1103, #1114); Send stays
+  // locked until it resolves, so this waits for the connected hint before
+  // typing rather than racing a button that only looks clickable.
+  await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible();
   await page.getByLabel(workbenchPageCopy.composerLabel).fill("Keep this conversation on screen.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
+  // Waits on the harness's own fence, the same reason `startConversationOverUi`
+  // does (see its doc): the conversation list this measures below is empty
+  // until the round actually lands, not the instant Send is clicked.
+  await waitForFreshConductorRound(page, seededConductor.workflow_revision_hash);
   await placeConversationAboveComposer(page);
   const pinnedBox = await pinnedRegion.boundingBox();
   const composerBox = await page.getByRole("form", { name: workbenchPageCopy.composerRegionLabel }).boundingBox();
@@ -632,7 +651,12 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
   expect(compactLayout.textOverflow).toBe("clip");
   expect(compactLayout.whiteSpace).toBe("normal");
 
-  await expect(page.getByRole("link", { name: "Workbench 6 needs you" })).toBeVisible();
+  // The conductor's own conversation is a seventh run now waiting for its
+  // next message (its loop reopened "next_message" once the fake executor
+  // answered the fresh round fenced above) -- counted in the rail's badge
+  // like any other waiting run, but never in the pinned rail below, which
+  // filters the conductor's own run out by reference (WorkbenchPage.svelte).
+  await expect(page.getByRole("link", { name: "Workbench 7 needs you" })).toBeVisible();
   await expect(decisions).toHaveCount(6);
   await photograph(page, "workbench-bounded-decisions", true);
 });

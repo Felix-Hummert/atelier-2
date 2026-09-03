@@ -28,6 +28,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     AuthProfileRevisionHash,
     ProviderId,
+    ProviderProbeFailure,
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -35,10 +36,12 @@ from atelier2.contracts.executions import (
     RunEventAgentAttemptBinding,
     RunEventKind,
 )
+from atelier2.contracts.provider_probe_receipts import ProviderProbeProblemCode
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision,
@@ -499,6 +502,8 @@ def test_list_answers_with_the_published_item_form_and_no_secrets() -> None:
                 "startable": True,
                 "structurally_startable": True,
                 "not_startable_reason": None,
+                "provider_probe_problem_code": None,
+                "provider_probe_observed_at": None,
             }
         ],
         "next_after_revision_hash": None,
@@ -591,6 +596,49 @@ def test_list_names_a_missing_receipt_apart_from_an_unavailable_executor() -> No
     assert item["startable"] is False
     assert item["structurally_startable"] is True
     assert item["not_startable_reason"] == "provider-probe-receipt-missing"
+    assert item["provider_probe_problem_code"] is None
+    assert item["provider_probe_observed_at"] is None
+
+
+def test_list_names_a_failed_probe_apart_from_a_merely_missing_receipt() -> None:
+    """A receipt that recorded a failure names itself, with its own evidence.
+
+    #1103: an operator reading "provider-probe-receipt-missing" for a
+    configuration whose last probe actually ran and failed is misled into
+    waiting for a probe that already happened -- the wire must carry the
+    failure's own problem code and instant instead of collapsing it into the
+    same reason a never-probed configuration gets.
+    """
+
+    catalog = RecordingCatalog(
+        object(),
+        list_result=AgentConfigurationRevisionPage(
+            (
+                AgentConfigurationRevisionListItem(
+                    CONFIGURATION,
+                    AUTH,
+                    True,
+                    True,
+                    False,
+                    ProviderProbeFailure(
+                        ProviderProbeProblemCode("provider-overloaded"),
+                        RecordedAt("2026-09-03T16:17:00Z"),
+                    ),
+                ),
+            ),
+            None,
+        ),
+    )
+
+    response = _client(catalog).get(API_PREFIX + "/agent-configuration-revisions")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["startable"] is False
+    assert item["structurally_startable"] is True
+    assert item["not_startable_reason"] == "provider-probe-failed"
+    assert item["provider_probe_problem_code"] == "provider-overloaded"
+    assert item["provider_probe_observed_at"] == "2026-09-03T16:17:00Z"
 
 
 def test_list_names_a_superseded_model_apart_from_a_missing_receipt() -> None:

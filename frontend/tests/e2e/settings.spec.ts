@@ -174,7 +174,9 @@ async function routeSettings(
         agent_configuration_revision_hash: configurationHash,
         startable: providerCheck === "checked",
         structurally_startable: providerCheck === "checked",
-        not_startable_reason: providerCheck === "checked" ? null : "agent-executor-binding-unavailable"
+        not_startable_reason: providerCheck === "checked" ? null : "agent-executor-binding-unavailable",
+        provider_probe_problem_code: null,
+        provider_probe_observed_at: null
       }],
       next_after_revision_hash: null
     }

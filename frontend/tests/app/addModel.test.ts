@@ -50,6 +50,8 @@ function configuration(
     startable: true,
     structurally_startable: true,
     not_startable_reason: null,
+    provider_probe_problem_code: null,
+    provider_probe_observed_at: null,
     ...overrides
   };
 }

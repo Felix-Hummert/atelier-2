@@ -54,4 +54,12 @@ def agent_configuration_revision_list_item_resource(
             if item.not_startable_reason is None
             else item.not_startable_reason.value
         ),
+        provider_probe_problem_code=(
+            None
+            if item.probe_failure is None
+            else item.probe_failure.problem_code.value
+        ),
+        provider_probe_observed_at=(
+            None if item.probe_failure is None else item.probe_failure.observed_at.value
+        ),
     )

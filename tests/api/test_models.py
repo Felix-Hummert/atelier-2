@@ -64,6 +64,8 @@ def test_listed_agent_configuration_requires_an_honest_startability_pair() -> No
         "auth_mode": "subscription",
         "requested_capability": "headless",
         "agent_configuration_revision_hash": EXECUTION,
+        "provider_probe_problem_code": None,
+        "provider_probe_observed_at": None,
     }
 
     assert AgentConfigurationRevisionListItemResource.model_validate(

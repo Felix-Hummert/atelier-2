@@ -43,7 +43,7 @@
     conductorConversationShape,
     newestConductorConversation,
     resolveConductorConnection,
-    type ConductorConnection
+    type ConductorConnectionState
   } from "../lib/conductorEpisode";
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -69,6 +69,7 @@
     protocolTitle,
     streamStopped
   } from "../lib/streamStatus";
+  import { ageLabel } from "../lib/when";
   import { absorbAttentionRun, workbenchDecisionPins } from "../lib/workbenchAttention";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
   import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
@@ -110,14 +111,10 @@
   /**
    * Whether a conductor reads this ear. "reading" is the moment before the
    * answer is known and "unreadable" the honest state when the reads themselves
-   * failed -- neither pretends "connected" or "absent", because either would be
-   * a guess dressed as a fact.
+   * failed -- neither pretends any of `ConductorConnectionState`'s own answers,
+   * because either would be a guess dressed as a fact.
    */
-  type ConductorLink =
-    | { kind: "reading" }
-    | { kind: "unreadable" }
-    | { kind: "absent" }
-    | { kind: "connected"; connection: ConductorConnection };
+  type ConductorLink = { kind: "reading" } | { kind: "unreadable" } | ConductorConnectionState;
 
   let live: RetainedRead<WorkbenchRuns, ReadFailure> = retainedRead<WorkbenchRuns, ReadFailure>();
   let hold: AttentionHold = startAttentionHold();
@@ -147,6 +144,7 @@
   };
 
   const catalogPath = WORKSHOP_DESTINATION.catalog.path;
+  const settingsPath = WORKSHOP_DESTINATION.settings.path;
 
   onMount(() => {
     void load();
@@ -175,13 +173,12 @@
 
   async function resolveConductor(): Promise<void> {
     try {
-      const connection = await resolveConductorConnection(cockpitApi);
-      conductorLink =
-        connection === null ? { kind: "absent" } : { kind: "connected", connection };
-      if (connection !== null && live.confirmed !== null) {
+      const state = await resolveConductorConnection(cockpitApi);
+      conductorLink = state;
+      if (state.kind === "connected" && live.confirmed !== null) {
         void selectConductorConversation(live.confirmed.runs);
       }
-      if (connection !== null) void restoreConductorConversation();
+      if (state.kind === "connected") void restoreConductorConversation();
     } catch {
       conductorLink = { kind: "unreadable" };
     }
@@ -449,18 +446,26 @@
 
   /**
    * A connected conductor starts one loop run for the first message, then
-   * turns every later message into its current wait answer; every other state keeps the standing
-   * honest refusal -- including "unreadable", where nothing was started is
-   * still the whole truth.
+   * turns every later message into its current wait answer. "unreadable"
+   * keeps the standing honest local refusal, where nothing was started is
+   * still the whole truth. "absent", "unbound", "not-startable" and
+   * "reading" (#1103, #1114) are a different kind of state: a real reason —
+   * or, for "reading", a real unknown still in flight — the composer is
+   * locked for, so nothing is sent at all rather than accepted and
+   * swallowed. A message sent while "reading" would otherwise fall into the
+   * "unreadable"/local-chat branch below and be answered locally, and the
+   * moment the read resolves to "connected" that locally-answered turn has
+   * nothing to do with the real conversation the operator meant to start.
    *
-   * A lost connection (#700) keeps the message in the box instead: the send
-   * button is disabled the same moment, so this guard only catches the
-   * keyboard's Enter shortcut racing that disable.
+   * A lost connection (#700), or one of those four locked states, keeps the
+   * message in the box instead: the send button is disabled the same moment,
+   * so this guard only catches the keyboard's Enter shortcut racing that
+   * disable.
    */
   async function send(event: Event): Promise<void> {
     event.preventDefault();
     const message = typed.trim();
-    if (message.length === 0 || $connectionState === "reconnecting") return;
+    if (message.length === 0 || $connectionState === "reconnecting" || composerLocked) return;
     if (conductorLink.kind === "connected") {
       if (
         conductorDeliveryBusy ||
@@ -553,6 +558,35 @@
     conductorRun?.state === "COMPLETED" &&
     conductorTranscript.messages.filter((message) => message.speaker === "house").length >=
       conductorLink.connection.maximumRounds;
+  // "begins" only holds before the conversation's own first round has
+  // actually landed; once one has, the same wait's next message continues it.
+  $: connectedComposerHint =
+    conductorRun !== null && runHasEnded(conductorRun.state) && conductorRun.state !== "COMPLETED"
+      ? conductorConversationCopy.endedHint
+      : conductorTranscript.messages.length > 0
+        ? conductorConversationCopy.composerHintOngoing
+        : conductorConversationCopy.composerHint;
+  // The one relative rendering of a failed probe's own instant (`when.ts`
+  // owns the formatting); null for every other not-startable reason.
+  $: probeFailedAgo =
+    conductorLink.kind === "not-startable" &&
+    conductorLink.notStartableReason === "provider-probe-failed" &&
+    conductorLink.providerProbeObservedAt !== null
+      ? ageLabel(conductorLink.providerProbeObservedAt, new Date(), "ago")
+      : null;
+  // The composer is visibly locked, not merely quiet, whenever the server
+  // named a real reason nothing can be sent (#1103), or whenever whether a
+  // conductor is even there is still unknown ("reading", #1114): sending
+  // then would silently fall into the local-chat branch and be answered as
+  // if no conductor existed, and the operator's words would part ways with
+  // the conversation the moment the read resolves. This is the one flag both
+  // the button's `disabled` attribute and the Enter-key guard in `send`
+  // read, so the two can never drift apart.
+  $: composerLocked =
+    conductorLink.kind === "absent" ||
+    conductorLink.kind === "unbound" ||
+    conductorLink.kind === "not-startable" ||
+    conductorLink.kind === "reading";
   $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
     expandedPinReference = pins[0]?.run.public_run_reference ?? null;
   }
@@ -676,6 +710,30 @@
       <h2>{wrapDisplayCopy(workbenchPageCopy.emptyTitle)}</h2>
       {#if conductorLink.kind === "connected"}
         <p>{wrapDisplayCopy(conductorConversationCopy.emptyDescription)}</p>
+      {:else if conductorLink.kind === "unbound"}
+        <p>{wrapDisplayCopy(workbenchPageCopy.emptyDescriptionUnbound(conductorLink.role))}</p>
+        <a
+          class="button primary"
+          href={settingsPath}
+          {...{ [workbenchQuestionAttribute]: workbenchQuestions.emptyOpenSettings.id }}
+          onclick={(event) => { event.preventDefault(); navigate(settingsPath); }}
+        >{wrapDisplayCopy(workbenchPageCopy.openSettings)}</a>
+      {:else if conductorLink.kind === "not-startable"}
+        <p>
+          {wrapDisplayCopy(
+            workbenchPageCopy.emptyDescriptionNotStartable(
+              conductorLink.modelId,
+              conductorLink.notStartableReason,
+              probeFailedAgo
+            )
+          )}
+        </p>
+        <a
+          class="button primary"
+          href={settingsPath}
+          {...{ [workbenchQuestionAttribute]: workbenchQuestions.emptyOpenSettings.id }}
+          onclick={(event) => { event.preventDefault(); navigate(settingsPath); }}
+        >{wrapDisplayCopy(workbenchPageCopy.openSettings)}</a>
       {:else}
         <p>{wrapDisplayCopy(workbenchPageCopy.emptyDescription)}</p>
         <a
@@ -730,7 +788,7 @@
       <button
         class="primary"
         type="submit"
-        disabled={$connectionState === "reconnecting" || conductorDeliveryBusy ||
+        disabled={$connectionState === "reconnecting" || conductorDeliveryBusy || composerLocked ||
           (conductorRun !== null &&
             conductorRun.state !== "WAITING_INPUT" &&
             !runHasEnded(conductorRun.state))}
@@ -744,15 +802,33 @@
            repeats it above (#700, App.svelte). -->
       <p class="composer-hint">{wrapDisplayCopy(restartNoticeCopy)}</p>
     {:else if conductorLink.kind === "connected"}
-      <p class="composer-hint">
-        {wrapDisplayCopy(
-          conductorRun !== null && runHasEnded(conductorRun.state) && conductorRun.state !== "COMPLETED"
-            ? conductorConversationCopy.endedHint
-            : conductorConversationCopy.composerHint
-        )}
-      </p>
+      <p class="composer-hint">{wrapDisplayCopy(connectedComposerHint)}</p>
+    {:else if conductorLink.kind === "reading"}
+      <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHintReading)}</p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
+    {:else if conductorLink.kind === "unbound" && conversationTranscript.length > 0}
+      <!-- The empty room's own card already names this exact reason (above,
+           `emptyDescriptionUnbound`) whenever the conversation is empty; this
+           hint only repeats it when that card is not on screen -- the same
+           complementary rule as "not-startable" below (#1103). -->
+      <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHintUnbound(conductorLink.role))}</p>
+    {:else if conductorLink.kind === "not-startable" && conversationTranscript.length > 0}
+      <!-- The empty room's own card already names this exact reason (below,
+           `emptyDescriptionNotStartable`) whenever the conversation is empty;
+           this hint only repeats it when that card is not on screen -- a
+           not-startable conductor reached after "unreadable" had already
+           taken a locally-answered turn, then the connection recovered and
+           resolved to a real reason (#700, #1103). -->
+      <p class="composer-hint">
+        {wrapDisplayCopy(
+          workbenchPageCopy.composerHintNotStartable(
+            conductorLink.modelId,
+            conductorLink.notStartableReason,
+            probeFailedAgo
+          )
+        )}
+      </p>
     {:else if conductorLink.kind === "unreadable"}
       <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.connectionUnknown)}</p>
     {/if}

@@ -1,4 +1,4 @@
-import type { CockpitApi, RunV3, WorkflowRevisionDetail } from "../api/client";
+import type { AgentConfigurationRevisionListItem, CockpitApi, RunV3, WorkflowRevisionDetail } from "../api/client";
 import { problemCode } from "./catalogName";
 import { readEveryAgentConfiguration } from "./runPages";
 
@@ -11,13 +11,42 @@ export interface ConductorConnection {
   maximumRounds: number;
 }
 
+/** Why the conductor's bound configuration will not start, exactly as the server names it. */
+export type ConductorNotStartableReason = NonNullable<
+  AgentConfigurationRevisionListItem["not_startable_reason"]
+>;
+
+/**
+ * What the server says about the one conductor conversation, discriminated
+ * instead of folded onto `null` (#1103): five distinct causes -- no catalog
+ * name, a foreign document shape, no project, a role with no binding, and a
+ * bound configuration that cannot start -- used to read as one silent
+ * refusal. The first three stay `absent`, because none names anything an
+ * operator could act on differently; `unbound` and `not-startable` carry
+ * exactly what a start would have refused on, passed through rather than
+ * reworded.
+ */
+export type ConductorConnectionState =
+  | { kind: "absent" }
+  | { kind: "unbound"; role: string }
+  | {
+      kind: "not-startable";
+      agentConfigurationRevisionHash: string;
+      providerId: string;
+      modelId: string;
+      notStartableReason: ConductorNotStartableReason;
+      providerProbeProblemCode: string | null;
+      providerProbeObservedAt: string | null;
+    }
+  | { kind: "connected"; connection: ConductorConnection };
+
 /**
  * The published loop a Workbench conversation can operate. Its first node is
  * the input-bearing wait, so the start door has no graph inputs to invent.
  */
 export async function resolveConductorConnection(
   cockpitApi: CockpitApi
-): Promise<ConductorConnection | null> {
+): Promise<ConductorConnectionState> {
   let workflowRevisionHash: string;
   try {
     const resolution = await cockpitApi.getRevisionByName(CONDUCTOR_WORKFLOW_NAME);
@@ -25,18 +54,18 @@ export async function resolveConductorConnection(
   } catch (error) {
     const code = problemCode(error);
     if (code === "catalog-name-not-found" || code === "catalog-lineage-retired") {
-      return null;
+      return { kind: "absent" };
     }
     throw error;
   }
 
   const revision = await cockpitApi.getWorkflowRevision(workflowRevisionHash);
   const shape = conductorConversationShape(revision);
-  if (shape === null) return null;
+  if (shape === null) return { kind: "absent" };
 
   const projects = await cockpitApi.listProjects();
   const project = projects.items[0];
-  if (project === undefined) return null;
+  if (project === undefined) return { kind: "absent" };
   const resolution = await cockpitApi.resolveProjectModels(
     project.public_project_reference,
     workflowRevisionHash,
@@ -45,7 +74,9 @@ export async function resolveConductorConnection(
   const boundConfigurationHash = resolution.resolutions.find(
     (binding) => binding.role === shape.role
   )?.agent_configuration_revision_hash;
-  if (boundConfigurationHash === undefined || boundConfigurationHash === null) return null;
+  if (boundConfigurationHash === undefined || boundConfigurationHash === null) {
+    return { kind: "unbound", role: shape.role };
+  }
 
   const reading = await readEveryAgentConfiguration((after) =>
     cockpitApi.listAgentConfigurationRevisions(after)
@@ -54,12 +85,31 @@ export async function resolveConductorConnection(
     (configuration) =>
       configuration.agent_configuration_revision_hash === boundConfigurationHash
   );
-  if (bound === undefined || !bound.startable) return null;
+  // A binding the catalog no longer lists is honestly no different from one
+  // that was never bound: neither names anything this room could show apart
+  // from "absent".
+  if (bound === undefined) return { kind: "absent" };
+  if (!bound.startable) {
+    return {
+      kind: "not-startable",
+      agentConfigurationRevisionHash: boundConfigurationHash,
+      providerId: bound.provider_id,
+      modelId: bound.model,
+      // `bound.startable` is false, so the server's own invariant
+      // (`AgentConfigurationRevisionListItemResource`) guarantees a reason.
+      notStartableReason: bound.not_startable_reason as ConductorNotStartableReason,
+      providerProbeProblemCode: bound.provider_probe_problem_code,
+      providerProbeObservedAt: bound.provider_probe_observed_at
+    };
+  }
   return {
-    workflowRevisionHash,
-    role: shape.role,
-    agentConfigurationRevisionHash: boundConfigurationHash,
-    maximumRounds: shape.maximumRounds
+    kind: "connected",
+    connection: {
+      workflowRevisionHash,
+      role: shape.role,
+      agentConfigurationRevisionHash: boundConfigurationHash,
+      maximumRounds: shape.maximumRounds
+    }
   };
 }
 

@@ -506,7 +506,9 @@ describe("the served vocabulary", () => {
       agent_configuration_revision_hash: "b".repeat(64),
       startable: false,
       structurally_startable: false,
-      not_startable_reason: "agent-executor-binding-unavailable" as const
+      not_startable_reason: "agent-executor-binding-unavailable" as const,
+      provider_probe_problem_code: null,
+      provider_probe_observed_at: null
     };
 
     expect(
