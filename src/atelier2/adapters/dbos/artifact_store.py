@@ -14,8 +14,13 @@ from atelier2.ports.artifacts import (
     ArtifactCreated,
     ArtifactExisting,
     PublishArtifactResult,
+    ReadArtifactResult,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
+
+
+class _StoredArtifactAddressMismatch(RuntimeError):
+    pass
 
 
 def read_stored_artifact(
@@ -37,7 +42,7 @@ def read_stored_artifact(
         return None
     stored = Artifact(bytes(content))
     if stored.artifact_hash != artifact_hash:
-        raise RuntimeError(
+        raise _StoredArtifactAddressMismatch(
             f"stored artifact {artifact_hash.value} does not hash to its address"
         )
     return stored
@@ -50,11 +55,13 @@ def read_stored_artifacts(
 
     The batched sibling of `read_stored_artifact`: a caller resolving more
     than one artifact at once -- a page of terminal refusals (#1045) -- reads
-    them all here instead of once per address. Same corruption rule: a stored
-    row whose content disagrees with its own address raises rather than
-    answering it as that artifact. Keyed by the hash string rather than
-    `ArtifactHash` so a caller can look an entry up straight from a raw
-    column value with no re-wrapping.
+    them all here instead of once per address. Same corruption rule as
+    `read_stored_artifact`, and the same typed exception: a stored row whose
+    content disagrees with its own address raises
+    `_StoredArtifactAddressMismatch` rather than answering it as that
+    artifact. Keyed by the hash string rather than `ArtifactHash` so a
+    caller can look an entry up straight from a raw column value with no
+    re-wrapping.
     """
     if not artifact_hashes:
         return {}
@@ -68,7 +75,7 @@ def read_stored_artifacts(
     ):
         stored = Artifact(bytes(record.content))
         if stored.artifact_hash.value != str(record.artifact_hash):
-            raise RuntimeError(
+            raise _StoredArtifactAddressMismatch(
                 f"stored artifact {record.artifact_hash} does not hash to its address"
             )
         found[str(record.artifact_hash)] = stored
@@ -107,6 +114,19 @@ class DbosArtifactStore:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+
+    def read_artifact(self, artifact_hash: ArtifactHash) -> ReadArtifactResult:
+        """The material one address names, on a connection of its own.
+
+        A caller holding only an address decides nothing else at the same time,
+        so this read opens its own connection instead of joining the serialized
+        transaction publication needs.
+        """
+        try:
+            with self._engine.connect() as connection:
+                return read_stored_artifact(connection, artifact_hash)
+        except _StoredArtifactAddressMismatch:
+            return DurableStateCorrupt()
 
     def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
         try:
