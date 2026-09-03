@@ -19,11 +19,14 @@ STORE_FILENAMES = (
     "atelier.sqlite-shm",
     "external.sqlite",
 )
+DEFINITION_SOURCE_ID = "a" * 64
 TOOL_STUB = r"""\
 import json
 import os
 import sys
 from pathlib import Path
+
+DEFINITION_SOURCE_ID = "a" * 64
 
 command = Path(sys.argv[0]).name
 arguments = sys.argv[1:]
@@ -95,6 +98,27 @@ if command == "uv":
                 raise SystemExit(f"migration reached without an equal-size backup of {source.name}")
         if state.get("fail_migrate"):
             raise SystemExit(42)
+        state["migrated"] = True
+        save()
+        raise SystemExit(0)
+    if arguments[:5] == ["run", "--locked", "atelier2", "definition-source", "connect"]:
+        if not state.get("migrated"):
+            raise SystemExit("definition source connect reached before migration")
+        if state.get("fail_connect"):
+            raise SystemExit("definition source connect refused for testing")
+        print(f"connected git source as {DEFINITION_SOURCE_ID} revision 1")
+        raise SystemExit(0)
+    if arguments[:5] == ["run", "--locked", "atelier2", "definition-source", "intake"]:
+        if not state.get("migrated"):
+            raise SystemExit("definition source intake reached before migration")
+        if state.get("intake_refused"):
+            print(
+                "refused workflows/example.yaml: intake refused for testing",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        print(f"{DEFINITION_SOURCE_ID} at 'refs/heads/main' resolves to {'d' * 40}")
+        print("  published workflow workflows/example.yaml")
         raise SystemExit(0)
     raise SystemExit(f"unsupported uv invocation: {arguments!r}")
 
@@ -273,6 +297,8 @@ def test_clean_main_updates_in_the_declared_order_and_backs_up_the_store(
             "stopping atelier2-serve.service",
             "backing up the live store",
             "migrating the live store",
+            "connecting the workflow definition source",
+            "taking the connected source's workflows into the live catalog",
             "starting atelier2-serve.service",
             "checking live serve health",
             "now serves",
@@ -319,6 +345,38 @@ def test_clean_main_updates_in_the_declared_order_and_backs_up_the_store(
             "--database",
             str(harness.store / "atelier.sqlite"),
         ],
+        [
+            "uv",
+            "run",
+            "--locked",
+            "atelier2",
+            "definition-source",
+            "connect",
+            "--database",
+            str(harness.store / "atelier.sqlite"),
+            "--location",
+            str(harness.repository),
+            "--ref",
+            "refs/heads/main",
+            "--select",
+            "workflows/*.yaml=workflow",
+            "--actor",
+            "atelier2-deploy",
+        ],
+        [
+            "uv",
+            "run",
+            "--locked",
+            "atelier2",
+            "definition-source",
+            "intake",
+            "--database",
+            str(harness.store / "atelier.sqlite"),
+            "--source-id",
+            DEFINITION_SOURCE_ID,
+            "--actor",
+            "atelier2-deploy",
+        ],
         ["systemctl", "--user", "start", "atelier2-serve.service"],
         [
             "curl",
@@ -333,6 +391,62 @@ def test_clean_main_updates_in_the_declared_order_and_backs_up_the_store(
         assert (backup / filename).stat().st_size == (
             harness.store / filename
         ).stat().st_size
+
+
+def test_intake_refusal_does_not_prevent_the_start_and_exits_its_own_code(
+    tmp_path: Path,
+) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    harness.configure(intake_refused=True)
+
+    completed = harness.run()
+
+    assert completed.returncode == 3, completed.stderr
+    assert_in_order(
+        completed.stdout,
+        (
+            "migrating the live store",
+            "connecting the workflow definition source",
+            "taking the connected source's workflows into the live catalog",
+            "starting atelier2-serve.service",
+            "now serves",
+        ),
+    )
+    assert "refused workflows/example.yaml" in completed.stdout
+    assert "WORKFLOW INTAKE REFUSED" in completed.stderr
+    assert harness.state()["serve_started"] is True
+    assert harness.state()["start_count"] == 1
+    intake_calls = [
+        call
+        for call in harness.invocations()
+        if call[:5] == ["uv", "run", "--locked", "atelier2", "definition-source"]
+        and call[5] == "intake"
+    ]
+    assert len(intake_calls) == 1
+    assert str(harness.store / "atelier.sqlite") in intake_calls[0]
+
+
+def test_connect_failure_rolls_back_without_ever_reaching_intake(
+    tmp_path: Path,
+) -> None:
+    harness = UpdateHarness.create(tmp_path)
+    previous_commit = str(harness.state()["head"])
+    harness.configure(fail_connect=True)
+
+    completed = harness.run()
+
+    assert completed.returncode != 0
+    assert (
+        "connecting the workflow definition source failed; restored the previous "
+        "commit and restarted the live serve" in completed.stderr
+    )
+    assert harness.state()["head"] == previous_commit
+    assert harness.state()["serve_started"] is True
+    assert not any(
+        call[:5] == ["uv", "run", "--locked", "atelier2", "definition-source"]
+        and call[5] == "intake"
+        for call in harness.invocations()
+    )
 
 
 def test_with_a_target_argument_it_fast_forwards_exactly_to_that_commit(

@@ -618,7 +618,8 @@ installation above. The host-process installation runs as the systemd user unit
 `atelier2-serve.service`. From its clean `main` deploy checkout, one hand
 command fast-forwards, installs the locked Python and frontend dependencies,
 builds the frontend, stops the unit, backs up the live store, migrates it,
-starts the unit, and verifies that health serves the new commit:
+takes the checkout's own workflows into the live catalog, starts the unit, and
+verifies that health serves the new commit:
 
 ```bash
 bash scripts/serve_live_update.sh
@@ -634,6 +635,22 @@ still exits nonzero. With the Serve unreachable and no recorded deploy, the
 command refuses and changes nothing. A `live serve is DOWN, operator action
 needed` line means that recovery itself failed; inspect `journalctl --user -u
 atelier2-serve.service -e` before acting.
+
+After migration and before the unit restarts -- the Serve is still stopped, so
+nothing else writes the store at the same time -- the command connects the
+deploy checkout itself as a definition source (`workflows/*.yaml`, ref
+`refs/heads/main`; connecting the same checkout and ref again is the same
+source, so this step is idempotent across runs) and takes its workflows in.
+Each path gets its own word in the log: `published` for bytes the catalog
+gained, `present` for bytes it already held, or `refused` for the one path
+that stopped that intake. A refusal does not hold the Serve back -- it starts
+with whatever workflow catalog state it already had -- but the command exits
+`3` rather than `0`, distinct from the generic failure exit `1`, so that a
+plain success/failure exit-code check (auto-redeploy's own) still counts that
+tick as a failure and, on a third consecutive one, escalates to the operator.
+The source itself failing to connect (an unreadable checkout or an unresolved
+ref, not a per-file refusal) is treated like a migration failure instead: it
+rolls back to the previously served commit and restarts that.
 
 Install the clean-stop classification once beside the unit, as the same user:
 
