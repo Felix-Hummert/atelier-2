@@ -343,9 +343,7 @@ def test_a_refine_round_returns_schema_valid_expectation_proposal(
     handed = provider.opened.requests[0].job_bytes
     assert composed_section(ORDER_HEADING.format(name="vision"), VISION) in handed
     assert (
-        composed_section(
-            ORDER_HEADING.format(name="owner_documents"), OWNER_DOCUMENTS
-        )
+        composed_section(ORDER_HEADING.format(name="owner_documents"), OWNER_DOCUMENTS)
         in handed
     )
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "refine")
