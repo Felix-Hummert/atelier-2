@@ -678,8 +678,8 @@ landing on `main` reaches it without an operator hand.** A systemd user timer
 checkout's Git admin directory, fetches `origin/main`, and compares it with the
 commit reported by live health. A matching commit is a no-op. Otherwise the
 watcher requires a clean `main` checkout and green GitHub check runs, checks
-all three active run states before requesting GitHub check runs and again
-immediately before the update, then hands the verified commit to
+for running runs before requesting GitHub check runs and again immediately
+before the update, then hands the verified commit to
 `scripts/serve_live_update.sh`. That script owns the fast-forward to the
 verified commit and remains the one owner of build, backup, migration,
 restart, and post-update health verification; the watcher never moves the
@@ -694,11 +694,15 @@ never itself cause the watcher's own clean-checkout preflight to refuse a
 deploy.
 
 Queued or running GitHub checks wait for another tick. No reported checks wait
-for up to 30 minutes after the commit; after that they count as red. A busy run
-in `STARTED`, `WAITING_INPUT`, or `WAITING_RECONCILIATION` also waits without
-failing the unit. An unreadable health, run list, or check result fails closed.
-The watcher never deploys a commit with a failed, cancelled, or timed-out check;
-completed neutral and skipped checks are accepted as non-red.
+for up to 30 minutes after the commit; after that they count as red. A run in
+`STARTED` also waits without failing the unit; a run parked on a person --
+`WAITING_INPUT`, `WAITING_RECONCILIATION` -- does not, because its answer is
+taken under whichever `--application-version` the serve carries when the person
+answers, so a redeploy cannot strand it
+(`tests/integration/test_wait_survives_version_change.py`). An unreadable
+health, run list, or check result fails closed. The watcher never deploys a
+commit with a failed, cancelled, or timed-out check; completed neutral and
+skipped checks are accepted as non-red.
 
 Enable it once per host, from the deploy checkout, no root:
 
@@ -713,12 +717,15 @@ systemctl --user enable --now atelier2-auto-redeploy.timer
 ```
 
 The Git admin directory holds `auto-redeploy.failures`, `auto-redeploy.busy`,
-and `auto-redeploy.last-alert`. A successful deploy or genuine no-op clears both
-streaks. Dirty or non-`main` checkouts warn and increment the failure streak but
-leave the tree untouched. The third consecutive failure, and the first repeat
-at least one hour later while the streak persists, logs at error priority and
-fails that oneshot tick; other failure ticks exit successfully. The 30th busy
-tick warns but never fails the unit. Inspect the tagged journal and unit state
+`auto-redeploy.last-alert`, and `auto-redeploy.last-busy-alert`. A successful
+deploy or genuine no-op clears both streaks. Dirty or non-`main` checkouts warn
+and increment the failure streak but leave the tree untouched. The third
+consecutive failure, and the first repeat at least one hour later while the
+streak persists, logs at error priority and fails that oneshot tick; other
+failure ticks exit successfully. Every deferred tick names the runs it waits for
+-- public reference, state, and start time -- and the tenth in a row, then at
+most hourly while the streak persists, repeats that at warning priority; a busy
+tick never fails the unit. Inspect the tagged journal and unit state
 with `journalctl --user -t atelier2-autodeploy -e` and
 `systemctl --user status atelier2-auto-redeploy.service`.
 
