@@ -83,3 +83,7 @@ text = "granted verify that exits nonzero ends the attempt `FAILED` under `PROJE
 [[sentence]]
 id = "a-verification-timeout-after-claim-fails-the-attempt-durably-named"
 text = "A granted verification that exceeds its declared `timeout_seconds` after `store.claim` ends the attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`, names the timeout in the `failed` `node-receipt/v3` reason, and does not leave the attempt `LAUNCH_ARMED`."
+
+[[sentence]]
+id = "a-red-verifications-output-is-kept-as-a-readable-artifact"
+text = "A granted verification that exits nonzero has the last 64 KiB of what it printed, with any credential shape redacted, kept as a content-addressed artifact and named by address in the `PROJECT_VERIFICATION_FAILED` receipt's own words, beside how long the command ran and, where the retained tail carries one, pytest's own short summary line; a runtime pinned with a redeemable grant but wired with no artifact publisher refuses before any provider work rather than discovering the gap only once a check has already exited nonzero."

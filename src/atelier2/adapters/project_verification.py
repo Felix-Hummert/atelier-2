@@ -19,11 +19,12 @@ talked out of is #242's, and this adapter must not be read as having done it.
 from __future__ import annotations
 
 import subprocess
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from atelier2.adapters.bounded_processes import bounded_process_answer
+from atelier2.adapters.bounded_processes import bounded_process_streams
 from atelier2.adapters.candidate_store import GitCandidateTreeStore
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.contracts.hashing import Sha256Hash
@@ -35,10 +36,12 @@ from atelier2.ports.project_source import (
     ProjectSourceUnavailable,
 )
 from atelier2.ports.project_verification import (
+    MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES,
     DeclaredProject,
     ProjectVerificationOutcome,
     ProjectVerificationUnavailable,
     ProjectVerificationUndeclared,
+    pytest_summary_line,
 )
 
 PROJECT_MANIFEST_NAME = "pyproject.toml"
@@ -122,6 +125,7 @@ class LocalProjectVerificationRunner:
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> ProjectVerificationOutcome:
         declared = self._declared(pin)
+        started_at = time.monotonic()
         try:
             process = subprocess.Popen(
                 declared.command,
@@ -137,7 +141,7 @@ class LocalProjectVerificationRunner:
                 f"started in {lease.working_directory}: {error}"
             ) from error
         try:
-            exit_code, standard_output = bounded_process_answer(
+            exit_code, standard_output, standard_error = bounded_process_streams(
                 process,
                 declared.timeout_seconds,
                 MAXIMUM_VERIFICATION_OUTPUT_BYTES,
@@ -148,8 +152,16 @@ class LocalProjectVerificationRunner:
                 f"within its declared {declared.timeout_seconds} seconds: {error}",
                 timeout_seconds=declared.timeout_seconds,
             ) from error
+        output_tail = (standard_output + standard_error)[
+            -MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES:
+        ]
         return ProjectVerificationOutcome(
-            declared.command, exit_code, Sha256Hash.of(standard_output)
+            declared.command,
+            exit_code,
+            Sha256Hash.of(standard_output),
+            time.monotonic() - started_at,
+            output_tail,
+            pytest_summary_line(output_tail),
         )
 
     def _declared(self, pin: ProjectSourcePin) -> DeclaredVerification:

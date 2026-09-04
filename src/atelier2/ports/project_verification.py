@@ -20,6 +20,7 @@ project declared.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -29,6 +30,55 @@ from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.candidate_store import CandidateTreeStore
 from atelier2.ports.project_source import ProjectSourceRepository
+
+MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES = 65_536
+"""How much of a verification's stdout and stderr, combined, an outcome retains.
+
+A red build's own words are the evidence an operator repairs from (#1137): the
+exit code alone answers nothing about whether a test broke or the environment
+did. Kept from the *end* of the combined streams, because a failing command's
+own diagnosis -- a traceback, a pytest short summary -- is printed last, and 64
+KiB is an operator-legible console tail rather than a derivation from
+`MAXIMUM_VERIFICATION_OUTPUT_BYTES`, which merely bounds how much of the raw
+answer this runtime will read at all before refusing it outright. What it costs
+is one resident copy of that tail, carried from the adapter that ran the
+command to whichever ending publishes or discards it.
+"""
+
+_BRACKETED_LINE = re.compile(r"=+\s*(?P<content>.*?)\s*=+")
+_VERDICT_COUNT = (
+    r"\d+ (?:passed|failed|error(?:s)?|skipped|xfailed|xpassed|deselected|"
+    r"warning(?:s)?)"
+)
+_VERDICT_LINE = re.compile(
+    rf"(?:no tests ran|{_VERDICT_COUNT}(?:,\s*{_VERDICT_COUNT})*)(?:\s+in\s+.*)?"
+)
+
+
+def pytest_summary_line(output_tail: bytes) -> str | None:
+    """The short summary pytest prints last, read from a retained tail.
+
+    Scanned from the end, because pytest brackets several section headers the
+    same way (`FAILURES`, `warnings summary`, `short test summary info`) and
+    only the run's own verdict is one this reads. `pytest -q` -- the shape this
+    runtime actually invokes -- prints that verdict bare, with no `=` border at
+    all; only a plain run without `-q`, or one bracketed for a wider terminal,
+    wraps it. Either way the verdict itself is never prose: it is `no tests
+    ran`, or one or more `<count> <word>` groups pytest's own vocabulary
+    produces, optionally followed by `in <duration>`. A bracketed section
+    header such as `warnings summary` carries no such count and is never
+    mistaken for one. A summary a long run pushed past the retained tail is
+    not a summary this outcome can honestly claim to carry, so a tail with
+    none answers `None` rather than guessing at an earlier section.
+    """
+    text = output_tail.decode("utf-8", errors="replace")
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        bracketed = _BRACKETED_LINE.fullmatch(stripped)
+        content = bracketed.group("content") if bracketed is not None else stripped
+        if _VERDICT_LINE.fullmatch(content) is not None:
+            return content
+    return None
 
 
 class ProjectVerificationUndeclared(Exception):
@@ -50,15 +100,36 @@ class ProjectVerificationUnavailable(Exception):
 
 @dataclass(frozen=True)
 class ProjectVerificationOutcome:
-    """What one declared verification ran, how it ended, and what it said."""
+    """What one declared verification ran, how it ended, and what it said.
+
+    `standard_output_hash` is unchanged from before this outcome carried more:
+    the digest of the full standard output this runtime read, up to
+    `MAXIMUM_VERIFICATION_OUTPUT_BYTES`, kept for exactly the reason it always
+    was -- proof that exactly this command produced exactly this answer.
+    `output_tail` is a second, deliberately narrower record: the last
+    `MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES` of *both* streams combined, retained
+    so a reader can see what a red build actually said without rerunning it.
+    `summary_line` is pytest's own short summary, read from that tail where one
+    is there to read.
+    """
 
     command: tuple[str, ...]
     exit_code: int
     standard_output_hash: Sha256Hash
+    duration_seconds: float
+    output_tail: bytes
+    summary_line: str | None
 
     def __post_init__(self) -> None:
         if not self.command:
             raise ValueError("a verification outcome names the command that ran")
+        if self.duration_seconds < 0:
+            raise ValueError("a verification cannot have run for negative time")
+        if len(self.output_tail) > MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES:
+            raise ValueError(
+                f"a verification outcome retains at most "
+                f"{MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES} bytes of output tail"
+            )
 
 
 class ProjectVerificationRunner(Protocol):

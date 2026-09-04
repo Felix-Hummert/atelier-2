@@ -18,6 +18,7 @@ wrote, beside an agent receipt whose provider bytes are untouched by any of it.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -56,6 +58,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.artifacts import Artifact, ArtifactHash
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
@@ -67,7 +70,10 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_forks import RunForkCommandId
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
+from atelier2.contracts.tool_grants_v3 import (
+    MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES,
+    ToolGrantCapability,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -260,6 +266,60 @@ def timeout_verification_runtime(
         VERIFICATION_EXIT_CODE,
         verification_command=["/bin/sh", "-c", "sleep 30"],
         timeout_seconds=DECLARED_VERIFICATION_TIMEOUT_SECONDS,
+    )
+
+
+PYTEST_STYLE_VERIFICATION_TAIL = b"1 failed, 4 passed in 0.10s\n"
+"""What a real `pytest -q` leaves as its last line, for the run this fixture drives.
+
+Bare, with no `=` border: `-q` prints the verdict unbracketed, unlike a plain
+run or a wider terminal, which is why the reader that finds this line
+(`pytest_summary_line`) accepts both shapes rather than assuming a border.
+"""
+
+PYTEST_STYLE_VERIFICATION_COMMAND = [
+    "/bin/sh",
+    "-c",
+    f"printf '%s' '{PYTEST_STYLE_VERIFICATION_TAIL.decode('ascii')}'; exit 1",
+]
+
+_OVERSIZED_SUMMARY_FILLER = "x" * (MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES + 200)
+OVERSIZED_SUMMARY_VERIFICATION_TAIL = (
+    f"1 failed, 1 passed in {_OVERSIZED_SUMMARY_FILLER}s\n"
+).encode("ascii")
+"""A verdict-shaped line a project's own test runner is free to compose this long.
+
+`pytest_summary_line`'s grammar bounds the shape of a verdict, never its
+length: anything after `in ` is free text, so this is exactly as real a
+summary as a short one, just longer than one receipt sentence keeps.
+"""
+
+OVERSIZED_SUMMARY_VERIFICATION_COMMAND = [
+    "/bin/sh",
+    "-c",
+    f"printf '%s' '{OVERSIZED_SUMMARY_VERIFICATION_TAIL.decode('ascii')}'; exit 1",
+]
+
+
+@pytest.fixture
+def oversized_summary_failing_verification_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    yield from granted_runtime(
+        tmp_path,
+        FAILED_VERIFICATION_EXIT_CODE,
+        verification_command=OVERSIZED_SUMMARY_VERIFICATION_COMMAND,
+    )
+
+
+@pytest.fixture
+def pytest_style_failing_verification_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    yield from granted_runtime(
+        tmp_path,
+        FAILED_VERIFICATION_EXIT_CODE,
+        verification_command=PYTEST_STYLE_VERIFICATION_COMMAND,
     )
 
 
@@ -510,6 +570,125 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
     assert value_hash is None
     assert receipt_count == 0
     assert redemption_count == 0
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_nonzero_project_verification_keeps_its_output_and_names_it_in_the_refusal(
+    pytest_style_failing_verification_runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    """The named failure #1137 closed: a reader learns *why* without rerunning it.
+
+    `exit 1` alone answers nothing about whether a test broke or the
+    environment did (#1137's own live pass). The receipt now also names the
+    command, pytest's own summary line and the address of an artifact holding
+    the check's full retained output -- reachable through the same
+    `GET /artifacts/{hash}` door #1089 already opened, not a new wire concept.
+    """
+    started_runtime, _scratch_root, _cwd_record = (
+        pytest_style_failing_verification_runtime
+    )
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+    run_id = RunId("v3/red-verify-names-its-evidence")
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    ).start_published(
+        StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    wait_for_failed_run_after_node_completion(started_runtime, run_id, workflow)
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(agent_attempts.c.run_id == run_id.value)
+            )
+            .mappings()
+            .one()
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+
+    words, _schema_revision, _value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    assert words.startswith(NodeReceiptReason.PROJECT_VERIFICATION_FAILED.value)
+    assert f"exit {FAILED_VERIFICATION_EXIT_CODE}" in words
+    assert " ".join(PYTEST_STYLE_VERIFICATION_COMMAND) in words
+    assert re.search(r"after \d+ s", words) is not None, words
+    assert "1 failed, 4 passed in 0.10s" in words
+
+    artifact_match = re.search(r"output artifact sha256:([0-9a-f]{64})", words)
+    assert artifact_match is not None, words
+    artifact = DbosArtifactStore(started_runtime.engine).read_artifact(
+        ArtifactHash(artifact_match.group(1))
+    )
+    assert isinstance(artifact, Artifact)
+    assert artifact.content == PYTEST_STYLE_VERIFICATION_TAIL
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_summary_line_past_the_receipted_bound_is_kept_as_its_own_tail(
+    oversized_summary_failing_verification_runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    """The command's own summary can grow past what one receipt sentence keeps.
+
+    Mirrors `ProcessExitSignature`'s standard-error bound (#1137): a receipt is
+    a sentence an operator reads at a glance, not the project's own log, so a
+    verdict-shaped line longer than the bound is kept as its own tail rather
+    than grown into the reason without limit.
+    """
+    started_runtime, _scratch_root, _cwd_record = (
+        oversized_summary_failing_verification_runtime
+    )
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+    run_id = RunId("v3/red-verify-oversized-summary")
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    ).start_published(
+        StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    wait_for_failed_run_after_node_completion(started_runtime, run_id, workflow)
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(agent_attempts.c.run_id == run_id.value)
+            )
+            .mappings()
+            .one()
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+
+    words, _schema_revision, _value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    summary_length = len(OVERSIZED_SUMMARY_VERIFICATION_TAIL.rstrip(b"\n"))
+    bound_prefix = (
+        f"last {MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES} of "
+        f"{summary_length} summary bytes: "
+    )
+    assert bound_prefix in words
+    kept_summary = words.split(bound_prefix, 1)[1].split(";", 1)[0]
+    assert kept_summary.endswith("s")
+    assert len(kept_summary) == MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES
 
 
 @pytest.mark.proves(
