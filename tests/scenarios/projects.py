@@ -80,7 +80,7 @@ def git_project(
     """
 
     root.mkdir(parents=True, exist_ok=True)
-    _git(
+    run_git(
         root,
         "init",
         "--quiet",
@@ -94,8 +94,8 @@ def commit_to_project(root: Path, files: Mapping[str, str]) -> ProjectSourcePin:
     """Write these files into the checkout, commit them, and pin what results."""
 
     write_into_checkout(root, files)
-    _git(root, "add", "--all")
-    _git(root, "commit", "--quiet", "--message", "scenario")
+    run_git(root, "add", "--all")
+    run_git(root, "commit", "--quiet", "--message", "scenario")
     return LocalGitProjectSource(root).head()
 
 
@@ -108,7 +108,7 @@ def declared_in_checkout(root: Path, settings: Mapping[str, str]) -> None:
     """
 
     for name, value in settings.items():
-        _git(root, "config", name, value)
+        run_git(root, "config", name, value)
 
 
 def write_into_checkout(root: Path, files: Mapping[str, str]) -> None:
@@ -134,11 +134,20 @@ def declaring_verification(
     }
 
 
-def _git(root: Path, *arguments: str) -> None:
-    subprocess.run(
+def run_git(root: Path, *arguments: str) -> str:
+    """Run one hookless git command against this repository, and read its stdout.
+
+    Every git call this module makes, and every acceptance test that exercises
+    a real push, funnels through this one runner rather than each spelling its
+    own isolation -- a hook or identity leak from the operator's machine has
+    exactly one place it could enter, and one place a test can catch it.
+    """
+
+    completed = subprocess.run(
         ("git", "-C", str(root), *arguments),
         env={**os.environ, **COMMITTING_SCENARIO},
         stdin=subprocess.DEVNULL,
         capture_output=True,
         check=True,
     )
+    return completed.stdout.decode().strip()
