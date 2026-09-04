@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -117,6 +118,8 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.issue_observation import (
     ObservedOpenTrackerItem,
     OpenTrackerItemsObserved,
+    TrackerItemSource,
+    TrackerSourceUnavailable,
 )
 from atelier2.ports.published_revisions import (
     CatalogLineageFounded,
@@ -127,6 +130,7 @@ from atelier2.ports.queue_projection import (
     QueueItemsReconciled,
     QueueLaunchBlocked,
     QueueLaunchReserved,
+    QueueProjectPolicyFound,
     QueueProjectPolicyPublished,
     QueueReadUnavailable,
 )
@@ -172,14 +176,32 @@ test a second, distinguishable revision of the same shape.
 """
 
 
-def _runtime(database_path: Path) -> DbosRuntime:
+def _runtime(
+    database_path: Path,
+    *,
+    project_root: Path | None = None,
+    tracker: TrackerItemSource | None = None,
+) -> DbosRuntime:
+    """The Serve runtime these tests launch, optionally serving one project.
+
+    A named project root is what makes the sweep's admission half run at all:
+    without a served project and a connected tracker there is no policy to read
+    and no label to read it against, so the plain harness gets neither.
+    """
+
     return DbosRuntime(
-        DbosRuntimeSettings(database_path, "phase-d-admission-test"),
+        DbosRuntimeSettings(
+            database_path,
+            "phase-d-admission-test",
+            project_id=None if project_root is None else PROJECT,
+            bootstrap_project_root=project_root,
+        ),
         LoopbackEffectAdapterFactory(
             database_path.parent / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        tracker_item_source=tracker,
     )
 
 
@@ -207,12 +229,15 @@ def _proposal(
     prerequisites: tuple[QueueItemId, ...] = (),
     rank: int = 1,
     policy_revision: int | None = 1,
+    disposition: QueueAutomationDisposition = (
+        QueueAutomationDisposition.HUMAN_REQUIRED
+    ),
 ) -> QueueProposal:
     return QueueProposal(
         QueuePriorityRank(rank),
         lineage_id,
         prerequisites,
-        QueueAutomationDisposition.HUMAN_REQUIRED,
+        disposition,
         policy_revision,
     )
 
@@ -283,6 +308,30 @@ def _seed_open_items(
     assert isinstance(reconciled, QueueItemsReconciled)
 
 
+def _prepare_proposed(
+    store: DbosQueueProjectionStore,
+    lineage_id: CatalogLineageId,
+    tracker: str = "gh:79",
+    prerequisites: tuple[QueueItemId, ...] = (),
+    rank: int = 1,
+    policy_revision: int | None = 1,
+    disposition: QueueAutomationDisposition = (
+        QueueAutomationDisposition.HUMAN_REQUIRED
+    ),
+) -> QueueItemProposed:
+    reference = WorkItemReference(PROJECT, TrackerItemReference(tracker))
+    _seed_open_items(store, reference)
+    proposed = store.plan(
+        PlanQueueItem(
+            reference,
+            _proposal(lineage_id, prerequisites, rank, policy_revision, disposition),
+            QueueProjectionRevision(0),
+        )
+    )
+    assert isinstance(proposed, QueueItemProposed)
+    return proposed
+
+
 def _prepare_admitted(
     store: DbosQueueProjectionStore,
     lineage_id: CatalogLineageId,
@@ -291,25 +340,18 @@ def _prepare_admitted(
     rank: int = 1,
     policy_revision: int | None = 1,
 ) -> WorkItemReference:
-    reference = WorkItemReference(PROJECT, TrackerItemReference(tracker))
-    _seed_open_items(store, reference)
-    proposed = store.plan(
-        PlanQueueItem(
-            reference,
-            _proposal(lineage_id, prerequisites, rank, policy_revision),
-            QueueProjectionRevision(0),
-        )
+    proposed = _prepare_proposed(
+        store, lineage_id, tracker, prerequisites, rank, policy_revision
     )
-    assert isinstance(proposed, QueueItemProposed)
     admitted = store.confirm(
         ConfirmQueueProposal(
-            reference,
+            proposed.item_reference,
             proposed.revision,
             QueueAdmissionRationale("operator approved the inspected proposal"),
         )
     )
     assert isinstance(admitted, QueueItemAdmitted)
-    return reference
+    return proposed.item_reference
 
 
 @pytest.fixture
@@ -348,6 +390,19 @@ def _snapshots_by_reference(
     page = queue.list_items(None, MAXIMUM_PAGE_ITEMS)
     assert isinstance(page, QueueItemsPage)
     return {item.item_reference.tracker_item: item for item in page.items}
+
+
+def _launch_bindings(engine: Engine, item_id: QueueItemId) -> tuple[sa.RowMapping, ...]:
+    with engine.connect() as connection:
+        return tuple(
+            connection.execute(
+                sa.select(queue_launch_bindings).where(
+                    queue_launch_bindings.c.item_id == item_id.value
+                )
+            )
+            .mappings()
+            .all()
+        )
 
 
 def _durable_observations(
@@ -1534,6 +1589,167 @@ def test_a_serve_launch_starts_an_admitted_item_in_a_policy_less_project(
         assert len(bindings) == 1
     finally:
         runtime.close()
+
+
+@pytest.mark.proves("the-automation-label-admits-the-items-that-carry-it")
+def test_a_serve_launch_admits_the_labelled_item_and_starts_it_in_the_same_sweep(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The label's whole way through a Serve start: policy, tracker, admission, start.
+
+    The unit scenarios own what the rule decides per item; what this proves is
+    the composition around it -- a policy published with a non-null label is
+    the one the runtime reads back, the tracker answer is read at the sweep,
+    and the item that label admits is started by the same sweep rather than by
+    the next process start. The two items beside it are the boundary: one
+    carries the label but is reserved for a human, one is automatable but
+    carries no label, and neither is admitted.
+    """
+
+    label = "bereit"
+    project_root = tmp_path / "operator-project"
+    project_root.mkdir()
+    listing = OpenTrackerItemsObserved(
+        (
+            ObservedOpenTrackerItem(
+                TrackerItemReference("gh:79"), "labelled", (label,)
+            ),
+            ObservedOpenTrackerItem(
+                TrackerItemReference("gh:80"), "reserved for a human", (label,)
+            ),
+            ObservedOpenTrackerItem(TrackerItemReference("gh:81"), "unlabelled", ()),
+        ),
+        RecordedAt("2026-09-04T09:00:00Z"),
+    )
+    runtime = _runtime(
+        tmp_path / "atelier.sqlite",
+        project_root=project_root,
+        tracker=FakeTrackerItemSource(open_items_answer=listing),
+    )
+    try:
+        lineage_id, _revision_hash = _found_lineage(runtime.engine)
+        queue = DbosQueueProjectionStore(runtime.engine)
+        assert isinstance(
+            queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, label), 0),
+            QueueProjectPolicyPublished,
+        )
+        automatic = _prepare_proposed(
+            queue,
+            lineage_id,
+            "gh:79",
+            disposition=QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+        ).item_reference
+        _prepare_proposed(queue, lineage_id, "gh:80")
+        _prepare_proposed(
+            queue,
+            lineage_id,
+            "gh:81",
+            disposition=QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+        )
+
+        with caplog.at_level(logging.INFO, logger="atelier2"):
+            runtime.launch()
+
+        snapshots = _snapshots_by_reference(queue)
+        admitted = snapshots[TrackerItemReference("gh:79")]
+        assert admitted.state is QueueItemState.ADMITTED
+        assert admitted.admission is not None
+        assert admitted.admission.authority is QueueDecisionAuthority.AUTOMATION_RULE
+        assert label in admitted.admission.rationale.value
+        assert snapshots[TrackerItemReference("gh:80")].state is QueueItemState.PROPOSED
+        assert snapshots[TrackerItemReference("gh:81")].state is QueueItemState.PROPOSED
+        assert len(_launch_bindings(runtime.engine, automatic.item_id)) == 1
+
+        swept = [
+            record
+            for record in caplog.records
+            if getattr(record, "event", None) == "queue_label_admission_swept"
+        ]
+        assert [
+            (getattr(record, "admitted", None), getattr(record, "declined", None))
+            for record in swept
+        ] == [(1, 1)]
+        assert [
+            (getattr(record, "item_id", None), getattr(record, "outcome", None))
+            for record in caplog.records
+            if getattr(record, "event", None) == "queue_label_admission_declined"
+        ] == [
+            (
+                WorkItemReference(PROJECT, TrackerItemReference("gh:80")).item_id.value,
+                QueueAdmissionAuthorityRefused.__name__,
+            )
+        ]
+    finally:
+        runtime.close()
+
+
+def test_a_serve_launch_admits_nothing_and_warns_when_the_tracker_cannot_be_read(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unreachable tracker leaves every row as it was -- and says so.
+
+    The rule is soft by contract: nothing durable changes, so the sweep's own
+    line is the only thing an operator can see it by.
+    """
+
+    project_root = tmp_path / "operator-project"
+    project_root.mkdir()
+    unreadable = TrackerSourceUnavailable("the tracker refused the listing")
+    runtime = _runtime(
+        tmp_path / "atelier.sqlite",
+        project_root=project_root,
+        tracker=FakeTrackerItemSource(open_items_answer=unreadable),
+    )
+    try:
+        lineage_id, _revision_hash = _found_lineage(runtime.engine)
+        queue = DbosQueueProjectionStore(runtime.engine)
+        queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, "bereit"), 0)
+        proposed = _prepare_proposed(
+            queue,
+            lineage_id,
+            disposition=QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+        ).item_reference
+
+        with caplog.at_level(logging.INFO, logger="atelier2"):
+            runtime.launch()
+
+        snapshots = _snapshots_by_reference(queue)
+        assert snapshots[proposed.tracker_item].state is QueueItemState.PROPOSED
+        assert _launch_bindings(runtime.engine, proposed.item_id) == ()
+        assert [
+            (record.levelno, getattr(record, "detail", None))
+            for record in caplog.records
+            if getattr(record, "event", None)
+            == "queue_label_admission_source_unreadable"
+        ] == [(logging.WARNING, unreadable.detail)]
+    finally:
+        runtime.close()
+
+
+def test_the_newest_policy_revision_answers_with_the_automation_label_it_published(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """Both rules of a policy survive the store, and the newest revision rules.
+
+    A label the store cannot read back is a label the sweep cannot act on, so
+    the round trip is part of the contract, not of the adapter's internals.
+    """
+
+    queue, _engine = store
+    assert isinstance(
+        queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, "bereit"), 0),
+        QueueProjectPolicyPublished,
+    )
+    assert isinstance(
+        queue.put_policy(QueueProjectPolicyRevision(PROJECT, 2, 3, "startklar"), 1),
+        QueueProjectPolicyPublished,
+    )
+
+    current = queue.current_policy(PROJECT)
+
+    assert current == QueueProjectPolicyFound(
+        QueueProjectPolicyRevision(PROJECT, 2, 3, "startklar")
+    )
 
 
 def test_advance_replays_a_reserved_binding_before_projection_blockers(
