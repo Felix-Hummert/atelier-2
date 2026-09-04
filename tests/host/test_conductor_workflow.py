@@ -47,6 +47,7 @@ from atelier2.contracts.provider_probe_receipts import (
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
+    MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     InstanceAccepted,
     InstanceRefused,
     SchemaAccepted,
@@ -58,7 +59,6 @@ from atelier2.contracts.when import recorded_instant
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WaitNodeV3, WorkflowGraphV3
 from atelier2.host.conductor_workflow import (
     CONDUCTOR_AGENT_NODE_ID,
-    CONDUCTOR_CARRIED_CONTEXT_MAXIMUM_LENGTH,
     CONDUCTOR_DOOR_TOOLS,
     CONDUCTOR_LOOP_ID,
     CONDUCTOR_LOOP_MAXIMUM_ROUNDS,
@@ -183,7 +183,7 @@ def test_the_canonical_message_and_report_schemas_are_enforceable() -> None:
     _accepted(CONDUCTOR_REPORT_SCHEMA)
 
 
-def _report(**overrides: object) -> bytes:
+def _report(*, ensure_ascii: bool = True, **overrides: object) -> bytes:
     payload: dict[str, object] = {
         "answer": "Started run build-1; it is STARTED.",
         "started_run_ids": ["build-1"],
@@ -191,7 +191,7 @@ def _report(**overrides: object) -> bytes:
         "carried_context_truncated": False,
     }
     payload.update(overrides)
-    return json.dumps(payload).encode()
+    return json.dumps(payload, ensure_ascii=ensure_ascii).encode()
 
 
 def test_the_report_schema_admits_the_instructed_json_and_refuses_prose() -> None:
@@ -212,14 +212,11 @@ def test_the_report_schema_admits_the_instructed_json_and_refuses_prose() -> Non
     )
 
 
-def test_the_report_schema_requires_the_honesty_marker_and_bounds_carried_context() -> (
-    None
-):
-    """`carried_context_truncated` cannot be omitted, and its context is bounded.
+def test_the_report_schema_requires_the_honesty_marker() -> None:
+    """`carried_context_truncated` cannot be omitted.
 
     A report that silently dropped context would poison every round that
-    trusts it; the schema refuses one that keeps quiet about it, and refuses
-    a `carried_context` past its own named ceiling.
+    trusts it; the schema refuses one that keeps quiet about it.
     """
 
     report_schema = _accepted(CONDUCTOR_REPORT_SCHEMA)
@@ -230,25 +227,41 @@ def test_the_report_schema_requires_the_honesty_marker_and_bounds_carried_contex
             "carried_context": "",
         }
     ).encode()
-    oversized_context = _report(
-        carried_context="x" * (CONDUCTOR_CARRIED_CONTEXT_MAXIMUM_LENGTH + 1)
-    )
 
     assert isinstance(
         read_instance_document(missing_marker, report_schema), InstanceRefused
     )
+
+
+def test_carried_context_is_bounded_in_bytes_not_code_points() -> None:
+    """A round near the limit fails at the same byte seam the code-point count let through, without one.
+
+    #658 P3: `carried_context`'s own ceiling used to be a JSON Schema
+    `maxLength` counted in code points, a different unit than the byte seam
+    (`MAXIMUM_INSTANCE_DOCUMENT_BYTES`) that actually reads the produced
+    report, both at the success write and at the round hand-off. A
+    multibyte-heavy `carried_context` could pass the code-point count and
+    still be refused loud at the byte seam. The report schema now declares no
+    competing bound, so the one byte seam alone decides: a two-byte character
+    repeated to land exactly on the ceiling is accepted, and one byte more --
+    a single trailing ASCII character -- is refused.
+    """
+
+    report_schema = _accepted(CONDUCTOR_REPORT_SCHEMA)
+    overhead = len(_report(carried_context="", ensure_ascii=False))
+    # "é" (U+00E9) encodes as exactly two UTF-8 bytes, so this count of
+    # repeats lands the whole report exactly on the byte ceiling.
+    repeats = (MAXIMUM_INSTANCE_DOCUMENT_BYTES - overhead) // 2
+    at_the_byte_ceiling = _report(carried_context="é" * repeats, ensure_ascii=False)
+    one_byte_over = _report(carried_context="é" * repeats + "x", ensure_ascii=False)
+    assert len(at_the_byte_ceiling) == MAXIMUM_INSTANCE_DOCUMENT_BYTES
+    assert len(one_byte_over) == MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1
+
     assert isinstance(
-        read_instance_document(oversized_context, report_schema), InstanceRefused
+        read_instance_document(at_the_byte_ceiling, report_schema), InstanceAccepted
     )
     assert isinstance(
-        read_instance_document(
-            _report(
-                carried_context="x" * CONDUCTOR_CARRIED_CONTEXT_MAXIMUM_LENGTH,
-                carried_context_truncated=True,
-            ),
-            report_schema,
-        ),
-        InstanceAccepted,
+        read_instance_document(one_byte_over, report_schema), InstanceRefused
     )
 
 
@@ -314,6 +327,38 @@ def test_a_conductor_document_authoring_an_order_naming_itself_is_refused() -> N
 
     with pytest.raises(ConductorDocumentDefect, match="unbounded billed tree"):
         require_conductor_document(self_starting)
+
+
+def test_a_document_with_foreign_graph_inputs_is_not_a_conductor() -> None:
+    """The conductor's round input is the wait node's answer, never a graph input.
+
+    A document that declares `graph_inputs` -- and reads one, so it still
+    passes grammar (an unread graph input is its own, earlier refusal) --
+    admits an order no genuine conductor round takes; `require_conductor_document`
+    must refuse it rather than let it pass as the conductor.
+    """
+
+    document = _conductor_document()
+    with_foreign_input = document.replace(
+        b"nodes:\n",
+        b"graph_inputs:\n"
+        b"  - name: foreign_order\n"
+        b'    schema: {ref: any-json, revision: "'
+        + _ANY_JSON_SCHEMA.revision_hash.value.encode("ascii")
+        + b'"}\n'
+        b"nodes:\n",
+    ).replace(
+        b"      - name: previous_report\n"
+        b"        from: {node: conduct, output: report}\n",
+        b"      - name: previous_report\n"
+        b"        from: {node: conduct, output: report}\n"
+        b"      - name: foreign_order\n"
+        b"        from: {graph_input: foreign_order}\n",
+    )
+    assert with_foreign_input != document
+
+    with pytest.raises(ConductorDocumentDefect, match="graph_inputs"):
+        require_conductor_document(with_foreign_input)
 
 
 def test_a_document_with_a_third_node_is_not_a_conductor() -> None:
