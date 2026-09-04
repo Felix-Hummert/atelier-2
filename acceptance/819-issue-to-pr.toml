@@ -1,0 +1,29 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/819"
+
+# Slice 1b: the catalog document itself. #1101 landed the runtime delta this
+# chain stands on -- two grant shapes on one node, and an open-pr Action that
+# reads a builder's own output through review and a Wait -- and this sentence is
+# the shipped `workflows/issue-to-pr.yaml` driving that line end to end from one
+# work-item order.
+#
+# WHAT THE SENTENCE CLAIMS, AND IN WHICH ORDER. The push is the builder attempt's
+# own effect-shaped continuation, so the Atelier-authored commit exists before
+# the review and before the Wait. What the operator releases at the Wait is the
+# pull request, never the commit; the sentence is worded so that stays visible.
+#
+# WHAT IT DOES NOT CLAIM. The reviewer judges the builder's own structured
+# report, not a canonical diff derived from the kept candidate -- #819 names that
+# as the first follow-up slice, and until it lands the review's evidence is the
+# builder's statement about its work. `revise` and `cannot-judge` reach the
+# operator at the Wait rather than routing anywhere; the fix rounds of #819 are
+# not in this line at all. The pull request body is the candidate report's
+# JSON, not prose; rendering it into a readable body is #819's next slice.
+# Slice 1b ships the catalog document with the deployment's own push-identity
+# pins (author Felix Hummert, committer Grok 4.6), superseding the 27.08.2026
+# reservation by the plan review -- the pins are owned by the deployment's
+# push grant and adapter operation, not by the catalog.
+
+[[sentence]]
+id = "issue-to-pr-builds-reviews-waits-and-opens-the-pull-request"
+text = "Der Head nennt nur die Issue-Referenz; issue-to-pr baut, lässt reviewen, wartet auf die Freigabe und öffnet den PR mit dem Atelier-Receipt."
