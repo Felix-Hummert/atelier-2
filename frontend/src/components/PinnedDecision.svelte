@@ -6,7 +6,6 @@
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { humanErrorMessage } from "../lib/humanRefusal";
-  import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
   import { waitAnswerText, type MutationJournal, type WaitMutation } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
@@ -44,6 +43,11 @@
   export let navigate: (path: string) => void;
   export let compact = false;
   export let onExpand: () => void;
+  /** Reports upward that the mutation journal itself could not be read
+   * (#914, second half of #1131) -- the run page owns the one honest
+   * sentence and its one door, mirroring the Workbench, rather than this
+   * card writing that sentence into its own wait-failure slot. */
+  export let onJournalPoisoned: () => void = () => {};
 
   /** One house beat (`--beat` in styles.css): long enough to read the landed sentence. */
   const ANSWER_LANDED_HOLD_MS = 1600;
@@ -184,10 +188,9 @@
       // The journal itself could not be read (#914). This card has no door
       // of its own out of a poisoned journal -- that is the page's to show,
       // as the Workbench already does by never mounting this component
-      // while its own journal check stays open -- so this reuses the
-      // existing failure slot rather than swallowing the read as an
-      // unhandled rejection.
-      if (key === loadedNodeKey) waitFailureMessage = journalPoisonedCopy.sentence;
+      // while its own journal check stays open -- so this reports upward
+      // instead of writing the sentence into its own failure slot.
+      onJournalPoisoned();
       return;
     }
     if (key !== loadedNodeKey) return;

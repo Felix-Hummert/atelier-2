@@ -2,7 +2,6 @@
   import ThreeFactConfirmSheet from "./ThreeFactConfirmSheet.svelte";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
-  import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
 
   /**
    * The one confirmation a poisoned mutation journal's door opens (#914,
@@ -15,24 +14,19 @@
    * sheet ever opens, so the same bytes shown here are the ones the caller's
    * post-discard receipt measures.
    *
-   * The confirm and cancel buttons default to the Workbench's own
-   * `data-workbench-question` tag -- the inventory its own control-inventory
-   * test still expects -- so its existing caller needs no change; a caller
-   * outside the Workbench (the run page, #1131) passes its own attributes,
-   * or `{}` for none, the same way `RetireCatalogLineageSheet.svelte`
-   * already leaves both at their default.
+   * The confirm and cancel buttons default to `{}`, the same way
+   * `RetireCatalogLineageSheet.svelte` already leaves both at their default:
+   * every caller that owns a control inventory (the Workbench's own
+   * `data-workbench-question` tags) passes its own attributes explicitly; a
+   * caller outside one (the run page, #1131) passes nothing.
    */
   export let raw: string;
   export let submitting = false;
   export let failure: string | null = null;
   export let onConfirm: () => void;
   export let onDismiss: () => void;
-  export let confirmAttributes: Record<string, string> = {
-    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalConfirm.id
-  };
-  export let cancelAttributes: Record<string, string> = {
-    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalCancel.id
-  };
+  export let confirmAttributes: Record<string, string> = {};
+  export let cancelAttributes: Record<string, string> = {};
 
   /**
    * A scrollable exact-bytes box takes a tab stop the same way

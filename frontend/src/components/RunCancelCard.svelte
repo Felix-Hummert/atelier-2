@@ -39,6 +39,13 @@
 
   const cancel = runPageCopy.cancel;
 
+  /** `readPendingCancel`'s own result, so a poisoned journal is a case its
+   * two callers must handle rather than a third, string-typed sentinel
+   * squeezed alongside the real `PendingCancel | null`. */
+  type PendingCancelLookup =
+    | { kind: "found"; pending: PendingCancel | null }
+    | { kind: "poisoned" };
+
   let pending: CancelMutation | null = null;
   let busy = false;
   let accepted = false;
@@ -75,10 +82,10 @@
       pending = null;
       return;
     }
-    const found = await readPendingCancel(publicRunReference);
-    if (found === "poisoned") return;
-    pending = found;
-    accepted = found !== null && found.delivery === "accepted";
+    const lookup = await readPendingCancel(publicRunReference);
+    if (lookup.kind === "poisoned") return;
+    pending = lookup.pending;
+    accepted = lookup.pending !== null && lookup.pending.delivery === "accepted";
   }
 
   /**
@@ -91,10 +98,10 @@
     publicRunReference: string
   ): Promise<void> {
     if (!runHasEnded(state)) return;
-    const found = await readPendingCancel(publicRunReference);
-    if (found === "poisoned") return;
-    if (found !== null) {
-      await mutationJournal.discard(found.mutation_id);
+    const lookup = await readPendingCancel(publicRunReference);
+    if (lookup.kind === "poisoned") return;
+    if (lookup.pending !== null) {
+      await mutationJournal.discard(lookup.pending.mutation_id);
     }
     pending = null;
     accepted = false;
@@ -108,12 +115,12 @@
    */
   async function readPendingCancel(
     publicRunReference: string
-  ): Promise<PendingCancel | null | "poisoned"> {
+  ): Promise<PendingCancelLookup> {
     try {
-      return await loadPendingCancelForRun(mutationJournal, publicRunReference);
+      return { kind: "found", pending: await loadPendingCancelForRun(mutationJournal, publicRunReference) };
     } catch {
       onJournalPoisoned();
-      return "poisoned";
+      return { kind: "poisoned" };
     }
   }
 

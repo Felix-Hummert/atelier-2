@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import App from "../../src/App.svelte";
 import PinnedDecision from "../../src/components/PinnedDecision.svelte";
+import RunCancelCard from "../../src/components/RunCancelCard.svelte";
+import V3RunView from "../../src/components/V3RunView.svelte";
 import { journalPoisonedCopy } from "../../src/lib/journalPoisonedCopy";
 import { cancelMutation, MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
@@ -55,15 +57,43 @@ function duplicateIdentityJournal(): string {
   return JSON.stringify([entry, entry]);
 }
 
+/** A single otherwise-valid cancel entry whose `body_base64` was corrupted
+ * after the fact -- one of `entries()`'s own rejection reasons distinct from
+ * the top-level shape checks above: the byte/hash corruption a real browser
+ * bug or a hand edit of `localStorage` could produce. */
+function corruptedBodyJournal(): string {
+  const entry = {
+    ...cancelMutation(publicReference, "d".repeat(64), "cancel-corrupt"),
+    delivery: "prepared" as const,
+    body_base64: "not-canonical-base64!!"
+  };
+  return JSON.stringify([entry]);
+}
+
+/** A single otherwise-valid entry carrying one field `entries()` never
+ * declared -- its own exact-keys refusal, distinct from an unknown delivery
+ * state (a known field with an unrecognized value). */
+function extraKeyJournal(): string {
+  const entry = {
+    ...cancelMutation(publicReference, "d".repeat(64), "cancel-extra"),
+    delivery: "prepared" as const,
+    unexpected_field: "x"
+  };
+  return JSON.stringify([entry]);
+}
+
 /** Every distinct way `entries()` (`mutationJournal.ts`) refuses to read the
  * stored journal -- corrupt JSON, a value that is not a list, an entry with
- * an unknown delivery state, and a duplicate mutation identity -- so the run
- * page proves it reacts the same way regardless of which one fired. */
+ * an unknown delivery state, a duplicate mutation identity, byte/hash
+ * corruption inside one entry, and an entry carrying an undeclared key -- so
+ * the run page proves it reacts the same way regardless of which one fired. */
 const POISONED_JOURNAL_FIXTURES: readonly { name: string; stored: () => string }[] = [
   { name: "invalid JSON", stored: () => "{" },
   { name: "a value that is not a list", stored: () => JSON.stringify({}) },
   { name: "an entry with an unknown delivery state", stored: () => JSON.stringify([{ delivery: "sent" }]) },
-  { name: "a duplicate mutation identity", stored: duplicateIdentityJournal }
+  { name: "a duplicate mutation identity", stored: duplicateIdentityJournal },
+  { name: "a cancel entry's body_base64 corrupted after the fact", stored: corruptedBodyJournal },
+  { name: "an entry carrying an undeclared key", stored: extraKeyJournal }
 ];
 
 let unhandledRejections: unknown[] = [];
@@ -166,8 +196,9 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
     expect(unhandledRejections).toEqual([]);
   });
 
-  it("proves(pinned-decision-read-reacts-to-a-poisoned-journal): shows the same honest sentence instead of an unhandled rejection", async () => {
+  it("proves(pinned-decision-read-reports-a-poisoned-journal): reports it through onJournalPoisoned instead of writing the sentence into its own wait-failure slot", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
+    let reported = 0;
     render(PinnedDecision, {
       props: {
         run: waitingInputRun(),
@@ -176,11 +207,58 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
         mutationJournal: new MutationJournal(sessionStorage),
         onRunRead: () => {},
         navigate: () => {},
-        onExpand: () => {}
+        onExpand: () => {},
+        onJournalPoisoned: () => { reported += 1; }
       }
     });
 
-    expect(await screen.findByText(journalPoisonedCopy.sentence)).toBeTruthy();
+    await waitFor(() => expect(reported).toBe(1));
+    // The card's own failure slot never carries the page's one sentence --
+    // that slot is the page's to fill, mirroring the Workbench.
+    expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();
+
+    await flushUnhandledRejectionQueue();
+    expect(unhandledRejections).toEqual([]);
+  });
+
+  it("proves(run-cancel-card-reports-a-poisoned-journal): reports it through onJournalPoisoned and renders nothing of its own, mounted directly with a poisoned journal", async () => {
+    sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
+    let reported = 0;
+    const { container } = render(RunCancelCard, {
+      props: {
+        run: waitingInputRun(),
+        cockpitApi: cockpitApiStub(),
+        mutationJournal: new MutationJournal(sessionStorage),
+        onJournalPoisoned: () => { reported += 1; }
+      }
+    });
+
+    await waitFor(() => expect(reported).toBe(1));
+    // Svelte leaves only its own empty anchor comments for the untaken
+    // `{#if}` branches -- no element of the card's own renders.
+    expect(container.querySelector("*")).toBeNull();
+    expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();
+
+    await flushUnhandledRejectionQueue();
+    expect(unhandledRejections).toEqual([]);
+  });
+
+  it("proves(v3-run-view-reports-a-poisoned-journal): reports it through onJournalPoisoned and shows no poisoned notice of its own, mounted directly with a poisoned journal", async () => {
+    sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
+    let reported = 0;
+    render(V3RunView, {
+      props: {
+        run: waitingInputRun(),
+        cockpitApi: cockpitApiStub({ getWorkflowRevision: async () => workflowRevision() }),
+        mutationJournal: new MutationJournal(sessionStorage),
+        onJournalPoisoned: () => { reported += 1; }
+      }
+    });
+
+    await waitFor(() => expect(reported).toBe(1));
+    // Deferring entirely to the page: no local door, no local sentence, and
+    // the raw throw never leaked into the wait card's own failure slot.
+    expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();
 
     await flushUnhandledRejectionQueue();
     expect(unhandledRejections).toEqual([]);

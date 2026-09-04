@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
 
   import {
     CockpitRequestError,
@@ -11,11 +11,8 @@
   } from "../api/client";
   import BackLink from "../components/BackLink.svelte";
   import LoadingState from "../components/LoadingState.svelte";
-  import PoisonedJournalDiscardSheet from "../components/PoisonedJournalDiscardSheet.svelte";
+  import PoisonedJournalDoor from "../components/PoisonedJournalDoor.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
-  import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { humanErrorMessage } from "../lib/humanRefusal";
-  import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
   import { MutationJournal } from "../lib/mutationJournal";
   import V3RunView from "../components/V3RunView.svelte";
   import {
@@ -30,7 +27,6 @@
   import { cockpitRoute } from "../lib/route";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runHasEnded } from "../lib/runState";
-  import { exactLocal } from "../lib/when";
   import {
     decodeAndApplyDurableEvent,
     markComplete,
@@ -66,81 +62,26 @@
    * (#914, second half of #1131). The run page reads the same journal
    * `V3RunView.loadPendingWait` and `RunCancelCard`'s two reactive reads --
    * a poisoned journal blocks every one of them, so the whole page stands
-   * behind the one honest sentence and its one door instead of letting a
-   * child mount and fail silently. `checkJournalHealth` catches the common
-   * case (already poisoned before this page opens) before `V3RunView` ever
-   * mounts; `onJournalPoisoned`, forwarded through `V3RunView` from its own
-   * read and from `RunCancelCard`'s, catches the same journal poisoned in
-   * the narrow window between this page's own check and its first read --
-   * both paths land on the identical `journalPoisoned` flag.
+   * behind `PoisonedJournalDoor`'s one honest sentence and its one door
+   * instead of letting a child mount and fail silently. The door's own mount
+   * check catches the common case (already poisoned before this page opens)
+   * before `V3RunView` ever mounts; `onJournalPoisoned`, forwarded through
+   * `V3RunView` from its own read and from `RunCancelCard`'s, catches the
+   * same journal poisoned in the narrow window between that check and the
+   * first read -- both paths land on the identical bound `journalPoisoned`
+   * flag.
    */
   let journalPoisoned = false;
-  let discardConfirming = false;
-  let discardRaw: string | null = null;
-  let discardSubmitting = false;
-  let discardFailure: string | null = null;
-  /** The receipt at display time: gone once this page is left, since no
-   * second ledger survives the same poisoned storage (#914 line 12). */
-  let discardReceipt: string | null = null;
   let pageRoot: HTMLElement;
 
   onMount(() => {
     void load();
-    void checkJournalHealth();
     return () => {
       disposed = true;
       stream?.close();
       stream = null;
     };
   });
-
-  async function checkJournalHealth(): Promise<void> {
-    try {
-      await mutationJournal.entries();
-    } catch {
-      journalPoisoned = true;
-    }
-  }
-
-  function handleJournalPoisoned(): void {
-    journalPoisoned = true;
-  }
-
-  function openDiscardConfirm(): void {
-    discardRaw = mutationJournal.rawStored();
-    discardFailure = null;
-    discardConfirming = true;
-  }
-
-  function dismissDiscardConfirm(): void {
-    discardConfirming = false;
-  }
-
-  /**
-   * The one door out of a poisoned journal: remove it without ever reading
-   * it, then let `V3RunView` remount and read the now-healthy journal fresh
-   * -- the same healing `V3RunView`/`RunCancelCard` already do for any other
-   * prop change, no page reload (#914 line 3).
-   */
-  async function confirmDiscardJournal(): Promise<void> {
-    discardSubmitting = true;
-    discardFailure = null;
-    try {
-      mutationJournal.discardPoisoned();
-      discardReceipt = journalPoisonedCopy.forgottenReceipt(
-        exactLocal(new Date().toISOString()),
-        new globalThis.TextEncoder().encode(discardRaw ?? "").length
-      );
-      discardConfirming = false;
-      journalPoisoned = false;
-      await tick();
-      pageRoot?.focus();
-    } catch (error) {
-      discardFailure = humanErrorMessage(error, journalPoisonedCopy.discardFailure);
-    } finally {
-      discardSubmitting = false;
-    }
-  }
 
   async function load(): Promise<void> {
     const begun = beginRead(snapshot);
@@ -284,23 +225,9 @@
     <BackLink label={trail.label} path={trail.path} {navigate} />
   {/if}
 
-  {#if journalPoisoned}
-    <!-- Every read this page makes into the journal -- `V3RunView`'s own
-         pending wait and `RunCancelCard`'s pending/terminal cancel reads --
-         would only be reading this same unreadable memory, so nothing below
-         tries: the same one-sentence, one-door brick the Workbench shows
-         (mockup v8 `#v8-21-journal-poisoned`). -->
-    <ProblemNotice
-      title={wrapDisplayCopy(journalPoisonedCopy.sentence)}
-      message=""
-      actionLabel={wrapDisplayCopy(journalPoisonedCopy.door)}
-      onAction={openDiscardConfirm}
-    />
-  {:else}
-    {#if discardReceipt !== null}
-      <p class="discard-receipt" role="status">{wrapDisplayCopy(discardReceipt)}</p>
-    {/if}
+  <PoisonedJournalDoor {mutationJournal} bind:poisoned={journalPoisoned} focusAfterHeal={pageRoot} />
 
+  {#if !journalPoisoned}
     {#if run !== null}
       <V3RunView
         {run}
@@ -312,7 +239,7 @@
           snapshot = updateConfirmed(snapshot, read);
         }}
         onRetryStream={retryStream}
-        onJournalPoisoned={handleJournalPoisoned}
+        onJournalPoisoned={() => { journalPoisoned = true; }}
       />
     {:else if snapshot.request.state === "failed"}
       <ProblemNotice problem={snapshot.request.failure} />
@@ -328,24 +255,4 @@
       {/if}
     {/if}
   {/if}
-
-  {#if discardConfirming}
-    <PoisonedJournalDiscardSheet
-      raw={discardRaw ?? ""}
-      submitting={discardSubmitting}
-      failure={discardFailure}
-      confirmAttributes={{}}
-      cancelAttributes={{}}
-      onConfirm={() => { void confirmDiscardJournal(); }}
-      onDismiss={dismissDiscardConfirm}
-    />
-  {/if}
 </section>
-
-<style>
-  .discard-receipt {
-    margin: 0;
-    color: var(--ink-dim);
-    font-size: var(--text-xs);
-  }
-</style>
