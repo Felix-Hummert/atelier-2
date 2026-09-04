@@ -14,6 +14,15 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_permissions import (
+    GRANTS_NOTHING,
+    PermissionAuthority,
+    PermissionCorrelationId,
+    PermissionDecision,
+    PermissionEffect,
+    PermissionScope,
+    PermissionScopeKind,
+)
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -155,3 +164,38 @@ def test_proves_every_v1_transcript_event_explicitly_predates_moments() -> None:
     assert isinstance(historical.events[0].moment, TranscriptBeforeMoments)
     with pytest.raises(ValueError, match="cannot be given a recording moment"):
         historical.with_recorded_moment(RecordedAt("2026-08-29T12:00:00Z"))
+
+
+def test_a_question_the_dispatched_policy_never_granted_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The session asks; the answer names the question and the authority it stands on."""
+
+    execution = agent_attempt_execution(agent_execution_request_v2())
+    session = FakeAgentSession(
+        AgentProcessCompletion(0, b'"done"', b""),
+        asks=(
+            (
+                PermissionEffect.NETWORK,
+                PermissionScope(PermissionScopeKind.HOST, "example.invalid"),
+            ),
+        ),
+    )
+
+    execute_agent_attempt(
+        execution,
+        _TranscriptExecutor(),
+        cast(AgentAttemptStore, _ClaimingStore()),
+        session,
+        _Workspaces(tmp_path / "workspace"),
+        permissions=GRANTS_NOTHING,
+    )
+
+    assert session.answers == [
+        PermissionDecision(
+            PermissionCorrelationId.for_call(execution.attempt_id, 1),
+            False,
+            GRANTS_NOTHING.revision_hash,
+            PermissionAuthority.POLICY,
+        )
+    ]

@@ -68,6 +68,12 @@ that transition is written.
 When a declared output schema refuses an agent's answer, the engine gives that
 same agent one durable repair round carrying the refusal reason; a second refusal
 ends the run under `OUTPUT_SCHEMA_REFUSED`.
+Every locally dispatched execution carries one immutable permission policy
+revision, bound by the composition root and handed down as a dispatch parameter
+rather than folded into the request an attempt is identified by; it grants
+nothing today, and no provider channel this runtime opens can ask yet, so a
+question would be refused under that revision's hash
+([ADR 0020](../decisions/0020-provider-boundary.md) §3).
 
 Schema V27 stages the Core half of the external Runner handoff. A disposable
 #301-A witness candidate now exercises a real codec against it end to end

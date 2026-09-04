@@ -28,6 +28,7 @@ from atelier2.ports.agent_executions import (
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
+    NOTHING_IS_PERMITTED,
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
     process_invocation,
@@ -80,7 +81,11 @@ def test_concurrent_local_waiters_share_one_process_completion(
         def invoke() -> None:
             start.wait()
             try:
-                outcomes.append(supervisor.launch_and_wait(execution, invocation))
+                outcomes.append(
+                    supervisor.launch_and_wait(
+                        execution, invocation, NOTHING_IS_PERMITTED
+                    )
+                )
             except (AgentProcessOwnerNotLocal, OSError, RuntimeError) as error:
                 failures.append(error)
 
@@ -143,7 +148,11 @@ def test_changed_launch_refuses_without_stopping_the_valid_process(
 
         def invoke() -> None:
             try:
-                outcomes.append(supervisor.launch_and_wait(execution, invocation))
+                outcomes.append(
+                    supervisor.launch_and_wait(
+                        execution, invocation, NOTHING_IS_PERMITTED
+                    )
+                )
             except (AgentProcessOwnerNotLocal, OSError, RuntimeError) as error:
                 failures.append(error)
 
@@ -161,6 +170,7 @@ def test_changed_launch_refuses_without_stopping_the_valid_process(
                     Path.cwd(),
                     standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                 ),
+                NOTHING_IS_PERMITTED,
             )
 
         assert waiter.is_alive()

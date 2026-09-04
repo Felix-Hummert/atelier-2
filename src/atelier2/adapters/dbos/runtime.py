@@ -106,6 +106,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerBindingConflict,
     RunnerGenerationBinding,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AgentExecutionCapability,
@@ -180,6 +181,15 @@ _SQLITE_WAL_RETRY_SECONDS = 0.01
 _SQLITE_RETRYABLE_ERRORS = frozenset((sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
 _SHUTDOWN_WORKFLOW_COMPLETION_SECONDS = 1
 AGENT_TERMINATION_GRACE_SECONDS = 2.0
+LOCAL_EXECUTION_PERMISSION_POLICY = GRANTS_NOTHING
+"""What a locally supervised provider process may ask this deployment for.
+
+The closed policy today, and therefore a refusal of everything: no provider
+channel this runtime opens can ask yet (ADR 0020 step 2 brings the first). It is
+bound here, at the composition root, and handed down as a dispatch parameter,
+because what a deployment permits is the deployment's own fact -- never a
+workflow's to look up.
+"""
 
 
 class DbosRuntimeBindingConflict(RuntimeError):
@@ -1119,6 +1129,7 @@ def _open_binding(
             _agent_executor_map(agent_registry, tuple(agent_executors_v2)),
             attempt_store,
             agent_process_supervisor,
+            LOCAL_EXECUTION_PERMISSION_POLICY,
             agent_workspace_owner,
             declared_project_source,
             artifact_store,

@@ -72,6 +72,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PermissionDecider,
 )
 from atelier2.ports.agent_tool_effects import (
     AgentToolEffectDelivered,
@@ -188,8 +189,12 @@ class _RecordingSupervisor:
         return prepared_agent_attempt(execution)
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
+        del permissions
         del execution, invocation
         return AgentProcessCompletion(0, b'"ok"', b"")
 

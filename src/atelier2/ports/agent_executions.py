@@ -15,6 +15,10 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_permissions import (
+    PermissionDecision,
+    PermissionRequest,
+)
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
@@ -299,6 +303,19 @@ class AgentExecutorV2(Protocol):
     def close(self) -> None: ...
 
 
+class PermissionDecider(Protocol):
+    """Who answers a running provider's permission question.
+
+    One seam so that the session driver transports a question and an answer and
+    decides neither. The only implementation is the policy revision the dispatch
+    bound to this execution (`contracts.agent_permissions`).
+    """
+
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
+        """Answer exactly this question, under the authority the answer names."""
+        ...
+
+
 class AgentSession(Protocol):
     """One attempt's provider process, from armed to given up, behind one seam.
 
@@ -328,9 +345,17 @@ class AgentSession(Protocol):
         ...
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
         """Start exactly this invocation in its lease and wait for its ending.
+
+        `permissions` is the authority this run's questions are answered under,
+        handed in rather than looked up so that no session can answer under one
+        the dispatch did not bind. A session whose provider channel cannot ask
+        -- everything print-mode -- carries it and never puts a question to it.
 
         The completion is the terminal evidence of that process: the code it
         exited with, and the bounded output and error frames supervision

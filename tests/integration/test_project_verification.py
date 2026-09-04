@@ -66,6 +66,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PermissionDecider,
 )
 from atelier2.ports.artifacts import ArtifactCreated, PublishArtifactResult
 from atelier2.ports.candidate_store import CandidateTreeStore
@@ -757,8 +758,12 @@ class _RecordingSupervisor:
         return prepared_agent_attempt(execution)
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
+        del permissions
         del execution
         write_into_checkout(invocation.lease.working_directory, self.leaves)
         return AgentProcessCompletion(0, b'"ok"', b"")

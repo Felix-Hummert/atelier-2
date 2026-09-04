@@ -76,6 +76,7 @@ from atelier2.ports.run_queries import (
     RunFound,
 )
 from tests.scenarios.agents import (
+    NOTHING_IS_PERMITTED,
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
     agent_attempt_execution,
@@ -648,7 +649,7 @@ def launch_attempt(
     )
     threading.Thread(
         target=lease.agent_process_supervisor.launch_and_wait,
-        args=(execution, invocation),
+        args=(execution, invocation, NOTHING_IS_PERMITTED),
         daemon=True,
     ).start()
     wait_for_file(ready)

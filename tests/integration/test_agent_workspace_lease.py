@@ -70,6 +70,7 @@ from atelier2.ports.agent_executions import (
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_claude_subscription import INTROSPECTING_CLAUDE
 from tests.scenarios.agents import (
+    NOTHING_IS_PERMITTED,
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
     agent_scratch_root,
@@ -1472,7 +1473,9 @@ def test_a_directory_swapped_after_the_lease_never_becomes_the_provider_ground(
         # process -- and what matters is that no provider ever started.
         with pytest.raises(AgentProcessOwnerNotLocal):
             runtime.agent_process_supervisor.launch_and_wait(
-                execution, AgentProcessInvocation(command, lease)
+                execution,
+                AgentProcessInvocation(command, lease),
+                NOTHING_IS_PERMITTED,
             )
 
         # The impostor is untouched: no provider was ever started in it.

@@ -45,6 +45,13 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationId,
     stop_command_for,
 )
+from atelier2.contracts.agent_permissions import (
+    GRANTS_NOTHING,
+    PermissionEffect,
+    PermissionPolicyRevision,
+    PermissionScope,
+    PermissionScopeKind,
+)
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -1405,5 +1412,59 @@ def test_driverless_iteration_bounds_ten_thousand_row_queries(
         # Bounded by the page, not by the store's size.
         assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS * 2 + 4
         assert len(observed_reads) == 201
+    finally:
+        runtime.close()
+
+
+def test_a_changed_permission_policy_leaves_a_live_attempt_recoverable(
+    tmp_path: Path,
+) -> None:
+    """The policy is bound at dispatch, so no part of it reaches durable identity.
+
+    A deployment that widens or narrows what a provider may do must not orphan
+    the attempts already in flight: a re-entering call reconstructs the very same
+    attempt from the same request rather than minting a second one beside it.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/policy-bound-at-dispatch")
+        executor = inspecting_executor(runtime)
+        execution = agent_attempt_execution(request)
+        may_read_one_path = PermissionPolicyRevision(
+            frozenset(
+                {
+                    (
+                        PermissionEffect.WORKSPACE_READ,
+                        PermissionScope(PermissionScopeKind.PATH_PREFIX, "/lease/"),
+                    )
+                }
+            )
+        )
+        assert may_read_one_path.revision_hash != GRANTS_NOTHING.revision_hash
+
+        first = execute_agent_attempt(
+            execution,
+            executor,
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
+        )
+        recovered = execute_agent_attempt(
+            agent_attempt_execution(request),
+            executor,
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
+            permissions=may_read_one_path,
+        )
+
+        assert isinstance(first, AgentAttemptSucceeded)
+        assert recovered == first
+        assert len(executor.results) == 1
+        durable = DbosAgentAttemptStore(runtime.engine).load(execution.attempt_id)
+        assert durable.request_hash == request.request_hash
     finally:
         runtime.close()

@@ -91,6 +91,31 @@ WAITING_FOR_A_CALLER = (
         "item": "#1168 (Verteiler, Befund 10)",
     },
     {
+        "names": (
+            "WORKSPACE_READ",
+            "COMMAND",
+            "NETWORK",
+            "SECRET_READ",
+            "PATH_PREFIX",
+            "COMMAND_NAME",
+            "HOST",
+            "for_call",
+            "granted",
+            "policy_revision_hash",
+        ),
+        "why": (
+            "The asking half of the permission boundary "
+            "(contracts/agent_permissions.py): the effect and scope vocabulary a "
+            "provider question is expressed in, the correlation id minted for one "
+            "call of one attempt, and the two fields of a decision only a reader "
+            "of the answer needs. Production binds the policy and hands the "
+            "decider to every session today; nothing asks yet, so the grant "
+            "branch and the words a question is spelled in wait for the first "
+            "provider channel that can put one (ADR 0020 step 2)."
+        ),
+        "item": "#1177 Schritt 2 (erster fragender Provider-Kanal)",
+    },
+    {
         "names": ("METHOD_INITIALIZED", "MCP_TOOL_HTTP_DOORS"),
         "why": (
             "The MCP door table and the initialized notification: the server "
