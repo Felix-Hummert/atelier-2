@@ -219,6 +219,32 @@ describe("MutationJournal exact transport truth", () => {
     expect(body.orders).toEqual([{ name: "portions", value: '{"portions": 7}' }]);
   });
 
+  it("retains a V3 start whose order names a published artifact", async () => {
+    const artifactHash = "d".repeat(64);
+    const envelope = startMutation(
+      "run-1",
+      revisionHash,
+      [],
+      [{ name: "diff", artifact_hash: artifactHash }]
+    );
+    const journal = new MutationJournal(sessionStorage);
+    await journal.prepare(envelope);
+
+    expect(await new MutationJournal(sessionStorage).get(envelope.mutation_id)).toEqual({
+      ...envelope,
+      delivery: "prepared"
+    });
+  });
+
+  it("refuses a V3 start whose artifact-hash order is malformed", async () => {
+    const bound = [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }];
+    await expect(
+      new MutationJournal(sessionStorage).prepare(
+        startMutation("run-1", revisionHash, bound, [{ name: "diff", artifact_hash: "not-a-hash" }])
+      )
+    ).rejects.toThrow(/invalid start mutation order/);
+  });
+
   it("refuses a V3 start whose order is empty or duplicated", async () => {
     const journal = new MutationJournal(sessionStorage);
     const bound = [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }];

@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import type { RunListRow } from "../../src/api/client";
+import { nodeDetailSchema } from "../../src/api/client";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import {
   catalogPageCopy,
@@ -10,7 +11,9 @@ import {
   workItemFor,
   workflowStartCopy
 } from "../../src/lib/catalogPageCopy";
+import { decodeUtf8Base64 } from "../../src/lib/exactBytes";
 import { shortFingerprint } from "../../src/lib/fingerprint";
+import { SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON } from "../../src/lib/orderSchema";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { retryLabel } from "../../src/lib/readStateCopy";
@@ -571,7 +574,7 @@ test("Start sheet presents a current role configuration without retaining a draf
   await expect(picker).toHaveValue("");
 });
 
-test("Catalog start sheet refuses scalar and array order schemas before starting", async ({ page }) => {
+test("Catalog start sheet refuses an array order schema before starting", async ({ page }) => {
   const api = "/atelier/api/v1";
   const workflowName = "unsupported-order-shapes";
   const scalarSchema = await page.request.post(`${api}/schema-revisions`, {
@@ -640,13 +643,18 @@ test("Catalog start sheet refuses scalar and array order schemas before starting
   await page.getByRole("button", { name: "Start" }).click();
   const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
   await expect(sheet).toBeVisible();
-  await expect(sheet.getByRole("group", { name: "Order scalar_order" }).getByRole("alert")).toHaveText(
-    "This order must be an object to start here."
+  const startRun = sheet.getByRole("button", { name: "Start run" });
+  await expect(startRun).toBeDisabled();
+
+  const scalarGroup = sheet.getByRole("group", { name: "Order scalar_order" });
+  const scalarText = scalarGroup.getByLabel(workflowStartCopy.orderText);
+  await expect(scalarText).toBeVisible();
+  await scalarText.fill("a string order starts here");
+
+  await expect(sheet.getByRole("group", { name: "Order array_order" }).getByRole("status")).toHaveText(
+    SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON
   );
-  await expect(sheet.getByRole("group", { name: "Order array_order" }).getByRole("alert")).toHaveText(
-    "This order must be an object to start here."
-  );
-  await expect(sheet.getByRole("button", { name: "Start run" })).toBeDisabled();
+  await expect(startRun).toBeDisabled();
 });
 
 test("walks the whole workshop: the workbench into the run, and one named way back", async ({ page }) => {
@@ -1818,25 +1826,42 @@ test("a declared order is a material field on start, and the typed value travels
   await material.fill("7");
   await sheet.getByLabel(workflowStartCopy.configurationFor("cook")).selectOption(configurationHash);
 
-  const started: { orders: Array<{ name: string; value: string }> | null } = {
-    orders: null
-  };
-  await page.route("**/runs", async (route) => {
-    const request = route.request();
-    if (request.method() === "POST" && /\/runs$/.test(new URL(request.url()).pathname)) {
-      const body = request.postDataJSON() as {
-        orders?: Array<{ name: string; value: string }>;
-      };
-      started.orders = body.orders ?? null;
+  // #1130: the order travels as a published artifact, not an inline value
+  // (#438 ruled line 3), so the wire proof is the artifact request plus an
+  // {name, artifact_hash} order, not the typed value on the /runs body.
+  const artifactRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/atelier/api/v1/artifacts") {
+      artifactRequests.push(request.url());
     }
-    await route.continue();
   });
+  const runsRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && new URL(request.url()).pathname === "/atelier/api/v1/runs"
+  );
   await sheet.getByRole("button", { name: "Start run" }).click();
-  await expect.poll(() => started.orders).not.toBeNull();
+  const runsBody = (await runsRequest).postDataJSON() as {
+    orders: ReadonlyArray<Record<string, unknown>>;
+  };
   await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible({
     timeout: 20_000
   });
-  expect(started.orders).toEqual([{ name: "portions", value: '{"portions":7}' }]);
+  expect(runsBody.orders).toEqual([{ name: "portions", artifact_hash: expect.any(String) }]);
+  expect(runsBody.orders[0]).not.toHaveProperty("value");
+  expect(artifactRequests).toHaveLength(1);
+
+  await expect(page).toHaveURL(/\/atelier\/runs\//);
+  const publicRef = new URL(page.url()).pathname.split("/").at(-1);
+  let job: string | null = null;
+  await expect.poll(async () => {
+    const response = await page.request.get(`${api}/runs/${publicRef}/nodes/cook`);
+    if (!response.ok()) return null;
+    const detail = nodeDetailSchema.parse(await response.json());
+    if (detail.job_base64 === null || detail.job_base64.length === 0) return null;
+    job = decodeUtf8Base64(detail.job_base64);
+    return job;
+  }, { timeout: 15_000 }).not.toBeNull();
+  expect(job).toContain('{"portions":7}');
 });
 
 test("the Catalog detail names the admitted head of a V3 lineage", async ({

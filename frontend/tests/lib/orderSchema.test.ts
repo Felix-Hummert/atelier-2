@@ -127,10 +127,60 @@ describe("classifying a schema for the start sheet", () => {
     ).toMatchObject({ kind: "unsupported" });
   });
 
-  it.each([true, { type: "boolean" }, { type: "array" }, { type: "object", properties: { nested: { type: "object" } } }])(
+  it.each([true, { type: "boolean" }, { type: "array" }])(
     "refuses an unsupported start shape before it can be serialized",
     (document) => {
       expect(classifyStartOrderSchema(document, "schema-other").kind).toBe("unsupported");
     }
   );
+
+  it("classifies a top-level object with a field the form cannot encode as raw_object, not unsupported (#1130)", () => {
+    expect(
+      classifyStartOrderSchema(
+        { type: "object", properties: { nested: { type: "object" } } },
+        "schema-other"
+      )
+    ).toEqual({ kind: "raw_object" });
+  });
+
+  it("classifies the accepted_sentences-shaped schema (an array field) as raw_object", () => {
+    expect(
+      classifyStartOrderSchema(
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["sentences"],
+          properties: {
+            sentences: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["id", "sentence"],
+                properties: {
+                  id: { type: "string" },
+                  sentence: { type: "string" }
+                }
+              }
+            }
+          }
+        },
+        "schema-accepted-sentences"
+      )
+    ).toEqual({ kind: "raw_object" });
+  });
+
+  it.each([{ type: "string" }, { type: "string", minLength: 1 }])(
+    "recognizes a string schema, minLength or not, as a string order (#438 A5)",
+    (document) => {
+      expect(classifyStartOrderSchema(document, "schema-string")).toEqual({ kind: "string" });
+    }
+  );
+
+  it("names a way out on every refusal (#438 Zeile 11)", () => {
+    expect(classifyStartOrderSchema({ type: "array" }, "schema-other")).toMatchObject({
+      kind: "unsupported",
+      reason: expect.stringContaining("CLI or the HTTP API")
+    });
+  });
 });

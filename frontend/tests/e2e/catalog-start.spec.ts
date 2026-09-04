@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { z } from "zod";
@@ -12,6 +14,24 @@ const VIEWPORTS = [
   { width: 390, height: 844 },
   { width: 1280, height: 900 }
 ] as const;
+
+// #1130 fix round finding 6: the committed `workflows/diff-review.yaml` pins
+// both `diff` and `review_questions` as plain strings (`nonempty_string.json`)
+// -- the exact bytes an operator's Git-source import would publish, read from
+// this repository rather than rebuilt inline.
+const WORKFLOWS_DIRECTORY = resolve(import.meta.dirname, "..", "..", "..", "workflows");
+const REAL_DIFF_REVIEW_DOCUMENT = readFileSync(
+  resolve(WORKFLOWS_DIRECTORY, "diff-review.yaml"),
+  "utf8"
+);
+const REAL_NONEMPTY_STRING_SCHEMA = readFileSync(
+  resolve(WORKFLOWS_DIRECTORY, "schemas", "nonempty_string.json"),
+  "utf8"
+);
+const REAL_DIFF_REVIEW_FINDING_SCHEMA = readFileSync(
+  resolve(WORKFLOWS_DIRECTORY, "schemas", "diff_review_finding.json"),
+  "utf8"
+);
 
 const workItemSchemaDocument =
   '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"}},"required":["body","change_marker","digest","kind","observed_at","reference"],"title":"work item","type":"object"}';
@@ -274,4 +294,222 @@ test("proves(a-v3-workflow-is-started-from-the-picker) proves(the-work-item-pick
       return await readObservedWorkItemRevision(page, publicRef!, "build");
     }, { timeout: 15_000 }).toEqual(observedWorkItemRevision);
   }
+});
+
+test("starts a diff-review-shaped workflow with review_questions typed as text and diff as an object order's Raw JSON, both through the real artifact door, and sends orders on the wire as {name, artifact_hash} (#438 Scheibe 1b)", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  const token = `${testInfo.repeatEachIndex}-${Date.now()}`;
+  const workflowName = `diff-review-e2e-${token}`;
+  const profileId = `diff-review-e2e-${token}`;
+  const reviewQuestionsText =
+    "Does the retry stay idempotent when the second call arrives first?";
+  const diffRawJson = '{"file": "src/atelier2/api/routes/runs.py"}';
+
+  const reviewQuestionsSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: '{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string","minLength":1}'
+  });
+  expect([200, 201]).toContain(reviewQuestionsSchema.status());
+  const reviewQuestionsSchemaHash =
+    (await reviewQuestionsSchema.json()).schema_revision_hash as string;
+
+  const diffSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data:
+      '{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",' +
+      '"required":["file"],"properties":{"file":{"type":"string"}},' +
+      '"additionalProperties":false}'
+  });
+  expect([200, 201]).toContain(diffSchema.status());
+  const diffSchemaHash = (await diffSchema.json()).schema_revision_hash as string;
+
+  const configuration = await publishStartableConfiguration(page, token);
+  const outputSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: "true"
+  });
+  expect([200, 201]).toContain(outputSchema.status());
+  const outputSchemaHash = (await outputSchema.json()).schema_revision_hash as string;
+
+  const published = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${workflowName}`,
+      "graph_inputs:",
+      "  - name: review_questions",
+      "    schema:",
+      "      ref: nonempty-string",
+      `      revision: ${reviewQuestionsSchemaHash}`,
+      "  - name: diff",
+      "    schema:",
+      "      ref: diff-object",
+      `      revision: ${diffSchemaHash}`,
+      "nodes:",
+      "  - id: review",
+      "    type: agent",
+      "    role: reviewer",
+      "    mode: headless",
+      "    instruction: Review the diff using the review questions.",
+      "    inputs:",
+      "      - name: review_questions",
+      "        from:",
+      "          graph_input: review_questions",
+      "      - name: diff",
+      "        from:",
+      "          graph_input: diff",
+      "    outputs:",
+      "      - name: result",
+      "        schema:",
+      "          ref: result-schema",
+      `          revision: ${outputSchemaHash}`,
+      ""
+    ].join("\n")
+  });
+  expect(published.status()).toBe(201);
+  const workflowRevisionHash = (await published.json()).workflow_revision_hash as string;
+  const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
+    data: {
+      workflow_revision_hash: workflowRevisionHash,
+      actor: profileId,
+      activated_at: "2026-09-04T00:00:00Z"
+    }
+  });
+  expect(admitted.status()).toBe(201);
+
+  await page.goto(`/atelier/catalog/${workflowName}`);
+  await page.getByRole("button", { name: "Start" }).click();
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
+  await expect(sheet).toBeVisible();
+
+  const reviewQuestionsGroup = sheet.getByRole("group", { name: "Order review_questions" });
+  await reviewQuestionsGroup.getByLabel(workflowStartCopy.orderText).fill(reviewQuestionsText);
+
+  const diffGroup = sheet.getByRole("group", { name: "Order diff" });
+  await diffGroup.getByText(workflowStartCopy.rawJson, { exact: true }).click();
+  await diffGroup.getByLabel(workflowStartCopy.rawJsonFor("diff")).fill(diffRawJson);
+
+  const roleConfiguration = sheet.getByLabel(workflowStartCopy.configurationFor("reviewer"));
+  await roleConfiguration.selectOption(configuration.agentConfigurationRevisionHash);
+  await expect(sheet.getByText("Chosen now", { exact: true })).toBeVisible();
+
+  // #1130 fix round finding 5: prove the wire shape itself, not only the
+  // resulting node job -- each non-work-item order publishes its own
+  // artifact, and the start request names it only by hash, never by value.
+  const artifactRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/atelier/api/v1/artifacts") {
+      artifactRequests.push(request.url());
+    }
+  });
+
+  const startRun = sheet.getByRole("button", { name: workflowStartCopy.startRun });
+  await expect(startRun).toBeEnabled();
+  const runsRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && new URL(request.url()).pathname === "/atelier/api/v1/runs"
+  );
+  await startRun.click();
+  const runsBody = (await runsRequest).postDataJSON() as {
+    orders: ReadonlyArray<Record<string, unknown>>;
+  };
+  expect(runsBody.orders).toEqual([
+    { name: "review_questions", artifact_hash: expect.any(String) },
+    { name: "diff", artifact_hash: expect.any(String) }
+  ]);
+  for (const order of runsBody.orders) expect(order).not.toHaveProperty("value");
+  expect(artifactRequests).toHaveLength(2);
+
+  await expect(page).toHaveURL(/\/atelier\/runs\//);
+  const publicRef = new URL(page.url()).pathname.split("/").at(-1);
+  expect(publicRef).toBeTruthy();
+
+  let job: string | null = null;
+  await expect.poll(async () => {
+    const response = await page.request.get(`/atelier/api/v1/runs/${publicRef}/nodes/review`);
+    if (!response.ok()) return null;
+    const detail = nodeDetailSchema.parse(await response.json());
+    if (detail.job_base64 === null || detail.job_base64.length === 0) return null;
+    job = decodeUtf8Base64(detail.job_base64);
+    return job;
+  }, { timeout: 15_000 }).not.toBeNull();
+  expect(job).toContain(`--- order: review_questions ---\n\n${reviewQuestionsText}`);
+  expect(job).toContain(`--- order: diff ---\n\n${diffRawJson}`);
+});
+
+test("starts the real diff-review revision from the catalog with review_questions and diff both typed as text (#1130 Done-when)", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  const token = `${testInfo.repeatEachIndex}-${Date.now()}`;
+  const profileId = `diff-review-real-e2e-${token}`;
+  const reviewQuestionsText = "Does this diff leave an obsolete schema reference?";
+  const diffText =
+    "diff --git a/workflows/diff-review.yaml b/workflows/diff-review.yaml\n+one guard clause added";
+
+  const nonemptyStringSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: REAL_NONEMPTY_STRING_SCHEMA
+  });
+  expect([200, 201]).toContain(nonemptyStringSchema.status());
+
+  const findingSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: REAL_DIFF_REVIEW_FINDING_SCHEMA
+  });
+  expect([200, 201]).toContain(findingSchema.status());
+
+  const configuration = await publishStartableConfiguration(page, token);
+
+  // The exact committed document, published and admitted through the same
+  // doors an operator's Git-source import uses -- not a hand-typed rebuild
+  // of its shape (#1130 Done-when).
+  const published = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: REAL_DIFF_REVIEW_DOCUMENT
+  });
+  expect(published.status()).toBe(201);
+  const workflowRevisionHash = (await published.json()).workflow_revision_hash as string;
+  const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
+    data: {
+      workflow_revision_hash: workflowRevisionHash,
+      actor: profileId,
+      activated_at: "2026-09-04T00:00:00Z"
+    }
+  });
+  expect(admitted.status()).toBe(201);
+
+  await page.goto("/atelier/catalog/diff-review");
+  await page.getByRole("button", { name: "Start" }).click();
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle("diff-review") });
+  await expect(sheet).toBeVisible();
+
+  const reviewQuestionsGroup = sheet.getByRole("group", { name: "Order review_questions" });
+  await expect(reviewQuestionsGroup.getByText(workflowStartCopy.rawJson)).toHaveCount(0);
+  await reviewQuestionsGroup.getByLabel(workflowStartCopy.orderText).fill(reviewQuestionsText);
+
+  const diffGroup = sheet.getByRole("group", { name: "Order diff" });
+  await expect(diffGroup.getByText(workflowStartCopy.rawJson)).toHaveCount(0);
+  await diffGroup.getByLabel(workflowStartCopy.orderText).fill(diffText);
+
+  const roleConfiguration = sheet.getByLabel(workflowStartCopy.configurationFor("reviewer"));
+  await roleConfiguration.selectOption(configuration.agentConfigurationRevisionHash);
+  await expect(sheet.getByText("Chosen now", { exact: true })).toBeVisible();
+
+  const startRun = sheet.getByRole("button", { name: workflowStartCopy.startRun });
+  await expect(startRun).toBeEnabled();
+  await startRun.click();
+  await expect(page).toHaveURL(/\/atelier\/runs\//);
+  const publicRef = new URL(page.url()).pathname.split("/").at(-1);
+  expect(publicRef).toBeTruthy();
+
+  let job: string | null = null;
+  await expect.poll(async () => {
+    const response = await page.request.get(`/atelier/api/v1/runs/${publicRef}/nodes/review`);
+    if (!response.ok()) return null;
+    const detail = nodeDetailSchema.parse(await response.json());
+    if (detail.job_base64 === null || detail.job_base64.length === 0) return null;
+    job = decodeUtf8Base64(detail.job_base64);
+    return job;
+  }, { timeout: 15_000 }).not.toBeNull();
+  expect(job).toContain(`--- order: review_questions ---\n\n${reviewQuestionsText}`);
+  expect(job).toContain(`--- order: diff ---\n\n${diffText}`);
 });

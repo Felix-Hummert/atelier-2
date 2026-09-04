@@ -29,8 +29,18 @@ export interface OrderSchemaResource {
 /** The start sheet's one honest rendering for a published V3 order schema. */
 export type StartOrderSchemaShape =
   | { readonly kind: "work_item" }
+  | { readonly kind: "string" }
   | { readonly kind: "inline_object" }
+  | { readonly kind: "raw_object" }
   | { readonly kind: "unsupported"; readonly reason: string };
+
+/**
+ * Every refusal names a way out (#438 Zeile 11): the CLI and the HTTP API
+ * accept any order this door cannot render, through the same publish-as-
+ * artifact start every door now shares.
+ */
+const UNSUPPORTED_ORDER_WAY_OUT =
+  "Start this workflow through the CLI or the HTTP API instead.";
 
 /**
  * The backend only accepts an observed work item beneath this published
@@ -39,6 +49,15 @@ export type StartOrderSchemaShape =
  */
 export const WORK_ITEM_ORDER_SCHEMA_REVISION =
   "e57e281851b809afc32527cdde2a2a76b033f4b6b4301ad592472147bc7c978a";
+
+/**
+ * What a person reads for a schema this door cannot render at all -- a
+ * scalar other than a string (boolean, number, null) or an array. Exported
+ * so the surfaces that assert this refusal (unit and end-to-end) read it
+ * from its one owner instead of retyping it.
+ */
+export const SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON =
+  "This order's schema is not a string, an object, or a work item. " + UNSUPPORTED_ORDER_WAY_OUT;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -94,39 +113,46 @@ function isWorkItemOrderSchema(document: Record<string, unknown>): boolean {
 
 /**
  * A start never manufactures an object for a scalar or array schema. It can
- * render the canonical tracker picker and ordinary object fields; anything
- * else stays visibly unavailable until its own renderer exists.
+ * render the canonical tracker picker and ordinary object fields; a top-level
+ * `object` schema with a field this form cannot type -- an array, a bare
+ * `enum`, a nested object -- still gets a way in, through Raw JSON alone
+ * (`raw_object`), rather than the refusal a shape outside `object`/`string`/
+ * `work_item` still gets.
  */
 export function classifyStartOrderSchema(
   document: JsonSchemaDocument,
   schemaRevision: string
 ): StartOrderSchemaShape {
   if (!isRecord(document)) {
-    return { kind: "unsupported", reason: "This order shape is not supported by the start sheet." };
+    return {
+      kind: "unsupported",
+      reason: `This order's schema is not one the start sheet can read. ${UNSUPPORTED_ORDER_WAY_OUT}`
+    };
   }
   if (isWorkItemOrderSchema(document)) {
     if (schemaRevision === WORK_ITEM_ORDER_SCHEMA_REVISION) return { kind: "work_item" };
     return {
       kind: "unsupported",
-      reason: "This work-item-shaped order does not use the canonical work-item schema."
+      reason:
+        "This work-item-shaped order does not use the canonical work-item schema. " +
+        UNSUPPORTED_ORDER_WAY_OUT
     };
   }
+  if (fieldTypesAreExactly(declaredTypes(document), "string")) {
+    return { kind: "string" };
+  }
   if (!fieldTypesAreExactly(declaredTypes(document), "object")) {
-    return { kind: "unsupported", reason: "This order must be an object to start here." };
+    return { kind: "unsupported", reason: SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON };
   }
   const properties = declaredProperties(document);
   const required = declaredRequired(document);
   const fieldNames = [...new Set([...Object.keys(properties), ...required])];
   const supported = new Set(["boolean", "number", "integer", "string"]);
-  if (
-    fieldNames.some((name) => {
-      const types = declaredTypes(properties[name]);
-      return types === null || types.length !== 1 || !supported.has(types[0] ?? "");
-    })
-  ) {
-    return { kind: "unsupported", reason: "This order has a field the start sheet cannot encode." };
-  }
-  return { kind: "inline_object" };
+  const hasUnencodableField = fieldNames.some((name) => {
+    const types = declaredTypes(properties[name]);
+    return types === null || types.length !== 1 || !supported.has(types[0] ?? "");
+  });
+  return { kind: hasUnencodableField ? "raw_object" : "inline_object" };
 }
 
 /**
