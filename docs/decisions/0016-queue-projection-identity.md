@@ -183,6 +183,21 @@ the projection remains the operator's full view — but the start sheet that rea
 this projection does not offer it as pullable, since retirement means the item
 left the tracker's open set.
 
+**2026-09-04 amendment (Operator ruling 04.09.2026 over
+[#79](https://github.com/FlexOr2/atelier-2/issues/79) rulings 2 and 3): a cap is
+a ruled number, and the queue is proved by a paid run.** The cap a project
+publishes is the operator's ruling about how much of one machine a project may
+occupy, not a measurement the atelier derives: for the live project he ruled 2
+concurrent runs, deliberately low because a single host carries every run, to be
+raised once runs go through cleanly rather than lowered after they do not.
+
+Automatic admission counts as proved only where the money is real. The queue's
+first live proof starts `issue-to-pr` on an actual tracker item — a real
+builder, provider spending, a pull request at the end. A fake executor, a
+rehearsed item, or a sweep that admits and starts something with nothing behind
+it proves the projection and the CAS, never the capability this record exists
+for.
+
 ## Consequences
 
 - Proposal and confirmation are independently stale-safe and idempotent.
