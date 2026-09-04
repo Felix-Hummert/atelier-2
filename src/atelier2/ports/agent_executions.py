@@ -30,6 +30,7 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeReceipt,
     ProviderProbeResult,
@@ -332,31 +333,35 @@ class ProviderProbeReceiptGate:
     """Whether one configuration's live evidence is still trustworthy, right now.
 
     Three independent facts must all hold: a receipt exists, it succeeded (a
-    receipt carrying a problem code is evidence of the opposite), it was
-    proven under the source this deployment actually runs (a receipt from a
-    different `source_commit` proves nothing about this one), and the clock
-    still sits inside its validity window. Any one absence answers `False` --
-    there is no partial credit for stale or foreign proof.
+    receipt carrying a problem code is evidence of the opposite), it was proven
+    under the exact provider layer this deployment actually runs (a receipt
+    whose `provider_layer_digest` differs proves nothing about this one), and
+    the clock still sits inside its validity window. Any one absence answers
+    `False` -- there is no partial credit for stale or foreign proof.
+
+    The comparison is the provider layer's own content digest
+    (`host.provider_canary.provider_layer_digest`), not the receipt's
+    `source_commit` (#1124): a redeploy that never touches the adapter files
+    behind a provider leaves every receipt proven, exactly as a redeploy that
+    does touch them must not.
     """
 
     reads: ProviderProbeReceiptReads
-    deployment_source_commit: str
+    deployment_provider_layer_digest: Sha256Hash
     clock: Callable[[], RecordedAt]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.deployment_source_commit, str) or not (
-            self.deployment_source_commit
-        ):
-            raise ValueError(
+        if not isinstance(self.deployment_provider_layer_digest, Sha256Hash):
+            raise TypeError(
                 "a provider probe receipt gate needs this deployment's own "
-                "nonempty source commit to judge foreign evidence"
+                "provider layer digest to judge foreign evidence"
             )
 
     def is_proven(self, configuration_hash: AgentConfigurationRevisionHash) -> bool:
         receipt = self.reads.receipt_for(configuration_hash)
         if receipt is None or receipt.result is not ProviderProbeResult.SUCCEEDED:
             return False
-        if receipt.source_commit != self.deployment_source_commit:
+        if receipt.provider_layer_digest != self.deployment_provider_layer_digest:
             return False
         return receipt.is_valid_at(self.clock())
 

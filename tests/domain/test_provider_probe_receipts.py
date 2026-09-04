@@ -26,6 +26,7 @@ def receipt(
         ProviderProbeVectorId("workspace-tools"),
         AgentConfigurationRevisionHash("1" * 64),
         WorkflowRevisionHash("2" * 64),
+        Sha256Hash("5" * 64),
         "3" * 40,
         RecordedAt("2026-09-01T08:00:00Z"),
         RecordedAt("2026-09-02T08:00:00Z"),
@@ -106,6 +107,14 @@ REFUSED_DOCUMENTS = (
     (
         canonical_document(workflow_hash=None),
         ProviderProbeReceiptRefusal.INVALID_FIELD,
+    ),
+    (
+        canonical_document(provider_layer_digest=None),
+        ProviderProbeReceiptRefusal.INVALID_FIELD,
+    ),
+    (
+        canonical_document(provider_layer_digest=_MISSING),
+        ProviderProbeReceiptRefusal.MISSING_FIELD,
     ),
     (
         canonical_document(terminal_hash=_MISSING),
