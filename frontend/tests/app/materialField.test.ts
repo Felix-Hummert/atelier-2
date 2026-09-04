@@ -5,6 +5,7 @@ import App from "../../src/App.svelte";
 import type {
   AgentConfigurationRevisionListItem,
   CockpitApi,
+  JsonSchemaDocument,
   ProjectModelResolution,
   RunV3,
   WorkflowRevisionDetail
@@ -28,6 +29,7 @@ const configurationHash = "b".repeat(64);
 const publicReference = "run1.cnVuLW9yZGVy";
 const workflowName = "cook-to-order";
 const projectReference = "project1.dGVzdA";
+const portionsArtifactHash = "9".repeat(64);
 
 const portionsOrder = {
   name: "portions",
@@ -45,6 +47,48 @@ const workItemOrder = {
   name: "work",
   schema: { ref: "work-item-schema", revision: WORK_ITEM_ORDER_SCHEMA_REVISION }
 };
+
+// #438 Scheibe 1b (#1130): a string-schema order (`review_questions` on
+// `diff-review`) and an object-schema order's Raw JSON door, each published
+// as its own artifact before the start.
+const reviewQuestionsOrder = {
+  name: "review_questions",
+  schema: { ref: "nonempty-string", revision: "5".repeat(64) }
+};
+const reviewQuestionsSchema = { type: "string", minLength: 1 };
+const reviewQuestionsArtifactHash = "7".repeat(64);
+
+const contextOrder = {
+  name: "context",
+  schema: { ref: "context-schema", revision: "6".repeat(64) }
+};
+const contextSchema = {
+  type: "object",
+  required: ["priority"],
+  properties: { priority: { type: "string" } }
+};
+const contextArtifactHash = "8".repeat(64);
+
+// #1130 fix round finding 1: a top-level object schema with a field the form
+// cannot type -- an array, here, matching the real `accepted_sentences.json`
+// shape -- classifies as `raw_object` and offers Raw JSON alone.
+const weightsOrder = {
+  name: "weights",
+  schema: { ref: "weights-schema", revision: "0".repeat(64) }
+};
+const weightsSchema = {
+  type: "object",
+  required: ["sentences"],
+  additionalProperties: false,
+  properties: { sentences: { type: "array", items: { type: "string" } } }
+};
+const weightsArtifactHash = "3".repeat(64);
+
+function stringAndObjectOrderSchema(schemaRevisionHash: string): JsonSchemaDocument {
+  if (schemaRevisionHash === reviewQuestionsOrder.schema.revision) return reviewQuestionsSchema;
+  if (schemaRevisionHash === contextOrder.schema.revision) return contextSchema;
+  throw new Error(`unexpected schema revision ${schemaRevisionHash}`);
+}
 
 const groupedObservedQueueItems = {
   items: [
@@ -244,6 +288,10 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     }),
     start: vi.fn(async () => ({ status: 201, value: startedRun() })),
     getRun: vi.fn(async () => startedRun()),
+    publishArtifact: vi.fn(async () => ({
+      status: 201,
+      value: { artifact_hash: portionsArtifactHash }
+    })),
     ...overrides
   });
 }
@@ -298,7 +346,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect((start as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("starts the selected revision with its typed schema values as named orders", async () => {
+  it("publishes its typed schema values as an artifact and starts with the returned hash", async () => {
     const cockpitApi = api();
     await openStart(cockpitApi);
 
@@ -307,9 +355,10 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(cockpitApi.publishArtifact).toHaveBeenCalledWith('{"portions":7}');
     const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
     const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
-    expect(request.orders).toEqual([{ name: "portions", value: '{"portions":7}' }]);
+    expect(request.orders).toEqual([{ name: "portions", artifact_hash: portionsArtifactHash }]);
     expect(request.agent_bindings).toEqual([
       { role: "cook", agent_configuration_revision_hash: configurationHash }
     ]);
@@ -485,7 +534,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    expect((await screen.findByRole("alert")).textContent).toContain("canonical work-item schema");
+    expect((await screen.findByRole("status")).textContent).toContain("canonical work-item schema");
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
@@ -502,7 +551,9 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    expect((await screen.findByRole("alert")).textContent).toContain("must be an object");
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "not a string, an object, or a work item"
+    );
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
@@ -545,6 +596,164 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.keyDown(dialog, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(start));
+  });
+});
+
+describe("string orders and Raw JSON on the catalog start sheet (#438 Scheibe 1b)", () => {
+  it("publishes a string order's typed text as its artifact and starts with the returned hash", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([reviewQuestionsOrder])),
+      getSchemaRevision: vi.fn(async (hash: string) => stringAndObjectOrderSchema(hash)),
+      publishArtifact: vi.fn(async () => ({
+        status: 201,
+        value: { artifact_hash: reviewQuestionsArtifactHash }
+      }))
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order review_questions" });
+    await fireEvent.input(within(group).getByLabelText(workflowStartCopy.orderText), {
+      target: { value: "Does the retry stay idempotent?" }
+    });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(cockpitApi.publishArtifact).toHaveBeenCalledWith("Does the retry stay idempotent?");
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.orders).toEqual([
+      { name: "review_questions", artifact_hash: reviewQuestionsArtifactHash }
+    ]);
+  });
+
+  it("reads a string order's file content into its exact text", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([reviewQuestionsOrder])),
+      getSchemaRevision: vi.fn(async (hash: string) => stringAndObjectOrderSchema(hash))
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order review_questions" });
+    const file = new File(
+      ["Does the diff keep the retry idempotent?"],
+      "questions.txt",
+      { type: "text/plain" }
+    );
+    const fileInput = within(group).getByLabelText(
+      workflowStartCopy.publishFromFile("review_questions")
+    ) as HTMLInputElement;
+    await fireEvent.change(fileInput, { target: { files: [file] } });
+
+    await waitFor(() =>
+      expect(
+        (within(group).getByLabelText(workflowStartCopy.orderText) as HTMLTextAreaElement).value
+      ).toBe("Does the diff keep the retry idempotent?")
+    );
+  });
+
+  it("publishes an object order's Raw JSON text as its artifact and starts with the returned hash", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([contextOrder])),
+      getSchemaRevision: vi.fn(async (hash: string) => stringAndObjectOrderSchema(hash)),
+      publishArtifact: vi.fn(async () => ({
+        status: 201,
+        value: { artifact_hash: contextArtifactHash }
+      }))
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order context" });
+    await fireEvent.click(within(group).getByText(workflowStartCopy.rawJson));
+    await fireEvent.input(within(group).getByLabelText(workflowStartCopy.rawJsonFor("context")), {
+      target: { value: '{"priority": "high"}' }
+    });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(cockpitApi.publishArtifact).toHaveBeenCalledWith('{"priority": "high"}');
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.orders).toEqual([{ name: "context", artifact_hash: contextArtifactHash }]);
+  });
+
+  it("refuses invalid Raw JSON with its position, names the way out, and keeps Start locked", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([contextOrder])),
+      getSchemaRevision: vi.fn(async (hash: string) => stringAndObjectOrderSchema(hash))
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order context" });
+    await fireEvent.click(within(group).getByText(workflowStartCopy.rawJson));
+    await fireEvent.input(within(group).getByLabelText(workflowStartCopy.rawJsonFor("context")), {
+      target: { value: '{priority: "high"}' }
+    });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+
+    const alert = await within(group).findByRole("alert");
+    expect(alert.textContent).toContain("line 1");
+    expect(alert.textContent).toContain(workflowStartCopy.rawJsonWayOutBesideForm);
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(cockpitApi.publishArtifact).not.toHaveBeenCalled();
+  });
+
+  it("renders Raw JSON alone for an object order the form cannot encode, and starts with the returned hash (#1130 finding 1)", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([weightsOrder])),
+      getSchemaRevision: vi.fn(async () => weightsSchema),
+      publishArtifact: vi.fn(async () => ({
+        status: 201,
+        value: { artifact_hash: weightsArtifactHash }
+      }))
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order weights" });
+    expect(within(group).queryByText(workflowStartCopy.rawJson)).toBeNull();
+    expect(within(group).queryByLabelText(/sentences/)).toBeNull();
+    await fireEvent.input(within(group).getByLabelText(workflowStartCopy.rawJsonFor("weights")), {
+      target: { value: '{"sentences": ["a", "b"]}' }
+    });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(cockpitApi.publishArtifact).toHaveBeenCalledWith('{"sentences": ["a", "b"]}');
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.orders).toEqual([{ name: "weights", artifact_hash: weightsArtifactHash }]);
+  });
+
+  it("names the no-form way out for invalid Raw JSON on an order Raw JSON alone can reach (#1130 finding 2)", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([weightsOrder])),
+      getSchemaRevision: vi.fn(async () => weightsSchema)
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order weights" });
+    await fireEvent.input(within(group).getByLabelText(workflowStartCopy.rawJsonFor("weights")), {
+      target: { value: '{sentences: ["a", "b"]}' }
+    });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+
+    const alert = await within(group).findByRole("alert");
+    expect(alert.textContent).toContain(workflowStartCopy.rawJsonWayOutAlone);
+    expect(alert.textContent).not.toContain(workflowStartCopy.rawJsonWayOutBesideForm);
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(cockpitApi.publishArtifact).not.toHaveBeenCalled();
   });
 });
 

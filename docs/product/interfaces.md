@@ -218,9 +218,17 @@ live event line stays open until the events it has applied match the latest
 cursor the run itself names, so a run that has already ended still shows every
 node that finished. Details on the
 saved-workflow picker reuses the same drawing without run state. A chosen V3 revision that declares
-orders shows one material field per order — the name and the schema the
-author pinned — and sends the typed text as `orders` on the start; a revision
-that declares none shows no field. Role
+orders shows one field per order, shaped by the schema the author pinned: a
+string schema renders a text area and a file door, an object schema always
+offers a Raw JSON door -- beside its field-by-field form when every field is a
+scalar the form can type, alone when a field is not (an array, a bare `enum`,
+a nested object) -- and a work-item order renders the tracker picker; a
+revision that declares none shows no field. Before the start, the cockpit
+publishes each declared order's exact bytes through `POST /artifacts` (#1089)
+and sends `orders` as `{name, artifact_hash}` for every order but the work
+item, which the start reads and sends as `{name, work_item}` itself -- the
+same publish-then-name-the-hash door the CLI and MCP already use, never an
+inline value for a published order. Role
 bindings on the Catalog detail's start sheet offer eligible registered
 configurations by provider, exact model id, and readable Account. There is no
 remembered role choice. For an admitted V3 workflow, that sheet reads the same
