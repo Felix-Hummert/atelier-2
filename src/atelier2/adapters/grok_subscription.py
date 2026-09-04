@@ -123,14 +123,15 @@ _JSON_OUTPUT_FORMAT = "json"
 # vector: standard output is pure NDJSON in the Anthropic Messages API wire
 # format -- a `system` init line, whole `assistant` and `user` messages
 # carrying `text`, `thinking`, `tool_use` and `tool_result` blocks, and last a
-# `result` line naming `is_error`, the answer text and, where a schema was
-# declared, `structured_output`. Whole messages, not deltas: the sibling
-# `streaming-json` writes the same session as one NDJSON line per generated
-# token (186 lines and 13,155 bytes for the same four-turn task, against 9,891
-# bytes here) and its terminal line carries no whole answer text at all.
-# `--json-schema` documents that it implies `--output-format json`; measured in
-# the same runs, an explicit format beside it wins and the structured answer
-# still arrives on the terminal line.
+# `result` line naming `is_error` and the answer text. Whole messages, not
+# deltas: the sibling `streaming-json` writes the same session as one NDJSON
+# line per generated token (186 lines and 13,155 bytes for the same four-turn
+# task, against 9,891 bytes here) and its terminal line carries no whole answer
+# text at all.
+# Measured again 04.09.2026 without `--json-schema` (`#1174`): the terminal
+# line then carries no `structured_output` field at all, and its `result` is
+# the model's last message as bare text -- one JSON document, no code fence and
+# no prose around it, in both the object-schema and the root-string vector.
 _STREAMING_MESSAGES_JSON_OUTPUT_FORMAT = "streaming-messages-json"
 _JSON_SCHEMA_FLAG = "--json-schema"
 _MODEL_FLAG = "--model"
@@ -238,16 +239,20 @@ _TEXT_FIELD = "text"
 _STRUCTURED_OUTPUT_FIELD = "structuredOutput"
 
 # The stream vocabulary of `streaming-messages-json`, read off the measured
-# capture named at `_STREAMING_MESSAGES_JSON_OUTPUT_FORMAT`. The terminal
-# line spells its structured answer in snake case, unlike the `camelCase`
-# field the one-envelope format above uses, so the two names stand apart.
+# capture named at `_STREAMING_MESSAGES_JSON_OUTPUT_FORMAT`. Every line and
+# every content block that release writes is named here, so a step a session
+# really took is never kept as raw provider output for want of a name.
 _LINE_TYPE_FIELD = "type"
+_SYSTEM_LINE_TYPE = "system"
+_SESSION_INIT_SUBTYPE = "init"
 _ASSISTANT_LINE_TYPE = "assistant"
 _USER_LINE_TYPE = "user"
 _RESULT_LINE_TYPE = "result"
 _MESSAGE_FIELD = "message"
 _CONTENT_FIELD = "content"
 _TEXT_BLOCK_TYPE = "text"
+_THINKING_BLOCK_TYPE = "thinking"
+_THINKING_FIELD = "thinking"
 _TOOL_USE_BLOCK_TYPE = "tool_use"
 _TOOL_RESULT_BLOCK_TYPE = "tool_result"
 _TOOL_NAME_FIELD = "name"
@@ -257,12 +262,17 @@ _ANSWERED_TOOL_USE_ID_FIELD = "tool_use_id"
 _RESULT_FIELD = "result"
 _LINE_SUBTYPE_FIELD = "subtype"
 _ERROR_FLAG_FIELD = "is_error"
-_STREAM_STRUCTURED_OUTPUT_FIELD = "structured_output"
 _USAGE_FIELD = "usage"
 _INPUT_TOKENS_FIELD = "input_tokens"
 _OUTPUT_TOKENS_FIELD = "output_tokens"
 _CACHE_READ_TOKENS_FIELD = "cache_read_input_tokens"
 _CACHE_CREATION_TOKENS_FIELD = "cache_creation_input_tokens"
+# What this executor keeps of the session header: the session the CLI opened,
+# the model that answered it, the doors it granted, and the regime it granted
+# them under. The rest of that line -- slash commands, an empty MCP and skill
+# inventory, the working directory, a uuid -- is the noise that pushed real
+# steps out of the document bound.
+_SESSION_HEADER_FIELDS = ("session_id", "model", "tools", "permissionMode")
 _RECORD_SEPARATOR = "\n"
 _SINGLE_PROMPT_FLAG = "-p"
 _MEASURED_INLINE_PROMPT_BYTES = 30_000
@@ -270,6 +280,35 @@ _PROMPT_LIMIT_REFUSAL = (
     "Grok 1.0.5 inline prompt transport is measured only through 30,000 bytes"
 )
 _PROMPT_ENCODING_REFUSAL = "Grok inline prompt transport accepts UTF-8 job bytes only"
+
+# How a declared output schema reaches an operation that may not carry the flag.
+# Measured 04.09.2026 on grok 1.0.5 / grok-4.6 (`#1174`) with exactly this
+# wording on the workspace-tool vector: the call narrated freely, opened its
+# doors, and ended on one bare JSON document as its terminal `result` -- for an
+# object schema and for a root-string schema alike.
+_OUTPUT_SCHEMA_ASK_HEADING = "--- final answer: declared output schema ---"
+_OUTPUT_SCHEMA_ASK = (
+    "Your last message is the answer, and nothing else in this session is. "
+    "Send it as exactly one JSON document matching this schema, on its own, "
+    "with no prose, no explanation and no code fence around it:"
+)
+
+
+def _job_with_output_schema_ask(
+    job_bytes: bytes, declared_output_schema_bytes: bytes | None
+) -> bytes:
+    """The job, closed by the shape its node declared for the answer.
+
+    The schema travels as its exact published document bytes -- the same ones
+    the output seam later judges the answer against -- so the sentence the model
+    reads and the contract it is held to cannot drift apart. A node that
+    declared no schema is left alone: there is nothing to ask for.
+    """
+
+    if declared_output_schema_bytes is None:
+        return job_bytes
+    ask = f"\n\n{_OUTPUT_SCHEMA_ASK_HEADING}\n\n{_OUTPUT_SCHEMA_ASK}\n\n"
+    return job_bytes + ask.encode("utf-8") + declared_output_schema_bytes
 
 
 def _unusable_provider_answer(
@@ -460,9 +499,10 @@ def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, 
     contract; the output seam remains the final judge.
 
     What the flag constrains is every assistant message, not the last one
-    (measured 04.09.2026, grok 1.0.5 / grok-4.6, `#1165`) -- which is why the
-    operation that acts with tools refuses a session that ended before its
-    first tool call rather than reading such a message as an answer.
+    (measured 04.09.2026, grok 1.0.5 / grok-4.6, `#1165`), so only the tool-free
+    operation carries it: one call, one message, one answer. Its sibling with
+    tools has to narrate and act before it answers, and asks for the same shape
+    in words instead (`_job_with_output_schema_ask`).
     """
     if declared_output_schema_bytes is None:
         return ()
@@ -880,10 +920,18 @@ def _message_content_blocks(entry: dict[str, object]) -> tuple[object, ...]:
 def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent:
     """One content block as the step it is, or as the output it stays.
 
-    Every block yields something. A shape this executor does not name -- a
-    thinking block, a kind a release adds tomorrow -- is kept as the provider's
-    own output rather than dropped, because a line that IS recognised is
-    exactly where a dropped block hides best.
+    Every block yields something. A shape this executor does not name -- a kind
+    a release adds tomorrow -- is kept as the provider's own output rather than
+    dropped, because a line that IS recognised is exactly where a dropped block
+    hides best.
+
+    A thinking block is one of the agent's turns and is kept as one: it is what
+    the agent said to itself on the way to its answer, and reading it is how a
+    person tells a lucky answer from a reasoned one. Its `signature` is not
+    kept. That blob is the provider's attestation for handing the block back to
+    its own API, which this transcript never does; measured 04.09.2026 it is
+    several hundred base64 characters on every assistant message, and keeping
+    the raw block was pushing real steps out of the document bound (`#1174`).
 
     `tool_names` is how a result finds the door it answered: the provider names
     the tool on the call and refers back to it by id afterwards, so the call
@@ -897,6 +945,10 @@ def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent:
             spoken = block.get(_TEXT_FIELD)
             if isinstance(spoken, str):
                 return AssistantTurn(spoken)
+        elif shape == _THINKING_BLOCK_TYPE:
+            thought = block.get(_THINKING_FIELD)
+            if isinstance(thought, str):
+                return AssistantTurn(thought)
         elif shape == _TOOL_USE_BLOCK_TYPE:
             name = block.get(_TOOL_NAME_FIELD)
             if isinstance(name, str):
@@ -913,6 +965,25 @@ def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent:
                     answer if isinstance(answer, str) else _canonical_json(answer),
                 )
     return UnrecognisedProviderOutput(_canonical_json(block))
+
+
+def _session_header_step(entry: dict[str, object]) -> UnrecognisedProviderOutput:
+    """This stream's opening `system` line, reduced to the facts it names.
+
+    The line is recognised, so nothing of it is guessed at; only what it says
+    about the session survives (`_SESSION_HEADER_FIELDS`). A release that
+    renames every one of those fields leaves the whole line standing instead of
+    an empty mapping -- the same discipline `_block_step` keeps, because a line
+    this reader DOES recognise is exactly where a lost line hides best.
+
+    It stays the provider's own output because the transcript vocabulary has no
+    step for a session header, and giving it one is a contract change across the
+    wire, the projection and the run-log surface rather than an adapter's
+    decision -- named as deferred to the shared stream reader (`#892`).
+    """
+
+    named = {name: entry[name] for name in _SESSION_HEADER_FIELDS if name in entry}
+    return UnrecognisedProviderOutput(_canonical_json(named or entry))
 
 
 def _token_count(usage: dict[str, object], field_name: str) -> int | None:
@@ -993,7 +1064,12 @@ def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent,
         return (UnrecognisedProviderOutput(line),)
     shape = entry.get(_LINE_TYPE_FIELD)
     steps: tuple[TranscriptEvent, ...] = ()
-    if shape in {_ASSISTANT_LINE_TYPE, _USER_LINE_TYPE}:
+    if (
+        shape == _SYSTEM_LINE_TYPE
+        and entry.get(_LINE_SUBTYPE_FIELD) == _SESSION_INIT_SUBTYPE
+    ):
+        steps = (_session_header_step(entry),)
+    elif shape in {_ASSISTANT_LINE_TYPE, _USER_LINE_TYPE}:
         steps = tuple(
             _block_step(block, tool_names) for block in _message_content_blocks(entry)
         )
@@ -1045,7 +1121,14 @@ def _streamed_session(standard_output: bytes) -> GrokStreamedSession:
 
 @dataclass(frozen=True)
 class GrokSubscriptionProcessCommand(AgentProcessCommand):
-    """One Grok headless command and the output schema it carried."""
+    """One Grok headless command and the output schema its node declared.
+
+    The tool-free vector is the one that carries those bytes in argv, as
+    `--json-schema`, and reads them back here to know which envelope field its
+    answer stands in. The workspace-tool vector carries the same bytes inside
+    its prompt instead, so on its command they state what was declared, never
+    what stands in its arguments.
+    """
 
     declared_output_schema_bytes: bytes | None = field(default=None, kw_only=True)
 
@@ -1062,6 +1145,15 @@ class GrokSubscriptionExecutor:
     _closed: threading.Event = field(
         default_factory=threading.Event, init=False, compare=False, repr=False
     )
+
+    def _invocation_prompt(self, request: AgentExecutionRequestV2) -> str:
+        """The exact text one invocation of this operation carries.
+
+        The tool-free call carries the job and nothing else: its `--json-schema`
+        flag states the shape of the one answer it is allowed to give.
+        """
+
+        return _validated_inline_prompt(request.job_bytes)
 
     def _invocation_arguments(
         self,
@@ -1086,7 +1178,7 @@ class GrokSubscriptionExecutor:
         binding = request.resolved_binding
         if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
             raise GrokSubscriptionAuthModeUnsupported(self._unsupported_auth_message)
-        prompt = _validated_inline_prompt(request.job_bytes)
+        prompt = self._invocation_prompt(request)
         settings = self.settings
         state_directory = _open_job_directory(settings)
         registered = False
@@ -1239,14 +1331,17 @@ GROK_WORKSPACE_TOOLS_EXECUTOR_KEY = AgentExecutorKey(
 # argument vector differs from the tool-free one in the tool grant, and that
 # decision is what an operational identity stands for, so every durable
 # attempt record keeps saying which of the two ran.
-# V3 is the wire change: the vector asks for `--output-format
+# V3 was the wire change: the vector asks for `--output-format
 # streaming-messages-json` instead of `json`, so the process publishes every
-# turn and tool call on its way to the same structured answer, and a session
-# that opened no door at all is refused instead of published (`#1165`). A
-# different vector reaching a different wire shape is a different operation,
-# so no attempt recorded under V2 is read as having run it.
+# turn and tool call on its way to its answer, and a session that opened no
+# door at all is refused instead of published (`#1165`). V4 drops
+# `--json-schema` from that vector and asks for the declared shape in the job's
+# last words instead (`#1174`), which changes what the model is constrained to
+# say on every turn and where the answer is read from. A different vector
+# reaching a different wire shape is a different operation, so no attempt
+# recorded under an earlier identity is read as having run it.
 GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-workspace-tools-streaming-messages-json-output-schema/v3"
+    "headless-workspace-tools-streaming-messages-json-schema-in-job/v4"
 )
 
 # Headless user-guide names `run_terminal_cmd`; Getting Started names
@@ -1358,10 +1453,17 @@ def _workspace_tool_arguments(
     executable: Path,
     model: str,
     prompt: str,
-    declared_output_schema_bytes: bytes | None,
     maximum_assistant_turns: int | None = None,
 ) -> tuple[str, ...]:
-    """The exact argument vector one workspace-tool invocation is launched with."""
+    """The exact argument vector one workspace-tool invocation is launched with.
+
+    No `--json-schema`: this operation has to narrate and act before it answers,
+    and the flag constrains every assistant message rather than the last one, so
+    the CLI ends such a session at the first schema-shaped message that carries
+    no tool call (`#1165`). The declared schema is asked for in the job instead
+    (`_job_with_output_schema_ask`) and judged at the output seam, which was
+    always its last instance.
+    """
 
     allow: list[str] = []
     for rule in WORKSPACE_ALLOW_RULES:
@@ -1373,7 +1475,6 @@ def _workspace_tool_arguments(
         str(executable),
         _OUTPUT_FORMAT_FLAG,
         _STREAMING_MESSAGES_JSON_OUTPUT_FORMAT,
-        *_json_schema_flag(declared_output_schema_bytes),
         _MODEL_FLAG,
         model,
         _SINGLE_PROMPT_FLAG,
@@ -1475,7 +1576,7 @@ def attest_grok_workspace_tool_invocation(
             _CONFIG_FILE_MODE,
         )
         arguments = _workspace_tool_arguments(
-            settings.executable, _INVOCATION_PROBE_MODEL, "", None
+            settings.executable, _INVOCATION_PROBE_MODEL, ""
         )
         started = _jobless_invocation_answer(
             settings, arguments, state_directory, timeout_seconds
@@ -1535,12 +1636,19 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
     configuration, no memory, no subagents, no web search, a bounded turn
     count.
 
+    WHAT IT ASKS FOR. Its answer's shape, in words rather than through
+    `--json-schema`: the flag constrains every assistant message, and this
+    operation has to narrate and act before it answers, so the flag ended whole
+    sessions on their own preamble (`#1165`). The node's declared schema closes
+    the job instead (`_job_with_output_schema_ask`), and the output seam judges
+    the answer against it exactly as it always did -- an answer that is no such
+    document is refused there, typed and retryable, rather than accepted here.
+
     WHAT IT READS. Not the tool-free call's one envelope. This vector asks for
     `--output-format streaming-messages-json`, so the call publishes its turns
     and its tool calls as NDJSON and names its own terminal line
-    (`_streamed_session`). Schema-bearing calls take that line's
-    `structured_output`; calls without a schema take its nonempty `result`.
-    A session whose stream shows no tool call at all is refused as
+    (`_streamed_session`), whose nonempty `result` is the answer. A session
+    whose stream shows no tool call at all is refused as
     `GrokProviderEndedWithoutToolUse` rather than answered -- see that class
     for the measurement, and `#1165` for the live pass that found it.
 
@@ -1570,6 +1678,21 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
         "the Grok workspace-tool executor serves subscription profiles only"
     )
 
+    def _invocation_prompt(self, request: AgentExecutionRequestV2) -> str:
+        """The job, closed by the shape its node declared for the answer.
+
+        This vector carries no `--json-schema`, so the ask is the job's own last
+        words. It is measured against the same 30,000-byte inline bound as the
+        job alone, because the bound is about what the carrier transports, not
+        about who wrote which part of it.
+        """
+
+        return _validated_inline_prompt(
+            _job_with_output_schema_ask(
+                request.job_bytes, request.declared_output_schema_bytes
+            )
+        )
+
     def _invocation_arguments(
         self,
         model: str,
@@ -1577,11 +1700,11 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
         declared_output_schema_bytes: bytes | None,
         maximum_assistant_turns: int | None = None,
     ) -> tuple[str, ...]:
+        del declared_output_schema_bytes
         return _workspace_tool_arguments(
             self.settings.executable,
             model,
             prompt,
-            declared_output_schema_bytes,
             maximum_assistant_turns,
         )
 
@@ -1596,8 +1719,18 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
         out. Every way through here carries whatever the call did write, the
         refusals included -- what a call wrote before it ended is the only
         account of an ending an exit code explains nothing about.
+
+        The terminal line's `result` is the whole answer and is handed on as
+        written. Measured 04.09.2026 on grok 1.0.5 / grok-4.6 without
+        `--json-schema` (`#1174`), that text was one bare JSON document in both
+        the object-schema and the root-string vector -- no code fence, no prose
+        beside it, and no `structured_output` field on the line to read instead.
+        So nothing is stripped here: a seam that trimmed shapes nobody measured
+        would be deciding what counts as an answer, and that decision belongs to
+        the output schema alone.
         """
 
+        del invocation
         session = _streamed_session(completion.standard_output)
         transcript = session.transcript
         if completion.return_code != 0:
@@ -1607,24 +1740,10 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
             return GrokProviderEndedWithoutFinalMessage(transcript)
         if not session.opened_a_door:
             return GrokProviderEndedWithoutToolUse(transcript)
-        command = invocation.command
-        if (
-            isinstance(command, GrokSubscriptionProcessCommand)
-            and command.declared_output_schema_bytes is not None
-        ):
-            # Absent and null decode alike, as in the tool-free sibling: null
-            # is the CLI's own no-answer sentinel, never a model answer.
-            structured_output = envelope.get(_STREAM_STRUCTURED_OUTPUT_FIELD)
-            if structured_output is None:
-                return GrokProviderEndedWithoutFinalMessage(transcript)
-            output_bytes = json.dumps(
-                structured_output, ensure_ascii=False, separators=(",", ":")
-            ).encode("utf-8")
-        else:
-            answer = envelope.get(_RESULT_FIELD)
-            if not isinstance(answer, str) or not answer:
-                return GrokProviderEndedWithoutFinalMessage(transcript)
-            output_bytes = answer.encode("utf-8")
+        answer = envelope.get(_RESULT_FIELD)
+        if not isinstance(answer, str) or not answer:
+            return GrokProviderEndedWithoutFinalMessage(transcript)
+        output_bytes = answer.encode("utf-8")
         if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
             return _unusable_provider_answer(transcript)
         return AgentExecutionResult(output_bytes, transcript)

@@ -29,7 +29,7 @@ export function isCatalogDisplayName(value: string): boolean {
 export function catalogNameStateOf(
   name: string,
   askByName: (name: string) => Promise<{
-    workflow_revision_hash: string;
+    catalog_revision_hash: string;
     lineage_id: string;
   }>
 ): Promise<CatalogNameState> {
@@ -39,7 +39,7 @@ export function catalogNameStateOf(
   return askByName(name).then(
     (head) => ({
       kind: "admitted" as const,
-      revisionHash: head.workflow_revision_hash,
+      revisionHash: head.catalog_revision_hash,
       lineageId: head.lineage_id
     }),
     (error: unknown) => {

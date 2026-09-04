@@ -128,10 +128,45 @@ async function photograph(page: Page, name: string, scrollMobileMainToEnd = fals
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
+/**
+ * Scrolls the mobile stage to the newest line and returns only once that line
+ * has come to rest. At 390 px the web fonts can still be loading, and a scroll
+ * measured against a `scrollHeight` that grows afterwards leaves the newest
+ * line below the composer instead of above it (CI run 33894818987). So this
+ * waits for the fonts, then scrolls to the end again in each of two
+ * consecutive frames until the line is painted in the same place twice.
+ */
 async function placeConversationAboveComposer(page: Page): Promise<void> {
-  await page.getByRole("main").evaluate((element) => {
-    element.scrollTop = element.scrollHeight - element.clientHeight;
+  const stage = page.getByRole("main");
+  const newestLine = page
+    .getByRole("list", { name: workbenchPageCopy.transcriptLabel })
+    .getByRole("listitem")
+    .last();
+  const scrollToEnd = () =>
+    stage.evaluate((element) => {
+      element.scrollTop = element.scrollHeight - element.clientHeight;
+    });
+  const placeOfNewestLineInTheNextFrame = () =>
+    newestLine.evaluate(
+      (line) =>
+        new Promise<string>((paint) => {
+          requestAnimationFrame(() => paint(JSON.stringify(line.getBoundingClientRect())));
+        })
+    );
+  await page.evaluate(async () => {
+    await document.fonts.ready;
   });
+  await expect
+    .poll(
+      async () => {
+        await scrollToEnd();
+        const placeAfterTheFirstScroll = await placeOfNewestLineInTheNextFrame();
+        await scrollToEnd();
+        return (await placeOfNewestLineInTheNextFrame()) === placeAfterTheFirstScroll;
+      },
+      { timeout: 10_000 }
+    )
+    .toBe(true);
 }
 
 /**
