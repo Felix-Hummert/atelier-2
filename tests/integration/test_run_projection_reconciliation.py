@@ -304,7 +304,7 @@ def test_every_read_of_a_run_awaiting_its_own_effect_answers(
 
     assert doors.statuses == (HTTPStatus.OK,) * 4
     assert _parked_node(doors.run)["state"] == NodeState.NEEDS_YOU.value
-    assert [item["run_id"] for item in doors.listed["items"]] == [RUN.value]
+    assert [item["run"]["run_id"] for item in doors.listed["items"]] == [RUN.value]
     assert [frame["event"] for frame in doors.streamed] == [
         RunEventKind.AGENT_COMPLETED.value,
         RunEventKind.ACTION_RECONCILIATION_REQUIRED.value,
@@ -327,7 +327,7 @@ def test_every_read_stays_answerable_while_the_operators_word_is_applied(
     assert standing.state is EffectIntentState.RECONCILING
     assert doors.statuses == (HTTPStatus.OK,) * 4
     assert _parked_node(doors.run)["state"] == NodeState.WORKING.value
-    assert [item["run_id"] for item in doors.listed["items"]] == [RUN.value]
+    assert [item["run"]["run_id"] for item in doors.listed["items"]] == [RUN.value]
     assert [frame["event"] for frame in doors.streamed] == [
         RunEventKind.AGENT_COMPLETED.value,
         RunEventKind.ACTION_RECONCILIATION_REQUIRED.value,

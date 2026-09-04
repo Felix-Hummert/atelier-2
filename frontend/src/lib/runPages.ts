@@ -3,11 +3,12 @@ import type {
   AgentConfigurationRevisionPage,
   AuthProfileRevision,
   AuthProfileRevisionPage,
-  RunV3,
+  RunListRow,
   RunPage,
   WorkflowRevisionPage,
   WorkflowRevisionSummary
 } from "../api/client";
+import { runListRowReference } from "./runList";
 
 /**
  * Every run the durable list holds, read page by page.
@@ -28,8 +29,8 @@ import type {
  * take the surface down instead of letting it report what went wrong.
  */
 export type RunReading =
-  | { complete: true; runs: RunV3[] }
-  | { complete: false; runs: RunV3[]; unreadable: string };
+  | { complete: true; runs: RunListRow[] }
+  | { complete: false; runs: RunListRow[]; unreadable: string; cursor: string };
 
 export type RevisionReading =
   | { complete: true; revisions: WorkflowRevisionSummary[] }
@@ -47,19 +48,27 @@ export type AuthProfileReading =
   | { complete: true; profiles: AuthProfileRevision[] }
   | { complete: false; profiles: AuthProfileRevision[]; unreadable: string };
 
+/**
+ * `after` resumes a stopped read instead of restarting from its first page
+ * (#1109 delta MEDIUM): History's Retry passes the cursor a stopped read
+ * named, so a retried list reads only what it is still missing rather than
+ * discarding the pages it already confirmed.
+ */
 export async function readEveryRun(
-  listRuns: (after?: string) => Promise<RunPage>
+  listRuns: (after?: string) => Promise<RunPage>,
+  after?: string
 ): Promise<RunReading> {
   const read = await readEveryPage(
-    async (after) => {
-      const page = await listRuns(after);
+    async (nextAfter) => {
+      const page = await listRuns(nextAfter);
       return { items: page.items, next: page.next_after };
     },
-    (run) => run.public_run_reference
+    runListRowReference,
+    after
   );
   return read.complete
     ? { complete: true, runs: read.items }
-    : { complete: false, runs: read.items, unreadable: read.unreadable };
+    : { complete: false, runs: read.items, unreadable: read.unreadable, cursor: read.cursor };
 }
 
 /** The saved workflows a picker may offer, read the same way and for the same reason. */
@@ -112,16 +121,17 @@ export async function readEveryAuthProfile(
 
 type PageReading<Item> =
   | { complete: true; items: Item[] }
-  | { complete: false; items: Item[]; unreadable: string };
+  | { complete: false; items: Item[]; unreadable: string; cursor: string };
 
 async function readEveryPage<Item>(
   readPage: (after?: string) => Promise<{ items: readonly Item[]; next: string | null }>,
-  identityOf: (item: Item) => string
+  identityOf: (item: Item) => string,
+  startingAfter?: string
 ): Promise<PageReading<Item>> {
   const items: Item[] = [];
   const collected = new Set<string>();
   const followed = new Set<string>();
-  let after: string | undefined;
+  let after: string | undefined = startingAfter;
   for (;;) {
     let page: { items: readonly Item[]; next: string | null };
     try {
@@ -130,7 +140,7 @@ async function readEveryPage<Item>(
       if (after === undefined) {
         throw error;
       }
-      return { complete: false, items, unreadable: failureText(error) };
+      return { complete: false, items, unreadable: failureText(error), cursor: after };
     }
     for (const item of page.items) {
       const identity = identityOf(item);
@@ -146,7 +156,8 @@ async function readEveryPage<Item>(
       return {
         complete: false,
         items,
-        unreadable: "the durable list answered with a cursor it had already given"
+        unreadable: "the durable list answered with a cursor it had already given",
+        cursor: page.next
       };
     }
     followed.add(page.next);

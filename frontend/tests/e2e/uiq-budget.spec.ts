@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import type { RunListRow, RunV3 } from "../../src/api/client";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
@@ -9,6 +10,7 @@ import { standingWords } from "../../src/lib/runState";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
+import { healthyRunListItems } from "../support/runListRows";
 
 /**
  * Click and glance budgets from mockup v8 §07. Each number is a door count on
@@ -112,12 +114,6 @@ async function resetToKnownStore(page: Page): Promise<void> {
   }).toPass({ timeout: 20_000 });
 }
 
-type ReconciliationFixtureRun = {
-  public_run_reference: string;
-  workflow_revision_hash: string;
-  state: string;
-};
-
 type InputFixtureRun = {
   public_run_reference: string;
   workflow_revision_hash: string;
@@ -127,7 +123,8 @@ type InputFixtureRun = {
 async function retireReconciliationFixtures(page: Page): Promise<void> {
   const listed = await page.request.get(`${API}/runs?state=WAITING_RECONCILIATION&limit=50`);
   expect(listed.status()).toBe(200);
-  const { items } = (await listed.json()) as { items: ReconciliationFixtureRun[] };
+  const { items: rows } = (await listed.json()) as { items: RunListRow[] };
+  const items: RunV3[] = healthyRunListItems(rows);
   expect(items).toHaveLength(2);
 
   for (const run of items) {

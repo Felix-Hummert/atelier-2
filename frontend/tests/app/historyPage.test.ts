@@ -15,9 +15,16 @@ import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { historyOutcome } from "../../src/lib/historyOutcome";
 import { historyWhenLabel } from "../../src/lib/historyRows";
 import { standingWords } from "../../src/lib/runState";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
-import { notCancellableBlock } from "../support/runV3";
-import { completedRun, publicReference, revisionHash } from "../support/runV3";
+import {
+  completedRun,
+  defectiveRunRow,
+  notCancellableBlock,
+  publicReference,
+  revisionHash,
+  runRow
+} from "../support/runV3";
 
 function failedRun(changes: Partial<RunV3> = {}): RunV3 {
   return { ...completedRun(changes), state: "FAILED" };
@@ -125,7 +132,9 @@ function openHistory(
 ) {
   window.history.replaceState(null, "", "/atelier/history");
   const listRuns = vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
-    items: state === "FAILED" ? runsByState.failed ?? [] : runsByState.completed ?? [],
+    items: (state === "FAILED" ? runsByState.failed ?? [] : runsByState.completed ?? []).map(
+      runRow
+    ),
     next_after: null
   }));
   return render(App, {
@@ -553,6 +562,105 @@ describe("History shows only what has finished", () => {
 
     await screen.findByText(historyPageCopy.emptyTitle);
     expect(screen.queryByText("ancient")).toBeNull();
+  });
+
+  it("shows a run whose own projection failed as a defective row beside its healthy neighbours (#1042)", async () => {
+    openHistory(
+      {},
+      {
+        listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
+          items:
+            state === "FAILED"
+              ? []
+              : [
+                  runRow(v3Run({ run_id: "healthy" })),
+                  defectiveRunRow({
+                    public_run_reference: "run1.Yg",
+                    detail: "RunTransitionConflict"
+                  })
+                ],
+          next_after: null
+        }))
+      }
+    );
+
+    // The healthy neighbour still shows and opens its run -- one row's own
+    // defect never dims the ones beside it.
+    expect((await findHistoryCard(/Two agents in a line/)).isConnected).toBe(true);
+
+    const defectiveList = await screen.findByRole("list", {
+      name: workbenchPageCopy.defectiveRunsLabel
+    });
+    expect(within(defectiveList).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(defectiveList).getByText(workbenchPageCopy.defectiveRunTitle)).toBeTruthy();
+    // Nothing here opens: History has no run to show for a row it could not
+    // read (no new door).
+    expect(within(defectiveList).queryByRole("link")).toBeNull();
+  });
+
+  it("keeps every page it already loaded and names the cursor a stopped read left off at, instead of discarding what loaded (#1042 review, A2)", async () => {
+    const listRuns = vi.fn(async (after: string | undefined, state?: RunV3["state"]) => {
+      if (state === "FAILED") return { items: [], next_after: null };
+      if (after === undefined) {
+        return {
+          items: [runRow(v3Run({ run_id: "first-page", public_run_reference: "run1.YQ" }))],
+          next_after: "run1.cmV2aWV3LTM3MGZpeC0wMDUzMDQ"
+        };
+      }
+      throw new Error("second page unreadable");
+    });
+    openHistory({}, { listRuns });
+
+    // The page that already loaded still shows -- a stopped later page is
+    // never a reason to discard it.
+    expect((await findHistoryCard(/Two agents in a line/)).isConnected).toBe(true);
+    expect(
+      (await screen.findByText(/Reading stopped at run1\.cmV2aWV3LTM3MGZpeC0wMDUzMDQ/))
+        .isConnected
+    ).toBe(true);
+    expect(screen.queryByText(historyPageCopy.emptyTitle)).toBeNull();
+  });
+
+  it("resumes only the stopped list from its own cursor when its Retry is pressed, never re-reading the other list (#1109 delta MEDIUM)", async () => {
+    const stoppedCursor = "run1.cmV2aWV3LTM3MGZpeC0wMDUzMDQ";
+    const listRuns = vi
+      .fn()
+      .mockImplementation(async (after: string | undefined, state?: RunV3["state"]) => {
+        if (state === "FAILED") return { items: [], next_after: null };
+        if (after === undefined) {
+          return {
+            items: [runRow(v3Run({ run_id: "first-page", public_run_reference: "run1.YQ" }))],
+            next_after: stoppedCursor
+          };
+        }
+        throw new Error("second page unreadable");
+      });
+    openHistory({}, { listRuns });
+    await screen.findByText(/Reading stopped at/);
+    // The page already loaded before the stop still shows -- Retry must not
+    // discard it to resume.
+    expect((await findHistoryCard(/Two agents in a line/)).isConnected).toBe(true);
+    const callsBeforeRetry = listRuns.mock.calls.length;
+
+    listRuns.mockImplementation(async (after: string | undefined, state?: RunV3["state"]) => {
+      if (state === "FAILED") throw new Error("the failed list was not stopped; Retry must not re-read it");
+      if (after === stoppedCursor) return { items: [], next_after: null };
+      throw new Error(`unexpected completed-list call with after=${String(after)}`);
+    });
+    await fireEvent.click(
+      screen.getByRole("button", { name: historyPageCopy.retryList.completed })
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Reading stopped at/)).toBeNull();
+    });
+    // Retry made exactly one new call, resuming the completed list from the
+    // cursor it stopped at -- never a new call from the start, and never a
+    // call for the failed list, which never stopped.
+    const callsAfterRetry = listRuns.mock.calls.slice(callsBeforeRetry);
+    expect(callsAfterRetry).toEqual([[stoppedCursor, "COMPLETED"]]);
+    // The page shown before Retry is still shown after it.
+    expect(historyCardByRun("run1.YQ").isConnected).toBe(true);
   });
 });
 

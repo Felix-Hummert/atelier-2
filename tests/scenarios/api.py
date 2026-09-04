@@ -48,6 +48,7 @@ from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.run_projections import (
+    RunPage,
     RunProjection,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -479,3 +480,21 @@ def durable_queries(
     point of the change this helper follows.
     """
     return DbosQueries(engine, projection_limit or permissive_projection_limit())
+
+
+def healthy_runs(page: RunPage) -> tuple[RunProjection, ...]:
+    """A page's rows, where the scenario seeded only runs that project cleanly.
+
+    `RunPage.runs` admits a defective row (#1042) because a real page can hold
+    one; a scenario that seeded no corrupt run asserts that here once, instead
+    of every call site unsafely indexing `.run` into a row that might not have
+    one. A defective row reaching this call is the scenario's own defect, not
+    a shape to narrow past quietly.
+    """
+    healthy: list[RunProjection] = []
+    for row in page.runs:
+        assert isinstance(row, RunProjection), (
+            f"expected a healthy listed run, got {row!r}"
+        )
+        healthy.append(row)
+    return tuple(healthy)

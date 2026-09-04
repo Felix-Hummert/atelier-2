@@ -37,7 +37,7 @@ from tests.integration.test_v3_output_enforcement import (
 from tests.integration.test_v3_output_enforcement import (
     runtime as output_contract_runtime,
 )
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import durable_queries, healthy_runs
 
 runtime = output_contract_runtime
 
@@ -155,7 +155,9 @@ def test_list_and_events_name_the_same_failed_node(runtime) -> None:
     assert isinstance(listed, RunPage)
     assert isinstance(page, RunEventPage)
     listed_projection = next(
-        projection for projection in listed.runs if projection.run.run_id == RUN
+        projection
+        for projection in healthy_runs(listed)
+        if projection.run.run_id == RUN
     )
 
     get_resource = run_resource(found.projection)
