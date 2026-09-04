@@ -226,21 +226,34 @@ def test_the_doors_vector_admits_exactly_the_granted_doors(tmp_path: Path) -> No
     assert not state_directory.exists()
 
 
-def test_a_schema_bearing_doors_call_adds_only_structured_output(
+def test_a_schema_bearing_doors_call_grants_no_tool_for_the_schema(
     tmp_path: Path,
 ) -> None:
-    settings = doors_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
-    command = (
-        ClaudeAtelierDoorsExecutorFactory(settings)
-        .open()
-        .prepare_process(
-            doors_request(declared_output_schema_bytes=b'{"type":"object"}')
-        )
-    )
-    expected_doors = ",".join((*settings.allowed_door_tools, "StructuredOutput"))
+    """A declared schema changes this vector's job, never its door grant (#1188).
 
-    assert "--tools=StructuredOutput" in command.arguments
-    assert argument_after(command.arguments, "--allowedTools") == expected_doors
+    The schema used to reach Anthropic as a synthesized tool's `input_schema`,
+    so a schema-bearing episode was granted a tool beside its doors -- and a
+    schema carrying a top-level `allOf` refused the whole call there. It closes
+    the job now, so this allowlist is the doors alone whatever a node declares.
+    """
+
+    settings = doors_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
+    command = executor.prepare_process(
+        doors_request(declared_output_schema_bytes=CONDUCTOR_REPORT_SCHEMA)
+    )
+
+    assert "--tools=" in command.arguments
+    assert argument_after(command.arguments, "--allowedTools") == ",".join(
+        settings.allowed_door_tools
+    )
+    assert not any(
+        argument.startswith("--json-schema") for argument in command.arguments
+    )
+    assert command.standard_input is not None
+    assert command.standard_input.endswith(CONDUCTOR_REPORT_SCHEMA)
+    executor.release_credential_channel(command)
+    executor.close()
 
 
 def test_a_pinned_budget_replaces_the_default_turn_bound(tmp_path: Path) -> None:
@@ -479,8 +492,9 @@ _EPISODE_REPORT = {
 }
 
 # The four result-text shapes one identical brief really came back in (#663,
-# live 25.08.). Native structured output now carries the durable object while
-# the text remains provider narration.
+# live 25.08.), and the terminal `result` text is again the whole answer this
+# executor hands on (#1188), so which bytes of it are the declared value is
+# what decides whether an episode ends as a report.
 _OBSERVED_ANSWER_SHAPES = (
     "{report}",
     "{report}\n",
@@ -511,21 +525,19 @@ def cycling_claude(shapes: tuple[str, ...]) -> str:
         "        'type': 'result',\n"
         "        'is_error': False,\n"
         "        'result': shapes[answered % len(shapes)].replace('{report}', report),\n"
-        "        'structured_output': json.loads(report),\n"
         "    },\n"
         "    sys.stdout,\n"
         ")\n"
     )
 
 
-def answering_claude(answer: str, structured_output: object | None = None) -> str:
-    """A fake CLI that answers text and, where present, a native schema value."""
+def answering_claude(answer: str) -> str:
+    """A fake CLI whose whole session is this one terminal answer."""
 
     return (
         "import json, sys\n"
         "sys.stdin.buffer.read()\n"
-        f"json.dump({{'type': 'result', 'is_error': False, 'result': {answer!r}, "
-        f"'structured_output': {structured_output!r}}}, "
+        f"json.dump({{'type': 'result', 'is_error': False, 'result': {answer!r}}}, "
         "sys.stdout)\n"
     )
 
@@ -577,34 +589,37 @@ def test_ten_identical_episodes_all_answer_a_value_the_report_schema_admits(
 
 @pytest.mark.proves("an-episode-answering-no-such-value-is-still-refused")
 @pytest.mark.parametrize(
-    "structured_output",
+    ("answer", "refusal"),
     [
         pytest.param(
-            {"answer": "done"},
+            '{"answer": "done"}',
+            InstanceRefusal.SCHEMA_VIOLATED,
             id="an object missing required fields",
         ),
         pytest.param(
-            [],
+            "[]",
+            InstanceRefusal.SCHEMA_VIOLATED,
             id="an array instead of a report object",
+        ),
+        pytest.param(
+            "I started the tidy workflow.",
+            InstanceRefusal.INSTANCE_NOT_JSON,
+            id="prose carrying no document at all",
         ),
     ],
 )
 def test_an_episode_carrying_no_declared_value_is_refused_rather_than_narrowed(
-    tmp_path: Path, structured_output: object
+    tmp_path: Path, answer: str, refusal: InstanceRefusal
 ) -> None:
-    """Fail loud: the output seam judges an invalid native provider value."""
+    """Fail loud: narrowing proposes, the output seam judges, nothing repairs."""
 
-    settings = doors_deployment(
-        tmp_path,
-        "refusing",
-        answering_claude("the provider returned a structured value", structured_output),
-    )
+    settings = doors_deployment(tmp_path, "refusing", answering_claude(answer))
     workspace = provider_workspace(tmp_path)
 
     verdict = report_verdict(episode_output(settings, workspace))
 
     assert isinstance(verdict, InstanceRefused)
-    assert verdict.refusal is InstanceRefusal.SCHEMA_VIOLATED
+    assert verdict.refusal is refusal
 
 
 def test_an_episode_whose_node_declared_no_schema_keeps_the_answer_it_was_given(

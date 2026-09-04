@@ -66,7 +66,6 @@ WAITING_FOR_A_CALLER = (
         "names": (
             "resolve_declared_reference",
             "agent_configuration_revision_for",
-            "declared_instance_in_answer",
             "join_of",
             "AnyBoundRun",
             "MAXIMUM_KIND_TOKEN_CHARACTERS",
@@ -75,8 +74,8 @@ WAITING_FOR_A_CALLER = (
         "why": (
             "Contract helpers a caller was planned for and has not arrived at: the "
             "scheduler that applies a join, the reader that reports which lineage "
-            "id was derived, the answer reader, the bound-run alias and the kind "
-            "token bound. Each is proven by a domain test and named by an ADR."
+            "id was derived, the bound-run alias and the kind token bound. Each "
+            "is proven by a domain test and named by an ADR."
         ),
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
