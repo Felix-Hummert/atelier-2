@@ -376,20 +376,14 @@ def connect_project_source(
     active = _active_source(latest_sources)
     if isinstance(active, DurableStateCorrupt):
         return active
-    disconnected_from: ProjectSourceConnectionRevision | None = None
+    move_source: ProjectSourceConnectionRevision | None = None
     if active is not None and (
         active.source_kind != typed_source_kind
         or active.source_address != typed_source_address
     ):
         if not (move and active.source_kind == typed_source_kind):
             return ProjectSourceConnectionConflict()
-        match _connection_write_result(_disconnected_after(active), connections):
-            case ProjectSourceConnectionPublished(
-                revision
-            ) | ProjectSourceConnectionUnchanged(revision):
-                disconnected_from = revision
-            case _ as failure:
-                return failure
+        move_source = active
         active = None
     matching_history = tuple(
         revision
@@ -424,10 +418,16 @@ def connect_project_source(
         return UnpublishableConnection()
     if latest is not None and _unchanged_fields(latest, candidate):
         return ProjectSourceConnectionUnchanged(latest)
-    result = _connection_write_result(candidate, connections)
-    if disconnected_from is None:
-        return result
-    match result:
+    if move_source is None:
+        return _connection_write_result(candidate, connections)
+    match _connection_write_result(_disconnected_after(move_source), connections):
+        case ProjectSourceConnectionPublished(
+            revision
+        ) | ProjectSourceConnectionUnchanged(revision):
+            disconnected_from = revision
+        case _ as failure:
+            return failure
+    match _connection_write_result(candidate, connections):
         case ProjectSourceConnectionPublished(
             revision
         ) | ProjectSourceConnectionUnchanged(revision):

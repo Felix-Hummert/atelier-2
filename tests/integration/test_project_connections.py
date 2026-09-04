@@ -102,13 +102,14 @@ def _connect(
     credential_directory: Path,
     *,
     project_id: str = "studio",
+    source_kind: str = "github",
     source_address: str = "acme/studio",
     move: bool = False,
 ) -> ConnectProjectSourceResult:
     channel = DbosHostConfigurationChannel(engine)
     return connect_project_source(
         project_id,
-        "github",
+        source_kind,
         source_address,
         credential_directory,
         "personal-access-token",
@@ -346,6 +347,72 @@ def test_move_against_the_already_active_address_is_unchanged(
 
     assert again == ProjectSourceConnectionUnchanged(first.revision)
     assert _connection_revision_count(engine) == 1
+
+
+def test_move_refuses_a_source_kind_change_and_leaves_the_old_source_connected(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    first = _connect(engine, credential_directory)
+    assert isinstance(first, ProjectSourceConnectionPublished)
+
+    moved = _connect(
+        engine,
+        credential_directory,
+        source_kind="gitlab",
+        source_address="acme/studio",
+        move=True,
+    )
+
+    assert moved == ApplicationProjectSourceConnectionConflict()
+    read = get_project_source_connection(
+        "studio", DbosHostConfigurationChannel(engine), GITHUB_CONNECTOR
+    )
+    assert isinstance(read, ProjectSourceConnectionRead)
+    assert read.revision == first.revision
+    assert read.revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+    assert _connection_revision_count(engine) == 1
+
+
+def test_resuming_a_move_after_a_disconnect_only_crash_yields_one_connected_source(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    """Simulates a crash between the move's two writes: the old address is
+    already `DISCONNECTED`, but the target was never written. Re-running the
+    move must connect the target without leaving two active sources."""
+    engine, credential_directory = connected_workshop
+    channel = DbosHostConfigurationChannel(engine)
+    first = _connect(engine, credential_directory)
+    assert isinstance(first, ProjectSourceConnectionPublished)
+    assert (
+        disconnect_project_source(
+            ProjectId("studio"),
+            ProjectId("studio"),
+            first.revision.source_id,
+            channel,
+            channel,
+        )
+        == ProjectSourceDisconnectedSuccessfully()
+    )
+
+    resumed = _connect(
+        engine, credential_directory, source_address="acme/studio-2", move=True
+    )
+
+    assert isinstance(resumed, ProjectSourceConnectionPublished)
+    assert resumed.revision.source_address == SourceAddress("acme/studio-2")
+    latest_per_source = channel.latest_project_source_connection_revisions(
+        ProjectId("studio")
+    )
+    assert isinstance(latest_per_source, tuple)
+    connected_sources = [
+        revision
+        for revision in latest_per_source
+        if revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+    ]
+    assert connected_sources == [resumed.revision]
+    assert len(latest_per_source) == 2
+    assert _connection_revision_count(engine) == 3
 
 
 def test_connecting_a_project_without_a_root_is_refused(
