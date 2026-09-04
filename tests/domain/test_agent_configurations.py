@@ -12,7 +12,9 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     AgentBinding,
     AgentBindingSet,
+    AgentConfigurationNotStartableReason,
     AgentConfigurationRevision,
+    AgentConfigurationRevisionListItem,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
@@ -23,12 +25,15 @@ from atelier2.contracts.agents import (
     AuthMode,
     AuthProfileRevision,
     ProviderId,
+    ProviderProbeFailure,
     ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
+from atelier2.contracts.provider_probe_receipts import ProviderProbeProblemCode
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
 
 
 def _auth(
@@ -593,3 +598,38 @@ def test_a_composed_chain_job_is_held_to_the_process_input_bound() -> None:
                 instruction, orders, (DeliveredOutput("cook", "plate", overflowing),)
             ).encode("utf-8"),
         )
+
+
+def test_probe_failure_evidence_is_carried_only_when_it_names_the_reason() -> None:
+    """#1128: a superseded model outranks a failed receipt in the precedence.
+
+    A configuration the model registry no longer points at is refused with
+    `model-not-registered` before its receipt is ever asked about, even when
+    that receipt itself failed -- so `probe_failure_evidence` must stay
+    `None` there, not echo the raw `probe_failure` the projection used to
+    read unconditionally and crash the wire validator with.
+    """
+    auth = _auth()
+    configuration = _configuration(auth)
+    failure = ProviderProbeFailure(
+        ProviderProbeProblemCode("provider-overloaded"),
+        RecordedAt("2026-09-03T11:22:00Z"),
+    )
+
+    superseded_with_failed_receipt = AgentConfigurationRevisionListItem(
+        configuration, auth, True, False, False, failure
+    )
+    assert (
+        superseded_with_failed_receipt.not_startable_reason
+        is AgentConfigurationNotStartableReason.MODEL_NOT_REGISTERED
+    )
+    assert superseded_with_failed_receipt.probe_failure_evidence is None
+
+    registered_with_failed_receipt = AgentConfigurationRevisionListItem(
+        configuration, auth, True, True, False, failure
+    )
+    assert (
+        registered_with_failed_receipt.not_startable_reason
+        is AgentConfigurationNotStartableReason.PROVIDER_PROBE_FAILED
+    )
+    assert registered_with_failed_receipt.probe_failure_evidence is failure
