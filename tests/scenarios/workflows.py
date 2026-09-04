@@ -32,6 +32,36 @@ def declared_output(
 """.encode()
 
 
+def graph_input_wait_line(
+    schema_revision: str, order_name: str = "context", node_id: str = "approve"
+) -> bytes:
+    """A wait-only document declaring and reading one `graph_input`.
+
+    No agent role, so a scenario about what a `graph_input` becomes -- filled,
+    unfillable, work-item-shaped or not -- needs no agent-configuration or
+    model-registry setup beside it; that ceremony belongs to a scenario about
+    binding an agent, not to one about a document's declared input.
+    """
+    return (
+        f"""format_version: 3
+name: Read one declared graph input
+graph_inputs:
+  - name: {order_name}
+    schema:
+      ref: work-item
+      revision: {schema_revision}
+nodes:
+  - id: {node_id}
+    type: wait
+    prompt: Approve the named item.
+    inputs:
+      - name: {order_name}
+        from: {{graph_input: {order_name}}}
+""".encode()
+        + declared_output(ANY_JSON_SCHEMA, "approval")
+    )
+
+
 OPEN_PR_OPERATION = PublishedRevision(
     RevisionKind.ADAPTER_OPERATION, b'{"operation":"open-pr"}'
 )
