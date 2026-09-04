@@ -1366,6 +1366,18 @@ gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
 two one owner *and* deleting its entry.
 
+## SonarCloud and CodeQL
+
+`sonar-project.properties` at the repository root lets SonarCloud's Automatic
+Analysis (public project `FlexOr2_atelier-2` in organisation `flexor2`, Free
+plan, no token, no CI step) read the source, test, and exclusion layout and
+comment on every pull request through the SonarCloud GitHub app. It measures
+duplication, cognitive complexity, and issues on new code. CodeQL's default
+setup, enabled directly on GitHub, scans Python, JavaScript/TypeScript, and
+Actions on the same pushes. Neither is a required check yet -- that follows
+the measurement week described in #1203, which compares Sonar's findings
+against the duplicate ratchet above and the `C901` complexity count.
+
 ## Verification
 
 Container recipes:
