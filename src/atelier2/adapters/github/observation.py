@@ -5,12 +5,12 @@ the project-source connection record names, and answer them in the reference
 grammar this package owns -- `gh:<n>`, the same spelling the queue's admission
 door already receives (ADR 0010: what a tracker reference means is the
 connected platform adapter's contract). Nothing else of the listing crosses
-this boundary; titles cross as observations for the caller to decide whether to
-retain, each dated by the one instant this source finished reading the whole
-open listing, while labels and an item's own lifecycle stay GitHub's
-(REQ-QUEUE-14). GitHub's state field remains deliberately unread; the importer
-derives closedness from the open-set difference (ADR 0016, 2026-09-01
-amendment).
+this boundary; a title and the labels an item was listed with cross as
+observations for the caller to decide what to do with, each dated by the one
+instant this source finished reading the whole open listing, while an item's
+own lifecycle stays GitHub's (REQ-QUEUE-14). GitHub's state field remains
+deliberately unread; the importer derives closedness from the open-set
+difference (ADR 0016, 2026-09-01 amendment).
 
 Reading one named item is the port's second operation (ADR 0010 decision 1,
 2026-08-26 amendment): it answers the observed revision of ADR 0010 §5 -- the
@@ -103,6 +103,34 @@ def _decoded_payload(
         return _DecodedPayload(response.json())
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         return TrackerPayloadMalformed(f"the platform answer is not JSON: {error}")
+
+
+def _label_names(payload: Any) -> tuple[str, ...] | None:
+    """The label names this listing served, or `None` for a shape to refuse.
+
+    GitHub spells a label either as its bare name or as an object carrying
+    `name`; both say the same thing, and a listed label the payload spells
+    some third way is refused rather than guessed at. An issue with no
+    `labels` at all carries no label: the key is absent only where nothing
+    named the item, and a missing label can authorize nothing (REQ-QUEUE-08),
+    so reading it as the empty set withholds authority rather than inventing
+    it.
+    """
+
+    if payload is None:
+        return ()
+    if not isinstance(payload, list):
+        return None
+    names: list[str] = []
+    for entry in payload:
+        if isinstance(entry, str):
+            names.append(entry)
+            continue
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(name, str):
+            return None
+        names.append(name)
+    return tuple(names)
 
 
 def _issue_number(reference: TrackerItemReference) -> int | None:
@@ -317,7 +345,12 @@ class LiveGitHubIssueSource:
             title = entry.get("title")
             if not isinstance(title, str):
                 return TrackerPayloadMalformed("an open issue carried no text title")
+            labels = _label_names(entry.get("labels"))
+            if labels is None:
+                return TrackerPayloadMalformed(
+                    "an open issue carried labels this source cannot read names from"
+                )
             items.append(
-                ObservedOpenTrackerItem(github_tracker_reference(number), title)
+                ObservedOpenTrackerItem(github_tracker_reference(number), title, labels)
             )
         return None

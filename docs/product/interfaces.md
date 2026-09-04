@@ -6,7 +6,11 @@ proposed, and admitted rows; revise a project's queue capacity policy with a
 CAS-guarded `PUT /projects/{public_project_reference}/queue-policy`; write the
 priority, workflow lineage, and prerequisites the operator will inspect through
 `PUT /queue-proposals`; and confirm exactly that proposal through
-`POST /queue-admissions`. The priority wire shape is `{"rank": n}`. Queue
+`POST /queue-admissions`. The policy revision also carries the project's
+`automation_label`: with one named, the sweep confirms every inspected
+proposal whose tracker item carries that label under the `AUTOMATION_RULE`
+authority, and with none named it admits nothing automatically. The priority
+wire shape is `{"rank": n}`. Queue
 responses use the contract's typed state, authority, automation disposition,
 and blocker values. A tracker read failure never drops a durable queue row: the
 resource instead reports `ENRICHMENT_UNAVAILABLE` while the row still carries

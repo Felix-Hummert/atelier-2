@@ -5,6 +5,7 @@ import pytest
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
+    QUEUE_AUTOMATION_LABEL_WILDCARD,
     ConfirmQueueProposal,
     QueueAdmission,
     QueueAdmissionProposalRequired,
@@ -15,6 +16,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemState,
     QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyRevision,
     QueueProposal,
     TrackerItemReference,
     WorkItemReference,
@@ -116,3 +118,15 @@ def test_observed_item_requires_a_proposal_before_confirmation() -> None:
     assert snapshot.confirm(command) == QueueAdmissionProposalRequired(
         REFERENCE, QueueItemState.OBSERVED
     )
+
+
+def test_a_policy_names_one_automation_label_and_refuses_the_wildcard() -> None:
+    """ "All" is a decision the operator has not made (#79 ruling 1)."""
+
+    project = REFERENCE.project
+
+    assert (
+        QueueProjectPolicyRevision(project, 1, 2, "bereit").automation_label == "bereit"
+    )
+    with pytest.raises(ValueError, match="names one label"):
+        QueueProjectPolicyRevision(project, 1, 2, QUEUE_AUTOMATION_LABEL_WILDCARD)
