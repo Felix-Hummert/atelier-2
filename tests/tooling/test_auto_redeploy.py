@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,7 @@ BLOCKING_RUN_SENTENCE = "cnVuLTE STARTED since 2026-09-03T07:15:00Z"
 """How the watcher must name that run: reference, state, since when."""
 
 
-def run_row(run: dict[str, object]) -> dict[str, object]:
+def run_row(run: Mapping[str, object]) -> dict[str, object]:
     """A `/runs` list row whose own projection could be told (#1042, #1109)."""
     return {"kind": "run", "run": run}
 
