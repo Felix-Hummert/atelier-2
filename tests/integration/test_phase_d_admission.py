@@ -37,6 +37,7 @@ from atelier2.adapters.dbos.schema import (
     queue_launch_bindings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.openapi import (
     API_PREFIX,
@@ -488,7 +489,10 @@ def test_a_retired_item_stays_visible_and_is_never_started(
     assert snapshot.state is QueueItemState.ADMITTED
     assert (
         advance_queue_module.advance_queue(
-            queue, DbosCatalogStore(engine), cast(DurablePublishedRunStarter, object())
+            queue,
+            DbosCatalogStore(engine),
+            cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
         == ()
     )
@@ -874,6 +878,7 @@ def test_dependencies_require_completed_and_ready_items_order_by_rank_then_id(
         queue,
         DbosCatalogStore(engine),
         cast(DurablePublishedRunStarter, object()),
+        workflow_document_parser=parse_workflow_document,
     )
     started_items = [
         outcome.item_id for outcome in outcomes if isinstance(outcome, QueueRunStarted)
@@ -939,7 +944,10 @@ def test_list_items_pages_seek_by_the_start_order_key_not_by_item_id(
 
     monkeypatch.setattr(advance_queue_module, "start_published_run", _run_started)
     outcomes = advance_queue_module.advance_queue(
-        queue, DbosCatalogStore(engine), cast(DurablePublishedRunStarter, object())
+        queue,
+        DbosCatalogStore(engine),
+        cast(DurablePublishedRunStarter, object()),
+        workflow_document_parser=parse_workflow_document,
     )
     started_items = [
         outcome.item_id for outcome in outcomes if isinstance(outcome, QueueRunStarted)
@@ -1394,6 +1402,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
             DbosQueueProjectionStore(reopened),
             DbosCatalogStore(reopened),
             cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
         assert isinstance(outcome, QueueItemBlocked)
         assert outcome.blockers == (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,)
@@ -1583,6 +1592,7 @@ def test_advance_replays_a_reserved_binding_before_projection_blockers(
         cast(Any, BoundQueue()),
         DbosCatalogStore(engine),
         cast(DurablePublishedRunStarter, object()),
+        workflow_document_parser=parse_workflow_document,
     )
 
     assert isinstance(outcomes[0], QueueRunStarted)
@@ -1610,6 +1620,7 @@ def test_advance_classifies_queue_read_failures(
             cast(Any, ReadAnswerQueue()),
             cast(Any, object()),
             cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
 
 
@@ -1669,6 +1680,7 @@ def test_advance_refuses_incomplete_phase_d_projection_before_blockers(
             cast(Any, MalformedProjection()),
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
 
 
@@ -1704,6 +1716,7 @@ def test_advance_classifies_launch_reservation_failures(
             cast(Any, ReservationAnswerQueue()),
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
 
 
@@ -1734,6 +1747,7 @@ def test_advance_classifies_catalog_resolution_failures(
             queue,
             cast(Any, CatalogAnswer()),
             cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
 
 
@@ -1777,6 +1791,7 @@ def test_advance_classifies_reserved_run_start_failures(
             queue,
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
 
 
@@ -2049,4 +2064,5 @@ def test_corrupt_admission_proposal_identity_fails_projection_api_and_start(
             queue,
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
         )
