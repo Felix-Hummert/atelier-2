@@ -945,11 +945,16 @@ operation, in this order:
    grant names step 3's operation by its own returned hash, so it cannot be
    published first.
 
-Only once every schema, budget, grant, and operation above has returned its
-hash does the Git-source intake admit `workflows/issue-to-pr.yaml` itself --
-an unresolved pin refuses the whole document. The live hashes are the
-landing's own evidence; this runbook does not copy them, for the same reason
-the canary's four hashes above are not copied either.
+The Git-source intake admits `workflows/issue-to-pr.yaml` regardless of this
+order; it does not refuse the document for an unresolved pin. The admitted
+revision reads `executable: false`, with `not_executable_reason` naming the
+first pin still missing, until every schema, budget, grant, and operation
+above is published -- publishing the missing ones then turns the same
+revision `executable: true` in place, with no new intake. The order above
+still matters: the `push-atelier-commit` grant names step 3's operation by
+its own returned hash, so it cannot be published first. The live hashes are
+the landing's own evidence; this runbook does not copy them, for the same
+reason the canary's four hashes above are not copied either.
 
 ### A red project verification's own output (#1137)
 

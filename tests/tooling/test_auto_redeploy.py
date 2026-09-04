@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,10 +19,24 @@ BLOCKING_RUN = {
     "state": "STARTED",
     "started_at": "2026-09-03T07:15:00Z",
 }
-"""The one running run a busy scenario serves from the runs list."""
+"""The one running run's own projected fields, as `RunResourceV3` carries them."""
 
 BLOCKING_RUN_SENTENCE = "cnVuLTE STARTED since 2026-09-03T07:15:00Z"
 """How the watcher must name that run: reference, state, since when."""
+
+
+def run_row(run: Mapping[str, object]) -> dict[str, object]:
+    """A `/runs` list row whose own projection could be told (#1042, #1109)."""
+    return {"kind": "run", "run": run}
+
+
+DEFECTIVE_RUN_ROW = {
+    "kind": "defective",
+    "public_run_reference": "cnVuLTI",
+    "problem_code": "durable-state-corrupt",
+    "detail": "durable projection unreadable",
+}
+"""A `/runs` list row whose own projection failed (#1042); never an active run."""
 
 GIT_IDENTITY = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -391,7 +406,7 @@ class AutoRedeployHarness:
             ),
             "ATELIER2_TEST_SERVED_COMMIT_FILE": str(self.served_commit_file),
             "ATELIER2_TEST_NOW_SECONDS": "2000000000",
-            "ATELIER2_TEST_BUSY_RUNS": json.dumps([BLOCKING_RUN]),
+            "ATELIER2_TEST_BUSY_RUNS": json.dumps([run_row(BLOCKING_RUN)]),
         }
         environment.update(settings)
         return subprocess.run(
@@ -563,19 +578,29 @@ def test_a_run_parked_on_a_person_never_defers_the_deploy(
 @pytest.mark.parametrize(
     ("runs", "next_page", "sentence"),
     (
-        ([BLOCKING_RUN], "", BLOCKING_RUN_SENTENCE),
+        ([run_row(BLOCKING_RUN)], "", BLOCKING_RUN_SENTENCE),
         (
-            [{**BLOCKING_RUN, "started_at": None}],
+            [run_row({**BLOCKING_RUN, "started_at": None})],
             "",
             "cnVuLTE STARTED since an unrecorded time",
         ),
         (
-            [BLOCKING_RUN],
+            [run_row(BLOCKING_RUN)],
             "next-page-cursor",
             f"{BLOCKING_RUN_SENTENCE}, and further runs",
         ),
+        (
+            [run_row(BLOCKING_RUN), DEFECTIVE_RUN_ROW],
+            "",
+            f"{BLOCKING_RUN_SENTENCE}, and 1 defective row(s) ignored",
+        ),
     ),
-    ids=("one-known-run", "a-run-without-a-start-time", "more-than-the-page-holds"),
+    ids=(
+        "one-known-run",
+        "a-run-without-a-start-time",
+        "more-than-the-page-holds",
+        "one-known-run-and-one-defective-row",
+    ),
 )
 def test_a_busy_deferral_names_what_it_is_waiting_for(
     tmp_path: Path, runs: list[dict[str, object]], next_page: str, sentence: str
@@ -621,6 +646,39 @@ def test_an_unreadable_run_list_fails_closed_and_counts_the_tick(
     assert run_git(harness.deploy, "rev-parse", "HEAD") == previous_commit
     assert harness.invocations("serve_live_update") == []
     assert harness.state("auto-redeploy.failures") == 1
+
+
+def test_a_run_row_with_an_unrecognised_kind_fails_closed_and_counts_the_tick(
+    tmp_path: Path,
+) -> None:
+    """A shape the watcher does not know is a parse failure, never a silently
+    ignored row -- only `kind == "defective"` (#1042) may be skipped."""
+    harness, previous_commit, _ = prepare_pending_deploy(tmp_path)
+
+    completed = harness.run(
+        ATELIER2_TEST_BUSY_STATE="STARTED",
+        ATELIER2_TEST_BUSY_RUNS=json.dumps([{"kind": "unknown"}]),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == previous_commit
+    assert harness.invocations("serve_live_update") == []
+    assert harness.state("auto-redeploy.failures") == 1
+
+
+def test_only_defective_rows_are_not_active_runs_and_the_deploy_proceeds(
+    tmp_path: Path,
+) -> None:
+    harness, _, target_commit = prepare_pending_deploy(tmp_path)
+
+    completed = harness.run(
+        ATELIER2_TEST_BUSY_STATE="STARTED",
+        ATELIER2_TEST_BUSY_RUNS=json.dumps([DEFECTIVE_RUN_ROW]),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert run_git(harness.deploy, "rev-parse", "HEAD") == target_commit
+    assert harness.state("auto-redeploy.busy") == 0
 
 
 @pytest.mark.parametrize("checks", ("queued", "in_progress"))

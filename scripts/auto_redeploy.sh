@@ -215,12 +215,24 @@ except (json.JSONDecodeError, KeyError, TypeError):
 if not isinstance(items, list):
     raise SystemExit(1)
 described = []
+defective_count = 0
 for item in items:
     if not isinstance(item, dict):
         raise SystemExit(1)
-    reference = item.get("public_run_reference")
-    state = item.get("state")
-    started_at = item.get("started_at")
+    kind = item.get("kind")
+    if kind == "defective":
+        if not isinstance(item.get("public_run_reference"), str):
+            raise SystemExit(1)
+        defective_count += 1
+        continue
+    if kind != "run":
+        raise SystemExit(1)
+    run = item.get("run")
+    if not isinstance(run, dict):
+        raise SystemExit(1)
+    reference = run.get("public_run_reference")
+    state = run.get("state")
+    started_at = run.get("started_at")
     if not isinstance(reference, str) or not isinstance(state, str):
         raise SystemExit(1)
     if started_at is not None and not isinstance(started_at, str):
@@ -229,6 +241,8 @@ for item in items:
     described.append(f"{reference} {state} since {since}")
 if described and next_page is not None:
     described.append("and further runs")
+if described and defective_count:
+    described.append(f"and {defective_count} defective row(s) ignored")
 print(", ".join(described))
 ' <<<"${body}" 2>/dev/null)"; then
     printf 'cannot parse %s runs' "${blocking_run_state}"
