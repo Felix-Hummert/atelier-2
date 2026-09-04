@@ -145,6 +145,7 @@ from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 from atelier2.ports.issue_observation import (
     ObservedOpenTrackerItem,
     OpenTrackerItemsObserved,
+    TrackerItemSource,
     TrackerItemUnknown,
     WorkItemRevisionObserved,
 )
@@ -1416,11 +1417,31 @@ def main() -> None:
 
     baseline = baseline_agent_executor_factory()
 
+    # One tracker for the whole harness process. This deployment connects no
+    # project source, so production hands the runtime no tracker at all; the
+    # import door and the runtime's own queue sweep both read this fixture
+    # instead, so they cannot disagree about the item a started run is about.
+    fixture_tracker = FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved(
+            (ObservedOpenTrackerItem(_E2E_TRACKER_ITEM, _E2E_TRACKER_ITEM_TITLE),)
+        ),
+        snapshot_answer=WorkItemRevisionObserved(_E2E_OBSERVED_REVISION),
+        expected_snapshot_reference=_E2E_TRACKER_ITEM,
+        unexpected_snapshot_answer=TrackerItemUnknown,
+    )
+
     def runtime(
         settings: DbosRuntimeSettings,
         effect_factory: EffectAdapterFactory,
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
+        *,
+        tracker_item_source: TrackerItemSource | None,
     ) -> DbosRuntime:
+        if tracker_item_source is not None:
+            raise RuntimeError(
+                "the e2e harness connects no project source, so it substitutes "
+                "its own fixture tracker; a live one would reach the network"
+            )
         factories = (
             *agent_factories_v2,
             baseline,
@@ -1439,6 +1460,7 @@ def main() -> None:
             ),
             effect_factory,
             factories,
+            tracker_item_source=fixture_tracker,
         )
 
     settings = HostSettings(
@@ -1471,18 +1493,7 @@ def main() -> None:
     ) -> FastAPI:
         seeded = replace(
             ports,
-            tracker_item_source=FakeTrackerItemSource(
-                open_items_answer=OpenTrackerItemsObserved(
-                    (
-                        ObservedOpenTrackerItem(
-                            _E2E_TRACKER_ITEM, _E2E_TRACKER_ITEM_TITLE
-                        ),
-                    )
-                ),
-                snapshot_answer=WorkItemRevisionObserved(_E2E_OBSERVED_REVISION),
-                expected_snapshot_reference=_E2E_TRACKER_ITEM,
-                unexpected_snapshot_answer=TrackerItemUnknown,
-            ),
+            tracker_item_source=fixture_tracker,
             agent_configuration_catalog=ReceiptMintingAgentConfigurationCatalog(
                 ports.agent_configuration_catalog, receipt_directory, source_commit
             ),
