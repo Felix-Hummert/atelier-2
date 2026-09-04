@@ -177,6 +177,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorV2,
     AgentProcessRunner,
 )
+from atelier2.ports.artifacts import ArtifactPublisher
 from atelier2.ports.effects import EffectAdapter, OpenEffectAdapterRegistry
 from atelier2.ports.project_verification import (
     DeclaredProject,
@@ -622,6 +623,7 @@ def register_durable_run_workflow(
     agent_process_runner: AgentProcessRunner | None,
     agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
     project: DeclaredProject | None,
+    artifact_publisher: ArtifactPublisher,
     adapter: OpenEffectAdapterRegistry,
     effect_binding: tuple[EffectAdapterBinding, ...],
     project_id: ProjectId | None = None,
@@ -669,6 +671,7 @@ def register_durable_run_workflow(
             runner,
             _declared_workspace_owner(agent_workspace_owner),
             pinned_project(binding, project),
+            artifact_publisher,
         )
 
     def agent_node_attempt(
