@@ -59,12 +59,14 @@ from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
     ToolCalled,
     ToolReturned,
     UnrecognisedProviderOutput,
     Usage,
 )
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -2292,18 +2294,25 @@ def recorded_tool_results(*blocks: Mapping[str, object]) -> dict[str, object]:
 
 
 def recorded_terminal_line(
-    answer: str,
+    answer: str | None = None,
     structured_output: object | None = None,
-    is_error: bool = False,
+    is_error: object = False,
+    subtype: str = "success",
 ) -> dict[str, object]:
-    """The `result` line grok names its own session's end with."""
+    """The `result` line grok names its own session's end with.
+
+    `is_error` is deliberately untyped: a release that spells its own flag as
+    something other than the JSON boolean is one of the endings this file has
+    to be able to write down. An absent `answer` leaves the `result` field off
+    the line entirely, which is how a terminal line carrying no last words
+    arrives.
+    """
 
     terminal: dict[str, object] = {
         "type": "result",
-        "subtype": "success",
+        "subtype": subtype,
         "is_error": is_error,
         "num_turns": 1,
-        "result": answer,
         "stop_reason": "end_turn",
         "usage": {
             "input_tokens": 16374,
@@ -2312,6 +2321,8 @@ def recorded_terminal_line(
             "cache_creation_input_tokens": 0,
         },
     }
+    if answer is not None:
+        terminal["result"] = answer
     if structured_output is not None:
         terminal["structured_output"] = structured_output
     return terminal
@@ -2467,23 +2478,48 @@ def test_a_session_that_ended_before_its_first_tool_call_is_no_answer_at_all(
 
 
 def test_a_root_string_schema_answer_survives_the_stream(tmp_path: Path) -> None:
-    """The provider-canary vector: a schema whose root is a string, not an object."""
+    """The provider-canary vector: a schema whose root is a string, not an object.
 
+    Replayed from a billed run of that vector's own instruction and schema
+    (04.09.2026, grok 1.0.5 / grok-4.6, `#1165`). Its terminal line settles the
+    two things an object-schema capture could not: the field is spelled
+    `structured_output` here too, and it carries the bare string rather than
+    wrapping it, while `result` beside it carries that string's JSON text. So
+    the bytes the output seam judges are one JSON string document, quotes
+    included. The same run showed the schema pressing even the narration before
+    the first tool call into that string form, which is the collapse the
+    sibling test above pins.
+    """
+
+    command = "sleep 20 && echo canary-alive"
+    call_id = "call-78cc785d-e7bf-4f49-9de0-5e4d219c1d4e-0"
     stream = recorded_grok_stream(
         recorded_session_start(),
         recorded_assistant_message(
+            {"type": "text", "text": '"I\'ll run that exact command."'},
             {
                 "type": "tool_use",
-                "id": "call-canary-0",
+                "id": call_id,
                 "name": "run_terminal_command",
-                "input": {"command": "sleep 20 && echo canary-alive"},
-            }
+                "input": {
+                    "command": command,
+                    "description": "Sleep 20 seconds then echo canary-alive",
+                    "timeout": 30000,
+                },
+            },
         ),
         recorded_tool_results(
             {
                 "type": "tool_result",
-                "tool_use_id": "call-canary-0",
-                "content": "canary-alive",
+                "tool_use_id": call_id,
+                "content": json.dumps(
+                    {
+                        "type": "Bash",
+                        "output_for_prompt": "exit: 0\ncanary-alive\n",
+                        "exit_code": 0,
+                        "command": command,
+                    }
+                ),
             }
         ),
         recorded_terminal_line('"canary-alive"', "canary-alive"),
@@ -2494,7 +2530,7 @@ def test_a_root_string_schema_answer_survives_the_stream(tmp_path: Path) -> None
     )
 
     assert isinstance(result, AgentExecutionResult)
-    assert json.loads(result.output_bytes) == "canary-alive"
+    assert result.output_bytes == b'"canary-alive"'
 
 
 @pytest.mark.parametrize(
@@ -2505,6 +2541,21 @@ def test_a_root_string_schema_answer_survives_the_stream(tmp_path: Path) -> None
             recorded_terminal_line("", is_error=True),
             "the provider ended the call itself",
             id="provider-error",
+        ),
+        pytest.param(
+            recorded_terminal_line("canary-alive", is_error=0),
+            "an ending that is not the JSON boolean is no successful ending",
+            id="error-flag-is-no-boolean",
+        ),
+        pytest.param(
+            recorded_terminal_line(),
+            "a terminal line without last words leaves the schema-free path none",
+            id="no-result-text",
+        ),
+        pytest.param(
+            recorded_terminal_line(""),
+            "empty last words are no answer either",
+            id="empty-result-text",
         ),
     ),
 )
@@ -2534,6 +2585,78 @@ def test_a_stream_without_a_usable_terminal_line_has_no_final_message(
     assert ToolCalled("read_file", '{"target_file":"README.md"}') in (
         result.transcript.events
     )
+
+
+def test_a_session_the_provider_ended_says_so_in_its_own_words(
+    tmp_path: Path,
+) -> None:
+    """A refused ending keeps the why, not only what the call spent.
+
+    The terminal line is the one place an in-band refusal is stated, and its
+    usage record parses on that same line -- so reading only the spend would
+    leave a transcript that says what an attempt cost and never that the
+    provider, rather than this process, ended it.
+    """
+
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        recorded_terminal_line(
+            "Maximum turns reached", is_error=True, subtype="error_max_turns"
+        ),
+    )
+
+    result = decoded_workspace_tool_stream(tmp_path, stream)
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript is not None
+    assert (
+        ProviderTerminalRefusal("error_max_turns", "", "Maximum turns reached")
+        in result.transcript.events
+    )
+    assert Usage(16374, 641, 2688, 0) in result.transcript.events
+
+
+def test_a_call_that_wrote_no_stream_keeps_what_it_did_write(
+    tmp_path: Path,
+) -> None:
+    """A crash writes a traceback where a stream belonged, and it is evidence."""
+
+    crash = "Traceback (most recent call last):\n  RuntimeError: no session\n"
+
+    result = decoded_workspace_tool_stream(tmp_path, crash.encode("utf-8"))
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript == AttemptTranscript.of(
+        [
+            UnrecognisedProviderOutput("Traceback (most recent call last):"),
+            UnrecognisedProviderOutput("  RuntimeError: no session"),
+        ]
+    )
+
+
+def test_an_answer_past_the_durable_output_bound_fails_the_attempt(
+    tmp_path: Path,
+) -> None:
+    """The stream may end well and still carry more than durable state admits."""
+
+    oversized = "a" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1)
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        recorded_assistant_message(
+            {
+                "type": "tool_use",
+                "id": "call-0",
+                "name": "read_file",
+                "input": {"target_file": "README.md"},
+            }
+        ),
+        recorded_terminal_line(oversized),
+    )
+
+    result = decoded_workspace_tool_stream(tmp_path, stream)
+
+    assert not isinstance(result, AgentExecutionResult)
+    assert result.code is AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
 
 
 def test_an_executable_that_starts_this_exact_grok_invocation_is_attested(

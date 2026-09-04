@@ -56,6 +56,7 @@ from atelier2.contracts.agent_transcripts import (
     MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
     ToolCalled,
     ToolReturned,
     TranscriptEvent,
@@ -254,6 +255,7 @@ _TOOL_INPUT_FIELD = "input"
 _TOOL_USE_ID_FIELD = "id"
 _ANSWERED_TOOL_USE_ID_FIELD = "tool_use_id"
 _RESULT_FIELD = "result"
+_LINE_SUBTYPE_FIELD = "subtype"
 _ERROR_FLAG_FIELD = "is_error"
 _STREAM_STRUCTURED_OUTPUT_FIELD = "structured_output"
 _USAGE_FIELD = "usage"
@@ -948,6 +950,34 @@ def _usage_step(entry: dict[str, object]) -> Usage | None:
     return Usage(read or 0, written or 0, cached or 0, created or 0)
 
 
+def _terminal_refusal_step(entry: dict[str, object]) -> ProviderTerminalRefusal | None:
+    """The provider's own ending, where this terminal line declared an error.
+
+    Only an explicit `true` counts: a line that never mentions the flag, or
+    spells it as anything other than the JSON boolean, is the success path this
+    vocabulary already knew. Once the flag is true the step is always kept, even
+    where the line names nothing else -- a call whose usage record parses would
+    otherwise leave the transcript saying what it spent and never why it ended.
+
+    Two fields carry that why, and they are the ones grok's terminal line was
+    measured to write (04.09.2026, grok 1.0.5 / grok-4.6, `#1165`): `subtype`,
+    which names the ending the CLI gave itself, and `result`, its own last
+    words. Claude's twin reads an `api_error_status` beside them; grok writes no
+    such field, so this step keeps it as the empty text the contract reserves
+    for a provider release that does not carry it.
+    """
+
+    if entry.get(_ERROR_FLAG_FIELD) is not True:
+        return None
+    ending = entry.get(_LINE_SUBTYPE_FIELD)
+    last_words = entry.get(_RESULT_FIELD)
+    return ProviderTerminalRefusal(
+        ending if isinstance(ending, str) else "",
+        "",
+        last_words if isinstance(last_words, str) else "",
+    )
+
+
 def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent, ...]:
     """The steps one stream line stands for, keeping whole what it does not.
 
@@ -968,8 +998,9 @@ def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent,
             _block_step(block, tool_names) for block in _message_content_blocks(entry)
         )
     elif shape == _RESULT_LINE_TYPE:
+        refused = _terminal_refusal_step(entry)
         spent = _usage_step(entry)
-        steps = () if spent is None else (spent,)
+        steps = tuple(step for step in (refused, spent) if step is not None)
     return steps if steps else (UnrecognisedProviderOutput(line),)
 
 
