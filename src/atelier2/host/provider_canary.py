@@ -47,6 +47,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
@@ -58,6 +59,7 @@ from pydantic import TypeAdapter, ValidationError
 from atelier2.adapters import claude_subscription as claude_subscription_adapter
 from atelier2.adapters import codex_subscription as codex_subscription_adapter
 from atelier2.adapters import grok_subscription as grok_subscription_adapter
+from atelier2.adapters import runner_cli_pins as runner_cli_pins_adapter
 from atelier2.adapters.claude_subscription import (
     CLAUDE_ATELIER_DOORS_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
@@ -126,6 +128,10 @@ PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS = 30.0
 PROVIDER_CANARY_CONFIGURATION_PAGE_SIZE = 50
 PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES = 4
 PROVIDER_CANARY_MAXIMUM_VECTORS = 50
+PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS = 8
+"""Bounds the thread pool, not the vector count: every discovered vector still
+gets its own receipt, just never more than this many live billed runs in
+flight together."""
 PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS = 300.0
 PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS = (
     PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS
@@ -273,12 +279,51 @@ class ProviderCanaryFailure:
     detail: str
 
 
+class ProviderLayerReceiptOutcome(StrEnum):
+    """What a readable prior receipt says about this run's provider layer.
+
+    Every receipt this deployment ever wrote shares one `provider_layer_digest`
+    (#1124), so the first readable one answers for all of them: either no such
+    receipt exists yet (nothing to compare, most plausibly the first run after
+    this very deploy), or one does and its digest still matches, or one does
+    and it does not.
+    """
+
+    NO_READABLE_PRIOR_RECEIPT = "no-readable-prior-receipt"
+    RECEIPTS_KEPT = "receipts-kept"
+    RECEIPTS_INVALIDATED = "receipts-invalidated"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderLayerReceiptStatus:
+    """The typed answer `_provider_layer_status` computes for one run (#1124)."""
+
+    outcome: ProviderLayerReceiptOutcome
+    current_digest: Sha256Hash
+    previous_digest: Sha256Hash | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, ProviderLayerReceiptOutcome):
+            raise TypeError("a provider layer receipt status names a typed outcome")
+        if not isinstance(self.current_digest, Sha256Hash):
+            raise TypeError("a provider layer receipt status names a typed digest")
+        carries_previous_digest = self.previous_digest is not None
+        names_a_change = (
+            self.outcome is ProviderLayerReceiptOutcome.RECEIPTS_INVALIDATED
+        )
+        if carries_previous_digest != names_a_change:
+            raise ValueError(
+                "a provider layer receipt status names a previous digest only "
+                "when receipts were invalidated"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderCanaryReport:
     attempted: int
     failures: tuple[ProviderCanaryFailure, ...]
-    provider_layer_status: str
-    """One journal line naming whether existing receipts still apply (#1124)."""
+    provider_layer_status: ProviderLayerReceiptStatus
+    """Whether existing receipts still apply to this run (#1124)."""
 
     @property
     def failed(self) -> int:
@@ -355,26 +400,35 @@ _PROVIDER_LAYER_ADAPTER_MODULES = (
     claude_subscription_adapter,
     codex_subscription_adapter,
     grok_subscription_adapter,
+    runner_cli_pins_adapter,
 )
-"""Every provider adapter this canary already imports to route a probe
-workflow (#1124). Named through the same modules `_WORKFLOW_BY_EXECUTOR`
+"""Every module that decides how this deployment talks to a provider. The
+three adapters are named through the same modules `_WORKFLOW_BY_EXECUTOR`
 above draws its executor keys from -- not a second, separately maintained
 file list -- so a fourth provider adapter joins the digest the moment its
-module is imported here for its own executor keys."""
+module is imported here for its own executor keys. `runner_cli_pins.py` joins
+them (#1124 review): the one place a Runner's own CLI-pin attestation is
+decided for those same executor keys, so a changed conformance set turns
+receipts over too. Narrower than the full provider surface on purpose: the
+pinned CLI executable path (`serve-live.sh`'s `--claude-executable`), the
+probe workflow bytes (`workflows/provider-canary-*.yaml`), and the executor
+start-binding wiring stay out -- OPERATIONS.md names that residual, backstopped
+by the 26-hour receipt validity."""
 
 
 def provider_layer_digest() -> Sha256Hash:
     """Hash the exact bytes that decide how this deployment talks to a provider.
 
-    Every provider adapter module, plus this canary client and the receipt
-    contract it writes -- the three places provider behaviour is actually
-    implemented. Computed from files on disk alone, identically by the Serve
-    process (`adapters/dbos/runtime.py`'s receipt gate, wired through
+    Every module in `_PROVIDER_LAYER_ADAPTER_MODULES`, plus this canary client
+    and the receipt contract it writes -- together the places provider
+    behaviour and its Runner-side CLI pin are actually decided. Computed from
+    files on disk alone, identically by the Serve process
+    (`adapters/dbos/runtime.py`'s receipt gate, wired through
     `host/serving.py`) and by this canary client running beside it on the same
     checkout, so neither has to learn the other's live state to agree. A
     receipt embeds this digest instead of the whole `source_commit`: a
     redeploy that leaves every one of these files unchanged leaves every
-    receipt valid, and touching even one adapter this deployment never arms
+    receipt valid, and touching even one file this deployment never arms
     still turns every receipt over -- the conservative side of "provider
     behaviour might have changed."
     """
@@ -483,8 +537,15 @@ def execute_provider_canaries(
     *,
     http: ProviderCanaryHttp | None = None,
     clock: ProviderCanaryClock | None = None,
+    on_provider_layer_status: Callable[[ProviderLayerReceiptStatus], None]
+    | None = None,
 ) -> ProviderCanaryReport:
-    """Run each currently startable, known provider vector exactly once."""
+    """Run each currently startable, known provider vector exactly once.
+
+    `on_provider_layer_status`, when given, fires the instant the provider
+    layer status is known -- discovery complete, no vector started yet -- so a
+    caller can journal it at that moment rather than waiting for every vector
+    to finish (#1124)."""
 
     client = http or UrllibProviderCanaryHttp(settings.service_url)
     canary_clock = clock or SystemProviderCanaryClock()
@@ -536,6 +597,8 @@ def execute_provider_canaries(
     provider_layer_status = _provider_layer_status(
         settings.state_directory, running_digest
     )
+    if on_provider_layer_status is not None:
+        on_provider_layer_status(provider_layer_status)
     _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
 
     # Every discovered vector starts together, bounded only by its own count:
@@ -556,21 +619,28 @@ def execute_provider_canaries(
             process_deadline,
         )
 
-    with ThreadPoolExecutor(max_workers=len(vectors)) as pool:
+    pool_workers = min(len(vectors), PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS)
+    with ThreadPoolExecutor(max_workers=pool_workers) as pool:
         failures = tuple(
             failure for failure in pool.map(run_one, vectors) if failure is not None
         )
     return ProviderCanaryReport(len(vectors), failures, provider_layer_status)
 
 
-def _provider_layer_status(state_directory: Path, digest: Sha256Hash) -> str:
-    """One journal line naming whether existing receipts still apply (#1124).
+def _provider_layer_status(
+    state_directory: Path, digest: Sha256Hash
+) -> ProviderLayerReceiptStatus:
+    """The typed answer naming whether existing receipts still apply (#1124).
 
     Read before this run overwrites anything: any one readable prior receipt
-    names what the deployment's evidence looked like a moment ago, and its
-    own `provider_layer_digest` either still matches this run's or does not --
+    names what the deployment's evidence looked like a moment ago, and its own
+    `provider_layer_digest` either still matches this run's or does not --
     every receipt this deployment ever wrote shares one digest, so the first
-    readable one answers for all of them.
+    readable one answers for all of them. A directory holding no receipt at
+    all, or holding only receipts this runtime refuses to read (an old
+    pre-#1124 shape, for one), names no prior evidence instead of falsely
+    claiming it was kept -- the bug an earlier version of this function had on
+    the very deploy that lands the digest gate.
     """
 
     try:
@@ -586,12 +656,17 @@ def _provider_layer_status(state_directory: Path, digest: Sha256Hash) -> str:
         if isinstance(receipt, ProviderProbeReceiptRefused):
             continue
         if receipt.provider_layer_digest != digest:
-            return (
-                "receipts invalidated (provider layer changed: "
-                f"{receipt.provider_layer_digest.value[:8]} → {digest.value[:8]})"
+            return ProviderLayerReceiptStatus(
+                ProviderLayerReceiptOutcome.RECEIPTS_INVALIDATED,
+                current_digest=digest,
+                previous_digest=receipt.provider_layer_digest,
             )
-        break
-    return "receipts kept (provider layer unchanged)"
+        return ProviderLayerReceiptStatus(
+            ProviderLayerReceiptOutcome.RECEIPTS_KEPT, current_digest=digest
+        )
+    return ProviderLayerReceiptStatus(
+        ProviderLayerReceiptOutcome.NO_READABLE_PRIOR_RECEIPT, current_digest=digest
+    )
 
 
 def _discovery_problem_text(

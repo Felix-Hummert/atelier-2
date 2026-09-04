@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 import json
 import threading
+import types
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -39,13 +41,14 @@ from atelier2.host import main
 from atelier2.host.provider_canary import (
     PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS,
     PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS,
+    PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS,
     PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES,
     PROVIDER_CANARY_MAXIMUM_VECTORS,
     ProviderCanaryDiscoveryFailed,
     ProviderCanaryHttpRefused,
     ProviderCanaryServerUnavailable,
     ProviderCanarySettings,
-    _provider_layer_status,
+    ProviderLayerReceiptOutcome,
     execute_provider_canaries,
     provider_layer_digest,
     write_provider_canary_receipt_atomic,
@@ -1023,8 +1026,8 @@ def test_empty_discovery_without_previous_receipts_is_a_loud_cli_failure(
     http = FakeHttp((), workflow_directory)
     monkeypatch.setattr(
         "atelier2.host.execute_provider_canaries",
-        lambda canary_settings: execute_provider_canaries(
-            canary_settings, http=http, clock=FakeClock()
+        lambda canary_settings, **keywords: execute_provider_canaries(
+            canary_settings, http=http, clock=FakeClock(), **keywords
         ),
     )
 
@@ -1409,7 +1412,11 @@ def test_provider_layer_status_names_receipts_kept_when_unchanged(
         settings(workflow_directory, state_directory), http=http, clock=FakeClock()
     )
 
-    assert report.provider_layer_status == "receipts kept (provider layer unchanged)"
+    assert report.provider_layer_status.outcome is (
+        ProviderLayerReceiptOutcome.RECEIPTS_KEPT
+    )
+    assert report.provider_layer_status.current_digest == RUNNING_PROVIDER_LAYER_DIGEST
+    assert report.provider_layer_status.previous_digest is None
 
 
 def test_provider_layer_status_names_receipts_invalidated_when_changed(
@@ -1426,16 +1433,118 @@ def test_provider_layer_status_names_receipts_invalidated_when_changed(
         settings(workflow_directory, state_directory), http=http, clock=FakeClock()
     )
 
-    assert report.provider_layer_status == (
-        "receipts invalidated (provider layer changed: "
-        f"{FOREIGN_PROVIDER_LAYER_DIGEST.value[:8]} → "
-        f"{RUNNING_PROVIDER_LAYER_DIGEST.value[:8]})"
+    assert report.provider_layer_status.outcome is (
+        ProviderLayerReceiptOutcome.RECEIPTS_INVALIDATED
+    )
+    assert report.provider_layer_status.current_digest == RUNNING_PROVIDER_LAYER_DIGEST
+    assert report.provider_layer_status.previous_digest == FOREIGN_PROVIDER_LAYER_DIGEST
+
+
+def test_provider_layer_status_names_no_readable_prior_receipt_on_a_first_ever_run(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    http = FakeHttp((configuration(),), workflow_directory)
+    state_directory = tmp_path / "never-created"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
     )
 
+    assert report.provider_layer_status.outcome is (
+        ProviderLayerReceiptOutcome.NO_READABLE_PRIOR_RECEIPT
+    )
+    assert report.provider_layer_status.current_digest == RUNNING_PROVIDER_LAYER_DIGEST
+    assert report.provider_layer_status.previous_digest is None
 
-def test_provider_layer_status_is_kept_on_a_first_ever_run() -> None:
-    status = _provider_layer_status(
-        Path("/nonexistent/never-created"), RUNNING_PROVIDER_LAYER_DIGEST
+
+def test_provider_layer_status_names_no_readable_prior_receipt_for_an_old_format_document(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """#1124 review: a pre-#1124 receipt (no `provider_layer_digest` field) is
+    every live receipt on the very deploy that introduces the digest gate.
+    Falling through to "receipts kept" there would tell the operator every
+    receipt still applies while every one of them is in fact unreadable."""
+
+    http = FakeHttp((configuration(),), workflow_directory)
+    state_directory = tmp_path / "state"
+    state_directory.mkdir()
+    old_format_document = json.loads(successful_receipt().canonical_bytes())
+    del old_format_document["provider_layer_digest"]
+    (state_directory / f"headless-{CONFIGURATION_HASH}.json").write_bytes(
+        json.dumps(old_format_document, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     )
 
-    assert status == "receipts kept (provider layer unchanged)"
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.provider_layer_status.outcome is (
+        ProviderLayerReceiptOutcome.NO_READABLE_PRIOR_RECEIPT
+    )
+    assert report.provider_layer_status.current_digest == RUNNING_PROVIDER_LAYER_DIGEST
+    assert report.provider_layer_status.previous_digest is None
+
+
+def test_provider_layer_digest_changes_with_its_source_bytes_and_stays_stable_otherwise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1124 review: the digest is a real content hash of its source modules,
+    not an identity or a timestamp -- changing bytes changes it, and hashing
+    the same bytes twice never does."""
+
+    module_path = tmp_path / "fake_provider_layer_module.py"
+    module_path.write_text("FIRST_VERSION = 1\n", encoding="utf-8")
+    fake_module = types.ModuleType("fake_provider_layer_module")
+    fake_module.__file__ = str(module_path)
+    monkeypatch.setattr(
+        "atelier2.host.provider_canary._PROVIDER_LAYER_ADAPTER_MODULES",
+        (fake_module,),
+    )
+
+    first_digest = provider_layer_digest()
+    stable_digest = provider_layer_digest()
+    module_path.write_text("FIRST_VERSION = 2\n", encoding="utf-8")
+    changed_digest = provider_layer_digest()
+
+    assert stable_digest == first_digest
+    assert changed_digest != first_digest
+
+
+def test_the_thread_pool_never_exceeds_the_concurrency_cap(
+    tmp_path: Path, workflow_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1124 review: discovering more startable vectors than
+    `PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS` must never start more live
+    billed runs together than that ceiling -- a redeploy that clears many
+    vectors' receipts at once is exactly when this matters most."""
+
+    vector_count = PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS + 3
+    configurations = tuple(
+        configuration(configuration_hash=f"{number:064x}")
+        for number in range(vector_count)
+    )
+    http = FakeHttp(configurations, workflow_directory)
+    state_directory = tmp_path / "state"
+    observed_max_workers: list[int | None] = []
+    real_thread_pool_executor = ThreadPoolExecutor
+
+    class RecordingThreadPoolExecutor(real_thread_pool_executor):
+        def __init__(
+            self, *args: object, max_workers: int | None = None, **kwargs: object
+        ) -> None:
+            observed_max_workers.append(max_workers)
+            super().__init__(*args, max_workers=max_workers, **kwargs)
+
+    monkeypatch.setattr(
+        "atelier2.host.provider_canary.ThreadPoolExecutor",
+        RecordingThreadPoolExecutor,
+    )
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert observed_max_workers == [PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS]
+    assert report.attempted == vector_count
