@@ -1236,6 +1236,49 @@ either an additive table home or a rebuild that copies every predecessor row. Ol
 versions, are refused by name. A store already on the current schema is left
 unaltered and said to be already current.
 
+## Remove defective rows from the live store
+
+A row the runtime can no longer read is removable without asking first; the
+[prototype stage](PRODUCT.md) carries that ruling and its boundary. This is
+the procedure, and it is a hand operation on the loopback host Serve's store
+under `${XDG_DATA_HOME:-$HOME/.local/share}/atelier2/live-store`.
+
+1. Stop the auto-redeploy timer, then the Serve, so nothing restarts the
+   process into the middle of the write:
+
+   ```bash
+   systemctl --user stop atelier2-auto-redeploy.timer
+   systemctl --user stop atelier2-serve.service
+   ```
+
+2. Copy `atelier.sqlite` and `external.sqlite`, plus their `-wal` and `-shm`
+   sidecars where present, into a fresh timestamped directory beside the
+   redeploy copies in the store's own `backups/`. This copy is the only way
+   back; a deletion has no rollback of its own.
+
+3. Delete in one transaction, children before parents. The immutability
+   triggers refuse the delete by design, so the transaction drops the
+   `*_no_delete` triggers that stand in the way, deletes, and recreates them
+   with exactly the text `_PRODUCT_TRIGGERS` in
+   `src/atelier2/adapters/dbos/schema.py` defines — that module is their
+   owner, and a trigger recreated from memory or from an older copy leaves the
+   store lying about what it protects. `PRAGMA foreign_key_list(<table>)`
+   names each table's parents, so the delete order follows the walk from the
+   leaves inward; a broken run's own row is the last to go.
+
+4. Prove the store before starting anything: `PRAGMA integrity_check` and
+   `PRAGMA foreign_key_check` must both come back clean, and the trigger set
+   must be complete again.
+
+5. Start the Serve and the timer again, then prove the repair from outside:
+   `GET /atelier/api/v1/runs` answers the full list, and
+   `journalctl --user -u atelier2-serve.service` stays quiet where the broken
+   rows used to write a projection failure on every poll.
+
+6. Say it in the report — what was removed, why it was unreadable, and where
+   the backup stands. A removal nobody reads about is the silent kind the
+   stage does not permit.
+
 ## What this slice does not do
 
 - **Live cutover.** The candidate selects no existing process, port, container,
