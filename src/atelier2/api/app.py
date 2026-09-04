@@ -110,6 +110,7 @@ from atelier2.application.read_agent_definition_revisions import (
 from atelier2.application.read_artifact import read_artifact
 from atelier2.application.read_attention_events import read_attention_events
 from atelier2.application.read_projects import get_project, list_projects
+from atelier2.application.read_redeploy_status import read_redeploy_status
 from atelier2.application.read_run_events import read_run_events
 from atelier2.application.read_runs import (
     get_node_detail,
@@ -485,6 +486,7 @@ def bound_use_cases(
         import_project_source_issues=lambda: import_project_source_issues(
             served_project_id, ports.tracker_item_source, ports.queue_projection
         ),
+        read_redeploy_status=lambda: read_redeploy_status(ports.redeploy_status_reader),
     )
 
 

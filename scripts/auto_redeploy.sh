@@ -28,6 +28,9 @@ readonly github_repository="repos/FlexOr2/atelier-2"
 # still succeeded (the new commit is served), only a workflow intake was
 # refused, so this is not an ordinary failure tick.
 readonly intake_refused_exit_code=3
+# Must match atelier2.adapters.redeploy_status.REDEPLOY_STATUS_FILE_NAME: the
+# name GET /health reads back beside the live database.
+readonly redeploy_status_file_name="redeploy-status.json"
 
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -83,6 +86,23 @@ readonly failure_alert_file="${git_admin_directory}/auto-redeploy.last-alert"
 readonly busy_alert_file="${git_admin_directory}/auto-redeploy.last-busy-alert"
 readonly lock_file="${git_admin_directory}/auto-redeploy.lock"
 
+# Beside the live database, not the Git admin directory: GET /health (the
+# served process, a separate process from this watcher) reads this file, and
+# the served process has no reason to know this checkout's Git admin
+# directory -- it already knows its own database's directory
+# (scripts/serve_live_update.sh's own "live_store", src/atelier2/host/serving.py's
+# HostSettings.database_path), which candidate_store.py and
+# project_source_credentials.py already place their own state beside.
+if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+  redeploy_status_data_home="${XDG_DATA_HOME}"
+elif [[ -n "${HOME:-}" ]]; then
+  redeploy_status_data_home="${HOME}/.local/share"
+else
+  log_error "HOME and XDG_DATA_HOME are both unset; the live store cannot be located"
+  exit 1
+fi
+readonly redeploy_status_file="${redeploy_status_data_home}/atelier2/live-store/${redeploy_status_file_name}"
+
 read_number() {
   local file="$1"
   local value
@@ -99,14 +119,94 @@ read_number() {
   printf '%s' "${value}"
 }
 
+now_seconds() {
+  date +%s
+}
+
+now_rfc3339() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+# One field the watcher itself last wrote to its own visibility file, so a
+# write that only learns one side of this tick's outcome (a failure learns
+# nothing new about the last success; a success learns nothing new about the
+# last failure) can still carry the other side forward instead of losing it.
+# Prints nothing when the field is absent, null, or the file itself cannot be
+# read -- this side only ever best-effort preserves what it can; a truly
+# malformed file is read_redeploy_status's own concern (atelier2.adapters.
+# redeploy_status, reached through GET /health), never a reason to fail a tick.
+read_redeploy_status_field() {
+  local field="$1"
+  [[ -f "${redeploy_status_file}" ]] || return 0
+  python3 -c '
+import json
+import sys
+
+path, field = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    value = payload.get(field)
+except (OSError, ValueError):
+    value = None
+if isinstance(value, str):
+    print(value)
+' "${redeploy_status_file}" "${field}" 2>/dev/null
+}
+
+# Writes the watcher's own visibility file, atomically (write-then-rename) so
+# a concurrent GET /health never observes a half-written file. Best-effort:
+# a write failure only warns, never turns this tick's own outcome (already
+# decided by its caller) into a failure over a sidecar file.
+write_redeploy_status() {
+  local failure_count="$1" last_failure_reason="$2" last_failure_at="$3"
+  local last_success_commit="$4" last_success_at="$5"
+  local status_directory tmp_file
+  status_directory="$(dirname -- "${redeploy_status_file}")"
+  if ! mkdir -p -- "${status_directory}" 2>/dev/null; then
+    log_warning "cannot create ${status_directory} for the redeploy status file"
+    return 0
+  fi
+  if ! tmp_file="$(mktemp "${redeploy_status_file}.XXXXXX" 2>&1)"; then
+    log_warning "cannot create a temporary redeploy status file: ${tmp_file}"
+    return 0
+  fi
+  if ! python3 -c '
+import json
+import sys
+
+failure_count, reason, failure_at, success_commit, success_at = sys.argv[1:6]
+json.dump(
+    {
+        "failure_count": int(failure_count),
+        "last_failure_reason": reason or None,
+        "last_failure_at": failure_at or None,
+        "last_success_commit": success_commit or None,
+        "last_success_at": success_at or None,
+    },
+    sys.stdout,
+)
+' "${failure_count}" "${last_failure_reason}" "${last_failure_at}" \
+    "${last_success_commit}" "${last_success_at}" >"${tmp_file}" 2>/dev/null; then
+    log_warning "cannot render the redeploy status file"
+    rm -f -- "${tmp_file}"
+    return 0
+  fi
+  if ! mv -f -- "${tmp_file}" "${redeploy_status_file}"; then
+    log_warning "cannot install the redeploy status file"
+    rm -f -- "${tmp_file}"
+  fi
+}
+
 reset_counters() {
+  local served_commit_for_status="$1"
   printf '0' >"${failure_count_file}"
   printf '0' >"${busy_count_file}"
   rm -f "${failure_alert_file}" "${busy_alert_file}"
-}
-
-now_seconds() {
-  date +%s
+  write_redeploy_status "0" \
+    "$(read_redeploy_status_field last_failure_reason)" \
+    "$(read_redeploy_status_field last_failure_at)" \
+    "${served_commit_for_status}" "$(now_rfc3339)"
 }
 
 # Loud once when a streak first reaches its threshold, then at most hourly, so
@@ -128,11 +228,15 @@ escalation_due() {
 
 record_failure() {
   local reason="$1"
-  local failure_count
+  local failure_count now
   failure_count="$(read_number "${failure_count_file}")"
   failure_count=$((failure_count + 1))
   printf '%s' "${failure_count}" >"${failure_count_file}"
   log_debug "failure count now ${failure_count} (this tick: ${reason})"
+  now="$(now_rfc3339)"
+  write_redeploy_status "${failure_count}" "${reason}" "${now}" \
+    "$(read_redeploy_status_field last_success_commit)" \
+    "$(read_redeploy_status_field last_success_at)"
   escalation_due "${failure_count}" "${failure_alert_threshold}" \
     "${failure_alert_file}" || return 1
   log_error "ALERT: ${failure_count} ticks in a row failed, reason: ${reason}; auto-redeploy needs operator attention"
@@ -428,7 +532,7 @@ if [[ "${served_status}" != "serving" ]]; then
 fi
 
 if [[ "${served_commit}" == "${newest_commit}" ]]; then
-  reset_counters
+  reset_counters "${served_commit}"
   log_debug "already current at ${newest_commit}; nothing to deploy"
   exit 0
 fi
@@ -439,11 +543,16 @@ fi
 if [[ "${current_branch}" != "${deploy_branch}" ]]; then
   refuse_tick "checkout is not on ${deploy_branch}" "deploy checkout is on ${current_branch@Q}, not ${deploy_branch}; leaving it untouched"
 fi
-if ! worktree_status="$(git -C "${repository}" status --porcelain --untracked-files=all 2>&1)"; then
+# Untracked-files=no: an untracked path (the operator's own scratch files, a
+# build artefact) is never the deploy's to judge -- the deploy only ever
+# fetches and fast-forwards, which never touches anything git does not
+# already track. A change to a TRACKED path is what a fast-forward would
+# silently discard, so only that blocks (#1186).
+if ! worktree_status="$(git -C "${repository}" status --porcelain --untracked-files=no 2>&1)"; then
   refuse_tick "checkout status is unreadable" "deploy checkout status is unreadable: ${worktree_status}"
 fi
 if [[ -n "${worktree_status}" ]]; then
-  refuse_tick "checkout is dirty" "deploy checkout is dirty; leaving operator work untouched"
+  refuse_tick "tracked checkout is dirty" "tracked checkout is dirty; leaving operator work untouched"
 fi
 
 if ! deferring_runs="$(blocking_runs)"; then
@@ -477,7 +586,7 @@ if ((is_ancestor_status > 1)); then
   refuse_tick "ancestry check is unreadable" "cannot determine whether ${green_ancestor_commit} is an ancestor of served commit ${served_commit} (git merge-base --is-ancestor exited ${is_ancestor_status})"
 fi
 if ((is_ancestor_status == 0)); then
-  reset_counters
+  reset_counters "${served_commit}"
   if [[ "${green_ancestor_commit}" != "${newest_commit}" ]]; then
     log_warning "HEAD ${newest_commit} is still waiting or red, and its newest green ancestor ${green_ancestor_commit} is already served; nothing to deploy"
   else
@@ -512,14 +621,14 @@ fi
 chmod +x "${staged_serve_live_update}"
 
 if "${staged_serve_live_update}" "${target_commit}"; then
-  reset_counters
+  reset_counters "${target_commit}"
   log_info "auto redeploy: main now served at ${target_commit}"
   exit 0
 else
   update_exit=$?
 fi
 if ((update_exit == intake_refused_exit_code)); then
-  reset_counters
+  reset_counters "${target_commit}"
   log_warning "main now served at ${target_commit}; workflow intake refused (see serve_live_update journal)"
   exit 0
 fi
