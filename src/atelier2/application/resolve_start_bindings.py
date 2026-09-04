@@ -30,11 +30,16 @@ from atelier2.contracts.workflows_v3 import (
     declared_roles_of,
 )
 from atelier2.ports.agent_configurations import AgentConfigurationBindingReads
-from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
+from atelier2.ports.agent_executions import (
+    AgentExecutorKey,
+    AgentExecutorRegistry,
+    WorkspaceFileTools,
+)
 from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
+    DurableAgentExecutorWithoutWorkspaceFileTools,
     DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
 )
@@ -45,6 +50,7 @@ type ResolveStartBindingsResult = (
     | DurableAgentConfigurationRevisionMissing
     | DurableAgentExecutorBindingUnavailable
     | DurableAgentExecutorCapabilityUnavailable
+    | DurableAgentExecutorWithoutWorkspaceFileTools
     | DurableBindingConstraintRefused
 )
 
@@ -586,6 +592,26 @@ def cast_unbound_roles(
     return CastUnboundRolesResult(bindings, resolutions)
 
 
+def _roles_working_on_the_project(graph: WorkflowGraphV3) -> frozenset[str]:
+    """Every role a node asks to work on the pinned project's own files.
+
+    A node pins a `tools` reference to name one published tool grant, and every
+    capability that closed vocabulary carries is about the project tree the
+    attempt stands in: the project's own verification runs on it, the Atelier
+    commit is pushed out of it, and the pull request opens over that commit
+    (`contracts.tool_grants_v3`). So a node that pins one is a node whose
+    attempt must be able to read and write its workspace, whatever else it
+    does -- which is read from the document alone, without resolving the
+    grants a second time.
+    """
+
+    return frozenset(
+        node.role
+        for node in graph.nodes
+        if isinstance(node, AgentNodeV3) and node.tools
+    )
+
+
 def resolve_start_bindings(
     graph: WorkflowGraphV3,
     workflow_hash: WorkflowRevisionHash,
@@ -604,7 +630,9 @@ def resolve_start_bindings(
     `AuthProfileMissingForConfiguration` rather than joining the refusals a
     caller could act on), the executor it names must be registered
     (`DurableAgentExecutorBindingUnavailable`), must declare the requested
-    capability (`DurableAgentExecutorCapabilityUnavailable`), and must be
+    capability (`DurableAgentExecutorCapabilityUnavailable`), must reach the
+    attempt's own files where the role's node pins a tool grant
+    (`DurableAgentExecutorWithoutWorkspaceFileTools`), and must be
     currently startable (`DurableAgentExecutorBindingUnavailable`). Only after
     every binding has resolved are a V3 graph's `distinct_from` constraints
     checked, last, because they compare resolutions nothing before this point
@@ -628,6 +656,11 @@ def resolve_start_bindings(
     if role_refusal is not None:
         return role_refusal
 
+    working_on_the_project = (
+        _roles_working_on_the_project(graph)
+        if isinstance(graph, WorkflowGraphV3)
+        else frozenset()
+    )
     resolved: list[ResolvedAgentBinding] = []
     for binding in agent_bindings.bindings:
         found = reads.agent_configuration_revision(
@@ -645,6 +678,14 @@ def resolve_start_bindings(
             executor_key
         ):
             return DurableAgentExecutorCapabilityUnavailable()
+        if (
+            binding.role.value in working_on_the_project
+            and registry.workspace_file_tools(executor_key)
+            is WorkspaceFileTools.WITHHELD
+        ):
+            return DurableAgentExecutorWithoutWorkspaceFileTools(
+                binding.role.value, configuration.executor_revision.value
+            )
         # The one exemption bypasses the receipt gate alone: it may only
         # rescue a start that `is_structurally_startable` already admits. An
         # executor never registered or marked unavailable refuses here

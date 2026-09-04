@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+
+import pytest
 
 from atelier2.application.refusals import ReadUnavailable, WriteUnavailable
 from atelier2.application.start_published_run import (
+    AgentExecutorBindingUnavailable,
     AuthoredOrder,
     RunCreated,
     RunExisting,
@@ -26,6 +30,7 @@ from atelier2.contracts.work_items import (
 )
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
+    DurableAgentExecutorWithoutWorkspaceFileTools,
     DurablePublishedRunResult,
     DurableRunCreated,
     DurableRunExisting,
@@ -176,3 +181,44 @@ def test_an_unavailable_tracker_on_a_first_start_is_named_not_swallowed() -> Non
 
     assert isinstance(outcome, WorkItemOrderUnreadable)
     assert isinstance(outcome.reason, ReadUnavailable)
+
+
+def test_a_role_cast_onto_an_executor_that_touches_no_file_is_named_in_the_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The caller hears one word; the operator hears which cast has to change.
+
+    Three different refusals share the answer `agent-executor-binding-
+    unavailable`, so the role and the executor revision the store named would
+    otherwise be dropped at this seam -- and an operator would be left guessing
+    which of a run's bindings is the wrong one (#1166).
+    """
+
+    tracker = FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(REVISION))
+    starter = _ScriptedStarter(
+        [
+            DurableAgentExecutorWithoutWorkspaceFileTools(
+                "builder", "claude-subscription/v1"
+            )
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="atelier2"):
+        outcome = start(starter, tracker)
+
+    assert isinstance(outcome, AgentExecutorBindingUnavailable)
+    named = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "agent_executor_without_workspace_file_tools"
+    ]
+    assert [
+        (
+            record.levelno,
+            getattr(record, "run_id", None),
+            getattr(record, "role", None),
+            getattr(record, "executor_revision", None),
+        )
+        for record in named
+    ] == [(logging.WARNING, RUN_ID.value, "builder", "claude-subscription/v1")]

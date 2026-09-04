@@ -86,7 +86,10 @@ from atelier2.host.serving import (
     _discover_grok_models,
     compose_application,
 )
-from atelier2.ports.agent_executions import AgentExecutorCarrier
+from atelier2.ports.agent_executions import (
+    AgentExecutorCarrier,
+    WorkspaceFileTools,
+)
 from atelier2.ports.issue_observation import WorkItemRevisionObserved
 from atelier2.ports.published_revisions import CatalogLineageFounded
 from atelier2.ports.queue_projection import QueueItemsPage, QueueItemsReconciled
@@ -208,6 +211,12 @@ def test_a_partial_runner_lease_declaration_is_refused_at_start(
 def test_a_full_runner_lease_declaration_serves_the_fake_free_candidate_as_a_lease(
     tmp_path: Path,
 ) -> None:
+    """It is offered over the lease carrier, and reaches no file of the attempt.
+
+    Its jobs print a line or hold until reaped, so a node pinning a tool grant
+    has nothing to gain here and is refused rather than cast (#1166).
+    """
+
     _app, runtime = compose_application(
         _settings(tmp_path, **_declared_runner_lease(tmp_path))
     )
@@ -217,6 +226,10 @@ def test_a_full_runner_lease_declaration_serves_the_fake_free_candidate_as_a_lea
         assert (
             runtime.agent_executor_registry.carrier(key)
             is AgentExecutorCarrier.RUNNER_LEASE
+        )
+        assert (
+            runtime.agent_executor_registry.workspace_file_tools(key)
+            is WorkspaceFileTools.WITHHELD
         )
         assert runtime.agent_workspace_owner is None
     finally:
