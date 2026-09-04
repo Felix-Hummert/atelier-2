@@ -27,6 +27,9 @@ def copied_project(tmp_path: Path) -> Path:
         PROJECT_ROOT / "scripts" / "check_architecture.py",
         project / "scripts" / "check_architecture.py",
     )
+    shutil.copy2(
+        PROJECT_ROOT / "duplicate_baseline.toml", project / "duplicate_baseline.toml"
+    )
     return project
 
 

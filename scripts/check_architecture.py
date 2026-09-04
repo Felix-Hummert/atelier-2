@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import ast
 import importlib
+import io
 import sys
+import tokenize
+import tomllib
 import typing
 from collections import abc
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +44,7 @@ class _UnresolvedOutcome:
 _UNRESOLVED_OUTCOME = _UnresolvedOutcome()
 
 
+SOURCE_PACKAGE_DIRECTORY = "src/atelier2"
 PORT_PACKAGE_DIRECTORY = "src/atelier2/ports"
 HTTP_SENTENCE_MARKERS = ("API limits", "HTTP", "status code")
 API_PACKAGE_DIRECTORY = "src/atelier2/api"
@@ -620,16 +624,235 @@ def route_port_problems(project_root: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
+DUPLICATE_BASELINE_FILE = "duplicate_baseline.toml"
+DUPLICATE_BASELINE_TABLE = "pair"
+# Five consecutive tokens: long enough that a shared idiom does not match on its
+# own, short enough that one edited statement still leaves the rest overlapping.
+DUPLICATE_SHINGLE_LENGTH = 5
+# A shorter definition says too little to call a second one a copy: a delegation
+# of two lines matches every neighbour that delegates the same way.
+MINIMUM_DUPLICATE_TOKENS = 40
+# Near-identity rather than similarity: at this overlap two definitions differ in
+# a token or two, which is a copy someone made, not a family resemblance.
+DUPLICATE_JACCARD_THRESHOLD = 0.95
+
+FunctionDefinition = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class DuplicatePair:
+    """Two qualified names carrying the same code, in one canonical order."""
+
+    left: str
+    right: str
+
+
+def duplicate_pair(one: str, other: str) -> DuplicatePair:
+    first, second = sorted((one, other))
+    return DuplicatePair(first, second)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDefinition:
+    qualified_name: str
+    location: str
+    shingles: frozenset[tuple[str, ...]]
+
+
+def _names_bound_by(definition: FunctionDefinition) -> dict[str, str]:
+    """Every name this definition binds itself, numbered in source order.
+
+    A copy someone renamed is still a copy, so the spelling a definition chose
+    for itself, its parameters, and its locals carries no evidence: numbering
+    them by where they are bound compares what the code does with them instead.
+    Names it does not bind -- imports, attributes, the vocabulary it calls into
+    -- keep their spelling, which is what keeps unrelated code apart.
+    """
+    bound: list[tuple[int, int, str]] = []
+    for node in ast.walk(definition):
+        if isinstance(node, ast.arg):
+            bound.append((node.lineno, node.col_offset, node.arg))
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.append((node.lineno, node.col_offset, node.id))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.append((node.lineno, node.col_offset, node.name))
+    numbered: dict[str, str] = {}
+    for _line, _column, name in sorted(bound):
+        numbered.setdefault(name, f"<name{len(numbered)}>")
+    return numbered
+
+
+def _structural_tokens(definition: FunctionDefinition) -> tuple[str, ...]:
+    """The definition as tokens with its literals and its own names normalised.
+
+    Unparsing first drops formatting and comments, so two copies that were
+    reflowed differently still yield the same stream.
+    """
+    numbered = _names_bound_by(definition)
+    source = ast.unparse(definition)
+    tokens: list[str] = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type in (
+            tokenize.NL,
+            tokenize.NEWLINE,
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.COMMENT,
+            tokenize.ENDMARKER,
+        ):
+            continue
+        if token.type == tokenize.STRING:
+            tokens.append("<string>")
+        elif token.type == tokenize.NUMBER:
+            tokens.append("<number>")
+        elif token.type == tokenize.NAME:
+            tokens.append(numbered.get(token.string, token.string))
+        else:
+            tokens.append(token.string)
+    return tuple(tokens)
+
+
+def _shingles(tokens: Sequence[str]) -> frozenset[tuple[str, ...]]:
+    length = DUPLICATE_SHINGLE_LENGTH
+    return frozenset(
+        tuple(tokens[start : start + length])
+        for start in range(len(tokens) - length + 1)
+    )
+
+
+def _definitions_under(
+    node: ast.AST, prefix: str
+) -> Iterator[tuple[str, FunctionDefinition]]:
+    """Every function this node holds, under the qualified name it is reached by."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            qualified_name = f"{prefix}.{child.name}"
+            if not isinstance(child, ast.ClassDef):
+                yield qualified_name, child
+            yield from _definitions_under(child, qualified_name)
+
+
+def _module_name(module_path: Path, source_root: Path) -> str:
+    parts = module_path.relative_to(source_root).with_suffix("").parts
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join((ROOT_PACKAGE, *parts))
+
+
+def source_definitions(project_root: Path) -> tuple[SourceDefinition, ...]:
+    """Every function of the source package long enough to be recognised again."""
+    source_root = project_root / SOURCE_PACKAGE_DIRECTORY
+    definitions: list[SourceDefinition] = []
+    seen: set[str] = set()
+    for module_path in sorted(source_root.rglob("*.py")):
+        module = _parsed(module_path)
+        for qualified_name, node in _definitions_under(
+            module, _module_name(module_path, source_root)
+        ):
+            tokens = _structural_tokens(node)
+            if len(tokens) < MINIMUM_DUPLICATE_TOKENS:
+                continue
+            if qualified_name in seen:
+                raise ArchitecturePreflightError(
+                    f"{qualified_name} is defined twice; the duplicate baseline "
+                    "names a definition by that name and could not tell them apart"
+                )
+            seen.add(qualified_name)
+            location = f"{module_path.relative_to(project_root)}:{node.lineno}"
+            definitions.append(
+                SourceDefinition(qualified_name, location, _shingles(tokens))
+            )
+    return tuple(definitions)
+
+
+def found_duplicates(
+    definitions: Sequence[SourceDefinition],
+) -> frozenset[DuplicatePair]:
+    """Every pair of definitions whose token shingles overlap at the threshold.
+
+    Scanning by shingle count and stopping early is exact rather than a
+    shortcut: a pair can only reach the threshold when the smaller set holds at
+    least that share of the larger one, so a larger partner cannot qualify once
+    one has failed.
+    """
+    by_size = sorted(definitions, key=lambda definition: len(definition.shingles))
+    duplicates: set[DuplicatePair] = set()
+    for index, smaller in enumerate(by_size):
+        for larger in by_size[index + 1 :]:
+            if len(smaller.shingles) < DUPLICATE_JACCARD_THRESHOLD * len(
+                larger.shingles
+            ):
+                break
+            shared = len(smaller.shingles & larger.shingles)
+            union = len(smaller.shingles | larger.shingles)
+            if shared / union >= DUPLICATE_JACCARD_THRESHOLD:
+                duplicates.add(
+                    duplicate_pair(smaller.qualified_name, larger.qualified_name)
+                )
+    return frozenset(duplicates)
+
+
+def read_duplicate_baseline(project_root: Path) -> frozenset[DuplicatePair]:
+    """The duplicate pairs this tree already knows about, read as data."""
+    path = project_root / DUPLICATE_BASELINE_FILE
+    try:
+        with path.open("rb") as handle:
+            document = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as error:
+        raise ArchitecturePreflightError(
+            f"{DUPLICATE_BASELINE_FILE} is not readable as TOML: {error}"
+        ) from error
+    entries = document.get(DUPLICATE_BASELINE_TABLE, ())
+    baseline: set[DuplicatePair] = set()
+    for entry in entries:
+        left, right = entry.get("left"), entry.get("right")
+        if not isinstance(left, str) or not isinstance(right, str):
+            raise ArchitecturePreflightError(
+                f"{DUPLICATE_BASELINE_FILE}: every [[{DUPLICATE_BASELINE_TABLE}]] "
+                "names a left and a right qualified name"
+            )
+        baseline.add(duplicate_pair(left, right))
+    return frozenset(baseline)
+
+
+def duplicate_problems(project_root: Path) -> tuple[str, ...]:
+    """Copied code the baseline does not already carry -- and entries it outlived.
+
+    The ratchet holds in both directions on purpose: a new pair is red because
+    the tree grew a copy, and a baseline entry whose pair is gone is red because
+    a list that only ever grows stops describing anything.
+    """
+    definitions = source_definitions(project_root)
+    located = {
+        definition.qualified_name: definition.location for definition in definitions
+    }
+    baseline = read_duplicate_baseline(project_root)
+    duplicates = found_duplicates(definitions)
+    problems = [
+        f"{pair.left} ({located[pair.left]}) is a copy of "
+        f"{pair.right} ({located[pair.right]}); give the two one owner, or record "
+        f"the pair in {DUPLICATE_BASELINE_FILE}"
+        for pair in sorted(duplicates - baseline)
+    ]
+    problems.extend(
+        f"{pair.left} and {pair.right} are no longer a duplicate pair: "
+        f"orphan baseline entry, remove it from {DUPLICATE_BASELINE_FILE}"
+        for pair in sorted(baseline - duplicates)
+    )
+    return tuple(problems)
+
+
 ARCHITECTURE_PREFLIGHTS = (
     ("port-sentence-problems", port_sentence_problems),
     ("api-port-record-problems", api_port_record_problems),
     ("use-case-record-problems", use_case_record_problems),
     ("route-port-problems", route_port_problems),
+    ("duplicate-problems", duplicate_problems),
 )
 
 
 def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
-    source_count = source_module_count(project_root / "src/atelier2")
+    source_count = source_module_count(project_root / SOURCE_PACKAGE_DIRECTORY)
     if source_count != EXPECTED_SOURCE_MODULE_COUNT:
         raise ArchitecturePreflightError(source_module_count_mismatch(source_count))
     problems: list[str] = []
