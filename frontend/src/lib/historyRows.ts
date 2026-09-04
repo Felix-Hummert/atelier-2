@@ -17,7 +17,7 @@ export type HistoryWorkItem = {
   href: string | null;
 };
 
-export type HistoryRowResult =
+type HistoryRowResult =
   | { kind: "completed"; sentence: string | null }
   | { kind: "omitted"; sentence: "answer-too-large" }
   | { kind: "failed"; nodeId: string; sentence: string | null };

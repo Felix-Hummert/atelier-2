@@ -89,7 +89,7 @@ export function readingStoppedAt(cursor: string): string {
   return `Reading stopped at ${cursor} — showing what already loaded.`;
 }
 
-export function historyFindingsHighest(count: number, severity: string): string {
+function historyFindingsHighest(count: number, severity: string): string {
   const findings = count === 1 ? "1 finding" : `${count} findings`;
   return `${findings}, highest ${severity}`;
 }

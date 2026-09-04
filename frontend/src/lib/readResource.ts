@@ -1,4 +1,4 @@
-export type ReadRequest<Failure> =
+type ReadRequest<Failure> =
   | { state: "idle" }
   | { state: "loading" }
   | { state: "failed"; failure: Failure };

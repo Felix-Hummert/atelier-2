@@ -8,7 +8,7 @@
  * copy of the English stays visible as itself.
  */
 
-export const PSEUDO_LOCALE_QUERY = "pseudo-locale";
+const PSEUDO_LOCALE_QUERY = "pseudo-locale";
 
 export function wrapDisplayCopy(text: string): string {
   if (!pseudoLocaleIsOn()) {
@@ -17,7 +17,7 @@ export function wrapDisplayCopy(text: string): string {
   return `[[[ ${text} ]]]`;
 }
 
-export function pseudoLocaleIsOn(): boolean {
+function pseudoLocaleIsOn(): boolean {
   if (typeof window === "undefined") {
     return false;
   }

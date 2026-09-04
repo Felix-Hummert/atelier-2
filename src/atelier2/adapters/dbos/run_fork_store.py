@@ -769,34 +769,6 @@ def _ultimate_effect_receipt_record(
     return current
 
 
-def _validate_effect_fence(connection: Connection, fence: RunForkEffectFence) -> None:
-    record = (
-        connection.execute(
-            sa.select(effect_receipts).where(
-                effect_receipts.c.logical_key == fence.source_logical_key.value,
-                effect_receipts.c.run_id == fence.source_run_id.value,
-                effect_receipts.c.workflow_revision_hash
-                == fence.source_workflow_revision_hash.value,
-                effect_receipts.c.result_hash == fence.source_result_hash.value,
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if record is None:
-        raise RuntimeError("fork effect fence source receipt is missing")
-    ultimate = _ultimate_effect_receipt_record(connection, record)
-    receipt = receipt_from_record(ultimate)
-    if (
-        receipt.intent.binding.logical_key != fence.source_logical_key
-        or receipt.intent.binding.run_id != fence.source_run_id
-        or receipt.intent.binding.workflow_revision_hash
-        != fence.source_workflow_revision_hash
-        or receipt.result.payload_hash != fence.source_result_hash
-    ):
-        raise RuntimeError("fork effect fence source receipt disagrees")
-
-
 def _inherited_inputs(
     connection: Connection,
     graph: WorkflowGraphV3,
