@@ -206,13 +206,14 @@ def _proposal(
     lineage_id: CatalogLineageId,
     prerequisites: tuple[QueueItemId, ...] = (),
     rank: int = 1,
+    policy_revision: int | None = 1,
 ) -> QueueProposal:
     return QueueProposal(
         QueuePriorityRank(rank),
         lineage_id,
         prerequisites,
         QueueAutomationDisposition.HUMAN_REQUIRED,
-        1,
+        policy_revision,
     )
 
 
@@ -288,13 +289,14 @@ def _prepare_admitted(
     tracker: str = "gh:79",
     prerequisites: tuple[QueueItemId, ...] = (),
     rank: int = 1,
+    policy_revision: int | None = 1,
 ) -> WorkItemReference:
     reference = WorkItemReference(PROJECT, TrackerItemReference(tracker))
     _seed_open_items(store, reference)
     proposed = store.plan(
         PlanQueueItem(
             reference,
-            _proposal(lineage_id, prerequisites, rank),
+            _proposal(lineage_id, prerequisites, rank, policy_revision),
             QueueProjectionRevision(0),
         )
     )
@@ -731,52 +733,32 @@ def test_policy_and_launch_reservation_are_atomic_under_the_project_cap(
     assert QueueBlockerKind.CAP_REACHED in blocked.item.blockers
 
 
-def test_missing_policy_fails_launch_reservation_as_corrupt_without_a_binding(
+def test_a_policy_less_project_reserves_and_launches_its_admitted_item(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
+    """No published policy revision means no cap, not corruption (ruling 28.08.2026)."""
     queue, engine = store
     lineage_id, revision_hash = _found_lineage(engine)
-    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:no-policy"))
-    _seed_open_items(queue, reference)
-    proposed = queue.plan(
-        PlanQueueItem(
-            reference,
-            QueueProposal(
-                QueuePriorityRank(1),
-                lineage_id,
-                (),
-                QueueAutomationDisposition.HUMAN_REQUIRED,
-                None,
-            ),
-            QueueProjectionRevision(0),
-        )
+    reference = _prepare_admitted(
+        queue, lineage_id, "gh:no-policy", policy_revision=None
     )
-    assert isinstance(proposed, QueueItemProposed)
-    admitted = queue.confirm(
-        ConfirmQueueProposal(
-            reference,
-            proposed.revision,
-            QueueAdmissionRationale("approved without an invented policy"),
-        )
-    )
-    assert isinstance(admitted, QueueItemAdmitted)
 
     result = queue.reserve_launch(
         QueueLaunchBinding(
             reference.item_id,
-            proposed.revision,
-            RunId("missing-policy-run"),
+            QueueProjectionRevision(1),
+            RunId("no-policy-run"),
             revision_hash,
         )
     )
 
-    assert isinstance(result, DurableStateCorrupt)
+    assert isinstance(result, QueueLaunchReserved)
     with engine.connect() as connection:
         assert (
             connection.scalar(
                 sa.select(sa.func.count()).select_from(queue_launch_bindings)
             )
-            == 0
+            == 1
         )
 
 
@@ -1522,6 +1504,36 @@ def test_one_manually_approved_item_starts_once_across_a_crash(
         assert runs[0].revision_hash == bindings[0]["workflow_revision_hash"]
     finally:
         reopened.close()
+
+
+def test_a_serve_launch_starts_an_admitted_item_in_a_policy_less_project(
+    tmp_path: Path,
+) -> None:
+    """No published policy revision means no cap (ruling 28.08.2026): the serve
+    starts the item on launch instead of raising `QueueAdvanceCorrupt`.
+    """
+    database_path = tmp_path / "atelier.sqlite"
+    runtime = _runtime(database_path)
+    runtime.initialize_storage()
+    lineage_id, _revision_hash = _found_lineage(runtime.engine)
+    queue = DbosQueueProjectionStore(runtime.engine)
+    reference = _prepare_admitted(queue, lineage_id, policy_revision=None)
+
+    try:
+        runtime.launch()
+        with runtime.engine.connect() as connection:
+            bindings = (
+                connection.execute(
+                    sa.select(queue_launch_bindings).where(
+                        queue_launch_bindings.c.item_id == reference.item_id.value
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        assert len(bindings) == 1
+    finally:
+        runtime.close()
 
 
 def test_advance_replays_a_reserved_binding_before_projection_blockers(

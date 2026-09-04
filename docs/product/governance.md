@@ -239,11 +239,15 @@ tracker.
 V44 also appends project policy revisions, proposal revisions, exact-proposal
 dependency edges, and immutable launch bindings. Dependencies are project-local
 and only a prerequisite run in `COMPLETED` satisfies one. Capacity inspection
-and launch reservation share one immediate transaction. The binding pins one
-derived run id and exact workflow revision, so restart and catalog-head movement
-cannot launch a second run. The V43→V44 migration preserves every earlier row,
-invents none of these decisions, and exposes any old admitted row without a
-provable binding as `LEGACY_REVIEW_REQUIRED`.
+and launch reservation share one immediate transaction: a project with a
+published policy revision blocks reservation with `CAP_REACHED` at its
+`maximum_active_runs` ceiling, and a project with no published revision has no
+cap at all -- launch reservation skips the check rather than treating the
+absence as corrupt durable state (operator ruling 28.08.2026). The binding pins
+one derived run id and exact workflow revision, so restart and catalog-head
+movement cannot launch a second run. The V43→V44 migration preserves every
+earlier row, invents none of these decisions, and exposes any old admitted row
+without a provable binding as `LEGACY_REVIEW_REQUIRED`.
 
 A run reads one of those items as its own material through the start door: a V3
 start order may name a work item (`{"name": ..., "work_item": "gh:<n>"}` on
