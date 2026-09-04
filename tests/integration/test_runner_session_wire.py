@@ -97,6 +97,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runner_manifests import (
+    CANDIDATE_ATTEMPT_SPAN,
     CANDIDATE_JOURNAL_BYTES,
     RunnerManifestV1,
     RunnerPathGrant,
@@ -1230,9 +1231,21 @@ def test_the_largest_record_the_journal_may_hold_reaches_core_over_tls(
     bound, and the production transport carries it the whole way from a real
     Runner subprocess over genuine TLS through commit, ACK tombstone, RELEASE
     and journal removal. A transport bound below the record bound stops this at
-    `runner-session-oversized` instead."""
+    `runner-session-oversized` instead.
 
-    prepared = _prepared_session(tmp_path)
+    The invocation span is `CANDIDATE_ATTEMPT_SPAN`, the real production
+    bound, rather than the shared `_WIRE_MANIFEST_TIMINGS` fixture: that
+    fixture's 5 seconds is calibrated for the handshake, a fixed small child
+    and a reap that the rest of this file drives, never for also carrying a
+    megabyte-scale record over TLS. Production spends that span on a real
+    provider's execution time, so headroom for one send of the widest record
+    is not a generosity this test invents -- charging the send against the
+    abbreviated fixture instead would starve it on a loaded host and prove
+    nothing about the real bound."""
+
+    prepared = _prepared_session(
+        tmp_path, total_attempt_milliseconds=CANDIDATE_ATTEMPT_SPAN
+    )
     envelope = _largest_record_a_session_may_carry(prepared)
     RunnerJournal(prepared.journal_directory).publish(envelope, CANDIDATE_JOURNAL_BYTES)
 
