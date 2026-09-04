@@ -1,0 +1,27 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/438"
+
+# #438 Scheibe 2 (#1142): the MCP side of the one-identity promise. Lines 2, 5,
+# 6, 9, 10, 11 and 12 of #438's ruled Erwartungen (operator ruling 03.09.2026)
+# already have a proof on the HTTP/CLI side --
+# `a-full-pull-request-diff-reaches-its-agent-as-an-artifact` (349) and
+# `a-run-input-binds-as-a-materialized-package-member` (295) cover lines 2 and
+# 6, `an-order-the-start-cannot-honour-is-refused-by-its-own-name` (38) covers
+# the refusal half of lines 9, 11 and 12. `tests/integration/test_mcp_named_run.py`
+# claims those same three sentences again, proven through the stdio MCP door
+# against a real running service and a real store rather than through the HTTP
+# route or the CLI, because #438's own acceptance names the MCP path as its own
+# door onto the identical bytes.
+#
+# What had no proof anywhere yet, on any door, is the two sentences below:
+# republishing the same bytes stays one artifact (line 5, 10) and a schema
+# refusal leaves the artifact it named behind, still readable (the "usable"
+# half of line 9/11 that the existing refusal sentence does not itself say).
+
+[[sentence]]
+id = "publishing-the-same-bytes-twice-through-mcp-stays-one-artifact"
+text = "Publishing the same bytes a second time through the MCP publish_artifact tool answers the same content-addressed hash as the first publish, and the store holds exactly one artifact row under that hash -- the duplicate is not a second identity and not an error."
+
+[[sentence]]
+id = "a-schema-refused-start-leaves-its-named-artifact-usable-and-writes-no-run"
+text = "A start whose named artifact does not satisfy the schema its document pinned is refused by name before any run row exists, and the artifact it named is still readable at its own address afterward, unchanged."
