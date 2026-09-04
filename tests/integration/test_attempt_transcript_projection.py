@@ -33,6 +33,7 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -194,6 +195,7 @@ def arranged_transcript_node(tmp_path: Path) -> Iterator[ArrangeTranscriptNode]:
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             clock=lambda: TRANSCRIPT_RECORDED_AT,
+            permissions=GRANTS_NOTHING,
         )
         if isinstance(verdict, AgentExecutionFailure):
             assert isinstance(outcome, AgentAttemptFailed), outcome

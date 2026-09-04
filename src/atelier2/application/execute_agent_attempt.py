@@ -16,6 +16,10 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     receipted_agent_answer,
 )
+from atelier2.contracts.agent_permissions import (
+    PermissionPolicyRevision,
+    PolicyPermissionDecider,
+)
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.secret_redaction import redact_credentials
@@ -64,6 +68,8 @@ def execute_agent_attempt(
     project: PinnedProjectSource | None = None,
     artifacts: ArtifactPublisher | None = None,
     clock: Callable[[], RecordedAt] = recorded_instant,
+    *,
+    permissions: PermissionPolicyRevision,
 ) -> AgentAttemptExecutionOutcome:
     """Invoke only after this live call durably wins the launch boundary.
 
@@ -95,6 +101,12 @@ def execute_agent_attempt(
     verify, so it ends `FAILED` under `CANDIDATE_UNCHANGED` in seconds instead
     of paying a whole test suite to learn that the pinned tree still passes
     (#1156).
+
+    `permissions` is the authorisation this execution runs under, bound by
+    whoever dispatched it; the decider handed to the session answers every
+    question against exactly that revision. It has no default: an authority
+    nobody named is an authority nobody bound, and this call would then run
+    under one its dispatcher never chose.
 
     `artifacts` is where a verification that exits nonzero publishes the tail of
     what it printed and the patch it rejected, so the words the attempt ends
@@ -150,7 +162,9 @@ def execute_agent_attempt(
         if project is not None:
             project.source.materialize(project.pin, lease)
         invocation = AgentProcessInvocation(command, lease)
-        completion = session.launch_and_wait(execution, invocation)
+        completion = session.launch_and_wait(
+            execution, invocation, PolicyPermissionDecider(permissions)
+        )
         result = _with_recorded_transcript(
             executor.decode_process_completion(invocation, completion), clock
         )

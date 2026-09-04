@@ -39,6 +39,16 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     ProcessExitSignature,
 )
+from atelier2.contracts.agent_permissions import (
+    GRANTS_NOTHING,
+    MINIMUM_PERMISSION_CALL_ORDINAL,
+    PermissionCorrelationId,
+    PermissionDecision,
+    PermissionEffect,
+    PermissionRequest,
+    PermissionScope,
+    PolicyPermissionDecider,
+)
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -84,6 +94,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
     AgentSession,
+    PermissionDecider,
 )
 from atelier2.ports.durable_runs import (
     DurablePublishedRunResult,
@@ -896,13 +907,36 @@ class FakeAgentSession(AgentSession):
     )
     """The one ending every launch answers with; by default a clean, silent exit."""
 
+    asks: tuple[tuple[PermissionEffect, PermissionScope], ...] = ()
+    """What this provider asks for, in order, before its process ends."""
+
+    answers: list[PermissionDecision] = field(default_factory=list)
+    """What it was told, so a scenario can read the decision the run produced."""
+
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         return prepared_agent_attempt(execution)
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
-        del execution, invocation
+        del invocation
+        for call_ordinal, (effect, scope) in enumerate(
+            self.asks, start=MINIMUM_PERMISSION_CALL_ORDINAL
+        ):
+            self.answers.append(
+                permissions.decide(
+                    PermissionRequest(
+                        effect,
+                        scope,
+                        PermissionCorrelationId.for_call(
+                            execution.attempt_id, call_ordinal
+                        ),
+                    )
+                )
+            )
         return self.completion
 
     def cancel(self, attempt: AgentAttempt) -> Never:
@@ -923,3 +957,6 @@ class FakeAgentSession(AgentSession):
 _NO_FAKED_SUPERVISION = (
     "a scenario that stops a live attempt needs the real session, not this fake"
 )
+
+NOTHING_IS_PERMITTED = PolicyPermissionDecider(GRANTS_NOTHING)
+"""The authority a scenario hands a session it expects to ask nothing."""

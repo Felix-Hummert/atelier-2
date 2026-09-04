@@ -1,6 +1,8 @@
 # ADR 0020: One session port carries every provider on the path that runs the live attempts; a permission is authorisation, the transcript its projection
 
-- Status: ACCEPTED 2026-09-04 — decision only, no slice implemented
+- Status: ACCEPTED 2026-09-04; amended 2026-09-04 (§3, the policy is bound at
+  dispatch) — step 1 carries the typed policy and the decider seam; steps 2-6
+  are not implemented
 - Date: 2026-09-04
 - Decision authority: the operator ruling of 2026-09-04 on proposal
   [#1177](https://github.com/FlexOr2/atelier-2/issues/1177), which owns the
@@ -100,13 +102,21 @@ here.
 ### 3. A permission is authorisation, decided by the session owner, fail-closed
 
 A transcript step is evidence, not a control. The authorisation is an immutable
-typed permission policy, bound into the execution binding before the session
-opens — neither `AgentConfigurationRevision` nor `AgentExecutionRequestV2`
-carries a policy revision today, and that field is part of this decision. A pure
-decider beside the session owner answers each request from that policy and
-refuses anything it does not recognise. It holds no deadline of its own; the
-attempt deadline bounds the session. The driver transports the request and the
-decision and decides nothing.
+typed permission policy revision, bound to the execution at dispatch, and its
+hash stands in every receipt the execution writes. A pure decider beside the
+session owner answers each request from that policy and refuses anything it does
+not recognise. It holds no deadline of its own; the attempt deadline bounds the
+session. The driver transports the request and the decision and decides nothing.
+
+**2026-09-04 amendment (head ruling, [#1198](https://github.com/FlexOr2/atelier-2/issues/1198)):
+the policy is bound at dispatch, not carried in the request.** The draft put the
+policy revision into `AgentConfigurationRevision` or `AgentExecutionRequestV2`.
+Either would fold the authorisation into the identity an attempt is minted from,
+so widening what a deployment permits would orphan every attempt in flight and
+rewrite stored hashes. What a deployment permits is the deployment's fact: the
+composition root binds one revision and hands it down as a dispatch parameter,
+and the receipt names its hash. A per-executor grant reaches the request only
+once it has a live caller.
 
 ### 4. Transport per provider is the vendor's own maintained structured channel
 

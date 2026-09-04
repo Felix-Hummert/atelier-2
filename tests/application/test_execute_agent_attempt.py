@@ -14,6 +14,16 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_permissions import (
+    GRANTS_NOTHING,
+    PermissionAuthority,
+    PermissionCorrelationId,
+    PermissionDecision,
+    PermissionEffect,
+    PermissionPolicyRevision,
+    PermissionScope,
+    PermissionScopeKind,
+)
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -127,6 +137,7 @@ def test_proves_every_transcript_event_carries_its_moment_when_recorded(
         FakeAgentSession(AgentProcessCompletion(0, b'"done"', b"")),
         _Workspaces(tmp_path / "workspace"),
         clock=lambda: recording_moment,
+        permissions=GRANTS_NOTHING,
     )
 
     assert store.completed_result is not None
@@ -155,3 +166,54 @@ def test_proves_every_v1_transcript_event_explicitly_predates_moments() -> None:
     assert isinstance(historical.events[0].moment, TranscriptBeforeMoments)
     with pytest.raises(ValueError, match="cannot be given a recording moment"):
         historical.with_recorded_moment(RecordedAt("2026-08-29T12:00:00Z"))
+
+
+def test_a_question_the_dispatched_policy_never_granted_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The dispatched policy answers, and the answer names it.
+
+    The policy handed in grants one host and the provider asks about another, so
+    the refusal can only have been decided against this revision -- a call that
+    ignored it and answered under any other authority would carry another hash.
+    """
+
+    execution = agent_attempt_execution(agent_execution_request_v2())
+    may_reach_one_host = PermissionPolicyRevision(
+        frozenset(
+            {
+                (
+                    PermissionEffect.NETWORK,
+                    PermissionScope(PermissionScopeKind.HOST, "granted.invalid"),
+                )
+            }
+        )
+    )
+    session = FakeAgentSession(
+        AgentProcessCompletion(0, b'"done"', b""),
+        asks=(
+            (
+                PermissionEffect.NETWORK,
+                PermissionScope(PermissionScopeKind.HOST, "unnamed.invalid"),
+            ),
+        ),
+    )
+
+    execute_agent_attempt(
+        execution,
+        _TranscriptExecutor(),
+        cast(AgentAttemptStore, _ClaimingStore()),
+        session,
+        _Workspaces(tmp_path / "workspace"),
+        permissions=may_reach_one_host,
+    )
+
+    assert may_reach_one_host.revision_hash != GRANTS_NOTHING.revision_hash
+    assert session.answers == [
+        PermissionDecision(
+            PermissionCorrelationId.for_call(execution.attempt_id, 1),
+            False,
+            may_reach_one_host.revision_hash,
+            PermissionAuthority.POLICY,
+        )
+    ]

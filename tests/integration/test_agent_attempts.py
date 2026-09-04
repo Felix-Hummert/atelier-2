@@ -28,6 +28,10 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow import (
+    AgentExecutorMap,
+    reconstruct_agent_attempt,
+)
 from atelier2.adapters.dbos.workflow_ids import (
     cancellation_workflow_id_for,
     driving_workflow_ids,
@@ -40,10 +44,18 @@ from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptFailureCode,
     AgentAttemptReplacement,
+    AgentAttemptState,
     CancelAgentAttemptRequest,
     RunnerGenerationBinding,
     RunnerGenerationId,
     stop_command_for,
+)
+from atelier2.contracts.agent_permissions import (
+    GRANTS_NOTHING,
+    PermissionEffect,
+    PermissionPolicyRevision,
+    PermissionScope,
+    PermissionScopeKind,
 )
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
@@ -362,6 +374,7 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -388,6 +401,7 @@ def test_thirty_two_claims_invoke_one_controlled_executor(tmp_path: Path) -> Non
                     store,
                     runtime.agent_process_supervisor,
                     runtime_workspace_owner(runtime),
+                    permissions=GRANTS_NOTHING,
                 )
                 for _ in range(32)
             ]
@@ -419,6 +433,7 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
             store,
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
         recovered = execute_agent_attempt(
             agent_attempt_execution(request),
@@ -426,6 +441,7 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
 
         assert isinstance(first, AgentAttemptSucceeded)
@@ -491,6 +507,7 @@ def test_terminal_agent_success_is_one_durable_write_and_exact_reentry(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
         recovered = execute_agent_attempt(
             execution,
@@ -498,6 +515,7 @@ def test_terminal_agent_success_is_one_durable_write_and_exact_reentry(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
 
         with runtime.engine.connect() as connection:
@@ -572,6 +590,7 @@ def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
 
         assert isinstance(outcome, AgentAttemptPossiblyRan)
@@ -670,6 +689,7 @@ def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             clock=lambda: TRANSCRIPT_RECORDED_AT,
+            permissions=GRANTS_NOTHING,
         )
 
         with runtime.engine.connect() as connection:
@@ -812,6 +832,7 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
             store,
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
         assert len(terminal.released_commands) == 1
         with runtime.engine.connect() as connection:
@@ -1062,6 +1083,7 @@ def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
             store,
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
         assert isinstance(first, AgentAttemptSucceeded)
         assert first.completion == RunCompletes()
@@ -1078,6 +1100,7 @@ def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
                 DbosAgentAttemptStore(runtime.engine),
                 runtime.agent_process_supervisor,
                 runtime_workspace_owner(runtime),
+                permissions=GRANTS_NOTHING,
             )
 
         assert len(executor.results) == 1
@@ -1231,6 +1254,7 @@ def test_a_terminal_attempt_is_never_driverless(tmp_path: Path) -> None:
             store,
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
 
         assert tuple(store.iter_driverless_attempts(PageLimit(1))) == ()
@@ -1405,5 +1429,68 @@ def test_driverless_iteration_bounds_ten_thousand_row_queries(
         # Bounded by the page, not by the store's size.
         assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS * 2 + 4
         assert len(observed_reads) == 201
+    finally:
+        runtime.close()
+
+
+def test_a_changed_permission_policy_leaves_a_live_attempt_recoverable(
+    tmp_path: Path,
+) -> None:
+    """The policy is bound at dispatch, so no part of it reaches durable identity.
+
+    An attempt left nonterminal is taken up again by a deployment that has since
+    widened what a provider may do. Recovery reconstructs that very attempt from
+    durable truth -- same request, same id, same ordinal -- and the widened
+    dispatch finishes it, rather than minting a second one beside it.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/policy-bound-at-dispatch")
+        execution = agent_attempt_execution(request)
+        store = DbosAgentAttemptStore(runtime.engine)
+        prepared = store.prepare(execution)
+        assert prepared.state is AgentAttemptState.PREPARED
+        may_read_one_path = PermissionPolicyRevision(
+            frozenset(
+                {
+                    (
+                        PermissionEffect.WORKSPACE_READ,
+                        PermissionScope(PermissionScopeKind.PATH_PREFIX, "/lease/"),
+                    )
+                }
+            )
+        )
+        assert may_read_one_path.revision_hash != GRANTS_NOTHING.revision_hash
+        executors: AgentExecutorMap = {
+            entry.key: (
+                None,
+                entry.manifest_entry.operational_identity,
+                entry.manifest_entry.declared_capabilities,
+                entry.manifest_entry.carrier,
+            )
+            for entry in runtime.agent_executor_registry.entries
+        }
+
+        recovered = reconstruct_agent_attempt(
+            runtime.datasource, executors, runtime.declared_project, prepared
+        ).execution
+
+        assert recovered.request.request_hash == request.request_hash
+        assert recovered.attempt_id == execution.attempt_id
+        assert recovered.ordinal == execution.ordinal
+        outcome = execute_agent_attempt(
+            recovered,
+            inspecting_executor(runtime),
+            store,
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
+            permissions=may_read_one_path,
+        )
+        assert isinstance(outcome, AgentAttemptSucceeded)
+        durable = store.load(execution.attempt_id)
+        assert durable.request_hash == request.request_hash
+        assert durable.attempt_ordinal == execution.ordinal
     finally:
         runtime.close()

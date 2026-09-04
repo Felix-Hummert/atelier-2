@@ -39,6 +39,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.executions import AgentAttemptExecution, RunEventKind
@@ -290,6 +291,7 @@ class Attempt:
             runtime_workspace_owner(self.runtime),
             project.pinned(pin, grant),
             artifacts,
+            permissions=GRANTS_NOTHING,
         )
 
 

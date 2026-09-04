@@ -17,6 +17,7 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.ports.agent_executions import AgentSession
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
+    NOTHING_IS_PERMITTED,
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
     process_invocation,
@@ -64,6 +65,7 @@ def test_supervisor_reaps_a_process_that_exits_on_term(tmp_path: Path) -> None:
                         Path.cwd(),
                         standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                     ),
+                    NOTHING_IS_PERMITTED,
                 )
             )
         )
@@ -112,6 +114,7 @@ def test_supervisor_kills_and_reaps_a_process_that_ignores_term(
                         Path.cwd(),
                         standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                     ),
+                    NOTHING_IS_PERMITTED,
                 )
             )
         )
@@ -174,6 +177,7 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
                         Path.cwd(),
                         standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                     ),
+                    NOTHING_IS_PERMITTED,
                 )
             )
         )
