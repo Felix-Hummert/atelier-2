@@ -86,12 +86,12 @@ async function stageNamedWorkflow(page: Page): Promise<void> {
     name: seededWorkflowName,
     description: "build → review → fix, until green"
   };
-  await page.route("**/atelier/api/v1/workflow-revisions/by-name/*", (route) =>
+  await page.route("**/atelier/api/v1/catalog-revisions/by-name/workflow/*", (route) =>
     route.fulfill({
       json: {
         display_name: seededWorkflowName,
         lineage_id: "b".repeat(64),
-        workflow_revision_hash: revisionHash,
+        catalog_revision_hash: revisionHash,
         revision_number: 1
       }
     })

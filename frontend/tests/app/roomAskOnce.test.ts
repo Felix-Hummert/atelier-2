@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import {
   encodePublicRunReference,
+  type CatalogLineageKind,
   type CockpitApi,
   type RunV3,
   type WorkflowRevisionSummary
@@ -194,13 +195,13 @@ function catalogApi(rows: number): Partial<CockpitApi> {
       items,
       next_after_revision_hash: null
     })),
-    getRevisionByName: vi.fn(async (name: string) => {
+    getRevisionByName: vi.fn(async (_kind: CatalogLineageKind, name: string) => {
       const item = items.find((revision) => revision.name === name);
       if (item === undefined || item.name === null) throw new Error(`no catalog name ${name}`);
       return {
         display_name: item.name,
         lineage_id: hexId(items.indexOf(item), "e"),
-        workflow_revision_hash: item.workflow_revision_hash,
+        catalog_revision_hash: item.workflow_revision_hash,
         revision_number: 1
       };
     })

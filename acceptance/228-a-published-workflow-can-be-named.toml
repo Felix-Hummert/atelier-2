@@ -17,4 +17,4 @@ story = "https://github.com/FlexOr2/atelier-2/issues/228"
 [[sentence]]
 id = "a-workflow-published-over-the-api-is-named-over-the-api"
 requirement = "REQ-KATALOG-05"
-text = "A V3 workflow published through POST /workflow-revisions is named through POST /workflow-lineages with that exact hash, actor and activation time, and repeating the founding is the same answer."
+text = "A V3 workflow published through POST /workflow-revisions is named through POST /catalog-lineages with that exact hash, actor and activation time, and repeating the founding is the same answer."

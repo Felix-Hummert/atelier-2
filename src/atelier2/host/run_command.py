@@ -13,7 +13,7 @@ carries, which is what `resolve` asks and what `run --name` runs, through the
 same question so the two cannot disagree; `run --workflow` publishes the document
 it was handed instead, and when those bytes are a V3 document whose authored
 name the catalog can hold it then names that revision through
-`POST /workflow-lineages` — publication and admission stay two HTTP acts.
+`POST /catalog-lineages` — publication and admission stay two HTTP acts.
 A title the catalog grammar refuses is left unpublished-to-the-catalog so the
 hash start still happens. All three publications are idempotent: identical
 bytes answer with the same hash and change nothing. The run identity is derived
@@ -79,6 +79,7 @@ from atelier2.api.wire.resources import (
 from atelier2.contracts.catalog_v3 import CatalogLineageDisplayName
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 from atelier2.host.address import ADDRESSABLE_SCHEMES, DEFAULT_SERVICE_URL
 
@@ -87,7 +88,8 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 AUTH_PROFILE_PATH = "/auth-profile-revisions"
 AGENT_CONFIGURATION_PATH = "/agent-configuration-revisions"
 WORKFLOW_REVISION_PATH = "/workflow-revisions"
-WORKFLOW_LINEAGE_PATH = "/workflow-lineages"
+CATALOG_LINEAGE_PATH = "/catalog-lineages"
+CATALOG_NAME_PATH = "/catalog-revisions/by-name"
 RUN_PATH = "/runs"
 ARTIFACT_PATH = "/artifacts"
 DEFAULT_CATALOG_POSITION: Final = "head"
@@ -332,7 +334,7 @@ def resolve_published_name(order: NameOrder) -> NameResolution:
     """
 
     api = _api_url(order.service_url)
-    asked = f"{api}{WORKFLOW_REVISION_PATH}/by-name/{quote(order.name, safe='')}"
+    asked = api + catalog_name_path(RevisionKind.WORKFLOW, order.name)
     if order.position != DEFAULT_CATALOG_POSITION:
         asked = f"{asked}?position={quote(order.position, safe='')}"
     resolved = _decoded(
@@ -341,9 +343,15 @@ def resolve_published_name(order: NameOrder) -> NameResolution:
     return NameResolution(
         resolved.display_name,
         resolved.lineage_id,
-        resolved.workflow_revision_hash,
+        resolved.catalog_revision_hash,
         resolved.revision_number,
     )
+
+
+def catalog_name_path(kind: RevisionKind, name: str) -> str:
+    """Where one catalog name is read: the kind is part of that address."""
+
+    return f"{CATALOG_NAME_PATH}/{kind.value}/{quote(name, safe='')}"
 
 
 def describe_resolution(resolution: NameResolution) -> str:
@@ -592,7 +600,7 @@ def _admit_published_v3(
     """Name a just-published V3 revision through the existing admission door.
 
     Publication does not found a lineage. This is the second act: POST
-    /workflow-lineages, or POST …/members when that authored name is already
+    /catalog-lineages, or POST …/members when that authored name is already
     held. A title the catalog grammar refuses is skipped so the hash start
     still happens.
     """
@@ -604,7 +612,8 @@ def _admit_published_v3(
     except (TypeError, ValueError):
         return
     founding = FoundCatalogLineageRequestResource(
-        workflow_revision_hash=revision.workflow_revision_hash,
+        kind=RevisionKind.WORKFLOW,
+        catalog_revision_hash=revision.workflow_revision_hash,
         actor=actor,
         activated_at=activated_at,
     )
@@ -612,7 +621,7 @@ def _admit_published_v3(
         _decoded(
             _catalog_admission_resource,
             _post(
-                api + WORKFLOW_LINEAGE_PATH,
+                api + CATALOG_LINEAGE_PATH,
                 founding.model_dump_json(exclude_none=True).encode(),
             ),
             "a catalog admission",
@@ -626,14 +635,12 @@ def _admit_published_v3(
             raise
     resolution = _decoded(
         _catalog_name_resolution_resource,
-        _get(
-            f"{api}{WORKFLOW_REVISION_PATH}/by-name/"
-            f"{quote(revision.graph.name, safe='')}"
-        ),
+        _get(api + catalog_name_path(RevisionKind.WORKFLOW, revision.graph.name)),
         "a catalog name",
     )
     member = AdmitCatalogMemberRequestResource(
-        workflow_revision_hash=revision.workflow_revision_hash,
+        kind=RevisionKind.WORKFLOW,
+        catalog_revision_hash=revision.workflow_revision_hash,
         actor=actor,
         activated_at=activated_at,
     )
@@ -641,7 +648,7 @@ def _admit_published_v3(
         _decoded(
             _catalog_admission_resource,
             _post(
-                f"{api}{WORKFLOW_LINEAGE_PATH}/{resolution.lineage_id}/members",
+                f"{api}{CATALOG_LINEAGE_PATH}/{resolution.lineage_id}/members",
                 member.model_dump_json().encode(),
             ),
             "a catalog admission",
