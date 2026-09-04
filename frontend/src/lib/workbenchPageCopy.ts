@@ -97,6 +97,14 @@ export const workbenchPageCopy = {
    */
   conductorConnectionUnknown:
     "Nothing was started. Your message is kept in this conversation until you reload the page.",
+  /**
+   * The failed line's own notice, beside its Resend control (#1078 B4): the
+   * composer never clears until a write is confirmed, so a send that could
+   * not be confirmed stands here instead of vanishing with no error and no
+   * way back.
+   */
+  conductorMessageFailed: "This message was not sent.",
+  resendConductorMessage: "Resend",
 
   /**
    * A published conductor exists but its role carries no agent-configuration

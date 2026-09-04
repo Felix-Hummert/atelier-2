@@ -32,6 +32,10 @@ export const workbenchQuestions = {
     id: "say-something",
     question: "Can I tell the workshop what I want?"
   },
+  resendConductorMessage: {
+    id: "resend-conductor-message",
+    question: "Can I send this exact message again after it failed to send?"
+  },
   answerDecision: {
     id: "answer-decision",
     question: "Can I answer, or send again, a decision that waits on me?"

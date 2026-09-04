@@ -11,6 +11,7 @@
   } from "../api/client";
   import BackLink from "../components/BackLink.svelte";
   import LoadingState from "../components/LoadingState.svelte";
+  import PoisonedJournalDoor from "../components/PoisonedJournalDoor.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import { MutationJournal } from "../lib/mutationJournal";
   import V3RunView from "../components/V3RunView.svelte";
@@ -55,6 +56,23 @@
     origin !== null || run !== null
       ? runBackLink(run !== null && runHasEnded(run.state), origin)
       : null;
+
+  /**
+   * Whether this browser's own memory of pending sendings can be read at all
+   * (#914, second half of #1131). The run page reads the same journal
+   * `V3RunView.loadPendingWait` and `RunCancelCard`'s two reactive reads --
+   * a poisoned journal blocks every one of them, so the whole page stands
+   * behind `PoisonedJournalDoor`'s one honest sentence and its one door
+   * instead of letting a child mount and fail silently. The door's own mount
+   * check catches the common case (already poisoned before this page opens)
+   * before `V3RunView` ever mounts; `onJournalPoisoned`, forwarded through
+   * `V3RunView` from its own read and from `RunCancelCard`'s, catches the
+   * same journal poisoned in the narrow window between that check and the
+   * first read -- both paths land on the identical bound `journalPoisoned`
+   * flag.
+   */
+  let journalPoisoned = false;
+  let pageRoot: HTMLElement;
 
   onMount(() => {
     void load();
@@ -202,34 +220,39 @@
   }
 </script>
 
-<section aria-labelledby="v3-run-title">
+<section aria-labelledby="v3-run-title" tabindex="-1" bind:this={pageRoot}>
   {#if trail !== null}
     <BackLink label={trail.label} path={trail.path} {navigate} />
   {/if}
 
-  {#if run !== null}
-    <V3RunView
-      {run}
-      {cockpitApi}
-      {mutationJournal}
-      {projection}
-      {navigate}
-      onRunRead={(read) => {
-        snapshot = updateConfirmed(snapshot, read);
-      }}
-      onRetryStream={retryStream}
-    />
-  {:else if snapshot.request.state === "failed"}
-    <ProblemNotice problem={snapshot.request.failure} />
-  {:else if failureMessage !== null}
-    <ProblemNotice title={runPageCopy.runUnavailable} message={failureMessage} />
-  {/if}
+  <PoisonedJournalDoor {mutationJournal} bind:poisoned={journalPoisoned} focusAfterHeal={pageRoot} />
 
-  {#if run === null}
-    {#if snapshot.request.state === "loading"}
-      <p class="status"><LoadingState label={runPageCopy.looking} compact /></p>
-    {:else}
-      <button type="button" onclick={load}>{runPageCopy.retry}</button>
+  {#if !journalPoisoned}
+    {#if run !== null}
+      <V3RunView
+        {run}
+        {cockpitApi}
+        {mutationJournal}
+        {projection}
+        {navigate}
+        onRunRead={(read) => {
+          snapshot = updateConfirmed(snapshot, read);
+        }}
+        onRetryStream={retryStream}
+        onJournalPoisoned={() => { journalPoisoned = true; }}
+      />
+    {:else if snapshot.request.state === "failed"}
+      <ProblemNotice problem={snapshot.request.failure} />
+    {:else if failureMessage !== null}
+      <ProblemNotice title={runPageCopy.runUnavailable} message={failureMessage} />
+    {/if}
+
+    {#if run === null}
+      {#if snapshot.request.state === "loading"}
+        <p class="status"><LoadingState label={runPageCopy.looking} compact /></p>
+      {:else}
+        <button type="button" onclick={load}>{runPageCopy.retry}</button>
+      {/if}
     {/if}
   {/if}
 </section>

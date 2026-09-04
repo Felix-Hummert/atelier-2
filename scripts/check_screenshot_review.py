@@ -84,6 +84,7 @@ _COMPONENTS = (
     Path("frontend/src/components/NodeDetailPanel.svelte"),
     Path("frontend/src/components/PinnedDecision.svelte"),
     Path("frontend/src/components/PoisonedJournalDiscardSheet.svelte"),
+    Path("frontend/src/components/PoisonedJournalDoor.svelte"),
     Path("frontend/src/components/ProblemNotice.svelte"),
     Path("frontend/src/components/ProofAnchor.svelte"),
     Path("frontend/src/components/ProviderAccounts.svelte"),
