@@ -61,7 +61,7 @@ from atelier2.ports.agent_attempts import (
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceOwner,
     AgentProcessOwnerNotLocal,
-    AgentProcessRunner,
+    AgentSession,
 )
 
 
@@ -156,7 +156,7 @@ def cancel_agent_attempt(
 def continue_agent_attempt_cancellation(
     request: CancelAgentAttemptRequest,
     store: AgentAttemptStore,
-    supervisor: AgentProcessRunner,
+    session: AgentSession,
     workspaces: AgentAttemptWorkspaceOwner,
 ) -> AgentAttemptCancellationAccepted | None:
     """Attest one exact cleanup, or leave a durable redrive marker.
@@ -171,7 +171,7 @@ def continue_agent_attempt_cancellation(
         result = store.request_cancellation(request)
         if not isinstance(result, AgentAttemptCancellationAccepted):
             raise RuntimeError("terminal cancellation retry lost its exact command")
-        supervisor.release(result.attempt)
+        session.release(result.attempt)
         workspaces.release(request.attempt_id)
         return result
     if (
@@ -184,21 +184,21 @@ def continue_agent_attempt_cancellation(
             None,
             None,
         )
-        supervisor.release(terminal.attempt)
+        session.release(terminal.attempt)
         workspaces.release(request.attempt_id)
         return terminal
     try:
-        disposition, owner, generation = supervisor.cancel(attempt)
+        disposition, owner, generation = session.cancel(attempt)
     except AgentProcessOwnerNotLocal:
         store.mark_cancellation_owner_not_local(request)
         attempt = store.load(request.attempt_id)
         try:
-            disposition, owner, generation = supervisor.recover(attempt)
+            disposition, owner, generation = session.recover(attempt)
         except AgentProcessOwnerNotLocal:
             return None
     terminal = store.attest_cancellation_cleanup(
         request, disposition, owner, generation
     )
-    supervisor.release(terminal.attempt)
+    session.release(terminal.attempt)
     workspaces.release(request.attempt_id)
     return terminal
