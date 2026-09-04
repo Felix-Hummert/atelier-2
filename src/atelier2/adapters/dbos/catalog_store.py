@@ -335,6 +335,28 @@ def current_display_name(
     return CatalogLineageDisplayName(str(name))
 
 
+def current_head_revision_hash(
+    connection: sa.Connection, lineage_id: CatalogLineageId
+) -> PublishedRevisionHash:
+    """The revision hash a lineage serves as its current head, read through one connection.
+
+    Public alongside `current_display_name`: a source intake recognising bytes
+    as already present must know whether they are what the lineage's name
+    actually serves now, not merely some revision the lineage once held --
+    the same "highest `revision_number`" a name lookup already serves as
+    `head`.
+    """
+    revision_hash = connection.scalar(
+        sa.select(catalog_lineage_members.c.revision_hash)
+        .where(catalog_lineage_members.c.lineage_id == lineage_id.value)
+        .order_by(catalog_lineage_members.c.revision_number.desc())
+        .limit(1)
+    )
+    if revision_hash is None:
+        raise ValueError("catalog lineage has no members")
+    return PublishedRevisionHash(str(revision_hash))
+
+
 def _is_retired(connection: sa.Connection, lineage_id: CatalogLineageId) -> bool:
     return (
         connection.scalar(

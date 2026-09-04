@@ -79,6 +79,7 @@ from atelier2.ports.definition_sources import (
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
 )
+from atelier2.ports.published_revisions import CatalogNameFound
 from atelier2.ports.workflow_revisions import WorkflowRevisionFound
 from tests.scenarios.api import durable_queries
 from tests.scenarios.workflows import declared_output
@@ -1143,6 +1144,146 @@ def test_a_name_a_different_source_already_intook_still_refuses(
     assert refused.startswith("refused workflows/build.yaml")
     assert "already held by lineage" in refused
     assert logical_dump(database) == settled
+
+
+def test_a_name_a_different_source_already_intook_still_refuses_byte_identical_content(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The byte-identical twin of the refusal above.
+
+    There a second source's *differing* bytes hit `CatalogAdmissionNameHeld`.
+    Bytes byte-identical to the lineage's own founding revision reach the
+    same refusal through a different door -- `CatalogAdmissionExisting` --
+    and must refuse for the same reason: a source has already fed this
+    lineage, so a second source recognising it present would attach its own
+    provenance to somebody else's continuity, and a later, differing delivery
+    from that second source could then re-head the lineage as if it always
+    owned it.
+    """
+
+    first_repository = tmp_path / "first.git"
+    bare_repository_of(
+        first_repository, {"workflows/build.yaml": workflow_named("build")}
+    )
+    assert intake(database, connect(database, first_repository)) == 0
+
+    second_repository = tmp_path / "second.git"
+    bare_repository_of(
+        second_repository, {"workflows/build.yaml": workflow_named("build")}
+    )
+    source_id = connect(database, second_repository)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/build.yaml")
+    assert "already held by lineage" in refused
+    assert logical_dump(database) == settled
+
+
+def _founded_three_member_lineage(engine: Engine) -> tuple[bytes, bytes, bytes]:
+    """An unsourced, manually imported lineage with three revisions.
+
+    Founding, then a middle and a head revision admitted the same way a
+    manual import stands before any source has ever fed it -- built once so
+    the two "present must agree with the served head" tests below share one
+    arrangement and differ only in which revision the repository delivers.
+    """
+
+    store = DbosCatalogStore(engine)
+    founding = workflow_named("build")
+    assert isinstance(
+        store.add_workflow(
+            WorkflowRevision(founding),
+            CatalogLineageDisplayName("build"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-01T00:00:00Z"),
+        ),
+        CatalogLineageFounded,
+    )
+    lineage = CatalogLineage(
+        RevisionKind.WORKFLOW, PublishedRevisionHash.of(founding)
+    ).lineage_id
+    middle = founding + b"\n"
+    newest = founding + b"\n\n"
+    for ordinal, revision in enumerate((middle, newest), start=1):
+        DbosWorkflowRevisionPublisher(engine).publish(WorkflowRevision(revision))
+        assert isinstance(
+            store.admit_member(
+                lineage,
+                PublishedRevision(RevisionKind.WORKFLOW, revision),
+                CatalogLineageDisplayName("build"),
+                CatalogActor("felix"),
+                CatalogActivatedAt(f"2026-09-01T00:0{ordinal + 5}:00Z"),
+            ),
+            CatalogMemberAdmitted,
+        )
+    return founding, middle, newest
+
+
+def _served_head(engine: Engine, name: str) -> CatalogNameFound:
+    served = DbosCatalogStore(engine).resolve_name(
+        RevisionKind.WORKFLOW, CatalogLineageDisplayName(name), "head"
+    )
+    assert isinstance(served, CatalogNameFound)
+    return served
+
+
+def test_a_present_answer_still_serves_the_lineages_current_head(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Recognising bytes present must agree with what the name actually serves.
+
+    Delivering the lineage's own current head as an unsourced later member
+    still answers present and records its provenance -- and the name still
+    resolves to that exact head afterwards, unmoved by the recognition.
+    """
+
+    _, _, newest = _founded_three_member_lineage(engine)
+    repository = tmp_path / "definitions.git"
+    commit = bare_repository_of(repository, {"workflows/build.yaml": newest})
+    source_id = connect(database, repository)
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    reported = capsys.readouterr().out
+    assert commit in reported
+    assert reported.splitlines()[1:] == ["  present workflow workflows/build.yaml"]
+    assert _served_head(engine, "build").revision_hash == PublishedRevisionHash.of(
+        newest
+    )
+
+
+def test_repo_bytes_matching_a_non_head_member_refuse_instead_of_present(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A stale, non-head revision is refused rather than reported present.
+
+    The lineage has moved past this revision: the repository no longer
+    carries what the name serves, so recognising it present would let a
+    stale delivery answer for served bytes it is not. The catalog keeps
+    serving its real head and records no provenance for the stale one.
+    """
+
+    _, middle, newest = _founded_three_member_lineage(engine)
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"workflows/build.yaml": middle})
+    source_id = connect(database, repository)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/build.yaml")
+    assert "already belong to lineage" in refused
+    assert logical_dump(database) == settled
+    assert _served_head(engine, "build").revision_hash == PublishedRevisionHash.of(
+        newest
+    )
 
 
 def test_an_adopted_lineage_intake_is_idempotent_on_a_repeat_commit(

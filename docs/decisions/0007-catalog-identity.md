@@ -334,7 +334,10 @@ revisions already in the lineage are untouched and remain its history; the
 lineage id — unchanged since decision 1 derives it from the founding revision
 — never moves. A name held by a lineage a source has already fed, this
 source or another, still refuses: adopting that would let a second `(source
-id, path)` silently claim a continuity the first one already owns.
+id, path)` silently claim a continuity the first one already owns. Bytes an
+unsourced lineage already serves as its current revision under the same name
+are recognised as present and gain the same provenance; the lineage id and
+its history are untouched.
 
 **Sync semantics: publication is explicit, and drift is visible.** Drift is derived, never a
 state anyone sets, and it is two independent readings that mirror this record's own
