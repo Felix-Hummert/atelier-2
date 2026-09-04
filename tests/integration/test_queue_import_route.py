@@ -25,6 +25,7 @@ from atelier2.adapters.github.observation import LiveGitHubIssueSource
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import (
     API_PREFIX,
+    CATALOG_LINEAGES_PATH,
     PROJECT_QUEUE_POLICY_PATH,
     PROJECT_SOURCE_IMPORT_PATH,
     QUEUE_ADMISSIONS_PATH,
@@ -44,6 +45,7 @@ from atelier2.contracts.host_configuration import (
     SourceKind,
     SourceReference,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.when import recorded_instant
 from tests.scenarios.api import durable_api_client
 
@@ -147,9 +149,10 @@ def founded_workflow_lineage(api: TestClient) -> str:
     )
     assert published.status_code == 201, published.text
     founded = api.post(
-        API_PREFIX + "/workflow-lineages",
+        CATALOG_LINEAGES_PATH,
         json={
-            "workflow_revision_hash": published.json()["workflow_revision_hash"],
+            "kind": RevisionKind.WORKFLOW.value,
+            "catalog_revision_hash": published.json()["workflow_revision_hash"],
             "actor": "operator",
             "activated_at": "2026-08-27T00:00:00Z",
         },

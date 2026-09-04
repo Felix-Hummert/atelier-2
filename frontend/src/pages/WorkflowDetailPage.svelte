@@ -130,7 +130,9 @@
         });
         return;
       }
-      const catalogState = await catalogNameStateOf(name, (asked) => cockpitApi.getRevisionByName(asked));
+      const catalogState = await catalogNameStateOf(name, (asked) =>
+        cockpitApi.getRevisionByName("workflow", asked)
+      );
       const newestByName = catalogHeadsOf(reading.revisions, { [name]: catalogState });
       if (newestByName === null) {
         detail = failRead(detail, begun.generation, {

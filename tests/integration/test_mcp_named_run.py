@@ -28,7 +28,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
-from atelier2.api.openapi import API_PREFIX
+from atelier2.api.openapi import API_PREFIX, CATALOG_LINEAGES_PATH
 from atelier2.api.references import encode_public_project_reference
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
@@ -251,9 +251,10 @@ def publish_named_line(app: FastAPI, document: bytes = DOCUMENT) -> PublishedLin
     assert workflow.status_code == 201, workflow.text
     revision_hash = workflow.json()["workflow_revision_hash"]
     named = api.post(
-        API_PREFIX + "/workflow-lineages",
+        CATALOG_LINEAGES_PATH,
         json={
-            "workflow_revision_hash": revision_hash,
+            "kind": RevisionKind.WORKFLOW.value,
+            "catalog_revision_hash": revision_hash,
             "actor": "operator",
             "activated_at": "2026-08-17T00:00:00Z",
         },
@@ -631,7 +632,7 @@ def test_a_stdio_client_lists_the_catalog_starts_by_name_and_reads_terminal(
     assert ended["state"] == RunState.COMPLETED.value
     assert ended["terminal_hash"] is not None
     assert (
-        ended["workflow_revision_hash"] == listed["items"][0]["workflow_revision_hash"]
+        ended["workflow_revision_hash"] == listed["items"][0]["catalog_revision_hash"]
     )
 
 

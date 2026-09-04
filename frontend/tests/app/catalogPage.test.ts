@@ -5,6 +5,7 @@ import App from "../../src/App.svelte";
 import {
   CockpitRequestError,
   type AgentDefinitionRevisionListItem,
+  type CatalogLineageKind,
   type CockpitApi,
   type Problem,
   type WorkflowRevisionSummary
@@ -85,7 +86,7 @@ function admittedName(): Partial<CockpitApi> {
     getRevisionByName: vi.fn(async () => ({
       display_name: WORKFLOW_NAME,
       lineage_id: LINEAGE_ID,
-      workflow_revision_hash: WORKFLOW_HASH,
+      catalog_revision_hash: WORKFLOW_HASH,
       revision_number: 1
     }))
   };
@@ -337,12 +338,12 @@ describe("the catalog room", () => {
         workflowSummary({ name: thirdName, workflow_revision_hash: thirdHash }),
         workflowSummary({ name: thirdName, workflow_revision_hash: fourthHash })
       ]),
-      getRevisionByName: vi.fn(async (name) => {
+      getRevisionByName: vi.fn(async (_kind: CatalogLineageKind, name: string) => {
         if (name === firstName || name === thirdName) {
           return {
             display_name: name,
             lineage_id: name === firstName ? firstLineageId : thirdLineageId,
-            workflow_revision_hash: name === firstName ? WORKFLOW_HASH : thirdHash,
+            catalog_revision_hash: name === firstName ? WORKFLOW_HASH : thirdHash,
             revision_number: 1
           };
         }
@@ -582,7 +583,7 @@ describe("the catalog room", () => {
       value: {
         display_name: WORKFLOW_NAME,
         lineage_id: LINEAGE_ID,
-        workflow_revision_hash: WORKFLOW_HASH,
+        catalog_revision_hash: WORKFLOW_HASH,
         revision_number: 1
       }
     }));
@@ -600,7 +601,7 @@ describe("the catalog room", () => {
         return {
           display_name: WORKFLOW_NAME,
           lineage_id: LINEAGE_ID,
-          workflow_revision_hash: WORKFLOW_HASH,
+          catalog_revision_hash: WORKFLOW_HASH,
           revision_number: 1
         };
       }),
@@ -716,10 +717,10 @@ describe("the catalog room", () => {
               next_after_revision_hash: null
             }
       ),
-      getRevisionByName: vi.fn(async (name: string) => ({
+      getRevisionByName: vi.fn(async (_kind: CatalogLineageKind, name: string) => ({
         display_name: name,
         lineage_id: LINEAGE_ID,
-        workflow_revision_hash: name === WORKFLOW_NAME ? WORKFLOW_HASH : SIBLING_HASH,
+        catalog_revision_hash: name === WORKFLOW_NAME ? WORKFLOW_HASH : SIBLING_HASH,
         revision_number: 1
       }))
     });

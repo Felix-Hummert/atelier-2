@@ -46,21 +46,23 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
     ARTIFACT_PATH,
     AUTH_PROFILE_PATH,
+    CATALOG_LINEAGE_PATH,
     COMMAND_CATALOG_ACTOR,
     JSON_MEDIA_TYPE,
     OCTET_STREAM_MEDIA_TYPE,
     RUN_PATH,
-    WORKFLOW_LINEAGE_PATH,
     WORKFLOW_REVISION_PATH,
     AgentRoleBinding,
     NameOrder,
     ServiceRefused,
+    catalog_name_path,
     derived_run_id,
     describe_resolution,
     resolve_published_name,
@@ -951,7 +953,7 @@ def test_an_address_that_is_not_a_served_api_is_refused(
 NAME = "review-bounded-diff"
 LINEAGE_ID = "b" * 64
 REVISION_NUMBER = 2
-BY_NAME_URL_PATH = f"{API_PREFIX}{WORKFLOW_REVISION_PATH}/by-name/{NAME}"
+BY_NAME_URL_PATH = API_PREFIX + catalog_name_path(RevisionKind.WORKFLOW, NAME)
 
 
 def name_answer() -> Answer:
@@ -960,7 +962,7 @@ def name_answer() -> Answer:
             {
                 "display_name": NAME,
                 "lineage_id": LINEAGE_ID,
-                "workflow_revision_hash": REVISION_HASH,
+                "catalog_revision_hash": REVISION_HASH,
                 "revision_number": REVISION_NUMBER,
             }
         ).encode()
@@ -1500,9 +1502,11 @@ nodes:
     mode: headless
     instruction: The first live V14 run.
 """
-LINEAGES_URL_PATH = API_PREFIX + WORKFLOW_LINEAGE_PATH
+LINEAGES_URL_PATH = API_PREFIX + CATALOG_LINEAGE_PATH
 MEMBERS_URL_PATH = f"{LINEAGES_URL_PATH}/{LINEAGE_ID}/members"
-V3_BY_NAME_URL_PATH = f"{API_PREFIX}{WORKFLOW_REVISION_PATH}/by-name/{WORKFLOW_NAME}"
+V3_BY_NAME_URL_PATH = API_PREFIX + catalog_name_path(
+    RevisionKind.WORKFLOW, WORKFLOW_NAME
+)
 
 
 def published_workflow_revision(name: str = WORKFLOW_NAME) -> Answer:
@@ -1543,7 +1547,7 @@ def founded_lineage(revision_number: int = 1) -> Answer:
         CatalogAdmissionResource(
             display_name=WORKFLOW_NAME,
             lineage_id=LINEAGE_ID,
-            workflow_revision_hash=REVISION_HASH,
+            catalog_revision_hash=REVISION_HASH,
             revision_number=revision_number,
         )
         .model_dump_json()
@@ -1564,7 +1568,8 @@ def test_publishing_a_v3_document_names_it_through_the_admission_door(
 
     assert exit_code == 0
     assert founded == {
-        "workflow_revision_hash": REVISION_HASH,
+        "kind": RevisionKind.WORKFLOW.value,
+        "catalog_revision_hash": REVISION_HASH,
         "actor": COMMAND_CATALOG_ACTOR,
         "activated_at": founded["activated_at"],
     }
@@ -1592,7 +1597,7 @@ def test_a_named_run_starts_the_revision_the_just_published_name_holds(
                 {
                     "display_name": WORKFLOW_NAME,
                     "lineage_id": LINEAGE_ID,
-                    "workflow_revision_hash": REVISION_HASH,
+                    "catalog_revision_hash": REVISION_HASH,
                     "revision_number": 1,
                 }
             ).encode()
@@ -1708,7 +1713,7 @@ def test_a_held_name_admits_the_new_revision_into_that_lineage(
                 {
                     "display_name": WORKFLOW_NAME,
                     "lineage_id": LINEAGE_ID,
-                    "workflow_revision_hash": REVISION_HASH,
+                    "catalog_revision_hash": REVISION_HASH,
                     "revision_number": 1,
                 }
             ).encode()
@@ -1721,7 +1726,8 @@ def test_a_held_name_admits_the_new_revision_into_that_lineage(
 
     assert exit_code == 0
     assert members == {
-        "workflow_revision_hash": REVISION_HASH,
+        "kind": RevisionKind.WORKFLOW.value,
+        "catalog_revision_hash": REVISION_HASH,
         "actor": COMMAND_CATALOG_ACTOR,
         "activated_at": members["activated_at"],
     }

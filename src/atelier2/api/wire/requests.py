@@ -42,6 +42,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 
@@ -60,13 +61,21 @@ class RevisionListingView(StrEnum):
 
 
 class FoundCatalogLineageRequestResource(ApiModel):
-    """Found a lineage for one published revision.
+    """Found a lineage for one published revision of one kind.
 
-    V3 workflow bytes author their own name; older formats require the explicit
-    name because they do not carry one.
+    The kind travels beside the hash because a hash alone names no publication:
+    the same bytes may be published under more than one kind, and the lineage
+    the catalog founds belongs to exactly one of them.
+
+    A format that authors its own name -- a V3 workflow, an agent definition --
+    supplies it from its bytes; a format that authors none requires the explicit
+    name.
     """
 
-    workflow_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    # A JSON body spells the kind as its own value; strict decoding alone would
+    # demand an enum instance no wire can carry.
+    kind: RevisionKind = Field(strict=False)
+    catalog_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     display_name: str | None = Field(
         default=None,
         min_length=1,
@@ -80,10 +89,13 @@ class AdmitCatalogMemberRequestResource(ApiModel):
     """Admit one published revision into the lineage named by the path.
 
     It carries no name: the lineage already holds one, and letting a caller
-    state it here would make an admission a rename.
+    state it here would make an admission a rename. It does carry the kind, for
+    the same reason founding does -- the hash it names is a publication only
+    under one.
     """
 
-    workflow_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    kind: RevisionKind = Field(strict=False)
+    catalog_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     actor: str = Field(min_length=1, max_length=MAXIMUM_CATALOG_ACTOR_CHARACTERS)
     activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
 
