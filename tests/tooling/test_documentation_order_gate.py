@@ -170,12 +170,12 @@ def source_binding_for_unbound_document_with_watermark(source_watermark: str) ->
     document = next(
         item
         for item in read_document_source_watermarks(PROJECT_ROOT)
-        if item.document.name.startswith("0001-")
+        if item.document.name.startswith("0002-")
     )
     assert isinstance(document, UnboundDocument)
     return (
         source_binding()
-        .replace('document = "0004"', 'document = "0001"')
+        .replace('document = "0004"', 'document = "0002"')
         .replace(
             f'content_sha256 = "{bound_0004_watermark().document_digest}"',
             f'content_sha256 = "{document.document_digest}"',
@@ -253,7 +253,7 @@ def test_the_current_requirement_contract_passes_both_wrappers(tmp_path: Path) -
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
-        "7 document(s), 74 rule(s), 3 frozen legacy, 4 approval-backed" in result.stdout
+        "7 document(s), 74 rule(s), 2 frozen legacy, 5 approval-backed" in result.stdout
     )
 
 
@@ -478,7 +478,7 @@ def test_a_base_revision_git_cannot_resolve_fails_closed(
                     "unregistered-revision"
                 )
             ),
-            "0001",
+            "0002",
         ),
         (
             lambda content: content.replace(
