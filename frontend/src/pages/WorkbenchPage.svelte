@@ -591,8 +591,19 @@
     await attemptSend(typed.trim());
   }
 
-  /** The transcript's own Resend control: the same send path, the failed text. */
+  /**
+   * The transcript's own Resend control: the same send path, the failed
+   * text -- but narrowed to the conductor path only (#1078 fix round 3,
+   * finding 3). A fresh message while the link is "unreadable" may still be
+   * answered by the local-chat fallback below in `attemptSend` (by design,
+   * `chatTranscript.ts`); a message that already failed to reach the
+   * conductor must never take that fallback instead, or a Resend the
+   * operator meant for the real conversation would be answered by a house
+   * sentence that never reached it. The failed line stays standing,
+   * unchanged, until the link reads "connected" again.
+   */
   async function resendFailedConductorMessage(message: string): Promise<void> {
+    if (conductorLink.kind !== "connected") return;
     // Removed inside `attemptSend`, only once its guards pass and only for
     // this exact message (#1078 review): an early return here must not lose
     // the standing failed line, and a second failure elsewhere in the list
@@ -747,13 +758,22 @@
     conductorLink.kind === "unbound" ||
     conductorLink.kind === "not-startable" ||
     conductorLink.kind === "reading";
-  // The one condition Send and the transcript's own Resend both read, so a
-  // busy or locked composer cannot resend behind the operator's back either.
+  // Send's own condition -- a busy or locked composer cannot send behind the
+  // operator's back.
   $: sendDisabled =
     $connectionState === "reconnecting" ||
     conductorDeliveryBusy ||
     composerLocked ||
     (conductorRun !== null && conductorRun.state !== "WAITING_INPUT" && !runHasEnded(conductorRun.state));
+  // The transcript's own Resend narrows further than Send (#1078 fix round
+  // 3, finding 3): every reason `sendDisabled` names still applies, plus one
+  // Resend alone must refuse -- the link reading "unreadable" -- because a
+  // fresh message there is allowed to fall into the local-chat fallback by
+  // design, but a message that already failed the real conductor must never
+  // take that fallback on Resend. `resendFailedConductorMessage` reads the
+  // same `conductorLink.kind !== "connected"` guard, so the two can never
+  // drift apart.
+  $: resendDisabled = sendDisabled || conductorLink.kind !== "connected";
   $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
     expandedPinReference = pins[0]?.run.public_run_reference ?? null;
   }
@@ -957,9 +977,16 @@
           </p>
           <p class="conversation-failed-notice" role="status">
             {wrapDisplayCopy(workbenchPageCopy.conductorMessageFailed)}
+            <!-- `resendDisabled`, not `sendDisabled` (#1078 fix round 3,
+                 finding 3): while the link reads "unreadable" the composer
+                 hint below already names why nothing can go out
+                 (`conductorChatCopy.connectionUnknown`), and this same
+                 sentence is why Resend stays locked here too, instead of
+                 silently answering this failed line from the local-chat
+                 fallback that hint describes. -->
             <button
               type="button"
-              disabled={sendDisabled}
+              disabled={resendDisabled}
               onclick={() => resendFailedConductorMessage(failedMessage)}
               {...{ [workbenchQuestionAttribute]: workbenchQuestions.resendConductorMessage.id }}
             >{wrapDisplayCopy(workbenchPageCopy.resendConductorMessage)}</button>

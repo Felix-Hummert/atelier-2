@@ -805,6 +805,81 @@ describe("the workbench conductor conversation", () => {
       true
     );
   });
+
+  // #1078 fix round 3, finding 3: Resend used to share `attemptSend`'s own
+  // "not connected" branch with the composer's fresh-message send, so a
+  // Resend clicked while the link read "unreadable" silently answered the
+  // standing failed line from the local-chat fallback instead of leaving it
+  // standing for the real conductor. Resend now refuses on its own until the
+  // link reads "connected" again.
+  it("refuses Resend and keeps the failed line standing while the link is unreadable, then performs the POST once it reads connected again", async () => {
+    const run = conductorRunFixture();
+    let refuseNextAnswer = true;
+    const answer = vi.fn<CockpitApi["answer"]>(async () => {
+      if (refuseNextAnswer) {
+        refuseNextAnswer = false;
+        throw new Error("network down");
+      }
+      return { status: 200, value: run };
+    });
+    const workflowResolution = {
+      display_name: "conductor",
+      lineage_id: "7".repeat(64),
+      workflow_revision_hash: conductorRevisionHash,
+      revision_number: 1
+    };
+    openChat({
+      ...conductorConnectionOverrides(),
+      // The link's own read fails only on the round after the failed send
+      // below, the same shape the "honest conductor connection" tests use
+      // to move an already-resolved link to a fresh reason -- here back to
+      // "unreadable" instead of a named one, then back to resolved.
+      getRevisionByName: vi
+        .fn()
+        .mockResolvedValueOnce(workflowResolution)
+        .mockRejectedValueOnce(new Error("network hiccup"))
+        .mockResolvedValue(workflowResolution),
+      listRuns: listRunsForConductor(run),
+      getRun: vi.fn(async () => run),
+      answer
+    });
+    const { screen, waitFor, fireEvent } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    await screen.findByText(conductorConversationCopy.composerHint);
+
+    await say("a message that failed");
+    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
+    expect(answer).toHaveBeenCalledTimes(1);
+
+    reportConnectionLost();
+    reportConnectionRestored();
+    await screen.findByText(conductorChatCopy.connectionUnknown);
+
+    const resendButton = screen.getByRole("button", {
+      name: workbenchPageCopy.resendConductorMessage
+    });
+    expect(resendButton).toHaveProperty("disabled", true);
+
+    await fireEvent.click(resendButton);
+    // Neither the real POST nor the local-chat fallback ran: the failed
+    // line still stands, unresent, and no house reply for it was invented.
+    expect(answer).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(workbenchPageCopy.conductorConnectionUnknown)).toBeNull();
+    expect(screen.getByText(workbenchPageCopy.conductorMessageFailed)).toBeTruthy();
+
+    reportConnectionLost();
+    reportConnectionRestored();
+    await screen.findByText(conductorConversationCopy.composerHint);
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: workbenchPageCopy.resendConductorMessage })
+    );
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByText(workbenchPageCopy.conductorMessageFailed)).toBeNull()
+    );
+  });
+
   // Finding 2 (#959 review): the old guard allowed only WAITING_INPUT and
   // COMPLETED, so a FAILED conversation blocked Send forever and survived a
   // reload via `restoreConductorConversation`. Every terminal state now
