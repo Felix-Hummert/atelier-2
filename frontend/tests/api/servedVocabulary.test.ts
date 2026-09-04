@@ -12,6 +12,7 @@ import {
   problemDefinitions,
   agentConfigurationRevisionListItemObjectSchema,
   agentConfigurationRevisionPageSchema,
+  agentDefinitionRevisionDetailSchema,
   agentDefinitionRevisionListItemSchema,
   agentDefinitionRevisionPageSchema,
   attemptTranscriptSchema,
@@ -538,6 +539,54 @@ describe("the served vocabulary", () => {
           ?.properties ?? {}
       ).sort()
     );
+  });
+
+  it("decodes the agent-definition detail up to the lengths the document serves", () => {
+    const served = servedDocument.components.schemas.AgentDefinitionRevisionDetailResource;
+    const systemPromptCharacters = (
+      served?.properties?.system_prompt as { maxLength?: number } | undefined
+    )?.maxLength;
+    const declaredTools = (
+      served?.properties?.tools?.anyOf as
+        | Array<{ maxItems?: number; items?: { maxLength?: number } }>
+        | undefined
+    )?.find((option) => option.maxItems !== undefined);
+    const toolCharacters = declaredTools?.items?.maxLength;
+    const longestTool = "t".repeat(toolCharacters ?? 0);
+    const detail = {
+      agent_definition_revision_hash: "a".repeat(64),
+      name: "scribe",
+      description: "Writes what the stage needs.",
+      model: null,
+      system_prompt: "p".repeat(systemPromptCharacters ?? 0),
+      tools: Array.from({ length: declaredTools?.maxItems ?? 0 }, () => longestTool)
+    };
+
+    expect(Object.keys(agentDefinitionRevisionDetailSchema.shape).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
+    expect(systemPromptCharacters).toBe(16_384);
+    expect(toolCharacters).toBe(16_384);
+    expect(declaredTools?.maxItems).toBe(128);
+    expect(agentDefinitionRevisionDetailSchema.parse(detail)).toEqual(detail);
+    expect(() =>
+      agentDefinitionRevisionDetailSchema.parse({
+        ...detail,
+        system_prompt: `${detail.system_prompt}p`
+      })
+    ).toThrow();
+    expect(() =>
+      agentDefinitionRevisionDetailSchema.parse({
+        ...detail,
+        tools: [...detail.tools, longestTool]
+      })
+    ).toThrow();
+    expect(() =>
+      agentDefinitionRevisionDetailSchema.parse({
+        ...detail,
+        tools: [`${longestTool}t`]
+      })
+    ).toThrow();
   });
 
   it("refuses a listed agent carrying a field the row has no reader for", () => {

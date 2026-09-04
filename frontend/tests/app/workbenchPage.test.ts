@@ -932,7 +932,7 @@ describe("the workbench conductor conversation", () => {
         getRevisionByName: vi.fn(async () => ({
           display_name: "conductor",
           lineage_id: "7".repeat(64),
-          workflow_revision_hash: conductorRevisionHash,
+          catalog_revision_hash: conductorRevisionHash,
           revision_number: 1
         })),
         getWorkflowRevision: vi.fn(async () => conductorRevisionDetail()),

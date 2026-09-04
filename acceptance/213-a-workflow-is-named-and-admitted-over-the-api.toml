@@ -3,7 +3,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/213"
 
 # THIS HEAD FILLS THE CATALOG FROM PRODUCTION CALLERS, AND NAMES ABSENCE.
 #
-# The write doors `POST /workflow-lineages` and `POST …/members` already exist.
+# The write doors `POST /catalog-lineages` and `POST …/members` already exist.
 # Until now no production client called either: a name reached the catalog only
 # when a test wrote the row. `run --workflow` published and `run --name` 404'd;
 # the cockpit publish did the same. This head keeps publication and admission as
@@ -47,12 +47,12 @@ text = "A V3 workflow whose authored name is exactly 64 lowercase hexadecimal ch
 [[sentence]]
 id = "a-cli-published-v3-workflow-is-named-and-then-run-by-that-name"
 requirement = "REQ-KATALOG-05"
-text = "A V3 workflow published through the CLI is named through POST /workflow-lineages with that exact hash, the command actor and an activation time, and run --name then starts the revision that name holds."
+text = "A V3 workflow published through the CLI is named through POST /catalog-lineages with that exact hash, the command actor and an activation time, and run --name then starts the revision that name holds."
 
 [[sentence]]
 id = "a-cockpit-published-v3-workflow-is-named-over-the-api"
 requirement = "REQ-KATALOG-05"
-text = "A V3 workflow published through the cockpit is named through POST /workflow-lineages with that exact hash, the cockpit actor and an activation time, so GET by-name answers with the lineage."
+text = "A V3 workflow published through the cockpit is named through POST /catalog-lineages with that exact hash, the cockpit actor and an activation time, so GET by-name answers with the lineage."
 
 # Retired by #698: the membership picker no longer exists. Catalog deliberately
 # collapses both states into its common not-admitted hint; WorkflowStartSheet

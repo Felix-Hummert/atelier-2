@@ -91,9 +91,10 @@ async function admitWorkflow(page: Page, name: string, schemaHash: string): Prom
   });
   expect([200, 201]).toContain(published.status());
   const workflowRevisionHash = (await published.json()).workflow_revision_hash as string;
-  const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
+  const admitted = await page.request.post("/atelier/api/v1/catalog-lineages", {
     data: {
-      workflow_revision_hash: workflowRevisionHash,
+      kind: "workflow",
+      catalog_revision_hash: workflowRevisionHash,
       actor: "retire-e2e",
       activated_at: "2026-08-29T00:00:00Z"
     }
