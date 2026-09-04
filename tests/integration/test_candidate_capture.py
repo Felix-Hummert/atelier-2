@@ -40,6 +40,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
 )
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.executions import AgentAttemptExecution, RunEventKind
 from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.tool_grants_v3 import (
@@ -58,6 +59,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
+from atelier2.ports.artifacts import ArtifactPublisher, PublishArtifactResult
 from atelier2.ports.candidate_store import (
     CandidateCaptureConflict,
     CandidateStoreUnavailable,
@@ -174,6 +176,22 @@ class RefusingCandidates:
         return None
 
 
+@dataclass
+class _UnreachedArtifactPublisher:
+    """A publisher a passing verification must never touch.
+
+    Every `Attempt.run` that pins `THE_GRANT` here declares a verification
+    that exits zero, so preflight's wiring requirement is satisfied by a
+    publisher this fake stands in for, and reaching its own method would
+    itself be the defect this window's tests exist to catch.
+    """
+
+    def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
+        raise AssertionError(
+            "a passing verification must not publish anything", artifact
+        )
+
+
 class Attempt:
     """One runtime pointed at one project, and the attempts it runs against it."""
 
@@ -232,6 +250,7 @@ class Attempt:
         pin: ProjectSourcePin,
         grant: DeclaredToolGrant | None = None,
         candidates: CandidateTreeStore | None = None,
+        artifacts: ArtifactPublisher | None = None,
     ) -> AgentAttemptExecutionOutcome:
         """Run one attempt of this project, with whatever keeps its candidates."""
 
@@ -248,6 +267,7 @@ class Attempt:
             self.runtime.agent_process_supervisor,
             runtime_workspace_owner(self.runtime),
             project.pinned(pin, grant),
+            artifacts,
         )
 
 
@@ -291,7 +311,7 @@ def test_the_candidate_carries_what_the_projects_own_verification_ran_against(
         declaring_verification(writing(WHAT_THE_VERIFICATION_MADE, CHECKED))
     )
 
-    outcome = attempt.run(pin, THE_GRANT)
+    outcome = attempt.run(pin, THE_GRANT, artifacts=_UnreachedArtifactPublisher())
 
     assert isinstance(outcome, AgentAttemptSucceeded)
     kept = attempt.kept

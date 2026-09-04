@@ -63,6 +63,7 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
     recognizeLibraryDocument: vi.fn(),
     addLibraryDocument: vi.fn(),
     publishAgentDefinition: vi.fn(),
+    publishArtifact: vi.fn(),
     getRevisionByName: vi.fn(),
     foundCatalogLineage: vi.fn(),
     admitCatalogMember: vi.fn(),

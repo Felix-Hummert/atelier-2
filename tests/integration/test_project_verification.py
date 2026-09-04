@@ -40,17 +40,24 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentExecutionResult,
 )
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
-from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
+from atelier2.contracts.tool_grants_v3 import (
+    DeclaredToolGrant,
+    ToolGrantCapability,
+    ToolRedemptionReceipt,
+)
 from atelier2.contracts.when import RecordedAt
 from atelier2.ports.agent_attempts import (
     AgentAttemptClaimedByThisCall,
     AgentAttemptClaimResult,
     AgentAttemptFailed,
     AgentAttemptSucceeded,
+    ProjectVerificationFailureEvidence,
 )
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
@@ -58,12 +65,16 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
+from atelier2.ports.artifacts import ArtifactCreated, PublishArtifactResult
+from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import (
+    MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES,
     PinnedProjectSource,
     ProjectVerificationOutcome,
     ProjectVerificationUnavailable,
     ProjectVerificationUndeclared,
+    pytest_summary_line,
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
@@ -84,8 +95,85 @@ THE_GRANT = DeclaredToolGrant(
 A_PIN_NO_SOURCE_ANSWERS_FOR = ProjectSourcePin("f0" * 20, "e1" * 20)
 
 
+PYTEST_SUMMARY_LINE_CASES: tuple[tuple[str, bytes, str | None], ...] = (
+    (
+        "a real pytest -q run's own last line, no warnings",
+        (
+            b"F.\n"
+            b"=========================== short test summary info ============================\n"
+            b"FAILED tests/test_sample.py::test_fail\n"
+            b"1 failed, 1 passed in 0.06s\n"
+        ),
+        "1 failed, 1 passed in 0.06s",
+    ),
+    (
+        "a real pytest -q run whose last line follows a warnings section",
+        (
+            b"F.w\n"
+            b"=============================== warnings summary ===============================\n"
+            b"tests/test_sample.py::test_warns\n"
+            b"  tests/test_sample.py:10: DeprecationWarning: deprecated thing\n"
+            b"\n"
+            b"=========================== short test summary info ============================\n"
+            b"FAILED tests/test_sample.py::test_fail\n"
+            b"1 failed, 2 passed, 1 warning in 0.09s\n"
+        ),
+        "1 failed, 2 passed, 1 warning in 0.09s",
+    ),
+    (
+        "a real pytest -n auto run: the same bare verdict, no xdist decoration",
+        (
+            b"..F                                                        [100%]\n"
+            b"1 failed, 2 passed, 1 warning in 7.51s\n"
+        ),
+        "1 failed, 2 passed, 1 warning in 7.51s",
+    ),
+    (
+        "a real pytest -q run that collected nothing at all",
+        b"\nno tests ran in 0.00s\n",
+        "no tests ran in 0.00s",
+    ),
+    (
+        "a real run long enough to also carry the H:MM:SS parenthetical",
+        b"1 passed in 61.01s (0:01:01)\n",
+        "1 passed in 61.01s (0:01:01)",
+    ),
+    (
+        "a bracketed section header that names no verdict count of its own",
+        b"=============================== warnings summary ===============================\n",
+        None,
+    ),
+    ("plain output naming no test at all", b"hello from a build script\n", None),
+    ("empty output", b"", None),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "tail", "expected"),
+    PYTEST_SUMMARY_LINE_CASES,
+    ids=[label for label, _, _ in PYTEST_SUMMARY_LINE_CASES],
+)
+def test_pytest_summary_line_reads_the_runs_own_last_verdict(
+    label: str, tail: bytes, expected: str | None
+) -> None:
+    del label
+    assert pytest_summary_line(tail) == expected
+
+
 def runner_for(root: Path) -> LocalProjectVerificationRunner:
     return LocalProjectVerificationRunner(LocalGitProjectSource(root))
+
+
+def _outcome_facts(
+    outcome: ProjectVerificationOutcome,
+) -> tuple[tuple[str, ...], int, Sha256Hash]:
+    """The command, exit code and full-output digest this suite has always pinned.
+
+    `duration_seconds` is real elapsed time and cannot be a literal in a test, so
+    it is asserted separately (merely non-negative) rather than folded in here.
+    """
+
+    return outcome.command, outcome.exit_code, outcome.standard_output_hash
 
 
 STATES_NO_VERIFICATION: tuple[tuple[str, str], ...] = (
@@ -180,11 +268,14 @@ def test_a_file_written_on_the_lease_after_materialize_is_visible_to_the_command
 
     outcome = runner_for(root).run(pin, lease)
 
-    assert outcome == ProjectVerificationOutcome(
+    assert _outcome_facts(outcome) == (
         ("/bin/cat", "written-after-materialize.txt"),
         0,
         Sha256Hash.of(b"from the lease\n"),
     )
+    assert outcome.output_tail == b"from the lease\n"
+    assert outcome.summary_line is None
+    assert outcome.duration_seconds >= 0
 
 
 @pytest.mark.proves("what-a-project-declares-and-where-it-runs-are-one-commit")
@@ -208,11 +299,12 @@ def test_overwriting_the_lease_manifest_does_not_change_the_command_that_runs(
 
     outcome = runner_for(root).run(pin, lease)
 
-    assert outcome == ProjectVerificationOutcome(
+    assert _outcome_facts(outcome) == (
         ("/bin/sh", "-c", "printf from-the-pin"),
         0,
         Sha256Hash.of(b"from-the-pin"),
     )
+    assert outcome.output_tail == b"from-the-pin"
 
 
 def test_the_declared_command_runs_in_the_lease_and_answers_with_its_own_outcome(
@@ -228,11 +320,12 @@ def test_the_declared_command_runs_in_the_lease_and_answers_with_its_own_outcome
 
     outcome = runner_for(root).run(pin, lease)
 
-    assert outcome == ProjectVerificationOutcome(
+    assert _outcome_facts(outcome) == (
         ("/bin/sh", "-c", "pwd; printf ' works'; exit 7"),
         7,
         Sha256Hash.of(f"{lease_directory}\n works".encode()),
     )
+    assert outcome.output_tail == f"{lease_directory}\n works".encode()
 
 
 def _printing_exactly(byte_count: int) -> list[str]:
@@ -266,6 +359,10 @@ def test_a_verification_printing_exactly_its_bound_still_answers(
     assert outcome.standard_output_hash == Sha256Hash.of(
         b"x" * MAXIMUM_VERIFICATION_OUTPUT_BYTES
     )
+    # The tail is a second, narrower record: not the whole answer the digest
+    # above proves, only what this outcome retains to show a reader.
+    assert len(outcome.output_tail) == MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES
+    assert outcome.output_tail == b"x" * MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES
 
 
 def test_a_verification_printing_one_byte_past_its_bound_is_refused(
@@ -545,6 +642,78 @@ class _ClaimingStore:
 
 
 @dataclass
+class _RecordingSuccessStore:
+    """A store that wins the claim, then records exactly what `complete_success` got.
+
+    Standing in for the durable store's own judgment of a redemption -- which
+    `tests/integration/test_v3_tool_grant_run.py` proves against the real one --
+    so this suite can pin what `execute_agent_attempt` computed and handed over,
+    without a database.
+    """
+
+    calls: list[str] = field(default_factory=list)
+    attempt: AgentAttempt | None = None
+    redemption: ToolRedemptionReceipt | None = None
+    verification_failure_evidence: ProjectVerificationFailureEvidence | None = None
+
+    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
+        self.calls.append("prepare")
+        self.attempt = prepared_agent_attempt(execution)
+        return self.attempt
+
+    def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult:
+        del execution
+        self.calls.append("claim")
+        assert self.attempt is not None
+        self.attempt = replace(
+            self.attempt,
+            state=AgentAttemptState.LAUNCH_ARMED,
+            state_version=self.attempt.state_version + 1,
+        )
+        return AgentAttemptClaimedByThisCall(self.attempt)
+
+    def complete_success(
+        self,
+        execution: AgentAttemptExecution,
+        result: AgentExecutionResult,
+        redemption: ToolRedemptionReceipt | None = None,
+        verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
+    ) -> AgentAttemptFailed:
+        del execution, result
+        self.calls.append("complete_success")
+        self.redemption = redemption
+        self.verification_failure_evidence = verification_failure_evidence
+        assert self.attempt is not None
+        self.attempt = replace(
+            self.attempt,
+            state=AgentAttemptState.FAILED,
+            state_version=self.attempt.state_version + 1,
+            failure_code=AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+        )
+        return AgentAttemptFailed(self.attempt)
+
+
+@dataclass
+class _RecordingArtifactPublisher:
+    """A publisher that keeps whatever it is asked to, and says it is new."""
+
+    published: list[Artifact] = field(default_factory=list)
+
+    def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
+        self.published.append(artifact)
+        return ArtifactCreated(artifact)
+
+
+@dataclass
+class _UnavailableArtifactPublisher:
+    """A publisher wired but unable to write, the way a database outage answers."""
+
+    def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
+        del artifact
+        return DurableWriteUnavailable()
+
+
+@dataclass
 class _SucceedingExecutor:
     """A provider that answers; the verification after it is the subject."""
 
@@ -634,6 +803,7 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
             pin,
             THE_GRANT,
         ),
+        _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         clock=lambda: TRANSCRIPT_RECORDED_AT,
     )
 
@@ -662,6 +832,182 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
     assert workspaces.acquired == 1
     assert workspaces.released == 1
     assert supervisor.finalized == 1
+
+
+FAILING_VERIFICATION_TAIL = (
+    b"=================== 2 failed, 3 passed in 0.01s ===================\n"
+)
+FAILING_VERIFICATION_COMMAND = [
+    "/bin/sh",
+    "-c",
+    f"printf '%s' '{FAILING_VERIFICATION_TAIL.decode('ascii')}'; exit 1",
+]
+
+
+def _drive_through_a_real_failing_verification(
+    tmp_path: Path,
+    artifacts: _RecordingArtifactPublisher | _UnavailableArtifactPublisher | None,
+    store: _RecordingSuccessStore,
+    command: list[str] | None = None,
+) -> None:
+    """A red check run by the real adapter, driven into the given store."""
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root, declaring_verification(command or FAILING_VERIFICATION_COMMAND)
+    )
+    execute_agent_attempt(
+        agent_attempt_execution(agent_execution_request_v2()),
+        _SucceedingExecutor(),  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _RecordingSupervisor(),  # type: ignore[arg-type]
+        _LeasingWorkspaces(tmp_path / "lease"),
+        PinnedProjectSource(
+            LocalGitProjectSource(root),
+            runner_for(root),
+            CandidatesKeptInMemory(),
+            pin,
+            THE_GRANT,
+        ),
+        artifacts,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_grant_with_no_artifact_publisher_refuses_at_preflight(
+    tmp_path: Path,
+) -> None:
+    """A runtime that can redeem a grant must be able to keep what a red check said.
+
+    Refused before the claim and before any provider process -- not discovered
+    only once a check has already exited nonzero. Silently dropping the
+    check's output back to six words -- `exit 1` -- is exactly the loss
+    #1137 exists to close, so a runtime wired without a place to keep it fails
+    loud rather than reproducing that loss quietly.
+    """
+    store = _RecordingSuccessStore()
+
+    with pytest.raises(RuntimeError, match="artifact publisher"):
+        _drive_through_a_real_failing_verification(tmp_path, None, store)
+
+    assert store.calls == ["prepare"]
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_nonzero_verification_publishes_its_tail_and_names_it_in_the_evidence(
+    tmp_path: Path,
+) -> None:
+    """The store is handed the summary line and the address the tail was kept at."""
+
+    publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(tmp_path, publisher, store)
+
+    assert store.calls == ["prepare", "claim", "complete_success"]
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.summary_line == "2 failed, 3 passed in 0.01s"
+    assert evidence.duration_seconds >= 0
+    assert evidence.redacted is False
+    assert evidence.retention_failure is None
+    assert len(publisher.published) == 1
+    published = publisher.published[0]
+    assert published.content == FAILING_VERIFICATION_TAIL
+    assert evidence.output_artifact_hash == published.artifact_hash
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_check_that_cannot_be_kept_degrades_the_words_instead_of_abandoning_the_attempt(
+    tmp_path: Path,
+) -> None:
+    """A publisher that answers but cannot write still ends the attempt named.
+
+    Preflight only catches a publisher this runtime was never wired with; a
+    wired publisher that fails once the check has already run must not turn
+    a `LAUNCH_ARMED` attempt no replay can resolve. The exit code, command and
+    summary line still reach the receipt, with a note of their own for why the
+    tail itself is not kept beside them.
+    """
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(
+        tmp_path, _UnavailableArtifactPublisher(), store
+    )
+
+    assert store.calls == ["prepare", "claim", "complete_success"]
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.summary_line == "2 failed, 3 passed in 0.01s"
+    assert evidence.output_artifact_hash is None
+    assert evidence.retention_failure is not None
+
+
+FAILING_VERIFICATION_WITH_A_CREDENTIAL_COMMAND = [
+    "/bin/sh",
+    "-c",
+    (
+        "printf 'token: sk-ant-abcdefghijklmnopqrstuvwx\\n"
+        "2 failed, 3 passed in 0.01s\\n'; exit 1"
+    ),
+]
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_credential_shape_in_a_red_checks_output_is_redacted_before_it_is_kept(
+    tmp_path: Path,
+) -> None:
+    """A token a project's own tooling printed does not become HTTP-readable material."""
+
+    publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(
+        tmp_path,
+        publisher,
+        store,
+        command=FAILING_VERIFICATION_WITH_A_CREDENTIAL_COMMAND,
+    )
+
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.redacted is True
+    published = publisher.published[0]
+    assert b"sk-ant-" not in published.content
+    assert REDACTION_MARKER.encode() in published.content
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_zero_exit_verification_never_publishes_an_artifact(
+    tmp_path: Path,
+) -> None:
+    """Nothing is kept for a check that passed: the outcome alone is the proof."""
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root, declaring_verification(["/bin/sh", "-c", "printf all-green"])
+    )
+    store = _RecordingSuccessStore()
+    publisher = _RecordingArtifactPublisher()
+
+    execute_agent_attempt(
+        agent_attempt_execution(agent_execution_request_v2()),
+        _SucceedingExecutor(),  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _RecordingSupervisor(),  # type: ignore[arg-type]
+        _LeasingWorkspaces(tmp_path / "lease"),
+        PinnedProjectSource(
+            LocalGitProjectSource(root),
+            runner_for(root),
+            CandidatesKeptInMemory(),
+            pin,
+            THE_GRANT,
+        ),
+        publisher,  # type: ignore[arg-type]
+    )
+
+    assert publisher.published == []
+    assert store.verification_failure_evidence is None
 
 
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")

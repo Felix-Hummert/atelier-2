@@ -346,6 +346,10 @@ details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:cent
 .fld label{font-weight:600}
 /* A token is a secret field: the same box as .in, never a value the picture can repeat. */
 .fld input{border:1px solid var(--line);border-radius:var(--r);padding:.4rem .65rem;background:var(--panel2);color:var(--ink);font:inherit;min-height:2.3rem;width:100%}
+/* A string order's exact text: typed, or read from a file dropped beside it -- either way the same box shape as an input. */
+.fld textarea{border:1px solid var(--line);border-radius:var(--r);padding:.4rem .65rem;background:var(--panel2);color:var(--ink);font:inherit;width:100%;min-height:4rem;resize:vertical}
+.fld input[type=file]{border-style:dashed;padding:.5rem .65rem;min-height:2.6rem}
+.fld .pill{align-self:flex-start}
 .in{border:1px solid var(--line);border-radius:var(--r);padding:.4rem .65rem;background:var(--panel2);color:var(--ink);min-height:2.3rem;display:flex;align-items:center;justify-content:space-between;gap:.5rem}
 .in span{color:var(--ink-dim)}
 .in.degraded{border-style:dashed;border-color:var(--need-mark);color:var(--need)}
@@ -1593,7 +1597,7 @@ command stopped before an answer</div>
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Fields from the schema</dt><dd>"What does this workflow need from me?" — every order type has exactly one rendering: <code>work_item</code> → picker, <code>text</code> → field; never JSON.</dd></div>
+  <div><dt>Fields from the schema</dt><dd>"What does this workflow need from me?" — every order type has exactly one primary rendering: <code>work_item</code> → picker, a string schema → text field; a string order never needs JSON quoting (below: a string order's file door, an object order's schema form and Raw JSON, and a schema the sheet cannot render at all).</dd></div>
   <div><dt>Picker grouped by source</dt><dd>"Which item, from which connection?" — the sheet stays platform-neutral; #/! are the adapter's grammar.</dd></div>
   <div><dt>Search field, first in the menu</dt><dd>"I know the number or the word." — the catalog's search field (line 1331), same border, radius, padding and type; typing narrows the grouped list to matching reference or title, live, no Enter (#962 ruling, "the work item picker narrows by a tap on number or title").</dd></div>
   <div><dt>Roles: one line per role, the value is the dropdown</dt><dd>"Who does what — and can I change it this time?" — only the role nodes of the graph. The graph above shows roles, the sheet shows which model fills each: an exact id from Settings › Models with its Account; the dropdown lists the registry, nothing else.</dd></div>
@@ -1601,6 +1605,47 @@ command stopped before an answer</div>
   <div><dt>"(next higher)"</dt><dd>"A difficulty has no default — why is the role still filled?" — the #557 rule: a difficulty without a default takes the next <b>higher</b> difficulty's, never silently and never a weaker one; the field says both which answered and that it was the fallback. Not drawn: every difficulty has a default here. Only when no higher difficulty has one either does the field go ochre.</dd></div>
   <div><dt>"chosen now" only under an overridden role</dt><dd>"Does this stay?" — only the deviation from the project carries a word; the default and the empty field say it by field and colour.</dd></div>
   <div><dt>Held button with tooltip</dt><dd>"Why won't it go?" — the ochre field "choose a configuration" is the whole message: no default answers this difficulty or any higher one outside the family the role must differ from; the reason on the button and the field only on request (tooltip).</dd></div>
+</dl>
+
+<h3 class="frame-title">Start sheet <small>— string order, object order, and a schema the sheet refuses (#438 Scheibe 1b)</small></h3>
+<div class="frame">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage sheeted">
+    <div class="head dimmed"><h4><span class="glyph">⧉</span>diff-review</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <div class="pipe dimmed" style="padding-top:.3rem">
+      <div class="node"><div class="dot">·</div><b>review</b></div>
+    </div>
+    <div class="sheet">
+      <h5>Start diff-review</h5>
+      <div class="fld"><label>review_questions</label>
+        <textarea rows="3">Does the retry stay idempotent when the second call arrives first?</textarea>
+        <input type="file" aria-label="Publish review_questions from a file">
+        <span class="pill">68 / 1,048,576 bytes</span>
+      </div>
+      <div class="fld"><label>diff</label>
+        <textarea rows="3" placeholder="Paste the diff, or choose a file below"></textarea>
+        <input type="file" aria-label="Publish diff from a file">
+      </div>
+      <div class="fld"><label>context</label>
+        <input placeholder="priority">
+        <input placeholder="scope">
+        <details class="raw"><summary>Raw JSON</summary><textarea rows="3">{"priority": "high", "scope": "backend"}</textarea></details>
+      </div>
+      <div class="fld"><label>weights</label>
+        <div class="in degraded"><span>This order's schema is not a string, an object, or a work item. Start this workflow through the CLI or the HTTP API instead.</span></div>
+      </div>
+      <div class="fld"><label>accepted_sentences</label>
+        <label>Raw JSON for accepted_sentences</label>
+        <textarea rows="3">{"sentences": ["a", "b"]}</textarea>
+      </div>
+      <div class="foot"><span class="btn held" title="fix the weights order before starting">Start run</span><span class="btn quiet">Cancel</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Text or file, same order</dt><dd>"How do I hand over a paragraph, or a whole file?" — a string-schema order takes typed text or a dropped file; either way the exact bytes publish as one artifact before the run starts (#438), and the order carries only that address. The byte count against the artifact store's own bound stays beside the field.</dd></div>
+  <div><dt>Raw JSON beside the schema form, or alone</dt><dd>"The form doesn't have the field I need." — an object order's Raw JSON field stands beside its per-field form when the form can type every field, alone when it cannot (<code>accepted_sentences</code>, above, whose nested array no field input encodes); invalid JSON stays visibly empty at the marked position, the start stays locked, and fixing either the fields or the JSON both work (#438 Zeile 9).</dd></div>
+  <div><dt>Ochre refusal names the way out</dt><dd>"Why can't I fill this one in?" — a schema shape the sheet cannot render (an array, here) says so and names the CLI or the API instead of a dead end (#438 Zeile 11); "This order must be an object to start here" without a next move is gone.</dd></div>
 </dl>
 
 <h3 class="frame-title">Filtered <small>— typed "#45" in the work item picker</small></h3>

@@ -33,6 +33,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
 )
 from atelier2.contracts.agents import AgentExecutionResult
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -77,6 +78,7 @@ from atelier2.ports.agent_tool_effects import (
     AgentToolEffectPending,
     redeem_prepared_tool_effect,
 )
+from atelier2.ports.artifacts import PublishArtifactResult
 from atelier2.ports.project_verification import (
     PinnedProjectSource,
     ProjectVerificationOutcome,
@@ -230,7 +232,9 @@ class _RunOnceVerifications:
     ) -> ProjectVerificationOutcome:
         del pin, lease
         self.ran += 1
-        return ProjectVerificationOutcome(("/bin/true",), 0, Sha256Hash.of(b""))
+        return ProjectVerificationOutcome(
+            ("/bin/true",), 0, Sha256Hash.of(b""), 0.0, b"", None
+        )
 
 
 @dataclass
@@ -253,6 +257,21 @@ class _NeverRedeemedVerifications:
         )
 
 
+@dataclass
+class _UnreachedArtifactPublisher:
+    """A publisher a passing verification must never touch.
+
+    A redeemable `run-project-verification` grant is wired with one before any
+    provider work runs; a check that exits zero never publishes anything, so
+    reaching this fake's own method would itself be the defect under test.
+    """
+
+    def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
+        raise AssertionError(
+            "a passing verification must not publish anything", artifact
+        )
+
+
 def _drive(
     project: PinnedProjectSource, root: Path
 ) -> tuple[_ClaimingStore, _RecordingSupervisor, _LeasingWorkspaces]:
@@ -266,6 +285,7 @@ def _drive(
         supervisor,  # type: ignore[arg-type]
         workspaces,  # type: ignore[arg-type]
         project,
+        _UnreachedArtifactPublisher(),  # type: ignore[arg-type]
     )
     return store, supervisor, workspaces
 
@@ -319,6 +339,52 @@ def test_a_capability_no_redeemer_performs_is_refused_by_name(tmp_path: Path) ->
             supervisor,  # type: ignore[arg-type]
             workspaces,  # type: ignore[arg-type]
             project,
+        )
+
+    assert raised.value.capability == "open-pr"
+    assert store.completed == 0
+    assert supervisor.finalized == 0
+    assert workspaces.released == 0
+
+
+def test_a_non_verification_grant_needs_no_artifact_publisher_to_reach_its_own_refusal(
+    tmp_path: Path,
+) -> None:
+    """Preflight's artifact-publisher requirement is scoped to `run-project-verification`.
+
+    `#1137` wires a publisher only where a redeemable `RUN_PROJECT_VERIFICATION`
+    grant is pinned, because only that redeemer ever has a failed check's tail
+    to keep. A grant naming a real but different capability -- `open-pr`,
+    redeemed as a platform effect elsewhere -- must reach its own dispatch
+    refusal (`ToolGrantCapabilityNotRedeemed`) with no publisher wired at all,
+    rather than tripping a publisher requirement that was never its own.
+    """
+    root = tmp_path / "project"
+    pin = git_project(root, declaring_verification(["/bin/true"]))
+    verifications = _NeverRedeemedVerifications()
+    grant = DeclaredToolGrant(
+        PublishedRevisionHash("c3" * 32), ToolGrantCapability.OPEN_PR
+    )
+    project = PinnedProjectSource(
+        LocalGitProjectSource(root),
+        verifications,
+        CandidatesKeptInMemory(),
+        pin,
+        grant,
+    )
+    store = _ClaimingStore()
+    supervisor = _RecordingSupervisor()
+    workspaces = _LeasingWorkspaces(tmp_path / "lease")
+
+    with pytest.raises(ToolGrantCapabilityNotRedeemed) as raised:
+        execute_agent_attempt(
+            agent_attempt_execution(agent_execution_request_v2()),
+            _SucceedingExecutor(),  # type: ignore[arg-type]
+            store,  # type: ignore[arg-type]
+            supervisor,  # type: ignore[arg-type]
+            workspaces,  # type: ignore[arg-type]
+            project,
+            None,
         )
 
     assert raised.value.capability == "open-pr"
