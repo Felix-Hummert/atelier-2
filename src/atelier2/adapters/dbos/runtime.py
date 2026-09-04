@@ -74,7 +74,10 @@ from atelier2.adapters.runner_tls import (
     pin_tls_13,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.advance_queue import advance_queue
+from atelier2.application.advance_queue import (
+    admit_queue_items_by_label,
+    advance_queue,
+)
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,
 )
@@ -1386,14 +1389,26 @@ class _DbosProcessOwner:
 
     @staticmethod
     def _advance_queue(bound: _BoundRuntime) -> None:
-        """Recover reservations and start each exact queue launch once."""
+        """Admit what the automation label names, then start each launch once.
+
+        Admission first: an item the label admits in this sweep is one the
+        same sweep can start, rather than one waiting for the next process
+        start. Without a served project or a connected tracker there is no
+        policy to read and no label to read it against, so only the start half
+        runs.
+        """
 
         # Local import: `starter` imports `DbosRuntimeSettings` from this module,
         # so importing it at module scope would close a cycle.
         from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 
+        queue = DbosQueueProjectionStore(bound.engine)
+        project = bound.settings.project_id
+        tracker = bound.tracker_item_source
+        if project is not None and tracker is not None:
+            admit_queue_items_by_label(queue, project=project, tracker=tracker)
         advance_queue(
-            DbosQueueProjectionStore(bound.engine),
+            queue,
             DbosCatalogStore(bound.engine),
             DbosDurableRunStarter(
                 bound.engine,
@@ -1401,8 +1416,8 @@ class _DbosProcessOwner:
                 bound.agent_executor_registry,
             ),
             workflow_document_parser=parse_workflow_document,
-            served_project=bound.settings.project_id,
-            tracker=bound.tracker_item_source,
+            served_project=project,
+            tracker=tracker,
         )
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:

@@ -1,9 +1,18 @@
-"""Advance manually admitted queue items from durable proposals exactly once."""
+"""The queue sweep: admit what the project's automation label names, then start.
+
+Both halves run on the same trigger and read the same projection, so they live
+together: `admit_queue_items_by_label` turns the operator's label in the
+tracker into the one durable admission decision an automation rule may make,
+and `advance_queue` starts each exact launch of an admitted item once. The cap
+and the priority govern the start, never the admission.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Final, assert_never
 
+from atelier2.application.admit_queue_item import confirm_queue_proposal
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
@@ -27,11 +36,18 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import WorkItemOrderValue
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.queue_projection import (
+    ConfirmQueueProposal,
+    QueueAdmissionOutcome,
+    QueueAdmissionRationale,
     QueueBlockerKind,
+    QueueDecisionAuthority,
+    QueueItemAdmitted,
     QueueItemId,
     QueueItemSnapshot,
     QueueItemState,
     QueueLaunchBinding,
+    QueueProjectPolicyRevision,
+    WorkItemReference,
     queue_start_order_key,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -45,7 +61,12 @@ from atelier2.ports.durable_runs import (
     DurableWriteUnavailable,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
-from atelier2.ports.issue_observation import TrackerItemSource
+from atelier2.ports.issue_observation import (
+    OpenTrackerItemsObserved,
+    TrackerItemSource,
+    TrackerPayloadMalformed,
+    TrackerSourceUnavailable,
+)
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
     CatalogNameMissing,
@@ -56,15 +77,23 @@ from atelier2.ports.published_revisions import (
 )
 from atelier2.ports.queue_projection import (
     QueueItemsPage,
+    QueueItemsReader,
     QueueLaunchAlreadyBound,
     QueueLaunchBlocked,
     QueueLaunchReserved,
+    QueuePolicyReader,
     QueueProjection,
+    QueueProjectPolicyAbsent,
+    QueueProjectPolicyFound,
     QueueReadUnavailable,
 )
 from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 
 _QUEUE_ITEM_RUN_DOMAIN = "queue-item-run/v2"
+# The durable reason an automatic admission records, followed by the label that
+# authorized it: the record says which rule admitted the item, not merely that
+# some rule did.
+_AUTOMATION_ADMISSION_REASON: Final = "the tracker item carries the automation label "
 
 
 class QueueAdvanceUnavailable(RuntimeError):
@@ -99,8 +128,150 @@ type QueueAdvanceOutcome = QueueRunStarted | QueueRunAlreadyActive | QueueItemBl
 
 
 @dataclass(frozen=True)
+class QueueAutomationLabelUnset:
+    """The project's policy names no label: no admission has an automation authority."""
+
+
+@dataclass(frozen=True)
+class QueueAutomationSourceUnreadable:
+    """The tracker did not say which items carry the label, so none was admitted.
+
+    Soft on purpose: the labels live outside this instance, and an unreachable
+    tracker leaves every durable queue row exactly as it was. The next sweep
+    asks again.
+    """
+
+    detail: str
+
+
+@dataclass(frozen=True)
+class QueueLabelAdmissionDeclined:
+    """One labelled item the projection did not newly admit, in its own words."""
+
+    item_id: QueueItemId
+    outcome: QueueAdmissionOutcome
+
+
+@dataclass(frozen=True)
+class QueueLabelAdmissionsDecided:
+    """What the rule decided about every labelled item of this project."""
+
+    admitted: tuple[QueueItemId, ...]
+    declined: tuple[QueueLabelAdmissionDeclined, ...]
+
+
+type QueueLabelAdmissionOutcome = (
+    QueueAutomationLabelUnset
+    | QueueAutomationSourceUnreadable
+    | QueueLabelAdmissionsDecided
+)
+
+
+@dataclass(frozen=True)
 class _RequiredOrderUnavailable:
     """The document declares graph inputs this sweep has no material for."""
+
+
+def admit_queue_items_by_label(
+    queue: QueueProjection,
+    *,
+    project: ProjectId,
+    tracker: TrackerItemSource,
+    page_limit: int = MAXIMUM_PAGE_ITEMS,
+) -> QueueLabelAdmissionOutcome:
+    """Admit every item the project's automation label names, and no other.
+
+    The label is the operator's own signal in the tracker (REQ-QUEUE-08): a
+    human writes it there, the atelier never does, and this rule only decides
+    whether an admission has an authority. It is read at the instant the rule
+    decides, so an item whose label was removed before the sweep is not
+    admitted by it.
+
+    What the rule may admit is the projection's decision, not this function's:
+    every labelled item goes through the same `confirm` CAS the operator's
+    door uses, under `AUTOMATION_RULE`. An item reserved for a human, one that
+    carries no inspected proposal yet, and one already admitted are therefore
+    declined by the contract itself and left exactly as they were. Admission
+    is not a start: the cap and the priority still govern what
+    `advance_queue` starts afterwards.
+    """
+
+    policy = _active_policy(queue, project)
+    label = None if policy is None else policy.automation_label
+    if label is None:
+        return QueueAutomationLabelUnset()
+    labelled = _labelled_item_ids(tracker, project, label)
+    if isinstance(labelled, QueueAutomationSourceUnreadable):
+        return labelled
+    rationale = QueueAdmissionRationale(_AUTOMATION_ADMISSION_REASON + label)
+    admitted: list[QueueItemId] = []
+    declined: list[QueueLabelAdmissionDeclined] = []
+    for item in _projected_items(queue, page_limit):
+        item_id = item.item_reference.item_id
+        # A retired item has left the pullable set (ADR 0016, 2026-09-01
+        # amendment); admitting one would write a decision the sweep then
+        # refuses to act on.
+        if item.retired_at is not None or item_id not in labelled:
+            continue
+        outcome = _confirmed_by_rule(queue, item, rationale)
+        if isinstance(outcome, QueueItemAdmitted):
+            admitted.append(item_id)
+        else:
+            declined.append(QueueLabelAdmissionDeclined(item_id, outcome))
+    return QueueLabelAdmissionsDecided(tuple(admitted), tuple(declined))
+
+
+def _active_policy(
+    queue: QueuePolicyReader, project: ProjectId
+) -> QueueProjectPolicyRevision | None:
+    match queue.current_policy(project):
+        case QueueProjectPolicyFound(policy):
+            return policy
+        case QueueProjectPolicyAbsent():
+            return None
+        case QueueReadUnavailable():
+            raise QueueAdvanceUnavailable("the queue policy could not be read")
+        case PortDurableStateCorrupt():
+            raise QueueAdvanceCorrupt("the queue policy is corrupt and cannot be read")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _labelled_item_ids(
+    tracker: TrackerItemSource, project: ProjectId, label: str
+) -> frozenset[QueueItemId] | QueueAutomationSourceUnreadable:
+    match tracker.open_items():
+        case OpenTrackerItemsObserved() as listing:
+            return frozenset(
+                WorkItemReference(project, item.reference).item_id
+                for item in listing.items
+                if label in item.labels
+            )
+        case TrackerSourceUnavailable(detail) | TrackerPayloadMalformed(detail):
+            return QueueAutomationSourceUnreadable(detail)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _confirmed_by_rule(
+    queue: QueueProjection,
+    item: QueueItemSnapshot,
+    rationale: QueueAdmissionRationale,
+) -> QueueAdmissionOutcome:
+    outcome = confirm_queue_proposal(
+        ConfirmQueueProposal(
+            item.item_reference,
+            item.revision,
+            rationale,
+            QueueDecisionAuthority.AUTOMATION_RULE,
+        ),
+        queue,
+    )
+    if isinstance(outcome, WriteUnavailable):
+        raise QueueAdvanceUnavailable("an automatic admission could not commit")
+    if isinstance(outcome, DurableStateCorrupt):
+        raise QueueAdvanceCorrupt("an automatic admission found corrupt state")
+    return outcome
 
 
 def advance_queue(
@@ -128,28 +299,14 @@ def advance_queue(
     behind -- so the sweep leaves it untouched (no launch binding, no run, no
     blocker invented) and continues with the next admitted item.
     """
-    admitted_items: list[QueueItemSnapshot] = []
-    after: QueueItemId | None = None
-    while True:
-        page = queue.list_items(after, page_limit)
-        if isinstance(page, QueueReadUnavailable):
-            raise QueueAdvanceUnavailable("the queue could not be read for advance")
-        if isinstance(page, PortDurableStateCorrupt):
-            raise QueueAdvanceCorrupt("the queue is corrupt and cannot be advanced")
-        if not isinstance(page, QueueItemsPage):
-            raise QueueAdvanceCorrupt("the queue answered an unknown projection")
-        for item in page.items:
-            item = _validated_snapshot(item)
-            # A retired item has left the pullable set (ADR 0016, 2026-09-01
-            # amendment): it stays visible in the projection, but the pull
-            # never starts it again.
-            if item.retired_at is not None:
-                continue
-            if item.state is QueueItemState.ADMITTED:
-                admitted_items.append(item)
-        if page.next_after is None:
-            break
-        after = page.next_after
+    admitted_items = [
+        item
+        for item in _projected_items(queue, page_limit)
+        # A retired item has left the pullable set (ADR 0016, 2026-09-01
+        # amendment): it stays visible in the projection, but the pull never
+        # starts it again.
+        if item.retired_at is None and item.state is QueueItemState.ADMITTED
+    ]
     ordered = sorted(admitted_items, key=queue_start_order_key)
     outcomes = (
         _advance_one(
@@ -164,6 +321,27 @@ def advance_queue(
         for item in ordered
     )
     return tuple(outcome for outcome in outcomes if outcome is not None)
+
+
+def _projected_items(
+    queue: QueueItemsReader, page_limit: int
+) -> tuple[QueueItemSnapshot, ...]:
+    """Every item of the whole projection, page by page, each re-validated."""
+
+    items: list[QueueItemSnapshot] = []
+    after: QueueItemId | None = None
+    while True:
+        page = queue.list_items(after, page_limit)
+        if isinstance(page, QueueReadUnavailable):
+            raise QueueAdvanceUnavailable("the queue could not be read for the sweep")
+        if isinstance(page, PortDurableStateCorrupt):
+            raise QueueAdvanceCorrupt("the queue is corrupt and cannot be swept")
+        if not isinstance(page, QueueItemsPage):
+            raise QueueAdvanceCorrupt("the queue answered an unknown projection")
+        items.extend(_validated_snapshot(item) for item in page.items)
+        if page.next_after is None:
+            return tuple(items)
+        after = page.next_after
 
 
 def _advance_one(

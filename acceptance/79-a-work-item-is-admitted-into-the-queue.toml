@@ -16,3 +16,9 @@ text = "Migrating the live V43 queue rows into the V44 Phase-D state preserves e
 [[sentence]]
 id = "a-refused-queue-start-stays-at-its-item-while-the-sweep-continues"
 text = "When a queued item's start is refused, the refusal stays scoped to that one item -- it alone stays unstarted -- and the other admitted items still start in the same sweep."
+
+# PHASE D2 (SLICE C): THE PROJECT'S AUTOMATION LABEL ADMITS WHAT IT NAMES.
+
+[[sentence]]
+id = "the-automation-label-admits-the-items-that-carry-it"
+text = "With an automation label named in the project's active queue policy, the sweep admits every inspected proposal whose tracker item carries that label under the AUTOMATION_RULE authority and leaves every other item's admission to a human; with no label named in the policy, the sweep admits nothing automatically."
