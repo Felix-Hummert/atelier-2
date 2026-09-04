@@ -14,7 +14,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
 )
-from atelier2.ports.agent_executions import AgentProcessRunner
+from atelier2.ports.agent_executions import AgentSession
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
@@ -221,7 +221,7 @@ def _wait_for_process_id(path: Path) -> int:
 
 def _cancel_and_release(
     store: DbosAgentAttemptStore,
-    supervisor: AgentProcessRunner,
+    supervisor: AgentSession,
     attempt_id: AgentAttemptId,
 ) -> AgentAttemptCancellationDisposition:
     attempt = store.load(attempt_id)

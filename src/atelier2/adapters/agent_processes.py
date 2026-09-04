@@ -36,6 +36,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
+    AgentSession,
 )
 
 MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS = 2
@@ -61,8 +62,11 @@ class _OwnedWatchdog:
     finalized: bool = False
 
 
-class AgentProcessSupervisor:
-    """Live signal authority; durable state contains no PID or invocation."""
+class AgentProcessSupervisor(AgentSession):
+    """Serve's own `AgentSession`: one provider child per attempt, watched.
+
+    Live signal authority; durable state contains no PID or invocation.
+    """
 
     def __init__(
         self,
