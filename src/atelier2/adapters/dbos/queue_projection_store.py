@@ -577,10 +577,9 @@ class DbosQueueProjectionStore:
                 policy = self._current_policy(
                     connection, snapshot.item_reference.project
                 )
-                if policy is None:
-                    return DurableStateCorrupt()
                 if (
-                    self._active_launch_count(
+                    policy is not None
+                    and self._active_launch_count(
                         connection, snapshot.item_reference.project
                     )
                     >= policy.maximum_active_runs
