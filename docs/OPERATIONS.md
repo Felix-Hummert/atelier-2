@@ -1354,6 +1354,18 @@ file it stands in is the whole justification:
 An entry naming something the gate no longer reports is red too: when a caller
 arrives, or the code goes, its entry goes with it.
 
+## The duplicate ratchet
+
+`uv run --locked python scripts/check_architecture.py` also refuses copied
+code. It reads every function of `src/atelier2` long enough to be recognised
+again as five-token shingles, with its literals and its own names normalised,
+so a copy someone renamed and reflowed still matches; a pair whose shingles
+overlap by 95 per cent or more is the same code. `duplicate_baseline.toml`
+names the pairs this tree already carries. A pair that is not listed turns the
+gate red, and so does an entry whose pair is gone -- a list that only grows
+stops describing anything. Resolving a listed pair therefore means giving the
+two one owner *and* deleting its entry.
+
 ## Verification
 
 Container recipes:
