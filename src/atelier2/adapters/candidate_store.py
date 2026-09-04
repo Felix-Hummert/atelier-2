@@ -56,10 +56,12 @@ from atelier2.contracts.project_sources import (
 )
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.candidate_store import (
+    MAXIMUM_CANDIDATE_DIFF_BYTES,
     CandidateCaptureConflict,
     CandidateNotKept,
     CandidateStoreUnavailable,
     CandidateTreeUnrepresentable,
+    LeasedWorkingTree,
 )
 
 CANDIDATE_STORE_DIRECTORY_NAME = ".atelier2-candidates.git"
@@ -110,23 +112,46 @@ class GitCandidateTreeStore:
     ) -> CandidateTree:
         """Keep what stands in this lease, or say by its own name it was not kept.
 
-        Every way this can fail leaves through `CandidateNotKept`, the
-        operational ones included: a directory swapped under the capture, and a
-        staging directory the machine would not give, are losses of the work
-        exactly as a refused git call is. They are normalized here, at the
-        boundary that knows they are one kind, rather than at the caller, which
-        would have to know this adapter runs git in a temporary directory to
-        guess what else might come out of it.
+        Naming the tree and anchoring it under the attempt are two steps, and
+        only the second one is this method's own: `written` already reads the
+        leased directory and normalizes every way that reading can fail, so a
+        capture adds the binding and nothing else. Every way this can fail
+        therefore still leaves through `CandidateNotKept`, which is what keeps
+        an attempt from being left `LAUNCH_ARMED` by an exception its caller
+        does not catch.
+        """
 
-        The reason is not tidiness. This adapter is asked between an attempt's
-        last work and its completion, and an exception in any other shape
-        escapes that caller's catch and leaves the attempt `LAUNCH_ARMED` --
-        which no operator can resolve, while a named loss is a fact they can
-        act on.
+        return self._anchored(
+            CandidateTree(lease.attempt_id, self.written(pin, lease).tree)
+        )
+
+    def written(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> LeasedWorkingTree:
+        """Name what stands in this lease, anchoring nothing under this attempt.
+
+        Everything a capture does except the last step, which is why a capture
+        is written on top of it rather than beside it: one reading of one leased
+        directory, so the tree an attempt is asked about before it pays for a
+        check and the tree it keeps afterwards can never be two different
+        readings of the same words.
+
+        The failure normalization is the same and is here for the same reason: a
+        directory swapped under the reading, and a staging directory the machine
+        would not give, are losses of the work exactly as a refused git call is,
+        and only this boundary knows they are one kind. An exception in any
+        other shape escapes the caller's catch and leaves the attempt
+        `LAUNCH_ARMED`, which no operator can resolve.
         """
 
         try:
-            return self._captured(pin, lease)
+            self._ensure_store()
+            with tempfile.TemporaryDirectory() as staging:
+                self._seed(pin, Path(staging))
+                return LeasedWorkingTree(
+                    pin,
+                    self._written(pin, lease, Path(staging) / _CAPTURE_INDEX_NAME),
+                )
         except CandidateNotKept:
             raise
         except (LeasedDirectoryChanged, OSError) as failure:
@@ -135,14 +160,21 @@ class GitCandidateTreeStore:
                 f"could not be kept: {failure}"
             ) from failure
 
-    def _captured(
-        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
-    ) -> CandidateTree:
-        self._ensure_store()
-        with tempfile.TemporaryDirectory() as staging:
-            self._seed(pin, Path(staging))
-            written = self._written(pin, lease, Path(staging) / _CAPTURE_INDEX_NAME)
-        return self._anchored(CandidateTree(lease.attempt_id, written))
+    def changes(self, written: LeasedWorkingTree) -> bytes:
+        """The patch between the two trees, read out of the store that holds both.
+
+        Both are already there whenever this is asked: the pinned tree because a
+        capture seeds it, and the written one because writing it put every blob
+        it names into this same store. So no checkout is read and no workspace
+        has to still exist -- this answers just as well after the lease is gone.
+        """
+
+        # `-p` and `-r` are what this plumbing command spells them; the long
+        # `--patch` and `--recursive` belong to porcelain `git diff` and are
+        # refused here.
+        return self._in_store(
+            ("diff-tree", "-p", "-r", written.pin.tree, written.tree)
+        )[:MAXIMUM_CANDIDATE_DIFF_BYTES]
 
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         """The candidate this attempt captured, asked of the store and nothing else.
