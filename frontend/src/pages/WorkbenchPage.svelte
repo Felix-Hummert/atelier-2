@@ -1228,38 +1228,16 @@
   }
 
   @media (max-width: 48rem) {
-    /* In the phone room the fixtures above can only keep their promise if the
-       room has an edge: a surface that scrolls as a whole slides the
-       conversation under the pinned rail, because a sticky fixture and a
-       flowing sibling move at different speeds and no fixed offset between
-       them is right at more than one scroll depth (#1149). So the Workbench
-       takes exactly the stage's height and becomes a column of rows: the rail
-       holds the top, the ear the bottom, and the conversation between them is
-       the only row that gives up height -- and therefore the only thing that
-       scrolls (picture §02, #580). */
-    .workbench {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
-
-    /* The rail already bounds itself by its own ceiling above; it must not be
-       squeezed below that when the conversation grows. */
-    .needs-you {
-      flex: none;
-    }
-
-    .conversation {
-      min-height: 0;
-      overflow-y: auto;
-    }
-
     .composer {
-      /* The ear keeps the room's floor even when little has been said, the way
-         the picture holds it there. */
-      margin-top: auto;
       gap: var(--space-1);
       padding-top: var(--space-1);
+    }
+
+    /* The sticky rail overlays the stream at this narrow height. Keep the
+       first visible conversation line below its fade without spending more
+       room in the document flow that anchors the composer. */
+    .needs-you ~ .conversation {
+      translate: 0 var(--space-5);
     }
   }
 </style>
