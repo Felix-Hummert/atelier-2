@@ -10,7 +10,7 @@
   } from "../api/client";
   import DefectiveRunRowItem from "../components/DefectiveRunRow.svelte";
   import PinnedDecision from "../components/PinnedDecision.svelte";
-  import PoisonedJournalDiscardSheet from "../components/PoisonedJournalDiscardSheet.svelte";
+  import PoisonedJournalDoor from "../components/PoisonedJournalDoor.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ReadState from "../components/ReadState.svelte";
   import {
@@ -49,7 +49,6 @@
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
-  import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
   import type { MutationJournal } from "../lib/mutationJournal";
   import {
     beginRead,
@@ -65,7 +64,6 @@
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { loadPendingWaitAnswer, type PendingWaitLookup } from "../lib/waitAnswerDelivery";
   import { humanMove, runHasEnded, runStanding, standingMarks } from "../lib/runState";
-  import { exactLocal } from "../lib/when";
   import {
     connectionLabel,
     protocolDetail,
@@ -153,22 +151,10 @@
    * Whether this browser's own memory of pending sendings can be read at all
    * (#914). A poisoned journal blocks every read that would otherwise show a
    * pinned decision or the conductor's own pending wait, so the whole room
-   * stands behind the one honest sentence and its one door -- reusing
-   * `ProblemNotice`, the same brick-with-one-move shape every other error in
-   * the house already wears (mockup v8, `#v8-21-journal-poisoned`) -- instead
-   * of quietly never showing the cards that would have read it.
+   * stands behind `PoisonedJournalDoor`'s one honest sentence and its one
+   * door instead of quietly never showing the cards that would have read it.
    */
   let journalPoisoned = false;
-  let discardConfirming = false;
-  /** The exact bytes about to be forgotten, read once when the confirm sheet
-   * opens (#914 line 12) -- the same reading the sheet's Technical reveal
-   * shows and the post-discard receipt below measures. */
-  let discardRaw: string | null = null;
-  let discardSubmitting = false;
-  let discardFailure: string | null = null;
-  /** The receipt at display time: gone once this room is left, because no
-   * second ledger survives the same poisoned storage (#914 line 12). */
-  let discardReceipt: string | null = null;
   let roomHeading: { focus(): void };
 
   const speakerLabels: Record<ChatMessage["speaker"], string> = {
@@ -183,7 +169,6 @@
     void load();
     holdAttention();
     void resolveConductor();
-    void checkJournalHealth();
     const unsubscribe = subscribeChatTranscript((next) => {
       transcript = next;
     });
@@ -219,60 +204,14 @@
   }
 
   /**
-   * One proactive read at mount, so a poisoned journal shows its one sentence
-   * before any card tries and fails to read it -- rather than being
-   * discovered piecemeal, once per card, once the room is already drawn.
+   * Re-reads the conductor's own pending wait once the journal has just
+   * healed (#914 second half, #1131): un-hiding the pinned-decision region
+   * already lets each pin mount and read the now-healthy journal on its
+   * own; the conductor's own pending wait needs this one explicit nudge,
+   * since nothing else prompts it right now.
    */
-  async function checkJournalHealth(): Promise<void> {
-    try {
-      await mutationJournal.entries();
-    } catch {
-      journalPoisoned = true;
-    }
-  }
-
-  function openDiscardConfirm(): void {
-    discardRaw = mutationJournal.rawStored();
-    discardFailure = null;
-    discardConfirming = true;
-  }
-
-  function dismissDiscardConfirm(): void {
-    discardConfirming = false;
-  }
-
-  /**
-   * The one door out of a poisoned journal: remove it without ever reading
-   * it, then let the room read fresh. Un-hiding the pinned-decision region
-   * lets each pin mount and read the now-healthy journal on its own; the
-   * conductor's own pending wait needs one explicit re-read, since nothing
-   * else nudges it right now.
-   *
-   * A throw from the browser's own storage stays inside the sheet as its
-   * `failure` sentence instead of escaping after the sheet already closed
-   * (#914 finding 6); only a successful discard closes it, heals the room,
-   * and moves focus to the room heading -- the same place a fresh page load
-   * would land it.
-   */
-  async function confirmDiscardJournal(): Promise<void> {
-    discardSubmitting = true;
-    discardFailure = null;
-    try {
-      mutationJournal.discardPoisoned();
-      discardReceipt = journalPoisonedCopy.forgottenReceipt(
-        exactLocal(new Date().toISOString()),
-        new globalThis.TextEncoder().encode(discardRaw ?? "").length
-      );
-      discardConfirming = false;
-      journalPoisoned = false;
-      if (conductorRun !== null) void refreshConductorRun(conductorRun.public_run_reference);
-      await tick();
-      roomHeading.focus();
-    } catch (error) {
-      discardFailure = humanErrorMessage(error, journalPoisonedCopy.discardFailure);
-    } finally {
-      discardSubmitting = false;
-    }
+  function healJournal(): void {
+    if (conductorRun !== null) void refreshConductorRun(conductorRun.public_run_reference);
   }
 
   function followConductor(run: RunV3): void {
@@ -836,25 +775,17 @@
     <p class="names-notice" role="status">{wrapDisplayCopy(workbenchPageCopy.workflowNamesUnavailable)}</p>
   {/if}
 
-  {#if journalPoisoned}
-    <!-- The whole room stands behind this one sentence and its one door
-         (mockup v8 §"Journal poisoned", `#v8-21-journal-poisoned`): every
-         card below would only be reading this same unreadable memory, so
-         nothing tries -- REQ-UIQ-10's error brick with exactly one move. -->
-    <ProblemNotice
-      title={wrapDisplayCopy(journalPoisonedCopy.sentence)}
-      message=""
-      actionLabel={wrapDisplayCopy(journalPoisonedCopy.door)}
-      onAction={openDiscardConfirm}
-      actionAttributes={{
-        [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalDoor.id
-      }}
-    />
-  {:else}
+  <PoisonedJournalDoor
+    {mutationJournal}
+    bind:poisoned={journalPoisoned}
+    onHealed={healJournal}
+    focusAfterHeal={roomHeading}
+    doorAttributes={{ [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalDoor.id }}
+    confirmAttributes={{ [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalConfirm.id }}
+    cancelAttributes={{ [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalCancel.id }}
+  />
 
-  {#if discardReceipt !== null}
-    <p class="discard-receipt" role="status">{wrapDisplayCopy(discardReceipt)}</p>
-  {/if}
+  {#if !journalPoisoned}
 
   {#if pins.length > 0}
     <section class="needs-you" aria-label={wrapDisplayCopy(workbenchPageCopy.pinnedDecisionsLabel)}>
@@ -870,6 +801,7 @@
               {navigate}
               compact={pin.run.public_run_reference !== expandedPinReference}
               onExpand={() => { expandedPinReference = pin.run.public_run_reference; }}
+              onJournalPoisoned={() => { journalPoisoned = true; }}
             />
           </li>
         {/each}
@@ -1076,16 +1008,6 @@
     {/if}
   </form>
   {/if}
-
-  {#if discardConfirming}
-    <PoisonedJournalDiscardSheet
-      raw={discardRaw ?? ""}
-      submitting={discardSubmitting}
-      failure={discardFailure}
-      onConfirm={() => { void confirmDiscardJournal(); }}
-      onDismiss={dismissDiscardConfirm}
-    />
-  {/if}
 </section>
 
 <style>
@@ -1126,12 +1048,6 @@
   }
 
   .names-notice {
-    margin: 0;
-    color: var(--ink-dim);
-    font-size: var(--text-xs);
-  }
-
-  .discard-receipt {
     margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
