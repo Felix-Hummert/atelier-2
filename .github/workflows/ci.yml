@@ -339,6 +339,9 @@ jobs:
       - name: Check product-status partition
         run: uv run --locked python scripts/check_product_status.py
 
+      - name: Check for direct Any parameters in contracts, ports, application, api
+        run: uv run --locked ruff check --select ANN401 --no-cache src/atelier2/contracts src/atelier2/ports src/atelier2/application src/atelier2/api
+
       - name: Check source
         run: uv run --locked ruff check .
 
