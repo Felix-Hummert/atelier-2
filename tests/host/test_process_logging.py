@@ -367,6 +367,14 @@ class _FailingAttemptStore:
     ) -> AgentAttemptFailed:
         raise AssertionError((execution, verdict, transcript))
 
+    def complete_candidate_unchanged(
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
+    ) -> AgentAttemptFailed:
+        raise AssertionError((execution, verdict, transcript))
+
     def complete_candidate_capture_failure(
         self,
         execution: AgentAttemptExecution,

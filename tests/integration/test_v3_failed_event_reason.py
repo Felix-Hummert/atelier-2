@@ -30,7 +30,9 @@ from atelier2.contracts.run_projections import (
     RunPage,
 )
 from atelier2.ports.agent_attempts import (
+    NOTHING_TO_KEEP,
     AgentAttemptFailed,
+    KeptEvidence,
     ProjectVerificationFailureEvidence,
 )
 from atelier2.ports.agent_executions import AgentExecutionResult
@@ -227,9 +229,9 @@ def test_a_redacted_verification_tails_words_say_so_in_the_stored_reason(
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     evidence = ProjectVerificationFailureEvidence(
         "1 failed, 3 passed in 0.01s",
-        ArtifactHash.of(b"the redacted tail"),
         0.5,
-        redacted=True,
+        KeptEvidence(ArtifactHash.of(b"the redacted tail"), redacted=True),
+        NOTHING_TO_KEEP,
     )
 
     outcome = store.complete_success(
@@ -262,10 +264,9 @@ def test_a_verification_tail_that_could_not_be_kept_names_the_reason_in_the_stor
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     evidence = ProjectVerificationFailureEvidence(
         "1 failed, 3 passed in 0.01s",
-        None,
         0.5,
-        redacted=False,
-        retention_failure="artifact write unavailable",
+        KeptEvidence(None, retention_failure="artifact write unavailable"),
+        NOTHING_TO_KEEP,
     )
 
     outcome = store.complete_success(

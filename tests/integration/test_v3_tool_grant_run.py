@@ -87,7 +87,9 @@ from atelier2.ports.durable_runs import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
+    emitting,
     publish_checked_model_registry,
+    working_and_emitting,
 )
 from tests.scenarios.projects import declaring_verification, git_project
 from tests.scenarios.run_waiting import (
@@ -100,6 +102,7 @@ RUN = RunId("v3/redeems-its-grant")
 FAILED_RUN = RunId("v3/red-verify-fails")
 TIMEOUT_RUN = RunId("v3/verify-timeout")
 UNKEPT_RUN = RunId("v3/candidate-unkeepable")
+UNCHANGED_RUN = RunId("v3/candidate-unchanged")
 BOTH_LOST_RUN = RunId("v3/red-verify-and-unkeepable")
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 VERIFICATION_OUTPUT = b"all green"
@@ -109,6 +112,16 @@ DECLARED_VERIFICATION_TIMEOUT_SECONDS = 0.2
 
 COMMITTED_MARKER_NAME = "marker.txt"
 COMMITTED_MARKER = "the tree this run was pinned to\n"
+
+WHAT_THE_AGENT_MADE = "made-by-the-agent.txt"
+MADE_BY_THE_AGENT = "the change this attempt is about\n"
+"""The one file this scenario's provider leaves behind in its lease.
+
+Every sentence here is about what happens *after* an agent did something -- the
+grant it redeems, the check that judges the work, whether the work is kept. An
+attempt that changed nothing ends before any of that, under its own name, so a
+provider that only printed an answer would prove none of them.
+"""
 
 THE_GRANT = json.dumps(
     {"capability": ToolGrantCapability.RUN_PROJECT_VERIFICATION.value}
@@ -174,6 +187,7 @@ def granted_runtime(
     *,
     verification_command: list[str] | None = None,
     timeout_seconds: float = 30,
+    provider_changes_the_tree: bool = True,
 ) -> Iterator[tuple[DbosRuntime, Path, Path]]:
     """A runtime that can run an agent and redeem a grant against one project."""
     cwd_record = tmp_path / "verification-cwd.txt"
@@ -200,7 +214,15 @@ def granted_runtime(
         ),
         (
             RecordingAgentExecutorFactoryV2(
-                "exact", "exact/v1", "exact-op", PROVIDER_OUTPUT
+                "exact",
+                "exact/v1",
+                "exact-op",
+                PROVIDER_OUTPUT,
+                command=working_and_emitting(
+                    PROVIDER_OUTPUT, WHAT_THE_AGENT_MADE, MADE_BY_THE_AGENT
+                )
+                if provider_changes_the_tree
+                else emitting(PROVIDER_OUTPUT),
             ),
         ),
     )
@@ -255,6 +277,20 @@ def unkeepable_candidate_runtime(
     blocked = tmp_path / CANDIDATE_STORE_DIRECTORY_NAME
     blocked.symlink_to(tmp_path / "somewhere-else", target_is_directory=True)
     yield from granted_runtime(tmp_path, VERIFICATION_EXIT_CODE)
+
+
+@pytest.fixture
+def unchanged_tree_runtime(tmp_path: Path) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    """A runtime whose provider answers and leaves the pinned tree exactly as it was.
+
+    The declared verification writes the directory it ran in into the record
+    file, so whether it ever started is a fact on disk rather than a mock's
+    memory: no record, no check.
+    """
+
+    yield from granted_runtime(
+        tmp_path, VERIFICATION_EXIT_CODE, provider_changes_the_tree=False
+    )
 
 
 @pytest.fixture
@@ -566,9 +602,85 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
     )
     assert words.startswith(NodeReceiptReason.PROJECT_VERIFICATION_FAILED.value)
     assert f"exit {FAILED_VERIFICATION_EXIT_CODE}" in words
-    assert schema_revision is None
-    assert value_hash is None
+    # The provider's own answer is kept with the refusal, judged by the schema
+    # that admitted it: a red check says nothing about whether the builder
+    # answered, and a reader who cannot see the answer cannot tell a broken
+    # build from a builder that did nothing (#1156).
+    assert schema_revision is not None
+    assert value_hash == Sha256Hash.of(PROVIDER_OUTPUT)
     assert receipt_count == 0
+    assert redemption_count == 0
+
+
+@pytest.mark.proves("an-attempt-that-changed-nothing-ends-before-it-pays-for-a-check")
+def test_an_attempt_that_left_the_pinned_tree_alone_ends_without_running_the_check(
+    unchanged_tree_runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    """The ending #1156 exists for: named in seconds, not after a whole test suite.
+
+    Three live runs ended `PROJECT_VERIFICATION_FAILED` after ten minutes of a
+    project's own tests, on a tree that was almost certainly the pin. That is
+    two lies at once -- a verification that decided nothing, and an attempt
+    whose real fact was that it did nothing. The record file is the proof the
+    command never started: the declared verification writes the directory it
+    ran in into it, so a file that does not exist is a check that did not run.
+    """
+    started_runtime, _scratch_root, cwd_record = unchanged_tree_runtime
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    ).start_published(
+        StartPublishedRunRequestV2(UNCHANGED_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    wait_for_failed_run_after_node_completion(started_runtime, UNCHANGED_RUN, workflow)
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.run_id == UNCHANGED_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        payload = connection.scalar(
+            sa.select(run_events.c.payload).where(
+                run_events.c.run_id == UNCHANGED_RUN.value,
+                run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            )
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+        redemption_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tool_redemptions)
+            .where(tool_redemptions.c.run_id == UNCHANGED_RUN.value)
+        )
+
+    assert attempt["state"] == AgentAttemptState.FAILED.value
+    assert attempt["failure_code"] == AgentAttemptFailureCode.CANDIDATE_UNCHANGED.value
+    assert payload is not None
+    assert bytes(payload) == (
+        AgentAttemptFailureCode.CANDIDATE_UNCHANGED.value.encode("ascii")
+    )
+    words, _schema_revision, _value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    token, _separator, verdict = words.partition(": ")
+    assert token == NodeReceiptReason.CANDIDATE_UNCHANGED.value
+    # What the builder said stands beside the tree that contradicts it.
+    assert PROVIDER_OUTPUT.decode("ascii") in verdict
+    assert not cwd_record.exists()
     assert redemption_count == 0
 
 
