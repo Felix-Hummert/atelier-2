@@ -77,6 +77,7 @@ _COMPONENTS = (
     Path("frontend/src/components/CatalogImportSheet.svelte"),
     Path("frontend/src/components/CatalogTile.svelte"),
     Path("frontend/src/components/ConnectSourceSheet.svelte"),
+    Path("frontend/src/components/DefectiveRunRow.svelte"),
     Path("frontend/src/components/DisconnectSourceSheet.svelte"),
     Path("frontend/src/components/InfoHint.svelte"),
     Path("frontend/src/components/LoadingState.svelte"),
