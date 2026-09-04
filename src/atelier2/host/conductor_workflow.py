@@ -23,9 +23,13 @@ also reads its own report from the round before (`previous_report`, the
 previous-round self-edge `is_previous_round_data_edge` carries), honestly
 absent in round one. There is no reloaded transcript: what the agent
 remembers across rounds is exactly what its own last report's
-`carried_context` says, bounded by `CONDUCTOR_CARRIED_CONTEXT_MAXIMUM_LENGTH`
-and marked honestly when that bound forced a cut. `CONDUCTOR_LOOP_MAXIMUM_ROUNDS`
-caps the conversation at 24 rounds; round 25 starts a new, unrelated run.
+`carried_context` says, bounded by the report's own produced-output byte
+bound (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`, `atelier2.contracts.agents` -- the
+one bound the success write and the round hand-off both apply to a produced
+report, `atelier2.adapters.dbos.agent_attempt_store` and
+`atelier2.adapters.dbos.run_store`) and marked honestly when that bound
+forced a cut. `CONDUCTOR_LOOP_MAXIMUM_ROUNDS` caps the conversation at 24
+rounds; round 25 starts a new, unrelated run.
 
 RECURSION FENCE, slice 1. A conductor that can start catalog workflows must
 not start itself: a conductor starting conductors would be an unbounded billed
@@ -42,6 +46,7 @@ from __future__ import annotations
 import json
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WaitNodeV3, WorkflowGraphV3
 from atelier2.host.mcp_tools import MCP_SERVER_NAME, McpToolName
 
@@ -80,21 +85,16 @@ _REPORT_STARTED_RUN_IDS_FIELD = "started_run_ids"
 _REPORT_CARRIED_CONTEXT_FIELD = "carried_context"
 _REPORT_CARRIED_CONTEXT_TRUNCATED_FIELD = "carried_context_truncated"
 
-CONDUCTOR_CARRIED_CONTEXT_MAXIMUM_LENGTH = 12_288
-"""The bound on what one round's report carries forward to the next round,
-in JSON Schema `maxLength` characters (code points), not bytes.
-
-Well under `MAXIMUM_AGENT_OUTPUT_BYTES_V2` (49_152, the whole report's own
-ceiling as raw agent output) and, for plain ASCII text, comfortably under
-`MAXIMUM_INSTANCE_DOCUMENT_BYTES` (16_384, `atelier2.contracts.schemas_v3`),
-the report's own instance-document byte ceiling once it is the declared
-output. The two ceilings measure different things, so this length alone does
-not guarantee the byte door admits the report: a `carried_context` near this
-bound that is heavy with characters JSON must escape (raw newlines, quotes) or
-with multibyte characters can still push the whole instance past
-`MAXIMUM_INSTANCE_DOCUMENT_BYTES` and be refused loud
-(`InstanceRefusal.INSTANCE_TOO_LARGE`) rather than silently truncated. That gap
-is named on #658 with an owner, not hardened here."""
+# `carried_context` (and the report around it) has exactly one size bound:
+# `MAXIMUM_AGENT_OUTPUT_BYTES_V2`, the produced-output bound
+# `agent_attempt_store.py`'s success write and `run_store.py`'s round
+# hand-off both apply to every produced report (#1078 edge 1: the two doors
+# must read one bound, or a report the write admits can still die at the
+# hand-off). A separate, code-point-counted `maxLength` here would measure a
+# different unit than that bound and could let a multibyte-heavy round
+# through a check that then fails at the doors (#658 P3 review); reusing the
+# one byte bound instead of adding a second, narrower one closes that gap
+# rather than naming it again.
 
 
 def _canonical_schema_bytes(schema: dict[str, object]) -> bytes:
@@ -133,10 +133,7 @@ CONDUCTOR_REPORT_SCHEMA = _canonical_schema_bytes(
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
             },
-            _REPORT_CARRIED_CONTEXT_FIELD: {
-                "type": "string",
-                "maxLength": CONDUCTOR_CARRIED_CONTEXT_MAXIMUM_LENGTH,
-            },
+            _REPORT_CARRIED_CONTEXT_FIELD: {"type": "string"},
             _REPORT_CARRIED_CONTEXT_TRUNCATED_FIELD: {"type": "boolean"},
         },
     }
@@ -185,8 +182,9 @@ def _conductor_instruction() -> str:
         f'"{_REPORT_STARTED_RUN_IDS_FIELD}": the run_id of every run you '
         f'started, an empty array when none, "{_REPORT_CARRIED_CONTEXT_FIELD}": '
         "what you need to remember of this conversation for your own next "
-        f"round, at most {CONDUCTOR_CARRIED_CONTEXT_MAXIMUM_LENGTH} "
-        f'characters, "{_REPORT_CARRIED_CONTEXT_TRUNCATED_FIELD}": true only '
+        "round, kept short enough that this whole JSON report stays within "
+        f"{MAXIMUM_AGENT_OUTPUT_BYTES_V2} bytes once encoded, "
+        f'"{_REPORT_CARRIED_CONTEXT_TRUNCATED_FIELD}": true only '
         "when that carried context had to drop something the conversation so "
         "far held, false when it is complete}."
     )
@@ -267,6 +265,17 @@ def require_conductor_document(document: bytes) -> None:
             "agent node: one round of its conversation loop"
         )
     node = agent_nodes[0]
+
+    if parsed.graph_inputs:
+        # The conductor's own round takes its message from the Wait node, not
+        # from a graph input a start supplies: `graph_inputs` is the door a
+        # foreign document could use to smuggle an order into what is admitted
+        # as "the conductor". A document that declares any is not this one.
+        raise ConductorDocumentDefect(
+            "the conductor document must declare no graph_inputs: its round "
+            "input is the wait node's answer, not an order a start supplies "
+            f"(found {[entry.name for entry in parsed.graph_inputs]!r})"
+        )
 
     if len(parsed.loops) != 1:
         raise ConductorDocumentDefect(
