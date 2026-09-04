@@ -31,8 +31,13 @@ jobs:
     # ~9min üblich, gemessen 30.08. (12 grüne main-Runs; mean 514s, max 559s)
     # inklusive #742's zweitem (reversed) e2e-Durchlauf; der damals
     # ausstehende Mittelwert ist damit gemessen und bestätigt das verdoppelte
-    # Budget: max ist 58% der Wand, sie bleibt bei 16min.
-    timeout-minutes: 16
+    # Budget: max ist 58% der Wand.
+    # 04.09.2026: sechs Abbrüche an der 16min-Wand auf GitHub-gehosteten
+    # Runnern (PR #1126 zweimal, #1136, #1134, main fd7ca7ca, main ead359a5) -
+    # `npm ci` brauchte ~7min statt ~14s, Playwright ~9.5min; Wand auf 30min
+    # angehoben, faengt weiterhin einen haengenden Job, uebersteht aber einen
+    # langsamen Runner.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: frontend
