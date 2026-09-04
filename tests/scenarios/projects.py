@@ -26,6 +26,7 @@ from atelier2.contracts.project_sources import (
     ProjectSourcePin,
 )
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
+from atelier2.ports.candidate_store import LeasedWorkingTree
 
 COMMITTING_SCENARIO = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -40,6 +41,15 @@ COMMITTING_SCENARIO = {
 """Who commits and when, so a scenario's pins depend on its content alone."""
 
 
+A_TREE_THE_PIN_DOES_NOT_NAME = "the-attempt-changed-something"
+"""What the in-memory store says a lease holds where a test did not say.
+
+Deliberately not shaped like an object name. The only question anyone asks of
+this value is whether it equals the pin, and a plausible-looking hash would
+invite a test to assert an address no repository ever produced.
+"""
+
+
 @dataclass
 class CandidatesKeptInMemory:
     """A candidate store for tests whose subject is not the keeping itself.
@@ -50,8 +60,11 @@ class CandidatesKeptInMemory:
     store answers, reduced to what a caller can observe: the work stated as the
     tree it became, readable afterwards under the attempt that made it.
 
-    The tree it states is the pin's own, because a store inventing an object
-    name would let a test assert an address no repository could ever produce.
+    The tree it states as *kept* is the pin's own, because a store inventing an
+    object name would let a test assert an address no repository could ever
+    produce. The tree it states as *standing in the lease* is not, because an
+    attempt driven here did work: a test whose subject is an attempt that
+    changed nothing drives the real store instead of saying so here.
     """
 
     kept: dict[AgentAttemptId, CandidateTree] = field(default_factory=dict)
@@ -65,6 +78,16 @@ class CandidatesKeptInMemory:
 
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         return self.kept.get(attempt_id)
+
+    def written(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> LeasedWorkingTree:
+        del lease
+        return LeasedWorkingTree(pin, A_TREE_THE_PIN_DOES_NOT_NAME)
+
+    def changes(self, written: LeasedWorkingTree) -> bytes:
+        del written
+        return b""
 
 
 def git_project(

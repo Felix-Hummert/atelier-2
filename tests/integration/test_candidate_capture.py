@@ -65,6 +65,7 @@ from atelier2.ports.candidate_store import (
     CandidateStoreUnavailable,
     CandidateTreeStore,
     CandidateTreeUnrepresentable,
+    LeasedWorkingTree,
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_candidate_store import carried
@@ -156,6 +157,14 @@ class LostUnderTheCapture:
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         return self.kept.read(attempt_id)
 
+    def written(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> LeasedWorkingTree:
+        return self.kept.written(pin, lease)
+
+    def changes(self, written: LeasedWorkingTree) -> bytes:
+        return self.kept.changes(written)
+
 
 @dataclass
 class RefusingCandidates:
@@ -174,6 +183,19 @@ class RefusingCandidates:
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         del attempt_id
         return None
+
+    def written(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> LeasedWorkingTree:
+        # A store that cannot keep the work cannot name it either: the two
+        # questions reach the same git repository, so one refusing while the
+        # other answers would be a store this product never writes.
+        del pin
+        self.asked.append(lease.attempt_id)
+        raise self.refusal
+
+    def changes(self, written: LeasedWorkingTree) -> bytes:
+        raise AssertionError(written)
 
 
 @dataclass

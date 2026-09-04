@@ -310,28 +310,51 @@ class RunnerTerminalEvidenceStore(AgentAttemptReader, Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class KeptEvidence:
+    """One bounded piece of a rejected attempt's evidence, and where it was kept.
+
+    `artifact_hash` is absent for two different reasons a reader must be able to
+    tell apart, and the second field is what tells them apart: nothing to keep
+    at all leaves `retention_failure` empty too, while a publication that failed
+    names why in it. `redacted` is true where `redact_credentials` found and
+    replaced a credential shape before the material was published, so a reader
+    knows the artifact is not the exact bytes.
+
+    One shape for both pieces this evidence carries -- what a red check printed
+    and what the attempt itself changed -- because they are kept the same way,
+    fail the same way, and are read the same way; two near-identical field
+    triples on one record would drift the day one of them grew a third reason.
+    """
+
+    artifact_hash: ArtifactHash | None
+    redacted: bool = False
+    retention_failure: str | None = None
+
+
+NOTHING_TO_KEEP = KeptEvidence(None)
+"""What a piece of evidence that never existed looks like: no address, no reason."""
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectVerificationFailureEvidence:
     """What a failed verification's refusal names beyond the command and its exit.
 
     Composed once, by the caller that already ran the check and read what it
     printed -- the store turns this into the receipt's words, but it never
     reopens a process or a released workspace to learn what one already said.
-    `output_artifact_hash` is absent where the verification printed nothing to
-    keep, and `summary_line` is absent where the retained tail carried no
-    pytest summary to read. `redacted` is true where `redact_credentials` found
-    and replaced a credential shape in the tail before it was published, so a
-    reader knows the artifact is not the command's exact bytes.
-    `retention_failure` names why nothing could be kept where the tail was
-    nonempty and publication itself failed -- distinct from an absent
-    `output_artifact_hash` beside no `retention_failure`, which means there was
-    nothing to keep in the first place.
+    `summary_line` is absent where the retained tail carried no pytest summary
+    to read.
+
+    `output` is what the check itself printed (#1137). `candidate_diff` is the
+    other half of the same question (#1156): a check that said no is only half
+    an answer while nobody can see what it said no *to*, and the patch is kept
+    as evidence exactly because the work behind it is not kept as a candidate.
     """
 
     summary_line: str | None
-    output_artifact_hash: ArtifactHash | None
     duration_seconds: float
-    redacted: bool
-    retention_failure: str | None = None
+    output: KeptEvidence
+    candidate_diff: KeptEvidence
 
 
 class AgentAttemptStore(AgentAttemptReader, Protocol):
@@ -379,8 +402,9 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         `PROJECT_VERIFICATION_FAILED`, with how the command ended in the receipt
         reason and without a `tool_redemptions` row. `verification_failure_evidence`
         is what that reason names beyond the exit code the redemption already
-        carries -- pytest's own summary and where the check's full output was kept
-        -- and it is read only on that one ending; every other ending ignores it.
+        carries -- pytest's own summary, where the check's output was kept, and
+        where the patch it rejected was kept -- and it is read only on that one
+        ending; every other ending ignores it.
         """
         ...
 
@@ -428,6 +452,27 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         own: the agent's work is not undone by the verification's silence, and
         whoever reads this failure has to see what was produced before deciding
         whether the check or the work is at fault.
+        """
+        ...
+
+    def complete_candidate_unchanged(
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
+    ) -> AgentAttemptFailed:
+        """End an armed attempt that left the tree its pin named untouched.
+
+        No check ran and no grant was redeemed, so there is no exit code and no
+        `tool_redemptions` row: what ended this attempt is the work itself, and
+        `verdict` says so in the words of the caller that compared the two trees
+        -- the pinned tree it still holds, and what the provider claimed to have
+        done to it. Those two beside each other are the whole point: an answer
+        describing work that is not there is a lie the run must state, not
+        absorb.
+
+        `transcript` is what the provider did on the way to answering nothing,
+        and it is the only place a reader can look for why.
         """
         ...
 

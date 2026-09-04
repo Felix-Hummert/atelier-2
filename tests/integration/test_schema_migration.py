@@ -61,6 +61,7 @@ from atelier2.adapters.dbos.schema import (
     V46_SCHEMA_HANDOFF,
     V47_SCHEMA_HANDOFF,
     V48_SCHEMA_HANDOFF,
+    V49_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     UnsupportedSchemaVersion,
@@ -536,11 +537,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[48]
         == "ecf4b2aba21f7225f121a3afc128d76e9ce10801c83121a93712f39320704653"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 49
+    assert V49_SCHEMA_HANDOFF.version == 49
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V49_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[49]
         == "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 50
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[50]
+        == "bb34288b35fbf4fe059960323b7a92ee4e5473b5a945e697c0f4b9fe29c6d8a9"
     )
 
 
@@ -631,13 +638,26 @@ def _schema_object_names(connection: sqlite3.Connection) -> frozenset[str]:
     )
 
 
+_REPUBLISHED_BY_A_LATER_HOP = "agent_attempts"
+"""The table a hop after the one under test republishes for reasons of its own.
+
+A store migrated to today crosses every remaining hop, not only the one a test
+is about, and V50 rebuilds this table to widen its failure-code vocabulary. Its
+declaration is therefore expected to differ afterwards; every row in it, and
+every other statement, is not.
+"""
+
+
 def _rows_beside_the_version_owner(connection: sqlite3.Connection) -> frozenset[str]:
-    """Every dumped statement except the one the hop is expected to change."""
+    """Every dumped statement except the ones a hop is expected to change."""
 
     return frozenset(
         statement
         for statement in connection.iterdump()
         if "atelier_schema_versions" not in statement
+        and not (
+            statement.startswith("CREATE") and _REPUBLISHED_BY_A_LATER_HOP in statement
+        )
     )
 
 
