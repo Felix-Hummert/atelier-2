@@ -20,3 +20,5 @@ requirement, revision, and acceptance contracts live in
   start, live graph
 - [A run waits for a person](a-run-waits-for-a-person.md) — `WAITING_INPUT`,
   the operator answers, the run ends
+- [A labelled item joins the queue and starts](a-labelled-item-joins-the-queue-and-starts.md) —
+  REQ 0001's canonical scenario, automation label admits, sweep starts once
