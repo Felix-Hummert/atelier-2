@@ -89,6 +89,11 @@ def frozen(
     return a_group(f"{module}:{name}", why=why, item="#1")
 
 
+def bare_frozen(name: str = A_LONELY_FUNCTION) -> str:
+    """A frozen entry that omits the module it was built in."""
+    return a_group(name, why="no caller is built yet", item="#1")
+
+
 @dataclass(frozen=True)
 class Lists:
     """What the three files say about the scratch project's lonely symbols."""
@@ -226,6 +231,15 @@ def test_a_frozen_name_excuses_only_the_module_it_was_built_in(tmp_path: Path) -
 
     assert result.returncode == 1
     assert ANOTHER_MODULE in result.stderr
+
+
+def test_a_frozen_entry_without_its_module_is_refused(tmp_path: Path) -> None:
+    """A frozen entry must name where its symbol was built, not just its name."""
+
+    result = run_gate(scratch_project(tmp_path, Lists(frozen=(bare_frozen(),))))
+
+    assert result.returncode == 1
+    assert A_LONELY_FUNCTION in result.stderr
 
 
 def test_a_decision_past_its_expiry_turns_the_gate_red(tmp_path: Path) -> None:

@@ -176,11 +176,13 @@ class PermissionPolicyRevision:
 
 
 GRANTS_NOTHING = PermissionPolicyRevision(frozenset())
-"""The closed policy: an execution nobody bound an authorisation to may do nothing.
+"""The deployment's closed policy: today, no provider channel may ask for anything.
 
-This is a policy, not an absence of one -- a decision made under it names its
-revision hash exactly as any other does, so a refusal is readable rather than a
-gap in the record.
+Explicit, not a default filled in by absence -- a deployment binds it at every
+dispatch the same way it would bind a wider revision once one exists (ADR 0020
+step 2 brings the first grant). A decision made under it names its own revision
+hash exactly as any other does, so a refusal is readable rather than a gap in
+the record.
 """
 
 
