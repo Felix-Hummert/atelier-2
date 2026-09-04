@@ -25,7 +25,8 @@
   import {
     deliverWaitAnswer,
     loadPendingWaitAnswer,
-    prepareWaitAnswer
+    prepareWaitAnswer,
+    type PendingWaitLookup
   } from "../lib/waitAnswerDelivery";
   import { ageLabel } from "../lib/when";
   import LoadingState from "./LoadingState.svelte";
@@ -56,6 +57,14 @@
   export let onRunRead: (run: RunV3) => void = () => {};
   export let onRetryStream: () => void = () => {};
   export let navigate: (path: string) => void | Promise<void> = () => {};
+  /**
+   * Reports upward that the mutation journal itself could not be read
+   * (#914, second half of #1131) -- the page owns the one honest sentence
+   * and its one door, mirroring the Workbench, rather than this room
+   * failing silently. Forwarded to `RunCancelCard`, whose own two reads
+   * hit the identical journal.
+   */
+  export let onJournalPoisoned: () => void = () => {};
 
   /**
    * The reason the run stopped, in the words of the owner that refused.
@@ -383,13 +392,21 @@
       return;
     }
     const nodeExecutionId = run.current_node_execution_id;
-    const lookup = await loadPendingWaitAnswer(
-      mutationJournal,
-      run.public_run_reference,
-      run.workflow_revision_hash,
-      run.current_node_id,
-      nodeExecutionId
-    );
+    let lookup: PendingWaitLookup;
+    try {
+      lookup = await loadPendingWaitAnswer(
+        mutationJournal,
+        run.public_run_reference,
+        run.workflow_revision_hash,
+        run.current_node_id,
+        nodeExecutionId
+      );
+    } catch {
+      // The journal itself could not be read (#914): the page's own notice
+      // takes over the room, so this card has nothing left to show.
+      onJournalPoisoned();
+      return;
+    }
     if (lookup.kind === "corrupt") {
       waitFailureMessage = lookup.message;
       return;
@@ -655,7 +672,7 @@
   <!-- Work first, brake second (HEART "The place"): the run's own shapes lead,
        and the cancel sits below them. It lifts itself back to the top only while
        a cancel is actually in flight, when it is the room's news. -->
-  <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} />
+  <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} {onJournalPoisoned} />
 
   {#if openNodeId !== null}
     {@const openForkPlan = planRunFork(run, openNodeId)}

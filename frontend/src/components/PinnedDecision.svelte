@@ -6,6 +6,7 @@
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { humanErrorMessage } from "../lib/humanRefusal";
+  import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
   import { waitAnswerText, type MutationJournal, type WaitMutation } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
@@ -13,7 +14,8 @@
   import {
     deliverWaitAnswer,
     loadPendingWaitAnswer,
-    prepareWaitAnswer
+    prepareWaitAnswer,
+    type PendingWaitLookup
   } from "../lib/waitAnswerDelivery";
   import { confirmedDecisionLabel, decisionLabel } from "../lib/waitDecision";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
@@ -169,13 +171,25 @@
     nodeExecutionId: string,
     key: string
   ): Promise<void> {
-    const lookup = await loadPendingWaitAnswer(
-      mutationJournal,
-      publicRunReference,
-      workflowRevisionHash,
-      nodeId,
-      nodeExecutionId
-    );
+    let lookup: PendingWaitLookup;
+    try {
+      lookup = await loadPendingWaitAnswer(
+        mutationJournal,
+        publicRunReference,
+        workflowRevisionHash,
+        nodeId,
+        nodeExecutionId
+      );
+    } catch {
+      // The journal itself could not be read (#914). This card has no door
+      // of its own out of a poisoned journal -- that is the page's to show,
+      // as the Workbench already does by never mounting this component
+      // while its own journal check stays open -- so this reuses the
+      // existing failure slot rather than swallowing the read as an
+      // unhandled rejection.
+      if (key === loadedNodeKey) waitFailureMessage = journalPoisonedCopy.sentence;
+      return;
+    }
     if (key !== loadedNodeKey) return;
     if (lookup.kind === "corrupt") {
       waitFailureMessage = lookup.message;

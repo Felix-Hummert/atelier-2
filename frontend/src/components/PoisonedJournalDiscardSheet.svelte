@@ -15,16 +15,24 @@
    * sheet ever opens, so the same bytes shown here are the ones the caller's
    * post-discard receipt measures.
    *
-   * The confirm and cancel buttons carry the Workbench's own
-   * `data-workbench-question` tag directly -- this sheet has one caller
-   * today (the Workbench), so it owns that inventory rather than routing the
-   * attributes through its parent.
+   * The confirm and cancel buttons default to the Workbench's own
+   * `data-workbench-question` tag -- the inventory its own control-inventory
+   * test still expects -- so its existing caller needs no change; a caller
+   * outside the Workbench (the run page, #1131) passes its own attributes,
+   * or `{}` for none, the same way `RetireCatalogLineageSheet.svelte`
+   * already leaves both at their default.
    */
   export let raw: string;
   export let submitting = false;
   export let failure: string | null = null;
   export let onConfirm: () => void;
   export let onDismiss: () => void;
+  export let confirmAttributes: Record<string, string> = {
+    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalConfirm.id
+  };
+  export let cancelAttributes: Record<string, string> = {
+    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalCancel.id
+  };
 
   /**
    * A scrollable exact-bytes box takes a tab stop the same way
@@ -49,12 +57,8 @@
   {failure}
   {onConfirm}
   {onDismiss}
-  confirmAttributes={{
-    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalConfirm.id
-  }}
-  cancelAttributes={{
-    [workbenchQuestionAttribute]: workbenchQuestions.discardPoisonedJournalCancel.id
-  }}
+  {confirmAttributes}
+  {cancelAttributes}
 >
   <details class="technical">
     <summary>{wrapDisplayCopy(journalPoisonedCopy.technical)}</summary>

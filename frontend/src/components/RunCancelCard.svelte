@@ -5,7 +5,8 @@
   import {
     deliverCancel,
     loadPendingCancelForRun,
-    prepareCancel
+    prepareCancel,
+    type PendingCancel
   } from "../lib/cancelRunDelivery";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
@@ -30,6 +31,11 @@
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
   export let onRunRead: (run: RunV3) => void = () => {};
+  /** Reports upward that the mutation journal itself could not be read
+   * (#914, second half of #1131) -- the run page owns the one honest
+   * sentence and its one door, mirroring the Workbench, rather than this
+   * card failing silently. */
+  export let onJournalPoisoned: () => void = () => {};
 
   const cancel = runPageCopy.cancel;
 
@@ -69,7 +75,8 @@
       pending = null;
       return;
     }
-    const found = await loadPendingCancelForRun(mutationJournal, publicRunReference);
+    const found = await readPendingCancel(publicRunReference);
+    if (found === "poisoned") return;
     pending = found;
     accepted = found !== null && found.delivery === "accepted";
   }
@@ -84,12 +91,30 @@
     publicRunReference: string
   ): Promise<void> {
     if (!runHasEnded(state)) return;
-    const found = await loadPendingCancelForRun(mutationJournal, publicRunReference);
+    const found = await readPendingCancel(publicRunReference);
+    if (found === "poisoned") return;
     if (found !== null) {
       await mutationJournal.discard(found.mutation_id);
     }
     pending = null;
     accepted = false;
+  }
+
+  /**
+   * The one place both reactive reads above catch the journal itself
+   * failing to read (#914, second half of #1131): the run page owns the
+   * one honest sentence and its one door, mirroring the Workbench, rather
+   * than either read failing silently.
+   */
+  async function readPendingCancel(
+    publicRunReference: string
+  ): Promise<PendingCancel | null | "poisoned"> {
+    try {
+      return await loadPendingCancelForRun(mutationJournal, publicRunReference);
+    } catch {
+      onJournalPoisoned();
+      return "poisoned";
+    }
   }
 
   async function openDecision(): Promise<void> {
