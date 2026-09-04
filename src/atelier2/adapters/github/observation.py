@@ -105,6 +105,34 @@ def _decoded_payload(
         return TrackerPayloadMalformed(f"the platform answer is not JSON: {error}")
 
 
+def _label_names(payload: Any) -> tuple[str, ...] | None:
+    """The label names this listing served, or `None` for a shape to refuse.
+
+    GitHub spells a label either as its bare name or as an object carrying
+    `name`; both say the same thing, and a listed label the payload spells
+    some third way is refused rather than guessed at. An issue with no
+    `labels` at all carries no label: the key is absent only where nothing
+    named the item, and a missing label can authorize nothing (REQ-QUEUE-08),
+    so reading it as the empty set withholds authority rather than inventing
+    it.
+    """
+
+    if payload is None:
+        return ()
+    if not isinstance(payload, list):
+        return None
+    names: list[str] = []
+    for entry in payload:
+        if isinstance(entry, str):
+            names.append(entry)
+            continue
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(name, str):
+            return None
+        names.append(name)
+    return tuple(names)
+
+
 def _issue_number(reference: TrackerItemReference) -> int | None:
     """The item this reference addresses here, or nothing if it addresses none.
 
@@ -317,7 +345,12 @@ class LiveGitHubIssueSource:
             title = entry.get("title")
             if not isinstance(title, str):
                 return TrackerPayloadMalformed("an open issue carried no text title")
+            labels = _label_names(entry.get("labels"))
+            if labels is None:
+                return TrackerPayloadMalformed(
+                    "an open issue carried labels this source cannot read names from"
+                )
             items.append(
-                ObservedOpenTrackerItem(github_tracker_reference(number), title)
+                ObservedOpenTrackerItem(github_tracker_reference(number), title, labels)
             )
         return None

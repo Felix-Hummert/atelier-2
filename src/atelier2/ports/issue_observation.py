@@ -4,13 +4,17 @@ The queue keys orchestration state by a reference into whichever tracker holds
 the item (REQ-QUEUE-14); this port is how those references enter. A source
 answers with the tracker's open items in the reference grammar its own adapter
 owns (`gh:<n>` for GitHub, ADR 0010), plus each item's title as the tracker
-last served it and the one instant that whole listing was read at. The title
-is an observation of a tracker-owned fact, not core truth, and carries its own
-age rather than an implied "now" (ADR 0016, 2026-09-01 amendment). Labels and
-the item's own lifecycle do not cross this boundary; closedness is instead
-whatever a caller derives by differencing successive open sets, never a flag
-this port answers. What becomes durable from an answer is the caller's
-decision; this port only observes.
+last served it, the labels it carried in that same read, and the one instant
+that whole listing was read at. Title and labels are observations of
+tracker-owned facts, not core truth, and carry their own age rather than an
+implied "now" (ADR 0016, 2026-09-01 amendment). The labels cross this boundary
+because a label is what authorizes automatic admission and a human sets it in
+the tracker, never the atelier (REQ-QUEUE-08): the rule reads them at the
+instant it decides rather than from a durable atelier copy that may already
+disagree with the tracker. The item's own lifecycle still does not cross:
+closedness is whatever a caller derives by differencing successive open sets,
+never a flag this port answers. What becomes durable from an answer is the
+caller's decision; this port only observes.
 
 Reading one named item is this port's second operation, and no more than that
 (ADR 0010 decision 1, 2026-08-26 amendment): a snapshot is the observed
@@ -37,23 +41,24 @@ from atelier2.contracts.work_items import ObservedWorkItemRevision
 
 @dataclass(frozen=True)
 class ObservedOpenTrackerItem:
-    """One open tracker item, with the title the tracker served for it."""
+    """One open tracker item: its reference, its title, and the labels it carries."""
 
     reference: TrackerItemReference
     title: str
+    labels: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class OpenTrackerItemsObserved:
-    """Every item open right now, with its title, as of one read of the tracker.
+    """Every item open right now, with its title and labels, as of one read.
 
     `observed_at` is the one instant this whole listing was read at -- a title
-    kept from it is a caller's memory of what the tracker said then, not a
-    current fact, and a later reader needs that marker to tell a fresh title
-    from a stale one (ADR 0016, 2026-09-01 amendment). It defaults to the
-    reading clock so callers outside this observation's own contract, which do
-    not exercise freshness, need not name an instant they do not use; the live
-    adapter always supplies its own read time explicitly.
+    or label set kept from it is a caller's memory of what the tracker said
+    then, not a current fact, and a later reader needs that marker to tell a
+    fresh observation from a stale one (ADR 0016, 2026-09-01 amendment). It
+    defaults to the reading clock so callers outside this observation's own
+    contract, which do not exercise freshness, need not name an instant they
+    do not use; the live adapter always supplies its own read time explicitly.
     """
 
     items: tuple[ObservedOpenTrackerItem, ...]

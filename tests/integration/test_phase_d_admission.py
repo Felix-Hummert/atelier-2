@@ -333,7 +333,7 @@ def _import(
     source = FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
             tuple(
-                ObservedOpenTrackerItem(TrackerItemReference(reference), title)
+                ObservedOpenTrackerItem(TrackerItemReference(reference), title, ())
                 for reference, title in open_items
             ),
             observed_at,

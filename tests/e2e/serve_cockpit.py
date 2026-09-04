@@ -1423,7 +1423,7 @@ def main() -> None:
     # instead, so they cannot disagree about the item a started run is about.
     fixture_tracker = FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
-            (ObservedOpenTrackerItem(_E2E_TRACKER_ITEM, _E2E_TRACKER_ITEM_TITLE),)
+            (ObservedOpenTrackerItem(_E2E_TRACKER_ITEM, _E2E_TRACKER_ITEM_TITLE, ()),)
         ),
         snapshot_answer=WorkItemRevisionObserved(_E2E_OBSERVED_REVISION),
         expected_snapshot_reference=_E2E_TRACKER_ITEM,
