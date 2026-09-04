@@ -37,12 +37,14 @@ from atelier2.contracts.effects import (
     AdapterRevision,
     CanonicalRequest,
     ConfirmationSource,
+    EffectAbsence,
     EffectBinding,
     EffectDestination,
     EffectIntent,
     EffectReceipt,
     EffectUnknownOutcome,
     LogicalEffectKey,
+    PerformedEffect,
 )
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
@@ -56,6 +58,7 @@ from atelier2.contracts.host_configuration import (
     SourceReference,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 
 ADAPTER_REVISION = AdapterRevision("github-open-pr-live-v1")
 DESTINATION = EffectDestination("github")
@@ -91,6 +94,7 @@ class _FakeGitHubServer:
     http_calls: int = 0
     branch_ref_attempts: int = 0
     suppress_next_pull_request_search: bool = False
+    pull_request_search_answer: httpx.Response | None = None
     _next_number: int = 1
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -102,6 +106,8 @@ class _FakeGitHubServer:
                 200, json={"name": self.base_branch, "commit": {"sha": self.base_sha}}
             )
         if request.method == "GET" and path == f"{prefix}/pulls":
+            if self.pull_request_search_answer is not None:
+                return self.pull_request_search_answer
             if self.suppress_next_pull_request_search:
                 self.suppress_next_pull_request_search = False
                 return httpx.Response(200, json=[])
@@ -219,7 +225,7 @@ def test_the_record_composed_factory_names_the_connected_repository(
     assert factory.binding.operational_identity == AdapterOperationalIdentity(
         f"{OWNER}/{REPO}"
     )
-    assert factory.proves_absence is False
+    assert factory.proves_absence is True
 
 
 def test_a_foreign_source_kind_does_not_compose_the_github_factory(
@@ -286,6 +292,13 @@ def test_a_v45_address_with_an_embedded_branch_is_durable_corruption(
             ADAPTER_REVISION,
             DESTINATION,
         )
+
+
+def published(outcome: PerformedEffect | EffectUnknownOutcome) -> PerformedEffect:
+    """What an execute performed; an unknown outcome is this test's failure."""
+
+    assert isinstance(outcome, PerformedEffect), outcome
+    return outcome
 
 
 def effect_intent(payload: bytes = AGENT_OUTPUT, *, typed: bool = True) -> EffectIntent:
@@ -409,7 +422,7 @@ def test_execute_uses_the_push_created_branch_and_opens_one_marked_pull_request(
     intent = effect_intent()
     adapter = factory.open()
     try:
-        performed = adapter.execute(intent)
+        performed = published(adapter.execute(intent))
     finally:
         adapter.close()
 
@@ -433,8 +446,8 @@ def test_a_second_execute_finds_the_same_pull_request_and_does_not_create_a_twin
     intent = effect_intent()
     adapter = factory.open()
     try:
-        first = adapter.execute(intent)
-        second = adapter.execute(intent)
+        first = published(adapter.execute(intent))
+        second = published(adapter.execute(intent))
         read = adapter.readback(intent)
     finally:
         adapter.close()
@@ -461,13 +474,13 @@ def test_execute_converges_on_a_concurrently_created_pull_request_instead_of_rai
     intent = effect_intent()
     adapter = factory.open()
     try:
-        winner = adapter.execute(intent)
+        winner = published(adapter.execute(intent))
 
         # This attempt's own search misses the pull request the "concurrent"
-        # execute above already created -- the eventually-consistent search
-        # ADR 0010 §5 names -- so it proceeds to create and hits the PR race.
+        # execute above already created, so it proceeds to create and hits the
+        # pull request race GitHub's own uniqueness constraint refuses.
         server.suppress_next_pull_request_search = True
-        loser = adapter.execute(intent)
+        loser = published(adapter.execute(intent))
     finally:
         adapter.close()
 
@@ -478,9 +491,72 @@ def test_execute_converges_on_a_concurrently_created_pull_request_instead_of_rai
     assert server.branch_ref_attempts == 0
 
 
-def test_readback_before_any_execute_is_unknown_never_an_authoritative_absence(
-    factory: LiveGitHubEffectAdapterFactory,
+def test_a_branch_carrying_no_pull_request_is_an_absence_that_licenses_the_create(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
 ) -> None:
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        read = adapter.readback(intent)
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(read, EffectAbsence)
+    assert read.intent_reference == intent.reference
+    assert isinstance(performed, PerformedEffect)
+    assert len(server.pull_requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("answer", "failure_code", "detail"),
+    [
+        pytest.param(
+            httpx.Response(500, json={"message": "Server Error"}),
+            500,
+            "Server Error",
+            id="refused-status",
+        ),
+        pytest.param(
+            httpx.Response(200, json={"message": "not a listing"}),
+            200,
+            "not a listing",
+            id="unreadable-listing",
+        ),
+    ],
+)
+def test_a_listing_that_did_not_resolve_creates_nothing_and_keeps_what_github_said(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+    answer: httpx.Response,
+    failure_code: int,
+    detail: str,
+) -> None:
+    server.pull_request_search_answer = answer
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        read = adapter.readback(intent)
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert server.pull_requests == []
+    for outcome in (read, performed):
+        assert isinstance(outcome, EffectUnknownOutcome)
+        assert outcome.reason is not None
+        assert outcome.reason.failure_code == failure_code
+        assert detail in outcome.reason.detail
+        assert outcome.reason.duration_milliseconds >= 0
+
+
+def test_a_credential_github_echoed_never_reaches_the_kept_reason(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    echoed = "ghp_" + "s" * 36
+    server.pull_request_search_answer = httpx.Response(
+        401, json={"message": f"Bad credentials: {echoed}"}
+    )
     intent = effect_intent()
     adapter = factory.open()
     try:
@@ -489,7 +565,10 @@ def test_readback_before_any_execute_is_unknown_never_an_authoritative_absence(
         adapter.close()
 
     assert isinstance(read, EffectUnknownOutcome)
-    assert read.intent_reference == intent.reference
+    assert read.reason is not None
+    assert echoed not in read.reason.detail
+    assert REDACTION_MARKER in read.reason.detail
+    assert server.pull_requests == []
 
 
 @pytest.mark.parametrize("operation", ["readback", "execute"])
@@ -517,7 +596,7 @@ def test_no_token_appears_in_any_adapter_output(
     intent = effect_intent()
     adapter = factory.open()
     try:
-        performed = adapter.execute(intent)
+        performed = published(adapter.execute(intent))
         read = adapter.readback(intent)
     finally:
         adapter.close()

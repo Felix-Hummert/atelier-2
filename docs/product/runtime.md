@@ -201,10 +201,17 @@ pinned project source and operation identities, the runtime derives one
 `atelier2/work-item/<id>` branch and one deterministic commit over the candidate
 tree, persists the operation with the intent and receipt, and admits success only
 when the configured remote reads back that exact commit; the PR uses the same
-branch as its head. Because neither remote absence nor an inconclusive post-send
-readback proves what happened, both enter or remain in durable reconciliation
-instead of permitting another push, while an operator-authorized send is still
-fenced by a create-only lease.
+branch as its head. A destination that answers and holds nothing has said so:
+a remote read that succeeds and advertises no such ref, and a pull request
+listing for that exact head branch answered with an empty list, are absences
+the send proceeds on, so a first publication no longer waits for a person to
+confirm what nobody sent. What still enters or remains in durable
+reconciliation instead of permitting another push is a read that failed, and an
+inconclusive post-send readback, which proves nothing either way. The adapter
+now reports why -- the code the destination answered, how long it took, and the
+last of its own words with every credential shape taken out -- while carrying
+that account into the durable record an operator reads is still owed. An
+operator-authorized send is still fenced by a create-only lease.
 
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --

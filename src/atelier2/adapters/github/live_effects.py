@@ -3,13 +3,19 @@
 Same contract as the fake platform's `atelier2.adapters.github.effects`:
 `readback` then `execute`, the request hash carried as a marker inside the
 pull request's own body, and idempotency by that marker rather than by any
-identifier GitHub assigns. What differs is the destination and one honest
-consequence of it (ADR 0010 §5): a fake platform can list every pull request
-it ever created, so a missing marker there is an authoritative absence. Live
-GitHub offers no such inventory -- a pull request search is eventually
-consistent -- so an unmatched search here can only report `EffectUnknownOutcome`,
-never `EffectAbsence`. Reporting an absence this adapter cannot prove would be
-exactly the `platform-absence-unprovable` case ADR 0010 §5 refuses.
+identifier GitHub assigns.
+
+What an unmatched read means here is decided by which read is used (#1210).
+Listing pull requests by their exact head branch is not the eventually
+consistent search index: it is a direct query about one branch, and a `200`
+answering it with an empty list is GitHub's own statement that this branch
+carries no pull request, in any state. That is an authoritative absence, and
+reporting it as unknown was what made every live run wait for an operator
+before it had sent anything at all. Only a read that failed -- a refused
+status, a timeout, an answer that is not a list -- leaves the outcome unknown,
+and then it carries what GitHub said. A false absence still cannot open a
+twin: GitHub's own head+base uniqueness refuses the second create with `422`,
+and this adapter converges on the winner.
 
 The client is `githubkit` (ADR 0010 §7): typed request construction, retries,
 TLS and pagination are its job, not this module's. This slice composes the
@@ -26,6 +32,7 @@ a lease, a receipt, an event, a log, or an API projection.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +58,7 @@ from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
     ConfirmationSource,
+    EffectAbsence,
     EffectAdapterBinding,
     EffectDestination,
     EffectId,
@@ -61,6 +69,7 @@ from atelier2.contracts.effects import (
     EffectResult,
     EffectUnknownOutcome,
     PerformedEffect,
+    UnknownOutcomeReason,
 )
 
 GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
@@ -139,6 +148,46 @@ class _RecordedPullRequest:
     body: str
 
 
+@dataclass(frozen=True)
+class _NoPullRequestOnBranch:
+    """GitHub answered the head-branch listing, and it names no pull request."""
+
+
+@dataclass(frozen=True)
+class _PullRequestSearchFailed:
+    """The listing itself did not resolve, so the branch's state is unknown."""
+
+    reason: UnknownOutcomeReason
+
+
+type _PullRequestSearch = (
+    _RecordedPullRequest | _NoPullRequestOnBranch | _PullRequestSearchFailed
+)
+
+
+def _elapsed_milliseconds(started: float) -> int:
+    return round((time.monotonic() - started) * 1_000)
+
+
+def _refused_search(
+    error: githubkit.exception.RequestError[Any], elapsed_milliseconds: int
+) -> UnknownOutcomeReason:
+    """Why a pull request listing did not resolve, in GitHub's own words.
+
+    A refused request carries the status GitHub answered and the body it
+    explained itself in; a timeout or a transport failure never reached a
+    status at all, and then the client's own account of it is what there is.
+    """
+
+    if isinstance(error, githubkit.exception.RequestFailed):
+        return UnknownOutcomeReason(
+            error.response.status_code,
+            elapsed_milliseconds,
+            error.response.raw_response.text,
+        )
+    return UnknownOutcomeReason(None, elapsed_milliseconds, str(error.exc))
+
+
 def _body_for(request: OpenPullRequestRequest, request_hash: str) -> str:
     return f"{request.body}\n\n{marker_line(request_hash)}\n"
 
@@ -206,11 +255,10 @@ class LiveGitHubEffectAdapterFactory:
 
     @property
     def proves_absence(self) -> bool:
-        # A live-GitHub pull request search is eventually consistent, so a
-        # not-found readback is `EffectUnknownOutcome`, never an authoritative
-        # absence (ADR 0010 §5). The shared effect path durably moves that
-        # outcome to reconciliation before an agent run can advance.
-        return False
+        # Listing pull requests by their exact head branch is a direct query,
+        # not the eventually consistent search index: a `200` with an empty
+        # list is GitHub's own answer that this branch carries none (#1210).
+        return True
 
     def open(self) -> LiveGitHubEffectAdapter:
         token = self.token_credential.resolve()
@@ -247,14 +295,18 @@ class LiveGitHubEffectAdapter:
     def readback(self, intent: EffectIntent) -> EffectReadback:
         request = self._authorized_request(intent)
         found = self._find_recorded_pull_request(intent, request)
-        if found is None:
-            return EffectUnknownOutcome(intent.reference)
+        if isinstance(found, _PullRequestSearchFailed):
+            return EffectUnknownOutcome(intent.reference, found.reason)
+        if isinstance(found, _NoPullRequestOnBranch):
+            return EffectAbsence(intent.reference)
         return self._receipt(intent, found)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         request = self._authorized_request(intent)
         found = self._find_recorded_pull_request(intent, request)
-        if found is not None:
+        if isinstance(found, _PullRequestSearchFailed):
+            return EffectUnknownOutcome(intent.reference, found.reason)
+        if isinstance(found, _RecordedPullRequest):
             return self._performed(found)
         if isinstance(request, ReviewedDocumentationPullRequest):
             self._verify_reviewed_base(request)
@@ -309,17 +361,34 @@ class LiveGitHubEffectAdapter:
 
     def _find_recorded_pull_request(
         self, intent: EffectIntent, request: OpenPullRequestRequest
-    ) -> _RecordedPullRequest | None:
+    ) -> _PullRequestSearch:
         branch = request.head_branch.value
-        response = self._client.rest.pulls.list(
-            self._repository.owner,
-            self._repository.name,
-            head=f"{self._repository.owner}:{branch}",
-            state="all",
-        )
-        matches = response.raw_response.json()
-        if not isinstance(matches, list) or not matches:
-            return None
+        started = time.monotonic()
+        try:
+            response = self._client.rest.pulls.list(
+                self._repository.owner,
+                self._repository.name,
+                head=f"{self._repository.owner}:{branch}",
+                state="all",
+            )
+        except githubkit.exception.RequestError as error:
+            return _PullRequestSearchFailed(
+                _refused_search(error, _elapsed_milliseconds(started))
+            )
+        raw_response = response.raw_response
+        elapsed = _elapsed_milliseconds(started)
+        try:
+            matches: Any = raw_response.json()
+        except ValueError:
+            matches = None
+        if not isinstance(matches, list):
+            return _PullRequestSearchFailed(
+                UnknownOutcomeReason(
+                    raw_response.status_code, elapsed, raw_response.text
+                )
+            )
+        if not matches:
+            return _NoPullRequestOnBranch()
         pull_request = matches[0]
         if not isinstance(pull_request, dict):
             raise GitHubUnexpectedResponse(
@@ -363,7 +432,7 @@ class LiveGitHubEffectAdapter:
             # creating a twin GitHub's own constraint would have refused
             # anyway.
             found = self._find_recorded_pull_request(intent, request)
-            if found is None:
+            if not isinstance(found, _RecordedPullRequest):
                 raise
             return found
         created = response.raw_response.json()

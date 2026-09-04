@@ -32,6 +32,7 @@ from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
     CanonicalRequest,
+    EffectAbsence,
     EffectBinding,
     EffectDestination,
     EffectIntent,
@@ -41,6 +42,7 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 
 ATTEMPT_ID = "a1" * 32
 HEAD_BRANCH = HeadBranch("atelier2/work-item/" + "b2" * 32)
@@ -156,7 +158,7 @@ def test_push_creates_the_declared_commit_and_replay_finds_no_twin(
     expected = request.expected_commit_oid(intent.request.request_hash.value)
     adapter = factory.open()
     try:
-        assert isinstance(adapter.readback(intent), EffectUnknownOutcome)
+        assert isinstance(adapter.readback(intent), EffectAbsence)
         performed = adapter.execute(intent)
         replay = adapter.execute(intent)
         readback = adapter.readback(intent)
@@ -279,6 +281,10 @@ def test_inconclusive_read_after_send_reconciles_and_retry_sends_no_second_push(
     assert isinstance(first, EffectUnknownOutcome)
     assert isinstance(retry, EffectUnknownOutcome)
     assert len(runner.push_arguments) == 1
+    for outcome in (first, retry):
+        assert outcome.reason is not None
+        assert outcome.reason.failure_code == inconclusive.returncode
+        assert outcome.reason.detail == inconclusive.stderr.decode()
 
 
 def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
@@ -318,13 +324,33 @@ def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
     assert len(runner.push_arguments) == 1
 
 
+def test_a_remote_answering_that_it_holds_no_such_ref_licenses_one_push(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    runner = _ScriptedRemoteReadRunner([GitCommandResult(0, b"", b""), None])
+    factory = _factory(store, remote, runner)
+    intent, request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(performed, PerformedEffect)
+    assert performed.effect_id.value == request.expected_commit_oid(
+        intent.request.request_hash.value
+    )
+    assert len(runner.push_arguments) == 1
+
+
 @pytest.mark.parametrize(
-    "observation",
+    ("observation", "detail"),
     [
-        pytest.param(GitCommandResult(0, b"", b""), id="empty-success"),
         pytest.param(
-            GitCommandResult(2, b"", b"remote read failed"),
-            id="absence-code-with-error",
+            GitCommandResult(128, b"", b"fatal: could not read from remote"),
+            "fatal: could not read from remote",
+            id="refused-read",
         ),
         pytest.param(
             GitCommandResult(
@@ -339,22 +365,32 @@ def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
                 ),
                 b"",
             ),
+            (
+                "a" * 40
+                + "\t"
+                + HEAD_BRANCH.full_ref
+                + "\n"
+                + "b" * 40
+                + "\trefs/heads/other"
+            ),
             id="multiple-lines",
         ),
         pytest.param(
             GitCommandResult(0, b"a" * 40 + b"\trefs/heads/other\n", b""),
+            "a" * 40 + "\trefs/heads/other",
             id="wrong-ref",
         ),
         pytest.param(
             GitCommandResult(
                 0, b"not-an-oid\t" + HEAD_BRANCH.full_ref.encode() + b"\n", b""
             ),
+            "not-an-oid\t" + HEAD_BRANCH.full_ref,
             id="malformed-oid",
         ),
     ],
 )
-def test_only_an_exact_remote_observation_can_license_a_push(
-    tmp_path: Path, observation: GitCommandResult
+def test_a_remote_read_that_resolves_nothing_sends_nothing_and_keeps_what_git_said(
+    tmp_path: Path, observation: GitCommandResult, detail: str
 ) -> None:
     store, remote, base, tree = _repositories(tmp_path)
     runner = _ScriptedRemoteReadRunner([observation])
@@ -368,6 +404,32 @@ def test_only_an_exact_remote_observation_can_license_a_push(
 
     assert isinstance(result, EffectUnknownOutcome)
     assert runner.push_arguments == []
+    assert result.reason is not None
+    assert result.reason.failure_code == observation.returncode
+    assert result.reason.detail == detail
+    assert result.reason.duration_milliseconds >= 0
+
+
+def test_a_credential_git_printed_never_reaches_the_kept_reason(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    token = "ghp_" + "s" * 36
+    refusal = f"fatal: authentication failed for 'https://x-access-token:{token}@host'"
+    runner = _ScriptedRemoteReadRunner([GitCommandResult(128, b"", refusal.encode())])
+    factory = _factory(store, remote, runner)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        result = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(result, EffectUnknownOutcome)
+    assert runner.push_arguments == []
+    assert result.reason is not None
+    assert token not in result.reason.detail
+    assert REDACTION_MARKER in result.reason.detail
 
 
 def test_a_reachable_base_that_is_no_longer_an_advertised_tip_can_be_pushed(

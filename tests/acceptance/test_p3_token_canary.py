@@ -29,10 +29,8 @@ from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, run_events
 from atelier2.adapters.dbos.workflow_ids import (
-    action_continuation_workflow_id_for,
     bootstrap_workflow_id_for,
     node_workflow_id_for,
-    reconcile_workflow_id_for,
 )
 from atelier2.adapters.git_transport.effects import (
     GitCommandResult,
@@ -46,11 +44,6 @@ from atelier2.contracts.effect_requests import PushAtelierCommitReceipt
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
-    EffectIntentStateVersion,
-    OperatorAuthoritativeAbsence,
-    ReconcileActor,
-    ReconcileCommand,
-    ReconcileCommandId,
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunState
@@ -80,7 +73,6 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
-from tests.scenarios.runs import submit_reconcile_command
 
 _STANDARD_LOG_RECORD_ATTRIBUTES = frozenset(logging.makeLogRecord({}).__dict__)
 
@@ -497,7 +489,7 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
             assert bootstrap.get_result() == RunState.STARTED.value
             node = NodeExecutionId.for_node(RUN, workflow.revision_hash, "implement")
             node_workflow = DBOS.retrieve_workflow(node_workflow_id_for(node))
-            assert node_workflow.get_result() == RunState.WAITING_RECONCILIATION.value
+            assert node_workflow.get_result() == RunState.STARTED.value
 
             with runtime.engine.connect() as connection:
                 intent = intent_snapshot_from_record(
@@ -510,32 +502,6 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
                     .mappings()
                     .one()
                 ).intent
-            command = submit_reconcile_command(
-                runtime.engine,
-                runtime.settings,
-                ReconcileCommand(
-                    ReconcileCommandId("authorize-canary-push"),
-                    intent.reference,
-                    EffectIntentStateVersion(1),
-                    ReconcileActor("operator"),
-                    "confirmed the derived branch is absent",
-                    OperatorAuthoritativeAbsence(),
-                ),
-            ).command
-            assert (
-                DBOS.retrieve_workflow(
-                    reconcile_workflow_id_for(command.command_id)
-                ).get_result()
-                == RunState.STARTED.value
-            )
-            assert (
-                DBOS.retrieve_workflow(
-                    action_continuation_workflow_id_for(intent.binding.logical_key)
-                ).get_result()
-                == RunState.STARTED.value
-            )
-
-            with runtime.engine.connect() as connection:
                 receipt_rows = tuple(
                     connection.execute(sa.select(effect_receipts)).mappings()
                 )

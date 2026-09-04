@@ -7,6 +7,7 @@ from typing import ClassVar, Final, Self
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.secret_redaction import redact_credentials
 
 
 class EffectHashCollision(RuntimeError):
@@ -286,13 +287,54 @@ class EffectAbsence:
     intent_reference: EffectIntentReference
 
 
+MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS: Final = 2048
+"""How much of what a destination said an unknown outcome keeps.
+
+Its last characters, not its first: a failed call explains itself at the end of
+its output, under whatever banner, progress, or advice it printed before.
+"""
+
+
+@dataclass(frozen=True)
+class UnknownOutcomeReason:
+    """What the destination itself said when the outcome stayed unknown.
+
+    `failure_code` is the destination's own numeric answer -- a git exit status,
+    an HTTP status -- and is `None` where the call never reached one, as a
+    timeout does not. `detail` is whatever it printed, credential-scrubbed and
+    cut to its last characters here rather than at each call site, because an
+    adapter that forgot either would write a token into durable state.
+    """
+
+    failure_code: int | None
+    duration_milliseconds: int
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.duration_milliseconds < 0:
+            raise ValueError("an unknown outcome took a nonnegative duration")
+        object.__setattr__(
+            self,
+            "detail",
+            redact_credentials(self.detail).text[
+                -MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS:
+            ],
+        )
+
+
 @dataclass(frozen=True)
 class EffectUnknownOutcome:
-    """No source can yet say whether the referenced prepared request was performed."""
+    """No source can yet say whether the referenced prepared request was performed.
+
+    `reason` is what the destination answered when an adapter's own read failed.
+    It is absent where nothing failed: a read that succeeded and found some
+    other state has no failure to report.
+    """
 
     outcome: ClassVar[EffectOutcome] = EffectOutcome.UNKNOWN
 
     intent_reference: EffectIntentReference
+    reason: UnknownOutcomeReason | None = None
 
 
 type EffectReadback = EffectReceipt | EffectAbsence | EffectUnknownOutcome

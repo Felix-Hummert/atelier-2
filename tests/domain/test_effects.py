@@ -13,6 +13,7 @@ from atelier2.contracts.effect_requests import (
     ReviewedDocumentReplacement,
 )
 from atelier2.contracts.effects import (
+    MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS,
     AdapterOperationalIdentity,
     AdapterRevision,
     AuthorizedEffectExecution,
@@ -49,9 +50,11 @@ from atelier2.contracts.effects import (
     ReconcileCommandSnapshot,
     ReconcileCommandState,
     ReconcileDetermination,
+    UnknownOutcomeReason,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.ports.effects import (
     EffectAdapterRegistration,
     EffectAdapterRegistry,
@@ -697,6 +700,22 @@ def test_prepared_effect_and_reconcile_state_cannot_be_rebound(
     for target, attribute, value in rebindings:
         with pytest.raises((AttributeError, TypeError)):
             setattr(target, attribute, value)
+
+
+def test_an_unknown_outcome_keeps_the_last_scrubbed_words_a_destination_said() -> None:
+    echoed_credential = "ghp_" + "s" * 36
+    said = "noise\n" * 2_000 + f"fatal: authentication failed: {echoed_credential}"
+
+    reason = UnknownOutcomeReason(128, 12, said)
+
+    assert len(reason.detail) <= MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS
+    assert echoed_credential not in reason.detail
+    assert reason.detail.endswith(f"fatal: authentication failed: {REDACTION_MARKER}")
+
+
+def test_an_unknown_outcome_cannot_claim_a_negative_duration() -> None:
+    with pytest.raises(ValueError, match="nonnegative duration"):
+        UnknownOutcomeReason(None, -1, "")
 
 
 def test_a_documentation_release_request_keeps_the_exact_reviewed_replacement() -> None:
