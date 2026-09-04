@@ -11,6 +11,7 @@ dependencies = [
     "dbos==2.29.0",
     "fastapi==0.141.1",
     "githubkit==0.16.1",
+    "httpx==0.28.1",
     "jsonschema==4.26.0",
     "pydantic==2.13.4",
     "pyyaml==6.0.3",
@@ -26,7 +27,6 @@ atelier2-runner-identity-receiver = "atelier2.runner.identity_receiver:main"
 
 [dependency-groups]
 dev = [
-    "httpx==0.28.1",
     "import-linter==2.13",
     "openapi-spec-validator==0.9.0",
     "pytest==9.1.1",
@@ -201,6 +201,25 @@ as_packages = true
 ignore_imports = [
     "atelier2.adapters.yaml_workflows -> yaml",
     "atelier2.adapters.markdown_agent_definitions -> yaml",
+]
+unmatched_ignore_imports_alerting = "error"
+
+# The outbound webhook transport and every GitHub credential exchange are the
+# only production callers of httpx; a fifth import site would otherwise reach
+# the network with no declared owner.
+[[tool.importlinter.contracts]]
+id = "httpx-owner"
+name = "httpx stays inside its declared transport owners"
+type = "forbidden"
+source_modules = ["atelier2"]
+forbidden_modules = ["httpx"]
+allow_indirect_imports = true
+as_packages = true
+ignore_imports = [
+    "atelier2.adapters.http_webhook_transport -> httpx",
+    "atelier2.adapters.github.observation -> httpx",
+    "atelier2.adapters.github.live_effects -> httpx",
+    "atelier2.adapters.github.project_connections -> httpx",
 ]
 unmatched_ignore_imports_alerting = "error"
 
