@@ -158,6 +158,13 @@ change what ADR 0009 decided.
   per hosted model — is accepted, not abstracted away.
 - The human terminal seat (#1099) and a real PTY for a child process (#943) stay
   separate from this boundary.
+- Whether the Runner is really the live owner is being measured: a live-usage
+  audit checks whether the Runner path executed any real attempt on the live
+  instance in the last thirty days. If every live attempt still runs through
+  the Serve-local path (`application/execute_agent_attempt.py` and watchdog),
+  the placement is re-questioned before step 1, and this record either confirms
+  the Runner as the owner — which then goes live first — or is amended to make
+  the Serve-local path the owner.
 
 ## Order
 
