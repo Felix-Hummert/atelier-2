@@ -278,11 +278,17 @@ the sweep starts with `WorkItemOrderValue` naming the item's own tracker
 reference and `bindings=()`, never `None` -- a bare request refuses an order.
 A revision with no `graph_inputs` still starts exactly as before. A revision
 that declares anything else -- more than one input, or one pinned to a
-different schema -- is material the sweep has no way to fill; it leaves the
-item `REQUIRED_ORDER_UNAVAILABLE`, the same blocker an unreachable or
-unconnected tracker already carries, and the rest of the sweep still runs.
-The sweep still fires only at process launch (`DbosRuntime.launch()`); a live
-trigger beyond that boot-time sweep is the next #79 slice.
+different schema -- is material the sweep has no way to fill; that one pass
+answers `REQUIRED_ORDER_UNAVAILABLE` for the item and moves on to the rest of
+the sweep -- the same transient, per-sweep answer an unreachable or
+unconnected tracker already gets, not a durable state the item carries
+between sweeps. Nothing renders that answer to the operator yet. An admitted
+item naming a project other than the one this process serves -- reachable
+through `PUT /queue-proposals`, or left behind by a changed served project --
+is never this instance's item either: the sweep leaves it untouched and moves
+on, rather than treating it as corrupt state. The sweep still fires only at
+process launch (`DbosRuntime.launch()`); a live trigger beyond that boot-time
+sweep, and rendering a refused start at its item, are the next #79 slice.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,

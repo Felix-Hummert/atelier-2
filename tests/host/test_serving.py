@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import sqlalchemy as sa
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -40,6 +41,7 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.run_store import load_run_orders
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.grok_subscription import GrokSubscriptionSettings
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -67,7 +69,7 @@ from atelier2.contracts.queue_projection import (
     WorkItemReference,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.runs import RunState, WorkflowRevision
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
@@ -781,5 +783,11 @@ def test_a_queue_started_run_carries_the_admitted_items_tracker_reference(
         decoded = read_work_item_order_document(order.value)
         assert decoded is not None
         assert decoded.reference == tracker_reference
+
+        with engine.connect() as connection:
+            run_record = connection.execute(
+                sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
+            ).scalar_one()
+        assert run_record == RunState.STARTED.value
     finally:
         runtime.close()

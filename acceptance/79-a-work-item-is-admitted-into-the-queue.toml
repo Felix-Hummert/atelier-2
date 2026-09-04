@@ -15,4 +15,4 @@ text = "Migrating the live V43 queue rows into the V44 Phase-D state preserves e
 
 [[sentence]]
 id = "a-refused-queue-start-stays-at-its-item-while-the-sweep-continues"
-text = "When a queued item is started and the start is refused, the failure is visible at that item, and the other admitted items still advance in the same sweep."
+text = "When a queued item's start is refused, the refusal stays scoped to that one item -- it alone stays unstarted -- and the other admitted items still start in the same sweep."

@@ -108,7 +108,7 @@ def advance_queue(
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
     *,
-    workflow_document_parser: WorkflowDocumentParser | None = None,
+    workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None = None,
     tracker: TrackerItemSource | None = None,
     page_limit: int = MAXIMUM_PAGE_ITEMS,
@@ -117,10 +117,16 @@ def advance_queue(
 
     `workflow_document_parser` is what turns a bound revision's published bytes
     into the graph a start can read `graph_inputs` from (ADR 0007's parsing
-    stays an adapter concern, so this is handed in rather than imported); left
-    `None`, a document is started exactly as before, bindings unexamined. That
-    default exists for a caller that never starts a graph-input workflow, not
-    as a production choice -- the live sweep always supplies the real parser.
+    stays an adapter concern, so this is handed in rather than imported).
+    Passed `None`, a document is started exactly as before, bindings
+    unexamined -- a caller says so explicitly rather than falling into it by
+    omission; the live sweep always supplies the real parser.
+
+    An admitted item naming a project other than `served_project` is not this
+    instance's item -- a foreign `project_id` reaches here through
+    `PUT /queue-proposals`, or the served project changes with old rows left
+    behind -- so the sweep leaves it untouched (no launch binding, no run, no
+    blocker invented) and continues with the next admitted item.
     """
     admitted_items: list[QueueItemSnapshot] = []
     after: QueueItemId | None = None
@@ -145,7 +151,7 @@ def advance_queue(
             break
         after = page.next_after
     ordered = sorted(admitted_items, key=queue_start_order_key)
-    return tuple(
+    outcomes = (
         _advance_one(
             item,
             queue,
@@ -157,6 +163,7 @@ def advance_queue(
         )
         for item in ordered
     )
+    return tuple(outcome for outcome in outcomes if outcome is not None)
 
 
 def _advance_one(
@@ -167,8 +174,11 @@ def _advance_one(
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
-) -> QueueAdvanceOutcome:
+) -> QueueAdvanceOutcome | None:
+    if served_project is not None and item.item_reference.project != served_project:
+        return None
     binding = item.launch_binding
+    binding_preexisted = binding is not None
     if binding is None:
         proposal = item.proposal
         admission = item.admission
@@ -211,11 +221,11 @@ def _advance_one(
         )
         reservation = queue.reserve_launch(proposed_binding)
         match reservation:
-            case (
-                QueueLaunchReserved(binding=reserved)
-                | QueueLaunchAlreadyBound(binding=reserved)
-            ):
+            case QueueLaunchReserved(binding=reserved):
                 binding = reserved
+            case QueueLaunchAlreadyBound(binding=reserved):
+                binding = reserved
+                binding_preexisted = True
             case QueueLaunchBlocked(item=blocked):
                 blocked = _validated_snapshot(blocked)
                 return QueueItemBlocked(
@@ -229,12 +239,27 @@ def _advance_one(
                 raise QueueAdvanceCorrupt(
                     "the queue answered an unknown launch reservation outcome"
                 )
-    if served_project is not None and item.item_reference.project != served_project:
-        raise QueueAdvanceCorrupt(
-            "a queue item names a project other than the one this process serves"
-        )
     order = _bound_work_item_order(item, binding, catalog, workflow_document_parser)
     if isinstance(order, _RequiredOrderUnavailable):
+        # A binding this sweep just reserved can own no run yet, so a fresh
+        # item is blocked without ever asking the starter (pinned by
+        # `test_a_document_declaring_more_than_the_sweep_can_fill_is_blocked_not_guessed_at`).
+        # A binding that already existed before this call may already have
+        # started a run under an earlier, fillable read of the same document
+        # -- the durable answer, not a second guess at the order, decides
+        # whether that item is blocked or already active.
+        if binding_preexisted:
+            probe = start_published_run(
+                binding.run_id,
+                binding.workflow_revision_hash,
+                None,
+                starter,
+                project=served_project,
+            )
+            if isinstance(probe, RunExisting):
+                return QueueRunAlreadyActive(
+                    item.item_reference.item_id, binding, probe.run
+                )
         return QueueItemBlocked(
             item.item_reference.item_id,
             (QueueBlockerKind.REQUIRED_ORDER_UNAVAILABLE,),
