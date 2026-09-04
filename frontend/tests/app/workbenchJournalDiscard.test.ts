@@ -9,7 +9,7 @@ import { runPageCopy } from "../../src/lib/runPageCopy";
 import { MUTATION_JOURNAL_STORAGE_KEY } from "../../src/lib/storageKeys";
 import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
 import { cockpitApiStub } from "../support/cockpitApi";
-import { waitingInputRun } from "../support/runV3";
+import { runRow, waitingInputRun } from "../support/runV3";
 import {
   describeWorkbenchControl,
   questionForWorkbenchControl,
@@ -46,7 +46,7 @@ function stubDialogMethods(): void {
 
 function listRunsWaiting(waiting: readonly ReturnType<typeof waitingInputRun>[]) {
   return async (_after?: string, state?: string): Promise<RunPage> => ({
-    items: state === "WAITING_INPUT" ? [...waiting] : [],
+    items: state === "WAITING_INPUT" ? waiting.map(runRow) : [],
     next_after: null
   });
 }
