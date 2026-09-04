@@ -196,6 +196,7 @@ from atelier2.ports.agent_attempts import (
     AgentExecutorBindingRefusalNeedsPreparedCleanup,
     AgentExecutorBindingRefusalResult,
     AgentExecutorBindingRefusalWritten,
+    KeptEvidence,
     ProjectVerificationFailureEvidence,
     RunCancellationAccepted,
     RunCancellationCommandConflict,
@@ -1108,15 +1109,29 @@ def _verification_failure_verdict(
         words.append(f"after {evidence.duration_seconds:.0f} s")
         if evidence.summary_line is not None:
             words.append(_bounded_verification_summary(evidence.summary_line))
-        if evidence.output_artifact_hash is not None:
-            words.append(
-                f"output artifact sha256:{evidence.output_artifact_hash.value}"
-            )
-        if evidence.redacted:
-            words.append("output redacted")
-        if evidence.retention_failure is not None:
-            words.append(f"output could not be kept: {evidence.retention_failure}")
+        words.extend(_named_evidence("output", evidence.output))
+        words.extend(_named_evidence("candidate diff", evidence.candidate_diff))
     return "; ".join(words)
+
+
+def _named_evidence(name: str, kept: KeptEvidence) -> tuple[str, ...]:
+    """Where one piece of this evidence was kept, or why it was not kept at all.
+
+    Silence is the honest answer for a piece that never existed -- a check that
+    printed nothing, an attempt with nothing to diff -- because a receipt saying
+    "no artifact" about something that was never there tells a reader nothing.
+    A piece that existed and could not be kept says so instead.
+    """
+
+    if kept.artifact_hash is not None:
+        return (
+            (f"{name} artifact sha256:{kept.artifact_hash.value}", f"{name} redacted")
+            if kept.redacted
+            else (f"{name} artifact sha256:{kept.artifact_hash.value}",)
+        )
+    if kept.retention_failure is not None:
+        return (f"{name} could not be kept: {kept.retention_failure}",)
+    return ()
 
 
 def _bounded_verification_summary(summary_line: str) -> str:
@@ -2249,6 +2264,11 @@ class DbosAgentAttemptStore:
             )
             return failed
         if redemption is not None and redemption.exit_code != 0:
+            # The bytes reached here past the refusal above, which means this
+            # node's own declared schema admitted them. That judgment is kept
+            # with the ending, exactly as a refused one is: the check said no to
+            # work, and a reader who cannot see what the provider answered
+            # cannot tell a broken build from a builder that did nothing (#1156).
             return _fail_current_attempt(
                 connection,
                 execution,
@@ -2260,6 +2280,8 @@ class DbosAgentAttemptStore:
                         redemption, verification_failure_evidence
                     ),
                 ),
+                PublishedRevisionHash(declared.schema_reference.revision),
+                result.output_bytes,
                 runner_evidence_hash=runner_evidence_hash,
                 transcript=result.transcript,
             )
@@ -2792,6 +2814,30 @@ class DbosAgentAttemptStore:
             execution,
             AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
             NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
+            verdict,
+            transcript,
+        )
+
+    def complete_candidate_unchanged(
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
+    ) -> AgentAttemptFailed:
+        """End the armed attempt that left the tree its pin named untouched.
+
+        No process died, no form refused anything and no check ever ran, so
+        there is no exit code and no `tool_redemptions` row -- `verdict` carries
+        the words of the caller that compared the two trees, and the provider's
+        own answer stands in them. The attempt is terminal: a run whose builder
+        produced nothing has nothing for a later node to judge, and pretending
+        otherwise is how ten minutes of verification came to be spent on a
+        pinned tree (#1156).
+        """
+        return self._judged_armed_failure(
+            execution,
+            AgentAttemptFailureCode.CANDIDATE_UNCHANGED,
+            NodeReceiptReason.CANDIDATE_UNCHANGED,
             verdict,
             transcript,
         )

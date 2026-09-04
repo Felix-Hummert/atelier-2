@@ -413,11 +413,11 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head publishes what a V3 agent node may say about the role it
-    declares: `difficulty` (`RoleDifficulty`), `kind` (`RoleKind`),
-    `family_differs_from`, and a `model` pin carrying the pattern that makes it
-    one exact provider id rather than an alias -- so an author reading the
-    description sees the whole grammar the parser accepts (#711).
+    it. This head publishes the two attempt failure codes an `AGENT_FAILED`
+    event may now carry: `CANDIDATE_UNCHANGED`, the ending of an attempt that
+    left its pinned tree untouched, and `CANDIDATE_CAPTURE_FAILED`, which the
+    store has written since #642 while this vocabulary silently refused it
+    (#1156).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 

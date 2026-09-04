@@ -19,7 +19,7 @@ from atelier2.api.wire.events import (
     AgentCompletedEventResourceV3,
     RunEventResourceV3,
 )
-from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -51,7 +51,6 @@ RUN_ID = RunId("v3-event-vocabulary")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)
 NODE_ID = "implement"
 ATTEMPT_ID = "a" * 64
-FAILURE_PAYLOAD = b"PROCESS_EXITED_UNSUCCESSFULLY"
 COMPLETED_PAYLOAD = b"hello"
 
 
@@ -132,27 +131,26 @@ def test_format_3_agent_completed_carries_its_output_as_exact_bytes() -> None:
     assert isinstance(resource, AgentCompletedEventResourceV3)
 
 
-@pytest.mark.parametrize(
-    "failure_code",
-    (
-        "PROCESS_EXITED_UNSUCCESSFULLY",
-        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-        "PROCESS_SUPERVISION_FAILED",
-    ),
-)
+@pytest.mark.parametrize("failure_code", tuple(AgentAttemptFailureCode))
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
 def test_format_3_agent_failed_names_its_failure_code_and_its_attempt(
-    failure_code: str,
+    failure_code: AgentAttemptFailureCode,
 ) -> None:
+    """Every name an attempt can fail under reaches the event a reader sees.
+
+    Driven from the owner's own membership rather than a hand-kept list: a code
+    the served vocabulary does not carry is a durable payload the projection
+    refuses, which is how `CANDIDATE_CAPTURE_FAILED` once reached nobody (#642).
+    """
     resource = run_event_resource(
-        v3_projection(RunEventKind.AGENT_FAILED, failure_code.encode("ascii")),
+        v3_projection(RunEventKind.AGENT_FAILED, failure_code.value.encode("ascii")),
         SERVED_RAIL,
     )
 
     dumped = resource.model_dump(mode="json")
     assert dumped["workflow_format_version"] == 3
     assert dumped["event"] == "AGENT_FAILED"
-    assert dumped["failure_code"] == failure_code
+    assert dumped["failure_code"] == failure_code.value
     assert dumped["reason"] is None
     assert dumped["attempt_id"] == ATTEMPT_ID
     assert dumped["node_rail"] == [

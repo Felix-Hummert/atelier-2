@@ -30,7 +30,11 @@ from atelier2.api.wire.events import (
     WaitCancelledEventResourceV3,
     WaitingInputEventResourceV3,
 )
-from atelier2.api.wire.resources import CancellationDispositionName, NodeRailResource
+from atelier2.api.wire.resources import (
+    AgentAttemptFailureCodeName,
+    CancellationDispositionName,
+    NodeRailResource,
+)
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
@@ -135,17 +139,7 @@ def run_event_resource(
             raise ValueError("V3 agent failure has no exact attempt binding")
         return AgentFailedEventResourceV3(
             event=event.event_kind.value,
-            failure_code=cast(
-                Literal[
-                    "PROCESS_EXITED_UNSUCCESSFULLY",
-                    "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-                    "PROCESS_SUPERVISION_FAILED",
-                    "OUTPUT_SCHEMA_REFUSED",
-                    "AGENT_REFUSED",
-                    "PROJECT_VERIFICATION_FAILED",
-                ],
-                failure_code,
-            ),
+            failure_code=cast(AgentAttemptFailureCodeName, failure_code),
             reason=projection.node_receipt_reason,
             attempt_id=binding.attempt_id.value,
             attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
