@@ -28,6 +28,9 @@ external claims against primary sources. Mark unknowns.
 
 Do not duplicate guidance. Update the owner.
 
+No new item without a named caller, and no hardening without usage evidence
+(operator ruling 04.09.2026).
+
 ## Code
 
 - Identify the owner, state, configuration, failure modes, and verification
@@ -45,6 +48,13 @@ Do not duplicate guidance. Update the owner.
   naming it — an open sentence or named gap on the owning item — and waits for
   usage evidence. A review judges the slice against its declared sentences, not
   against all conceivable hardness. (Operator + coordinator ruling, 16.08.2026.)
+- Code reached only by tests is dead code: reachability counts from real
+  entry points — composition root, routes, CLI, workflows — and a test is not
+  a caller (operator ruling 04.09.2026).
+- Code built ahead of its caller is frozen, not deleted: it stays in the tree,
+  gets no hardening and no new tests, keeps the tests it has, and is listed
+  against the item that names its caller. It is deleted when no item names one
+  (operator ruling 04.09.2026).
 - Match existing style unless it conflicts with this file or preserves a known
   defect.
 - Use readable, fully written names. Avoid abbreviations unless established.
