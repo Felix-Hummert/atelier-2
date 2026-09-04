@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
+from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WaitNodeV3, WorkflowGraphV3
 from atelier2.host.mcp_tools import MCP_SERVER_NAME, McpToolName
 
@@ -183,7 +183,7 @@ def _conductor_instruction() -> str:
         f'started, an empty array when none, "{_REPORT_CARRIED_CONTEXT_FIELD}": '
         "what you need to remember of this conversation for your own next "
         "round, kept short enough that this whole JSON report stays within "
-        f"{MAXIMUM_INSTANCE_DOCUMENT_BYTES} bytes once encoded, "
+        f"{MAXIMUM_AGENT_OUTPUT_BYTES_V2} bytes once encoded, "
         f'"{_REPORT_CARRIED_CONTEXT_TRUNCATED_FIELD}": true only '
         "when that carried context had to drop something the conversation so "
         "far held, false when it is complete}."

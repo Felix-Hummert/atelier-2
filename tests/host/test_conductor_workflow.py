@@ -31,6 +31,7 @@ from atelier2.application.publish_workflow_revision import (
     publish_workflow_revision,
 )
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
@@ -47,7 +48,6 @@ from atelier2.contracts.provider_probe_receipts import (
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
-    MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     InstanceAccepted,
     InstanceRefused,
     SchemaAccepted,
@@ -238,30 +238,40 @@ def test_carried_context_is_bounded_in_bytes_not_code_points() -> None:
 
     #658 P3: `carried_context`'s own ceiling used to be a JSON Schema
     `maxLength` counted in code points, a different unit than the byte seam
-    (`MAXIMUM_INSTANCE_DOCUMENT_BYTES`) that actually reads the produced
-    report, both at the success write and at the round hand-off. A
-    multibyte-heavy `carried_context` could pass the code-point count and
-    still be refused loud at the byte seam. The report schema now declares no
-    competing bound, so the one byte seam alone decides: a two-byte character
-    repeated to land exactly on the ceiling is accepted, and one byte more --
-    a single trailing ASCII character -- is refused.
+    (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`) that actually reads the produced
+    report at both doors -- the success write
+    (`atelier2.adapters.dbos.agent_attempt_store`) and the round hand-off
+    (`atelier2.adapters.dbos.run_store`), #1078 edge 1. A multibyte-heavy
+    `carried_context` could pass the code-point count and still be refused
+    loud at the byte seam. The report schema now declares no competing
+    bound, so the one byte seam alone decides: a two-byte character repeated
+    to land exactly on the ceiling is accepted, and one byte more -- a
+    single trailing ASCII character -- is refused.
     """
 
     report_schema = _accepted(CONDUCTOR_REPORT_SCHEMA)
     overhead = len(_report(carried_context="", ensure_ascii=False))
     # "é" (U+00E9) encodes as exactly two UTF-8 bytes, so this count of
     # repeats lands the whole report exactly on the byte ceiling.
-    repeats = (MAXIMUM_INSTANCE_DOCUMENT_BYTES - overhead) // 2
+    repeats = (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - overhead) // 2
     at_the_byte_ceiling = _report(carried_context="é" * repeats, ensure_ascii=False)
     one_byte_over = _report(carried_context="é" * repeats + "x", ensure_ascii=False)
-    assert len(at_the_byte_ceiling) == MAXIMUM_INSTANCE_DOCUMENT_BYTES
-    assert len(one_byte_over) == MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1
+    assert len(at_the_byte_ceiling) == MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    assert len(one_byte_over) == MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1
 
     assert isinstance(
-        read_instance_document(at_the_byte_ceiling, report_schema), InstanceAccepted
+        read_instance_document(
+            at_the_byte_ceiling,
+            report_schema,
+            maximum_bytes=MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+        ),
+        InstanceAccepted,
     )
     assert isinstance(
-        read_instance_document(one_byte_over, report_schema), InstanceRefused
+        read_instance_document(
+            one_byte_over, report_schema, maximum_bytes=MAXIMUM_AGENT_OUTPUT_BYTES_V2
+        ),
+        InstanceRefused,
     )
 
 
