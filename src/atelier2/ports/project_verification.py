@@ -45,18 +45,13 @@ is one resident copy of that tail, carried from the adapter that ran the
 command to whichever ending publishes or discards it.
 """
 
-_PYTEST_SUMMARY_LINE = re.compile(r"^=+\s+(.*?)\s+=+\s*$")
-_PYTEST_SUMMARY_KEYWORDS = (
-    "passed",
-    "failed",
-    "error",
-    "errors",
-    "skipped",
-    "xfailed",
-    "xpassed",
-    "warning",
-    "warnings",
-    "no tests ran",
+_BRACKETED_LINE = re.compile(r"=+\s*(?P<content>.*?)\s*=+")
+_VERDICT_COUNT = (
+    r"\d+ (?:passed|failed|error(?:s)?|skipped|xfailed|xpassed|deselected|"
+    r"warning(?:s)?)"
+)
+_VERDICT_LINE = re.compile(
+    rf"(?:no tests ran|{_VERDICT_COUNT}(?:,\s*{_VERDICT_COUNT})*)(?:\s+in\s+.*)?"
 )
 
 
@@ -64,18 +59,25 @@ def pytest_summary_line(output_tail: bytes) -> str | None:
     """The short summary pytest prints last, read from a retained tail.
 
     Scanned from the end, because pytest brackets several section headers the
-    same way (`FAILURES`, `short test summary info`) and only the very last one
-    is the run's own verdict. A summary a long run pushed past the retained
-    tail is not a summary this outcome can honestly claim to carry, so a tail
-    with none answers `None` rather than guessing at an earlier section.
+    same way (`FAILURES`, `warnings summary`, `short test summary info`) and
+    only the run's own verdict is one this reads. `pytest -q` -- the shape this
+    runtime actually invokes -- prints that verdict bare, with no `=` border at
+    all; only a plain run without `-q`, or one bracketed for a wider terminal,
+    wraps it. Either way the verdict itself is never prose: it is `no tests
+    ran`, or one or more `<count> <word>` groups pytest's own vocabulary
+    produces, optionally followed by `in <duration>`. A bracketed section
+    header such as `warnings summary` carries no such count and is never
+    mistaken for one. A summary a long run pushed past the retained tail is
+    not a summary this outcome can honestly claim to carry, so a tail with
+    none answers `None` rather than guessing at an earlier section.
     """
     text = output_tail.decode("utf-8", errors="replace")
     for line in reversed(text.splitlines()):
-        matched = _PYTEST_SUMMARY_LINE.match(line.strip())
-        if matched is not None and any(
-            keyword in matched.group(1) for keyword in _PYTEST_SUMMARY_KEYWORDS
-        ):
-            return matched.group(1)
+        stripped = line.strip()
+        bracketed = _BRACKETED_LINE.fullmatch(stripped)
+        content = bracketed.group("content") if bracketed is not None else stripped
+        if _VERDICT_LINE.fullmatch(content) is not None:
+            return content
     return None
 
 
