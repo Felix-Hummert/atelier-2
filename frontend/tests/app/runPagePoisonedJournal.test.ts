@@ -255,7 +255,11 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
       }
     });
 
-    await waitFor(() => expect(reported).toBe(1));
+    // V3RunView mounts RunCancelCard as a child and passes it the same
+    // onJournalPoisoned, so both V3RunView.loadPendingWait and
+    // RunCancelCard.loadPending report the poisoned journal independently --
+    // the settled count is 2, not 1.
+    await waitFor(() => expect(reported).toBe(2));
     // Deferring entirely to the page: no local door, no local sentence, and
     // the raw throw never leaked into the wait card's own failure slot.
     expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();

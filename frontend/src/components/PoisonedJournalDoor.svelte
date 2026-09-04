@@ -28,8 +28,8 @@
    * The run page needs nothing further: its own read sites already heal
    * themselves the same way they react to any other prop change. */
   export let onHealed: () => void = () => {};
-  /** Focus target once the discard has landed -- the same place a fresh page
-   * load would put it. */
+  /** Where focus lands once the discard has landed; each caller names its
+   * own room-level landing spot. */
   export let focusAfterHeal: { focus(): void } | null = null;
   export let doorAttributes: Record<string, string> = {};
   export let confirmAttributes: Record<string, string> = {};
