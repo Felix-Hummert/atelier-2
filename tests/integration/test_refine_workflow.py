@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
+from atelier2.application.compose_node_job import ORDER_HEADING, RESULT_HEADING
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -93,8 +94,8 @@ RULING_SCHEMA = PublishedRevision(
 )
 VISION_TEXT = "Ich möchte für Projekte einen verständlichen Einstellungsbereich."
 OWNER_DOCUMENTS_TEXT = "Projekte haben Namen und sichtbare Einstellungen."
-VISION = json.dumps(VISION_TEXT).encode()
-OWNER_DOCUMENTS = json.dumps(OWNER_DOCUMENTS_TEXT).encode()
+VISION = VISION_TEXT.encode()
+OWNER_DOCUMENTS = OWNER_DOCUMENTS_TEXT.encode()
 REFINEMENT = {
     "mirror": (
         "So habe ich dich verstanden: Du willst Projekte einfach einstellen. "
@@ -134,9 +135,9 @@ THIRD_REFINEMENT = {
     },
 }
 THIRD_ANSWER = json.dumps(THIRD_REFINEMENT, ensure_ascii=False).encode()
-RULE_YES = b'"ja"'
-RULE_NO = b'"nein"'
-RULE_SHOW_ME = b'"zeig-mir"'
+RULE_YES = b"ja"
+RULE_NO = b"nein"
+RULE_SHOW_ME = b"zeig-mir"
 CONVERSATION_ANSWERS = {
     ("refine", 1): ANSWER,
     ("decide_next_round", 1): b'{"verdict":"revise"}',
@@ -228,6 +229,10 @@ def artifact_order(runtime: DbosRuntime, name: str, content: bytes) -> AuthoredO
     published = DbosArtifactStore(runtime.engine).publish_artifact(Artifact(content))
     assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
     return AuthoredOrder(name, ArtifactOrderValue(published.artifact.artifact_hash))
+
+
+def composed_section(heading: str, value: bytes) -> bytes:
+    return heading.encode() + b"\n\n" + value
 
 
 def start_refine(
@@ -336,8 +341,11 @@ def test_a_refine_round_returns_schema_valid_expectation_proposal(
 
     assert provider.opened is not None
     handed = provider.opened.requests[0].job_bytes
-    assert VISION_TEXT.encode() in handed
-    assert OWNER_DOCUMENTS_TEXT.encode() in handed
+    assert composed_section(ORDER_HEADING.format(name="vision"), VISION) in handed
+    assert (
+        composed_section(ORDER_HEADING.format(name="owner_documents"), OWNER_DOCUMENTS)
+        in handed
+    )
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "refine")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.SUCCEEDED
@@ -374,13 +382,16 @@ def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
         if (request.node_id, request.round_ordinal) == ("decide_next_round", 1)
     )
     assert ANSWER in first_round_decision
-    assert RULE_YES in first_round_decision
+    yes_ruling_section = composed_section(
+        RESULT_HEADING.format(node="rule_expectation", name="ruling"), RULE_YES
+    )
+    assert yes_ruling_section in first_round_decision
     second_refine_job = next(
         request.job_bytes
         for request in provider.opened.requests
         if (request.node_id, request.round_ordinal) == ("refine", 2)
     )
-    assert RULE_YES in second_refine_job
+    assert yes_ruling_section in second_refine_job
     second_question = durable_queries(runtime.engine).get_node_detail(
         run_id, "rule_expectation"
     )
@@ -398,13 +409,16 @@ def test_a_refine_run_waits_for_each_ruling_and_carries_it_to_the_next_round(
         if (request.node_id, request.round_ordinal) == ("decide_next_round", 2)
     )
     assert SECOND_ANSWER in second_round_decision
-    assert RULE_SHOW_ME in second_round_decision
+    show_me_ruling_section = composed_section(
+        RESULT_HEADING.format(node="rule_expectation", name="ruling"), RULE_SHOW_ME
+    )
+    assert show_me_ruling_section in second_round_decision
     third_refine_job = next(
         request.job_bytes
         for request in provider.opened.requests
         if (request.node_id, request.round_ordinal) == ("refine", 3)
     )
-    assert RULE_SHOW_ME in third_refine_job
+    assert show_me_ruling_section in third_refine_job
     third_question = durable_queries(runtime.engine).get_node_detail(
         run_id, "rule_expectation"
     )

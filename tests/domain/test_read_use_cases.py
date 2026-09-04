@@ -430,7 +430,7 @@ def test_a_wait_answer_schema_classifies_free_for_every_named_resolution_failure
 
     assert isinstance(result, WorkflowRevisionRead)
     assert result.wait_answer_classifications == (
-        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free"),
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free", string_typed=False),
     )
 
 
@@ -473,11 +473,87 @@ def test_a_schema_document_is_validated_at_most_once_across_two_separate_reads(
     assert isinstance(second, WorkflowRevisionRead)
     assert first.wait_answer_classifications == (
         WaitAnswerClassification(
-            node_id=WAIT_NODE_ID, kind="enum", values=('"issue-937-round-4"',)
+            node_id=WAIT_NODE_ID,
+            kind="enum",
+            string_typed=True,
+            values=("issue-937-round-4",),
         ),
     )
     assert second.wait_answer_classifications == first.wait_answer_classifications
     assert validated <= 1
+
+
+def test_a_wait_answer_schema_classifies_string_for_a_plain_string_schema() -> None:
+    """A `type: string` schema with no `enum` is the raw-text wait a composer
+    sends verbatim, never JSON-quoted (#1091's dogfood defect)."""
+    schema = PublishedRevision(
+        RevisionKind.SCHEMA, b'{"type": "string", "minLength": 1}'
+    )
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+
+    result = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(result, WorkflowRevisionRead)
+    assert result.wait_answer_classifications == (
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID, kind="string", string_typed=True
+        ),
+    )
+
+
+def test_a_wait_answer_schema_classifies_enum_over_string_when_a_schema_names_both() -> (
+    None
+):
+    """An `enum` on a `type: string` schema still classifies `enum`, the more
+    specific answer -- `string` names only a schema with no closed member set.
+    The door reads a `type: string` schema's own top level, `enum` and all, so
+    the classification still carries the raw text the door admits, marked
+    `string_typed` (#1091 PR #1108 finding 1), never the JSON-quoted text a
+    plain (non-string-typed) `enum` carries."""
+    schema = PublishedRevision(
+        RevisionKind.SCHEMA, b'{"type": "string", "enum": ["ship", "hold"]}'
+    )
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+
+    result = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(result, WorkflowRevisionRead)
+    assert result.wait_answer_classifications == (
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID,
+            kind="enum",
+            string_typed=True,
+            values=("ship", "hold"),
+        ),
+    )
+
+
+def test_a_string_typed_enum_naming_a_non_string_member_classifies_free() -> None:
+    """A `type: string` schema whose `enum` names a member that is not itself a
+    string is self-contradictory -- no raw text could ever be that member --
+    so this reader declines to guess a closed set from it, the same honest
+    `free` a plain enum falls back to for a member `_json_wire_scalar` cannot
+    encode."""
+    schema = PublishedRevision(
+        RevisionKind.SCHEMA, b'{"type": "string", "enum": ["ship", 1]}'
+    )
+    projection = _wait_revision_projection(schema.revision_hash.value)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+
+    result = get_workflow_revision(
+        REVISION_HASH, queries, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(result, WorkflowRevisionRead)
+    assert result.wait_answer_classifications == (
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free", string_typed=False),
+    )
 
 
 def test_a_resolver_answering_a_different_revision_than_pinned_is_not_cached() -> None:
@@ -500,11 +576,13 @@ def test_a_resolver_answering_a_different_revision_than_pinned_is_not_cached() -
 
     assert isinstance(mismatched, WorkflowRevisionRead)
     assert mismatched.wait_answer_classifications == (
-        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free"),
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free", string_typed=False),
     )
     assert isinstance(correct, WorkflowRevisionRead)
     assert correct.wait_answer_classifications == (
-        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="boolean"),
+        WaitAnswerClassification(
+            node_id=WAIT_NODE_ID, kind="boolean", string_typed=False
+        ),
     ), (
         "the mismatched resolve must not have cached the stranger's schema under the pinned hash"
     )

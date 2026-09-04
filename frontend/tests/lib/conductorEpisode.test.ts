@@ -22,12 +22,19 @@ function conductorRun(
   } as RunV3;
 }
 
+/**
+ * The conductor's message wait is a `{type: "string"}` schema, so the
+ * composer sends the operator's text raw, with no JSON-quoting layer
+ * (`CONDUCTOR_MESSAGE_IS_STRING_SCHEMA`, #1091 PR #1108 finding 3) --
+ * `answer_base64` here carries exactly the bytes that convention hands the
+ * wire, never `JSON.stringify(text)`.
+ */
 function answeredMessage(cursor: string, text: string): RunEvent {
   return {
     event: "WAIT_ANSWERED",
     cursor,
     node_id: "next_message",
-    answer_base64: btoa(JSON.stringify(text))
+    answer_base64: btoa(text)
   } as RunEvent;
 }
 
@@ -92,6 +99,15 @@ describe("the durable conductor transcript", () => {
       ["you", "Start the canary"],
       ["house", "Canary is ready."]
     ]);
+  });
+
+  it("shows the operator's own message verbatim, quotes and all, with no JSON layer to undo", () => {
+    const transcript = reduceConductorEvent(
+      emptyConductorTranscript(),
+      answeredMessage("run1.conversation:1", 'say "yes" to the run')
+    );
+
+    expect(transcript.messages[0]?.text).toBe('say "yes" to the run');
   });
 
   it("keeps an answered round legible when its conductor fails", () => {
