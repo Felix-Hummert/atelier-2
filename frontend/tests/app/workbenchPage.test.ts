@@ -640,6 +640,53 @@ describe("the workbench conductor conversation", () => {
     );
   });
 
+  // #1078 B4 (Opus field report): a typed message twice vanished on send --
+  // composer cleared, no POST, no error -- because the composer used to clear
+  // before the write was confirmed. The composer now keeps the words on a
+  // failed send and the transcript carries the failed line with its own
+  // Resend, which is the exact same send path the composer's own Send uses.
+  it("keeps the composer text and offers Resend on a failed send, and Resend performs the same POST", async () => {
+    const run = conductorRunFixture();
+    let refuseNextAnswer = true;
+    const answer = vi.fn<CockpitApi["answer"]>(async () => {
+      if (refuseNextAnswer) {
+        refuseNextAnswer = false;
+        throw new Error("network down");
+      }
+      return { status: 200, value: run };
+    });
+    openChat({
+      ...conductorConnectionOverrides(),
+      listRuns: listRunsForConductor(run),
+      getRun: vi.fn(async () => run),
+      answer
+    });
+    const { screen, waitFor, fireEvent } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    await screen.findByText(conductorConversationCopy.composerHint);
+
+    await say("the message that failed");
+
+    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
+      "value",
+      "the message that failed"
+    );
+    const failedLine = screen.getByText(workbenchPageCopy.conductorMessageFailed).closest("li");
+    expect(failedLine?.classList.contains("conversation-line-failed")).toBe(true);
+    expect(failedLine?.textContent).toContain("the message that failed");
+    expect(answer).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: workbenchPageCopy.resendConductorMessage })
+    );
+
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(2));
+    expect(answer.mock.calls[1]?.[0].body_base64).toBe(answer.mock.calls[0]?.[0].body_base64);
+    await waitFor(() => expect(screen.queryByText(workbenchPageCopy.conductorMessageFailed)).toBeNull());
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
+  });
+
   // Finding 2 (#959 review): the old guard allowed only WAITING_INPUT and
   // COMPLETED, so a FAILED conversation blocked Send forever and survived a
   // reload via `restoreConductorConversation`. Every terminal state now
@@ -694,7 +741,14 @@ describe("the workbench conductor conversation", () => {
 
     await say("Let's try again");
 
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
+    // The run starting is not the message landing (#1078 B4): this fixture's
+    // fresh run never reaches WAITING_INPUT, so the wait answer never
+    // confirms, and the composer keeps the words rather than clearing on the
+    // start alone.
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
+      "value",
+      "Let's try again"
+    );
     await waitFor(() => expect(start).toHaveBeenCalled());
     // The fresh run is genuinely a new, distinct conversation in flight --
     // not the same failed one pretending to have recovered.
