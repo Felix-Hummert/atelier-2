@@ -210,7 +210,11 @@ when the configured remote reads back that exact commit; the PR uses the same
 branch as its head. Because neither remote absence nor an inconclusive post-send
 readback proves what happened, both enter or remain in durable reconciliation
 instead of permitting another push, while an operator-authorized send is still
-fenced by a create-only lease.
+fenced by a create-only lease. The live-GitHub `open-pr` adapter renders that
+PR's own title and body from the candidate's summary and changed paths rather
+than its raw report, stating the default `Literal acceptance sentence(s): none`
+exemption the repository's own acceptance gate reads, never the report's bare
+JSON.
 
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --
