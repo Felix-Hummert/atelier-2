@@ -1324,7 +1324,7 @@ def test_real_console_launcher_starts_and_closes_one_runtime(tmp_path: Path) -> 
 
     first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        health = wait_for_health(port)
+        health = wait_for_health(port, first)
         assert re.fullmatch(RECORDED_AT_PATTERN, health.pop("serve_started_at", ""))
         assert health == {
             "status": "serving",
@@ -1337,7 +1337,7 @@ def test_real_console_launcher_starts_and_closes_one_runtime(tmp_path: Path) -> 
 
     second = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        assert wait_for_health(port)["status"] == "serving"
+        assert wait_for_health(port, second)["status"] == "serving"
     finally:
         second_error = stop_child_process(second)
     assert second.returncode == 0, second_error.decode(errors="replace")
@@ -1385,7 +1385,7 @@ def test_real_console_launcher_serves_one_opaque_project_resource(
 
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        wait_for_health(port)
+        wait_for_health(port, child)
         with urlopen(f"http://127.0.0.1:{port}{PROJECTS_PATH}", timeout=2) as response:
             listed = json.load(response)
         (project,) = listed["items"]
@@ -1459,7 +1459,7 @@ def test_a_stop_with_an_open_events_stream_exits_within_the_shutdown_grace(
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     events_stream = None
     try:
-        wait_for_health(port)
+        wait_for_health(port, child)
         events_stream = urlopen(
             Request(
                 f"http://127.0.0.1:{port}{ATTENTION_EVENT_PATH}",
@@ -1524,17 +1524,47 @@ def free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def wait_for_health(port: int) -> dict[str, str]:
-    deadline = time.monotonic() + 10
+# How long a spawned `uv run atelier2 serve` subprocess may take to answer
+# its own health door before this wait gives up. Reaching that answer costs
+# CPU-bound work -- `uv run` resolving the project, then importing the whole
+# adapter catalogue (DBOS, uvicorn, every provider factory) before uvicorn
+# ever binds a socket -- so it stretches under machine load rather than
+# staying flat; 10 s assumed an idle host and flaked under real contention. 60
+# s clears cold starts observed under heavy load with headroom, while still
+# failing a genuinely stuck server well inside a test run rather than hanging
+# it.
+_HEALTH_POLL_TIMEOUT_SECONDS = 60.0
+_HEALTH_POLL_INTERVAL_SECONDS = 0.05
+
+
+def wait_for_health(port: int, process: subprocess.Popen[bytes]) -> dict[str, str]:
+    """Wait for a spawned server's own health door to answer.
+
+    Polls the real readiness signal -- the health endpoint the server itself
+    exposes -- inside a generous, named bound rather than a stopwatch sized
+    for an idle machine. A process that has already exited fails this
+    immediately with its captured output instead of polling out the whole
+    bound against a server that will never come up.
+    """
+    deadline = time.monotonic() + _HEALTH_POLL_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
+        exit_code = process.poll()
+        if exit_code is not None:
+            _, stderr = process.communicate()
+            raise AssertionError(
+                f"local host exited ({exit_code}) before it became healthy: "
+                f"{stderr.decode(errors='replace')}"
+            )
         try:
             with urlopen(
                 f"http://127.0.0.1:{port}/atelier/api/v1/health", timeout=0.2
             ) as response:
                 return json.load(response)
         except OSError:
-            time.sleep(0.05)
-    raise AssertionError("local host did not become healthy")
+            time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
+    raise AssertionError(
+        f"local host did not become healthy within {_HEALTH_POLL_TIMEOUT_SECONDS}s"
+    )
 
 
 @pytest.mark.proves("an-instance-value-is-set-where-the-instance-is-configured")
