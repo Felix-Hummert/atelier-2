@@ -51,7 +51,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
@@ -100,6 +100,7 @@ from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeVectorId,
     read_provider_probe_receipt,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
 from atelier2.host.address import ADDRESSABLE_SCHEMES, DEFAULT_SERVICE_URL
@@ -107,8 +108,8 @@ from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
     JSON_MEDIA_TYPE,
     RUN_PATH,
-    WORKFLOW_REVISION_PATH,
     AgentRoleBinding,
+    catalog_name_path,
     start_request_body,
 )
 
@@ -813,14 +814,14 @@ def _resolve_admitted_workflows(
             _catalog_name_resolution_resource,
             _get_before_deadline(
                 client,
-                f"{WORKFLOW_REVISION_PATH}/by-name/{quote(workflow_name, safe='')}",
+                catalog_name_path(RevisionKind.WORKFLOW, workflow_name),
                 clock=clock,
                 deadline=deadline,
                 timeout_error=_discovery_timeout,
             ),
             "admitted workflow name",
         )
-        admitted[workflow_name] = WorkflowRevisionHash(resolved.workflow_revision_hash)
+        admitted[workflow_name] = WorkflowRevisionHash(resolved.catalog_revision_hash)
     return admitted
 
 

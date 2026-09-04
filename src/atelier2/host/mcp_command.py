@@ -53,6 +53,7 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, ArtifactHash
 from atelier2.contracts.executions import WaitAnswerActor
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.host.address import (
     ADDRESSABLE_SCHEMES,
     DEFAULT_SERVICE_URL,
@@ -96,6 +97,7 @@ from atelier2.host.run_command import (
     SuppliedWorkItemOrder,
     UnreadableServiceAnswer,
     UnusableRunOrder,
+    catalog_name_path,
     resolve_published_name,
     start_request_body,
 )
@@ -429,7 +431,7 @@ def read_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, A
 def _resolve_listed_name(api: str, name: str) -> CatalogNameResolutionResource | None:
     """Resolve one listed title. An unadmitted name is not a catalog member."""
 
-    asked = f"{api}{WORKFLOW_REVISION_PATH}/by-name/{quote(name, safe='')}"
+    asked = api + catalog_name_path(RevisionKind.WORKFLOW, name)
     try:
         return _decoded(_catalog_name_resolution, _get(asked), "a catalog name")
     except ServiceRefused as refused:

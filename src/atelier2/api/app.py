@@ -161,6 +161,7 @@ def bound_use_cases(
                 ports.catalog_resolver,
                 ports.catalog_admissions,
                 ports.workflow_document_parser,
+                ports.agent_definition_parser,
                 ports.workflow_revision_queries,
             )
         ),
@@ -174,6 +175,7 @@ def bound_use_cases(
                 ports.catalog_resolver,
                 ports.catalog_admissions,
                 ports.workflow_document_parser,
+                ports.agent_definition_parser,
                 ports.workflow_revision_queries,
             )
         ),

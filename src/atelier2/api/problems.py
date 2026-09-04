@@ -436,7 +436,7 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
     "catalog-revision-unpublished": ProblemDefinition(
         409,
         "Catalog revision is unpublished",
-        "Publish the revision through POST /atelier/api/v1/workflow-revisions before giving it a name.",
+        "Publish the revision through the door of its kind before giving it a name.",
     ),
     "catalog-name-held": ProblemDefinition(
         409,
