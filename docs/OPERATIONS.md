@@ -1384,6 +1384,27 @@ gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
 two one owner *and* deleting its entry.
 
+## Code rules: gates, metrics, audit
+
+The code rules in [`AGENTS.md`](../AGENTS.md) fall into three classes, and this
+section only says which class a rule is in; `.github/workflows/ci.yml` stays the
+live list of what actually runs.
+
+Machine-checkable rules are gates there. Running today: the architecture check
+(`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
+above, and the dead-code gates above. Dispatched and not landed yet: `ruff
+check --select ANN401` over `contracts`, `ports`, `application` and `api`
+(#1196). The size, complexity and narrative checks are ruled but unbuilt, and
+the core-test-import ratchet starts only once the first adapter-bound test
+module has moved.
+
+Rules about the shape of a change — slice size, context-file length, the
+adapter-import share in core tests — stay reported metrics and never become
+gates, because a check cannot judge a cut. Everything a machine cannot judge is
+ruled to run as a scheduled agent audit on the self-hosted runner, producing one
+distributor issue per run (operator ruling 04.09.2026); that workflow does not
+exist yet.
+
 ## Verification
 
 Container recipes:
