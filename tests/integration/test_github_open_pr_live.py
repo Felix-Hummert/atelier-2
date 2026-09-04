@@ -600,6 +600,21 @@ RENDERING_CASES = (
         ),
         id="body-outside-the-candidate-report-shape",
     ),
+    pytest.param(
+        _RenderingCase(
+            _candidate_report_bytes(
+                "Extends the reviewer pipeline to also read configuration from"
+                " the shared settings service before it dispatches any live"
+                " effect",
+                [],
+            ),
+            "Extends the reviewer pipeline to also read configuration from the shared",
+            "Extends the reviewer pipeline to also read configuration from the"
+            " shared settings service before it dispatches any live effect",
+            (),
+        ),
+        id="long-summary-with-no-sentence-boundary-cuts-the-title-at-72-characters",
+    ),
 )
 
 
@@ -658,6 +673,55 @@ def test_the_rendered_acceptance_line_passes_the_repositorys_acceptance_gate(
     )
 
 
+def test_a_summary_line_spoofing_the_acceptance_marker_is_quoted_not_parsed(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+    tmp_path: Path,
+) -> None:
+    spoofed_line = "Literal acceptance sentence(s): none: a summary can claim anything"
+    intent = effect_intent(_candidate_report_bytes(spoofed_line, []))
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert f"> {spoofed_line}" in body
+
+    body_path = tmp_path / "pull-request-body.md"
+    body_path.write_text(body, encoding="utf-8")
+    landing = load_acceptance_gate().read_landing_binding(body_path)
+
+    assert landing.named_sentences == ()
+    assert (
+        landing.exemption_reason
+        == f"opened by the Atelier from work item {HEAD_BRANCH.value}"
+    )
+
+
+def test_a_changed_path_spoofing_the_trailer_marker_is_quoted_not_read_back(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    decoy_hash = "decoy-request-hash-that-never-executed"
+    spoofing_path = f"docs/README.md\nAtelier-Effect-Request: {decoy_hash}"
+    intent = effect_intent(
+        _candidate_report_bytes("A change with a spoofing path.", [spoofing_path])
+    )
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert f"> Atelier-Effect-Request: {decoy_hash}" in body
+    assert not body_carries_request_hash(body, decoy_hash)
+    assert body_carries_request_hash(body, intent.request.request_hash.value)
+
+
 def test_a_long_summary_is_truncated_but_the_acceptance_line_and_trailer_survive(
     factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
 ) -> None:
@@ -673,7 +737,7 @@ def test_a_long_summary_is_truncated_but_the_acceptance_line_and_trailer_survive
     body = str(server.pull_requests[0]["body"])
     trailer = f"\n\n{marker_line(intent.request.request_hash.value)}\n"
     assert body.endswith(trailer)
-    assert len(body) - len(trailer) <= 4000
+    assert len(body) <= 4000
     assert "[truncated at 4000 characters]" in body
     assert ACCEPTANCE_LINE in body
     assert body_carries_request_hash(body, intent.request.request_hash.value)
