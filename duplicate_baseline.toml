@@ -24,6 +24,10 @@ left = "atelier2.adapters.claude_subscription._content_blocks"
 right = "atelier2.adapters.grok_subscription._message_content_blocks"
 
 [[pair]]
+left = "atelier2.adapters.claude_subscription._job_with_output_schema_ask"
+right = "atelier2.adapters.grok_subscription._job_with_output_schema_ask"
+
+[[pair]]
 left = "atelier2.adapters.claude_subscription._stream_entry"
 right = "atelier2.adapters.grok_subscription._stream_entry"
 
