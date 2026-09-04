@@ -1011,13 +1011,6 @@
 </section>
 
 <style>
-  .workbench {
-    /* The rail's own ceiling (below), named once so the mobile layout can
-       bound how far `.conversation` may ever need to stay clear of it
-       (#1149) without repeating the formula. */
-    --pinned-rail-max-height: calc(var(--tap) * 7 + var(--space-3) * 3);
-  }
-
   /* The pinned region and the ear are the two fixtures of the Workbench: they
      hold to the top and bottom of the stage while the conversation scrolls
      between them, so an open decision never leaves the screen (issue #580). The
@@ -1033,7 +1026,7 @@
     /* One expanded stage and about three compact decisions keep the ear and
        conversation in the 390px room; more remains reachable by this stack's
        own scroll, whose fade is the promised affordance. */
-    max-height: var(--pinned-rail-max-height);
+    max-height: calc(var(--tap) * 7 + var(--space-3) * 3);
     overflow-y: auto;
     mask-image: linear-gradient(to bottom, var(--mask-opaque) calc(100% - var(--space-3)), transparent);
     -webkit-mask-image: linear-gradient(to bottom, var(--mask-opaque) calc(100% - var(--space-3)), transparent);
@@ -1235,46 +1228,38 @@
   }
 
   @media (max-width: 48rem) {
-    .composer {
-      gap: var(--space-1);
-      padding-top: var(--space-1);
+    /* In the phone room the fixtures above can only keep their promise if the
+       room has an edge: a surface that scrolls as a whole slides the
+       conversation under the pinned rail, because a sticky fixture and a
+       flowing sibling move at different speeds and no fixed offset between
+       them is right at more than one scroll depth (#1149). So the Workbench
+       takes exactly the stage's height and becomes a column of rows: the rail
+       holds the top, the ear the bottom, and the conversation between them is
+       the only row that gives up height -- and therefore the only thing that
+       scrolls (picture §02, #580). */
+    .workbench {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
     }
 
-    /* The sticky rail overlays the stream at this narrow height, and it
-       stays pinned across a wide scroll range on purpose -- the rail must
-       not leave the screen while the operator is mid-conversation (#580),
-       so its containing block is the whole surface, not a snug wrapper
-       around itself alone. `.conversation` is an ordinary flow sibling, not
-       sticky itself, so once the rail pins, a *fixed* offset (the previous
-       `translate`) only clears the gap at the instant the rail starts
-       pinning: from there the conversation keeps climbing the screen 1:1
-       with every further pixel `main` scrolls, and the gap shrinks by
-       exactly that much more by the time the page settles (composer in
-       view) -- thin enough at rest (space-5) to flip sign under the
-       ordinary content-height variance a conversation carries (#1149).
-       Growing that fixed offset does not fix this: it pushes the whole
-       conversation box down by the same amount at every scroll depth, so it
-       closes the rail's edge only by opening the composer's (measured while
-       building this fix: doubling the offset cleared the rail but newly
-       overlapped the composer in a taller-content run). The only
-       offset that cannot both starve and overshoot is one that answers "how
-       far is the rail actually pinned right now", which nothing here can
-       read from a sibling's live height without script -- so `.conversation`
-       is made sticky too, one full rail-height below it. A sticky element
-       cannot be pushed past its own `top` by scrolling (unlike a flow
-       sibling with a fixed offset), so this bounds the overlap at exactly
-       zero for every rail height up to its own ceiling -- and unlike a
-       fixed offset applied to the whole box, the clamp only ever holds the
-       conversation *back*, so it never pushes the conversation's bottom
-       edge any further toward the composer than the small, constant, real
-       margin below already does. That margin alone still carries the
-       at-rest clearance below the mask fade (unchanged from before; a
-       sticky `top` past the rail's own bottom never engages until a real
-       scroll would otherwise slide the conversation above it). */
-    .needs-you ~ .conversation {
-      margin-top: var(--space-5);
-      position: sticky;
-      top: calc(var(--pinned-rail-max-height) + var(--space-3));
+    /* The rail already bounds itself by its own ceiling above; it must not be
+       squeezed below that when the conversation grows. */
+    .needs-you {
+      flex: none;
+    }
+
+    .conversation {
+      min-height: 0;
+      overflow-y: auto;
+    }
+
+    .composer {
+      /* The ear keeps the room's floor even when little has been said, the way
+         the picture holds it there. */
+      margin-top: auto;
+      gap: var(--space-1);
+      padding-top: var(--space-1);
     }
   }
 </style>

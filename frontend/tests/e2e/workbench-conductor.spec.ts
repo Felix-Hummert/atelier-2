@@ -107,7 +107,7 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
   }).toPass({ timeout: 60_000 });
 }
 
-async function photograph(page: Page, name: string, scrollMobileMainToEnd = false): Promise<void> {
+async function photograph(page: Page, name: string, scrollMobileConversationToEnd = false): Promise<void> {
   for (const theme of themes) {
     await page.emulateMedia({ colorScheme: theme });
     for (const viewport of widths) {
@@ -115,7 +115,7 @@ async function photograph(page: Page, name: string, scrollMobileMainToEnd = fals
         width: viewport.width,
         height: viewport.height
       });
-      if (scrollMobileMainToEnd && viewport.width === 390) {
+      if (scrollMobileConversationToEnd && viewport.width === 390) {
         await placeConversationAboveComposer(page);
       }
       await page.screenshot({
@@ -128,8 +128,13 @@ async function photograph(page: Page, name: string, scrollMobileMainToEnd = fals
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
+/**
+ * At phone width the Workbench is the room itself and only the transcript
+ * scrolls inside it (#1149), so reaching the newest line means scrolling that
+ * list rather than the stage.
+ */
 async function placeConversationAboveComposer(page: Page): Promise<void> {
-  await page.getByRole("main").evaluate((element) => {
+  await page.getByRole("list", { name: workbenchPageCopy.transcriptLabel }).evaluate((element) => {
     element.scrollTop = element.scrollHeight - element.clientHeight;
   });
 }
