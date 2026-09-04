@@ -128,7 +128,10 @@ from atelier2.host.conductor_workflow import (
     CONDUCTOR_DOOR_TOOLS,
 )
 from atelier2.host.logging import configure_process_logging
-from atelier2.host.provider_canary import default_provider_canary_state_directory
+from atelier2.host.provider_canary import (
+    default_provider_canary_state_directory,
+    provider_layer_digest,
+)
 from atelier2.host.run_command import REQUEST_TIMEOUT_SECONDS
 from atelier2.host.webhook_delivery import (
     WebhookDeliveryLoop,
@@ -384,7 +387,7 @@ class HostSettings:
                 if self.provider_probe_receipt_directory is not None
                 else default_provider_canary_state_directory()
             ),
-            provider_probe_receipt_source_commit=self.source_commit,
+            provider_probe_receipt_provider_layer_digest=provider_layer_digest(),
         )
 
     def __post_init__(self) -> None:

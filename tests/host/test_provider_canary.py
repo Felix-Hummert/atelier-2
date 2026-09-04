@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -42,10 +43,11 @@ from atelier2.host.provider_canary import (
     PROVIDER_CANARY_MAXIMUM_VECTORS,
     ProviderCanaryDiscoveryFailed,
     ProviderCanaryHttpRefused,
-    ProviderCanaryProcessTimedOut,
     ProviderCanaryServerUnavailable,
     ProviderCanarySettings,
+    _provider_layer_status,
     execute_provider_canaries,
+    provider_layer_digest,
     write_provider_canary_receipt_atomic,
 )
 
@@ -53,6 +55,10 @@ SOURCE_COMMIT = "a" * 40
 CONFIGURATION_HASH = "b" * 64
 TERMINAL_HASH = "c" * 64
 PUBLIC_RUN_REFERENCE = "run1.cHJvdmlkZXItY2FuYXJ5"
+# The canary computes this from the checkout's own adapter files (#1124), the
+# same value `execute_provider_canaries` embeds in every receipt it writes.
+RUNNING_PROVIDER_LAYER_DIGEST = provider_layer_digest()
+FOREIGN_PROVIDER_LAYER_DIGEST = Sha256Hash("9" * 64)
 
 
 @dataclass
@@ -360,11 +366,14 @@ def read_receipts(state_directory: Path) -> tuple[ProviderProbeReceipt, ...]:
     return tuple(receipts)
 
 
-def successful_receipt() -> ProviderProbeReceipt:
+def successful_receipt(
+    *, provider_layer_digest: Sha256Hash = RUNNING_PROVIDER_LAYER_DIGEST
+) -> ProviderProbeReceipt:
     return ProviderProbeReceipt(
         vector=ProviderProbeVectorId(f"headless-{CONFIGURATION_HASH}"),
         configuration_hash=AgentConfigurationRevisionHash(CONFIGURATION_HASH),
         workflow_hash=WorkflowRevisionHash("d" * 64),
+        provider_layer_digest=provider_layer_digest,
         source_commit=SOURCE_COMMIT,
         observed_at=RecordedAt("2026-08-31T08:00:00Z"),
         valid_until=RecordedAt("2026-09-01T10:00:00Z"),
@@ -414,16 +423,22 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     start_bodies = [
         body for _method, path, body in http.calls if path == "/runs" and body
     ]
-    starts = [json.loads(body) for body in start_bodies]
-    resolved = [
+    # Every vector starts together (#1124): two concurrent threads race to
+    # append their own POST to the shared call log, so only the *set* of
+    # starts is a stable assertion, never their order.
+    starts_by_configuration = {
+        start["agent_bindings"][0]["agent_configuration_revision_hash"]: start
+        for start in (json.loads(body) for body in start_bodies)
+    }
+    resolved = {
         path
         for method, path, _body in http.calls
         if method == "GET" and path.startswith("/workflow-revisions/by-name/")
-    ]
-    assert len(starts) == len(resolved) == 2
-    assert starts[0] == {
+    }
+    assert set(starts_by_configuration) == {CONFIGURATION_HASH, "f" * 64}
+    assert starts_by_configuration[CONFIGURATION_HASH] == {
         "workflow_format_version": 2,
-        "run_id": starts[0]["run_id"],
+        "run_id": starts_by_configuration[CONFIGURATION_HASH]["run_id"],
         "workflow_revision_hash": http.workflow_hashes[0],
         "agent_bindings": [
             {
@@ -432,25 +447,14 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
             }
         ],
     }
-    assert [start["agent_bindings"] for start in starts] == [
-        [
-            {
-                "role": "provider-canary",
-                "agent_configuration_revision_hash": CONFIGURATION_HASH,
-            }
-        ],
-        [
-            {
-                "role": "provider-canary",
-                "agent_configuration_revision_hash": "f" * 64,
-            }
-        ],
-    ]
-    assert resolved == [
+    assert resolved == {
         "/workflow-revisions/by-name/provider-canary-headless",
         "/workflow-revisions/by-name/provider-canary-workspace-tools",
-    ]
-    first_start_index = next(
+    }
+    # Discovery (health, listing, workflow resolution) is a strictly earlier,
+    # single-threaded phase: every workflow-resolution GET precedes every
+    # vector's own POST, even though the two POSTs race each other.
+    first_start_index = min(
         index
         for index, (method, path, _body) in enumerate(http.calls)
         if method == "POST" and path == "/runs"
@@ -468,6 +472,9 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
         receipt.terminal_hash.value for receipt in receipts if receipt.terminal_hash
     } == {TERMINAL_HASH}
     assert {receipt.source_commit for receipt in receipts} == {SOURCE_COMMIT}
+    assert {receipt.provider_layer_digest for receipt in receipts} == {
+        RUNNING_PROVIDER_LAYER_DIGEST
+    }
     assert {receipt.valid_until.value for receipt in receipts} == {
         "2026-09-02T10:00:00Z"
     }
@@ -1222,17 +1229,21 @@ def test_discovery_limits_are_loud_and_receipt_neutral(
         )
 
 
-def test_overall_deadline_bounds_cumulative_work_and_never_enters_later_vector(
+def test_the_overall_deadline_bounds_a_hanging_vectors_own_cumulative_work(
     tmp_path: Path, workflow_directory: Path
 ) -> None:
+    """A vector that keeps consuming time past the process budget ends in a
+    loud, receipted `process-timeout` rather than hanging the whole run.
+
+    #1124: this failure is now caught and receipted by the vector's own
+    execution, exactly like a run-timeout or a server refusal -- it no longer
+    aborts `execute_provider_canaries` itself, because concurrent vectors
+    share no single "next vector" checkpoint left to raise from. A sibling
+    vector's own receipt is unaffected by this one's exhausted budget.
+    """
+
     clock = FakeClock()
-    delegate = FakeHttp(
-        (
-            configuration(),
-            configuration(configuration_hash="f" * 64),
-        ),
-        workflow_directory,
-    )
+    delegate = FakeHttp((configuration(),), workflow_directory)
 
     class ConsumingHttp:
         def get(self, path: str, *, timeout_seconds: float) -> bytes:
@@ -1263,15 +1274,15 @@ def test_overall_deadline_bounds_cumulative_work_and_never_enters_later_vector(
         state_directory=state_directory,
         terminal_timeout_seconds=5,
         poll_interval_seconds=1,
-        process_timeout_seconds=5,
+        process_timeout_seconds=4,
     )
 
-    with pytest.raises(ProviderCanaryProcessTimedOut):
-        execute_provider_canaries(canary_settings, http=http, clock=clock)
+    report = execute_provider_canaries(canary_settings, http=http, clock=clock)
 
     starts = [path for method, path, _body in delegate.calls if method == "POST"]
     assert starts == ["/runs"]
     assert clock.elapsed <= canary_settings.process_timeout_seconds
+    assert report.failed == 1
     (first_receipt,) = read_receipts(state_directory)
     assert first_receipt.vector == ProviderProbeVectorId(
         f"headless-{CONFIGURATION_HASH}"
@@ -1288,6 +1299,7 @@ def test_atomic_receipt_replacement_never_exposes_a_partly_written_success(
         vector=ProviderProbeVectorId("headless-vector"),
         configuration_hash=AgentConfigurationRevisionHash(CONFIGURATION_HASH),
         workflow_hash=WorkflowRevisionHash("d" * 64),
+        provider_layer_digest=RUNNING_PROVIDER_LAYER_DIGEST,
         source_commit=SOURCE_COMMIT,
         observed_at=RecordedAt("2026-09-01T08:00:00Z"),
         valid_until=RecordedAt("2026-09-02T10:00:00Z"),
@@ -1305,3 +1317,125 @@ def test_atomic_receipt_replacement_never_exposes_a_partly_written_success(
 
     assert destination.read_bytes() == b"previous-complete-receipt"
     assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_a_hanging_vectors_own_receipt_never_delays_a_sibling_vectors(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """#1124: vectors probe concurrently, proven by both starts being in
+    flight at once.
+
+    Sequential probing could never pass the barrier below: the second
+    vector's own POST would not fire until the first vector's entire attempt
+    -- including its full hang -- had already ended, so the barrier would
+    time out rather than release both threads together.
+    """
+
+    slow_configuration_hash = "f" * 64
+    http = FakeHttp(
+        (
+            configuration(),
+            configuration(
+                provider="xai",
+                executor="grok-subscription-tools/v1",
+                capability="headless_with_tools",
+                configuration_hash=slow_configuration_hash,
+            ),
+        ),
+        workflow_directory,
+    )
+    both_starts_in_flight = threading.Barrier(2, timeout=2.0)
+    never_set = threading.Event()
+
+    class ConcurrentStartHttp:
+        def get(self, path: str, *, timeout_seconds: float) -> bytes:
+            return http.get(path, timeout_seconds=timeout_seconds)
+
+        def post(
+            self,
+            path: str,
+            body: bytes,
+            *,
+            timeout_seconds: float,
+            media_type: str = "application/json",
+        ) -> bytes:
+            both_starts_in_flight.wait()
+            request = json.loads(body)
+            binding = request["agent_bindings"][0]
+            if binding["agent_configuration_revision_hash"] == slow_configuration_hash:
+                # A real client's own timeout would give up after exactly this
+                # long; the event never fires, so this always waits the full
+                # bound rather than racing on when a test happens to run.
+                never_set.wait(timeout=timeout_seconds)
+                raise ProviderCanaryServerUnavailable("hung provider vector")
+            return http.post(
+                path, body, timeout_seconds=timeout_seconds, media_type=media_type
+            )
+
+    state_directory = tmp_path / "state"
+    canary_settings = ProviderCanarySettings(
+        service_url="http://127.0.0.1:8422",
+        workflow_directory=workflow_directory,
+        state_directory=state_directory,
+        terminal_timeout_seconds=0.2,
+    )
+
+    report = execute_provider_canaries(canary_settings, http=ConcurrentStartHttp())
+
+    assert report.attempted == 2
+    assert report.failed == 1
+    receipts = {
+        receipt.configuration_hash.value: receipt
+        for receipt in read_receipts(state_directory)
+    }
+    slow_receipt = receipts[slow_configuration_hash]
+    assert receipts[CONFIGURATION_HASH].result is ProviderProbeResult.SUCCEEDED
+    assert slow_receipt.result is ProviderProbeResult.FAILED
+    assert slow_receipt.problem_code is not None
+    assert slow_receipt.problem_code.value in {"server-unavailable", "run-timeout"}
+
+
+def test_provider_layer_status_names_receipts_kept_when_unchanged(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    http = FakeHttp((configuration(),), workflow_directory)
+    state_directory = tmp_path / "state"
+    write_provider_canary_receipt_atomic(
+        state_directory / f"headless-{CONFIGURATION_HASH}.json",
+        successful_receipt(provider_layer_digest=RUNNING_PROVIDER_LAYER_DIGEST),
+    )
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.provider_layer_status == "receipts kept (provider layer unchanged)"
+
+
+def test_provider_layer_status_names_receipts_invalidated_when_changed(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    http = FakeHttp((configuration(),), workflow_directory)
+    state_directory = tmp_path / "state"
+    write_provider_canary_receipt_atomic(
+        state_directory / f"headless-{CONFIGURATION_HASH}.json",
+        successful_receipt(provider_layer_digest=FOREIGN_PROVIDER_LAYER_DIGEST),
+    )
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.provider_layer_status == (
+        "receipts invalidated (provider layer changed: "
+        f"{FOREIGN_PROVIDER_LAYER_DIGEST.value[:8]} → "
+        f"{RUNNING_PROVIDER_LAYER_DIGEST.value[:8]})"
+    )
+
+
+def test_provider_layer_status_is_kept_on_a_first_ever_run() -> None:
+    status = _provider_layer_status(
+        Path("/nonexistent/never-created"), RUNNING_PROVIDER_LAYER_DIGEST
+    )
+
+    assert status == "receipts kept (provider layer unchanged)"

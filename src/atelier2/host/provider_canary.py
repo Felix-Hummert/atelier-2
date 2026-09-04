@@ -38,11 +38,13 @@ as the retry key before POST and replaying it until its outcome is receipted.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,6 +55,9 @@ from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
+from atelier2.adapters import claude_subscription as claude_subscription_adapter
+from atelier2.adapters import codex_subscription as codex_subscription_adapter
+from atelier2.adapters import grok_subscription as grok_subscription_adapter
 from atelier2.adapters.claude_subscription import (
     CLAUDE_ATELIER_DOORS_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
@@ -78,7 +83,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationNotStartableReason,
     AgentConfigurationRevisionHash,
 )
-from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.provider_probe_receipts import (
     _SOURCE_COMMIT as PROVIDER_PROBE_SOURCE_COMMIT_FORMAT,
 )
@@ -88,8 +93,10 @@ from atelier2.contracts.provider_probe_receipts import (
     PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME,
     ProviderProbeProblemCode,
     ProviderProbeReceipt,
+    ProviderProbeReceiptRefused,
     ProviderProbeResult,
     ProviderProbeVectorId,
+    read_provider_probe_receipt,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
@@ -270,6 +277,8 @@ class ProviderCanaryFailure:
 class ProviderCanaryReport:
     attempted: int
     failures: tuple[ProviderCanaryFailure, ...]
+    provider_layer_status: str
+    """One journal line naming whether existing receipts still apply (#1124)."""
 
     @property
     def failed(self) -> int:
@@ -339,6 +348,44 @@ def default_provider_canary_state_directory(
     state_home = environment.get("XDG_STATE_HOME")
     root = Path(state_home) if state_home else Path.home() / ".local/state"
     return root / PROVIDER_CANARY_STATE_RELATIVE_PATH
+
+
+_PROVIDER_LAYER_FRAME_DOMAIN = "provider-layer/v1"
+_PROVIDER_LAYER_ADAPTER_MODULES = (
+    claude_subscription_adapter,
+    codex_subscription_adapter,
+    grok_subscription_adapter,
+)
+"""Every provider adapter this canary already imports to route a probe
+workflow (#1124). Named through the same modules `_WORKFLOW_BY_EXECUTOR`
+above draws its executor keys from -- not a second, separately maintained
+file list -- so a fourth provider adapter joins the digest the moment its
+module is imported here for its own executor keys."""
+
+
+def provider_layer_digest() -> Sha256Hash:
+    """Hash the exact bytes that decide how this deployment talks to a provider.
+
+    Every provider adapter module, plus this canary client and the receipt
+    contract it writes -- the three places provider behaviour is actually
+    implemented. Computed from files on disk alone, identically by the Serve
+    process (`adapters/dbos/runtime.py`'s receipt gate, wired through
+    `host/serving.py`) and by this canary client running beside it on the same
+    checkout, so neither has to learn the other's live state to agree. A
+    receipt embeds this digest instead of the whole `source_commit`: a
+    redeploy that leaves every one of these files unchanged leaves every
+    receipt valid, and touching even one adapter this deployment never arms
+    still turns every receipt over -- the conservative side of "provider
+    behaviour might have changed."
+    """
+
+    paths = sorted(
+        {Path(inspect.getfile(module)) for module in _PROVIDER_LAYER_ADAPTER_MODULES}
+        | {Path(__file__), Path(inspect.getfile(ProviderProbeReceipt))}
+    )
+    return Sha256Hash.of(
+        frame(_PROVIDER_LAYER_FRAME_DOMAIN, *(path.read_bytes() for path in paths))
+    )
 
 
 def _discovery_timeout() -> ProviderCanaryDiscoveryFailed:
@@ -485,21 +532,66 @@ def execute_provider_canaries(
         raise ProviderCanaryDiscoveryFailed(
             _discovery_problem_text(failure)
         ) from failure
-    failures: list[ProviderCanaryFailure] = []
-    for vector in vectors:
-        _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
-        failure = _execute_vector(
+    running_digest = provider_layer_digest()
+    provider_layer_status = _provider_layer_status(
+        settings.state_directory, running_digest
+    )
+    _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
+
+    # Every discovered vector starts together, bounded only by its own count:
+    # a run-timeout vector (#1124, grok tools) then bounds only its own
+    # receipt, never delaying or starving the vectors beside it. Each
+    # `_execute_vector` call writes its receipt itself, the moment its own
+    # outcome is known, so a receipt lands as soon as its vector finishes
+    # regardless of how long a sibling vector keeps running.
+    def run_one(vector: _CanaryVector) -> ProviderCanaryFailure | None:
+        return _execute_vector(
             settings,
             vector,
             admitted_workflows[vector.workflow_name],
             health,
+            running_digest,
             client,
             canary_clock,
             process_deadline,
         )
-        if failure is not None:
-            failures.append(failure)
-    return ProviderCanaryReport(len(vectors), tuple(failures))
+
+    with ThreadPoolExecutor(max_workers=len(vectors)) as pool:
+        failures = tuple(
+            failure for failure in pool.map(run_one, vectors) if failure is not None
+        )
+    return ProviderCanaryReport(len(vectors), failures, provider_layer_status)
+
+
+def _provider_layer_status(state_directory: Path, digest: Sha256Hash) -> str:
+    """One journal line naming whether existing receipts still apply (#1124).
+
+    Read before this run overwrites anything: any one readable prior receipt
+    names what the deployment's evidence looked like a moment ago, and its
+    own `provider_layer_digest` either still matches this run's or does not --
+    every receipt this deployment ever wrote shares one digest, so the first
+    readable one answers for all of them.
+    """
+
+    try:
+        entries = sorted(state_directory.glob("*.json"))
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            document = entry.read_bytes()
+        except OSError:
+            continue
+        receipt = read_provider_probe_receipt(document)
+        if isinstance(receipt, ProviderProbeReceiptRefused):
+            continue
+        if receipt.provider_layer_digest != digest:
+            return (
+                "receipts invalidated (provider layer changed: "
+                f"{receipt.provider_layer_digest.value[:8]} → {digest.value[:8]})"
+            )
+        break
+    return "receipts kept (provider layer unchanged)"
 
 
 def _discovery_problem_text(
@@ -688,6 +780,7 @@ def _execute_vector(
     vector: _CanaryVector,
     admitted_workflow_hash: WorkflowRevisionHash,
     health: HealthResource,
+    provider_layer_digest: Sha256Hash,
     client: ProviderCanaryHttp,
     clock: ProviderCanaryClock,
     process_deadline: float,
@@ -748,6 +841,7 @@ def _execute_vector(
             receipt = _receipt(
                 vector,
                 workflow_hash,
+                provider_layer_digest,
                 health.source_commit,
                 run_id,
                 clock,
@@ -789,6 +883,7 @@ def _execute_vector(
     receipt = _receipt(
         vector,
         workflow_hash,
+        provider_layer_digest,
         health.source_commit,
         run_id,
         clock,
@@ -891,6 +986,7 @@ def _failed_run_problem_code(
 def _receipt(
     vector: _CanaryVector,
     workflow_hash: WorkflowRevisionHash,
+    provider_layer_digest: Sha256Hash,
     source_commit: str,
     run_id: RunId,
     clock: ProviderCanaryClock,
@@ -903,6 +999,7 @@ def _receipt(
         vector.vector_id,
         vector.configuration_hash,
         workflow_hash,
+        provider_layer_digest,
         source_commit,
         recorded_instant(observed),
         recorded_instant(observed + PROVIDER_CANARY_RECEIPT_VALIDITY),

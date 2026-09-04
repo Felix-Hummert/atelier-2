@@ -768,17 +768,33 @@ same judgment a start reads, computed once by the deployment's atomic
 snapshot; discovery derives nothing of its own from either field. A
 superseded revision (the model registry no longer points to it) carries its
 own distinct reason and is excluded; a redeploy that invalidates every
-receipt by `source_commit` still leaves every registered configuration
-reprobable. Discovery is capped at four configuration pages, 50 known
-startable vectors, and 300 seconds. All distinct admitted workflow names
-resolve before any vector starts. Each run then has a 300-second terminal
-deadline, while the complete process has a 15,300-second deadline enforced by
-both the runner and its systemd unit. Every HTTP call has a 30-second cap reduced
-to the remaining discovery, vector, and process deadline. The durable run owns
-provider output. The canary atomically
+registered configuration's receipt still leaves it reprobable. Discovery is
+capped at four configuration pages, 50 known startable vectors, and 300
+seconds. All distinct admitted workflow names resolve before any vector
+starts. Every discovered vector then probes concurrently, bounded only by its
+own count, so one vector's own terminal deadline never delays or blocks a
+sibling's receipt -- each vector's outcome replaces its own receipt the
+instant it is known, not in the order discovery listed it. Each vector still
+has its own 300-second terminal deadline, while the complete process has a
+15,300-second deadline enforced by both the runner and its systemd unit. Every
+HTTP call has a 30-second cap reduced to the remaining discovery, vector, and
+process deadline. The durable run owns provider output. The canary atomically
 replaces only the secret-free
 `provider-probe-receipt/v1` at
 `${XDG_STATE_HOME:-$HOME/.local/state}/atelier2/provider-probes/live/<vector-id>.json`.
+
+A receipt's validity key is a content digest of the provider layer
+(`provider_layer_digest`: every provider adapter module, `host/provider_canary.py`,
+and `contracts/provider_probe_receipts.py`), not the whole `source_commit`
+(`source_commit` still travels on the receipt, but only as journal provenance,
+#1124). A redeploy that leaves those files' bytes unchanged leaves every
+receipt proven and every configuration immediately startable; only a
+redeploy that actually touches the provider layer turns receipts over, and it
+turns over all of them at once, since they share one digest. Each run's own
+journal line names which happened: `receipts kept (provider layer unchanged)`
+or `receipts invalidated (provider layer changed: <digest8> -> <digest8>)`,
+printed once before any vector is attempted and visible through
+`journalctl --user -u atelier2-provider-canary.service -e`.
 Receipts remain valid for 26 hours, so the nightly schedule has two hours of
 overlap. A receipt always says what the youngest probe attempt found: after a
 vector enters its own execution, a failed attempt replaces that vector's

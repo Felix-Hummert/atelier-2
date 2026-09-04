@@ -447,6 +447,7 @@ def _provider_canary(
     ) as refusal:
         print(f"provider canary refused: {refusal}", file=sys.stderr)
         return 1
+    print(report.provider_layer_status)
     for failure in report.failures:
         print(
             f"provider canary {failure.vector.value} failed with "
