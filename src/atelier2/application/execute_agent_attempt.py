@@ -42,7 +42,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutionPreflightRefusal,
     AgentExecutorV2,
     AgentProcessInvocation,
-    AgentProcessRunner,
+    AgentSession,
 )
 from atelier2.ports.artifacts import ArtifactPublisher
 from atelier2.ports.candidate_store import CandidateNotKept, LeasedWorkingTree
@@ -59,7 +59,7 @@ def execute_agent_attempt(
     execution: AgentAttemptExecution,
     executor: AgentExecutorV2,
     store: AgentAttemptStore,
-    supervisor: AgentProcessRunner,
+    session: AgentSession,
     workspaces: AgentAttemptWorkspaceOwner,
     project: PinnedProjectSource | None = None,
     artifacts: ArtifactPublisher | None = None,
@@ -140,17 +140,17 @@ def execute_agent_attempt(
                         "grant, but this attempt was given no artifact "
                         "publisher to keep a failed verification's output with"
                     )
-        supervisor.prepare(execution)
+        session.prepare(execution)
         claim = store.claim(execution)
         if not isinstance(claim, AgentAttemptClaimedByThisCall):
             if isinstance(claim, (AgentAttemptSucceeded, AgentAttemptFailed)):
-                supervisor.finalize(execution)
+                session.finalize(execution)
             return claim
         lease = workspaces.acquire(execution.attempt_id)
         if project is not None:
             project.source.materialize(project.pin, lease)
         invocation = AgentProcessInvocation(command, lease)
-        completion = supervisor.launch_and_wait(execution, invocation)
+        completion = session.launch_and_wait(execution, invocation)
         result = _with_recorded_transcript(
             executor.decode_process_completion(invocation, completion), clock
         )
@@ -187,7 +187,7 @@ def execute_agent_attempt(
             )
             if isinstance(outcome, AgentAttemptFailed):
                 _log_named_failure(execution, outcome.attempt.failure_code)
-        supervisor.finalize(execution)
+        session.finalize(execution)
         workspaces.release(execution.attempt_id)
     finally:
         executor.release_credential_channel(command)
