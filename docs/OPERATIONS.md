@@ -1256,13 +1256,17 @@ the harness observes them.
 
 ## Dead-code gates
 
-Two gates keep code that nothing reaches out of the tree, and both treat tests
-as no usage source: a symbol only its own test reaches is not a symbol the
-product uses.
+Two gates keep code that nothing reaches out of the tree, and they do not yet
+ask the same question of a test.
 
 `uv run --locked python scripts/check_dead_code.py` runs vulture over
-`src/atelier2`. `npm run check:dead` (in `frontend`) runs knip over the
-cockpit's `src`, where an unused file, export, or dependency is red.
+`src/atelier2` alone: a symbol only its own test reaches is not a symbol the
+product uses, so it is dead. `npm run check:dead` (in `frontend`) runs knip
+over the cockpit's `src`, where an unused file, export, or dependency is red --
+but knip's vitest and playwright plugins register the test files as entry
+points, so an export only a cockpit test imports counts as reached. Making the
+cockpit gate ask what vulture asks turns roughly a dozen test-only exports red
+and is its own slice (#1181).
 
 A vulture finding survives only by standing in one of three files, and which
 file it stands in is the whole justification:
