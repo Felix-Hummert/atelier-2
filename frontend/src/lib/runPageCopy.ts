@@ -129,7 +129,6 @@ export const runPageCopy = {
   closeNodeDetail: "Close node detail",
   stoppedHere: "Stopped here:",
   waitingForWork: "Waiting for the work before it. Nothing has been refused.",
-  bytes: "bytes",
   none: "None",
   cancel: {
     /** The label above the control, in state hue only where it asks something. */
@@ -246,7 +245,7 @@ const ENDED_NODE_STATES: ReadonlySet<NodeState> = new Set([
   "interrupted"
 ]);
 
-export function nodeHasEnded(state: NodeState): boolean {
+function nodeHasEnded(state: NodeState): boolean {
   return ENDED_NODE_STATES.has(state);
 }
 
@@ -267,7 +266,7 @@ export function notRecordedCopy(state: NodeState): string {
 }
 
 /** Grouping for token counts on a usage line. The page's copy is English. */
-export function formatTokenCount(value: number): string {
+function formatTokenCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
@@ -289,20 +288,4 @@ export function transcriptDroppedCopy(droppedEvents: number): string {
   return droppedEvents === 1
     ? "1 event dropped from this transcript."
     : `${droppedEvents} events dropped from this transcript.`;
-}
-
-export function byteCountCopy(bytes: number): string {
-  return `${bytes} ${runPageCopy.bytes}`;
-}
-
-export function fingerprintLabel(label: string): string {
-  return `${label} fingerprint`;
-}
-
-export function infoLabel(label: string): string {
-  return `${label} info`;
-}
-
-export function sealsTheseBytes(label: string): string {
-  return `exactly these ${label.toLowerCase()} bytes`;
 }

@@ -47,7 +47,6 @@ const positiveSafeInteger = safeInteger.refine((value) => value > 0);
 const invalidFieldSchema = z
   .object({ path: z.string().min(1), reason: z.string().min(1) })
   .strict();
-export type InvalidField = z.infer<typeof invalidFieldSchema>;
 
 /**
  * A published V3 revision says what it is and whether this build runs it.
@@ -165,8 +164,6 @@ const workflowLoopSchema = z
   })
   .strict();
 
-export { workflowLoopSchema, workflowLoopVerdictSchema };
-
 const workflowGraphV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -227,7 +224,7 @@ export const workflowRevisionDetailSchema = z
   })
   .strict();
 
-export const workflowRevisionPageSchema = z
+const workflowRevisionPageSchema = z
   .object({
     items: z.array(workflowRevisionSummarySchema),
     next_after_revision_hash: sha256.nullable(),
@@ -276,7 +273,7 @@ export const projectSourceListSchema = z
 
 /** The wire shape `GET /health` answers -- reused as #700's own recovery
  * probe, an existing cheap read rather than a purpose-built endpoint. */
-export const healthResourceSchema = z
+const healthResourceSchema = z
   .object({
     status: z.literal("serving"),
     source_commit: z.string(),
@@ -383,7 +380,7 @@ export const catalogNameResolutionSchema = z
   })
   .strict();
 
-export const catalogAdmissionSchema = z
+const catalogAdmissionSchema = z
   .object({
     display_name: z.string().min(1).max(128),
     lineage_id: sha256,
@@ -392,7 +389,7 @@ export const catalogAdmissionSchema = z
   })
   .strict();
 
-export const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
+const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("workflow"),
     workflow_format_version: z.literal(3),
@@ -425,9 +422,9 @@ export const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
   }).strict(),
 ]);
 
-export const catalogIntakeKindSchema = z.enum(["agent", "skill", "workflow"]);
+const catalogIntakeKindSchema = z.enum(["agent", "skill", "workflow"]);
 
-export const libraryAdditionSchema = z
+const libraryAdditionSchema = z
   .object({
     intake_id: sha256,
     kind: catalogIntakeKindSchema,
@@ -443,14 +440,14 @@ export const libraryAdditionSchema = z
  */
 export type CatalogLineageKind = "workflow" | "agent_definition";
 
-export interface CatalogAdmissionInput {
+interface CatalogAdmissionInput {
   kind: CatalogLineageKind;
   catalog_revision_hash: string;
   actor: string;
   activated_at: string;
 }
 
-export interface CatalogRetirementInput {
+interface CatalogRetirementInput {
   actor: string;
   activated_at: string;
 }
@@ -597,10 +594,6 @@ export const observedQueueItemSchema = z
   })
   .strict();
 
-export const observedQueueItemPageSchema = z
-  .object({ items: z.array(observedQueueItemSchema), next_after: sha256.nullable() })
-  .strict();
-
 const queueProposalSchema = z
   .object({
     revision: positiveSafeInteger,
@@ -697,7 +690,7 @@ export const agentDefinitionRevisionDetailSchema = z
   })
   .strict();
 
-export const agentDefinitionRevisionSchema = z
+const agentDefinitionRevisionSchema = z
   .object({ agent_definition_revision_hash: sha256 })
   .strict();
 
@@ -711,8 +704,8 @@ export const agentDefinitionRevisionSchema = z
  */
 export const MAXIMUM_ARTIFACT_BYTES = 1_048_576;
 
-export const artifactResourceSchema = z.object({ artifact_hash: sha256 }).strict();
-export type ArtifactResource = z.infer<typeof artifactResourceSchema>;
+const artifactResourceSchema = z.object({ artifact_hash: sha256 }).strict();
+type ArtifactResource = z.infer<typeof artifactResourceSchema>;
 
 /**
  * The listing of published auth profiles, in the item form publication already
@@ -888,7 +881,6 @@ const runOrderSchema = z
   })
   .strict();
 
-export type RunOrder = z.infer<typeof runOrderSchema>;
 
 const runForkOriginSchema = z
   .object({
@@ -980,7 +972,7 @@ const nodeRefusalOutputSchema = z
  * repeated once per row, so unlike `nodeAnswerSchema` (unbounded: a single
  * node detail read shares no byte bound across node kinds) it needs one.
  */
-export const MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = 65_536;
+const MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = 65_536;
 
 const runTerminalAnswerValueSchema = z
   .object({
@@ -1008,7 +1000,6 @@ const runTerminalAnswerSchema = z.discriminatedUnion("kind", [
   runTerminalAnswerOmittedSchema,
 ]);
 
-export type RunTerminalAnswer = z.infer<typeof runTerminalAnswerSchema>;
 
 export const runV3Schema = z
   .object({
@@ -1061,20 +1052,20 @@ export const MAXIMUM_TRANSCRIPT_STEP_CHARACTERS = 8_192;
 
 const transcriptStepTextSchema = z.string().max(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
 
-export const transcriptRecordedMomentSchema = z
+const transcriptRecordedMomentSchema = z
   .object({
     recorded_at: recordedAtStamp,
     origin: z.literal("recorded"),
   })
   .strict();
 
-export const transcriptBeforeMomentsSchema = z
+const transcriptBeforeMomentsSchema = z
   .object({
     origin: z.literal("v1-before-moments"),
   })
   .strict();
 
-export const transcriptEventMomentSchema = z.discriminatedUnion("origin", [
+const transcriptEventMomentSchema = z.discriminatedUnion("origin", [
   transcriptRecordedMomentSchema,
   transcriptBeforeMomentsSchema,
 ]);
@@ -1192,7 +1183,7 @@ export type NodeDetail = z.infer<typeof nodeDetailSchema>;
  * mirrored here as a plain number the way every other server-owned wire bound
  * already is on this side.
  */
-export const MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512;
+const MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512;
 
 const runListRowSchema = z
   .object({
@@ -1216,7 +1207,7 @@ const defectiveRunRowSchema = z
   })
   .strict();
 
-export const runListRowUnionSchema = z.discriminatedUnion("kind", [
+const runListRowUnionSchema = z.discriminatedUnion("kind", [
   runListRowSchema,
   defectiveRunRowSchema,
 ]);
@@ -1224,7 +1215,7 @@ export const runListRowUnionSchema = z.discriminatedUnion("kind", [
 export type RunListRow = z.infer<typeof runListRowUnionSchema>;
 export type DefectiveRunRow = z.infer<typeof defectiveRunRowSchema>;
 
-export const runPageSchema = z
+const runPageSchema = z
   .object({
     items: z.array(runListRowUnionSchema),
     next_after: publicRunReference.nullable(),
@@ -1301,7 +1292,7 @@ const v3EventBase = {
   node_rail: z.array(nodeRailEntrySchema).min(1),
 };
 
-export const runEventSchema = z
+const runEventSchema = z
   .union([
     z
       .object({
@@ -1878,7 +1869,7 @@ export const problemDefinitions = {
   "internal-error": { status: 500, title: "Internal error" },
 } as const;
 
-export const problemSchema = z.discriminatedUnion("type", [
+const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "auth-profile-revision-conflict",
     problemDefinitions["auth-profile-revision-conflict"],
@@ -2457,7 +2448,6 @@ export type StreamFailure = z.infer<typeof streamFailureSchema>;
 export type RunProjectionCorrupt = z.infer<typeof runProjectionCorruptSchema>;
 export type StreamFrame = z.infer<typeof streamFrameSchema>;
 export type RunV3 = z.infer<typeof runV3Schema>;
-export type RunCancellability = z.infer<typeof runCancellabilitySchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
 export type WorkflowRevisionDetail = z.infer<
   typeof workflowRevisionDetailSchema
@@ -2467,21 +2457,20 @@ export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
 export type WorkflowRevisionSummary = z.infer<
   typeof workflowRevisionSummarySchema
 >;
-export type AgentDefinitionRevisionDetail = z.infer<
+type AgentDefinitionRevisionDetail = z.infer<
   typeof agentDefinitionRevisionDetailSchema
 >;
-export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
-export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
+type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
+type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
 export type LibraryRecognition = z.infer<typeof libraryRecognitionSchema>;
 export type CatalogIntakeKind = z.infer<typeof catalogIntakeKindSchema>;
-export type LibraryAddition = z.infer<typeof libraryAdditionSchema>;
-export type ProjectResource = z.infer<typeof projectResourceSchema>;
-export type ProjectList = z.infer<typeof projectListSchema>;
-export type ProjectSourceConnectionRevision = z.infer<
+type LibraryAddition = z.infer<typeof libraryAdditionSchema>;
+type ProjectList = z.infer<typeof projectListSchema>;
+type ProjectSourceConnectionRevision = z.infer<
   typeof projectSourceConnectionRevisionSchema
 >;
 export type ProjectSourceResource = z.infer<typeof projectSourceResourceSchema>;
-export type ProjectSourceList = z.infer<typeof projectSourceListSchema>;
+type ProjectSourceList = z.infer<typeof projectSourceListSchema>;
 export type ModelRegistryRevision = z.infer<typeof modelRegistryRevisionSchema>;
 export type ProjectModelDefaultsRevision = z.infer<
   typeof projectModelDefaultsRevisionSchema
@@ -2490,12 +2479,12 @@ export type ProjectModelResolution = z.infer<
   typeof projectModelResolutionSchema
 >;
 
-export interface ProjectModelDefaultsRevisionInput {
+interface ProjectModelDefaultsRevisionInput {
   revision_number: number;
   defaults: ProjectModelDefaultsRevision["defaults"];
 }
 
-export interface ModelRegistryRevisionInput {
+interface ModelRegistryRevisionInput {
   revision_number: number;
   entries: Array<
     Pick<
@@ -2515,7 +2504,7 @@ export interface ExactProjectModelDefaultsRevisionWrite {
   body: string;
 }
 
-export type AuthProfileInput = z.infer<typeof authProfileInputSchema>;
+type AuthProfileInput = z.infer<typeof authProfileInputSchema>;
 export type AuthProfileRevision = z.infer<typeof authProfileRevisionSchema>;
 export type AuthProfileRevisionPage = z.infer<
   typeof authProfileRevisionPageSchema
@@ -2529,22 +2518,26 @@ export type AgentConfigurationRevision = z.infer<
 export type AgentConfigurationRevisionListItem = z.infer<
   typeof agentConfigurationRevisionListItemSchema
 >;
-export type AgentDefinitionRevision = z.infer<
+type AgentDefinitionRevision = z.infer<
   typeof agentDefinitionRevisionSchema
 >;
 export type AgentDefinitionRevisionListItem = z.infer<
   typeof agentDefinitionRevisionListItemSchema
 >;
-export type AgentDefinitionRevisionPage = z.infer<
+type AgentDefinitionRevisionPage = z.infer<
   typeof agentDefinitionRevisionPageSchema
 >;
 export type AgentConfigurationRevisionPage = z.infer<
   typeof agentConfigurationRevisionPageSchema
 >;
 export type ObservedQueueItem = z.infer<typeof observedQueueItemSchema>;
-export type ObservedQueueItemPage = z.infer<typeof observedQueueItemPageSchema>;
+/** What the queue page keeps after this client filters the served page. */
+export type ObservedQueueItemPage = {
+  items: ObservedQueueItem[];
+  next_after: string | null;
+};
 
-export interface HttpResult<T> {
+interface HttpResult<T> {
   status: number;
   value: T;
 }
@@ -2680,7 +2673,7 @@ export interface RunEventSubscription {
   close(): void;
 }
 
-export interface EventSourcePort extends RunEventSubscription {
+interface EventSourcePort extends RunEventSubscription {
   addEventListener(type: string, listener: EventListener): void;
 }
 
