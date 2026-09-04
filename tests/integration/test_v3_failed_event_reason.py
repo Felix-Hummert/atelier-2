@@ -214,24 +214,59 @@ def _stored_verification_failure_words(runtime, execution) -> str:
     return words
 
 
+WHY_A_PIECE_WAS_NOT_KEPT = "artifact write unavailable"
+A_REDACTED_TAIL = KeptEvidence(ArtifactHash.of(b"the redacted tail"), redacted=True)
+AN_UNKEPT_PIECE = KeptEvidence(None, retention_failure=WHY_A_PIECE_WAS_NOT_KEPT)
+
+
+@pytest.mark.parametrize(
+    ("kept_output", "kept_candidate_diff", "expected_words"),
+    (
+        pytest.param(
+            A_REDACTED_TAIL,
+            NOTHING_TO_KEEP,
+            "output redacted",
+            id="a-redacted-check-output",
+        ),
+        pytest.param(
+            AN_UNKEPT_PIECE,
+            NOTHING_TO_KEEP,
+            f"output could not be kept: {WHY_A_PIECE_WAS_NOT_KEPT}",
+            id="a-check-output-that-could-not-be-kept",
+        ),
+        pytest.param(
+            NOTHING_TO_KEEP,
+            AN_UNKEPT_PIECE,
+            f"candidate diff could not be kept: {WHY_A_PIECE_WAS_NOT_KEPT}",
+            id="a-candidate-diff-that-could-not-be-kept",
+        ),
+    ),
+)
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
-def test_a_redacted_verification_tails_words_say_so_in_the_stored_reason(
+@pytest.mark.proves("a-rejected-attempts-own-diff-is-kept-as-a-readable-artifact")
+def test_evidence_that_was_redacted_or_unkeepable_says_so_in_the_stored_reason(
     runtime,
+    kept_output: KeptEvidence,
+    kept_candidate_diff: KeptEvidence,
+    expected_words: str,
 ) -> None:
-    """The durable reason names a redaction, not just the fields that caused it.
+    """What a reader is told when a piece of the evidence is not the exact bytes.
 
     `test_project_verification.py` already proves `execute_agent_attempt`
-    computes `ProjectVerificationFailureEvidence(redacted=True)` for a tail
-    carrying a credential shape; this proves what the store composes from
-    that evidence into the sentence an operator actually reads.
+    computes the redaction and degrades instead of abandoning the attempt when
+    a wired publisher answers but cannot write. What is proved here is the
+    durable sentence the store composes from that evidence -- one case per
+    piece, because a receipt that named only the exit code would leave an
+    operator to guess whether the artifact is missing, altered, or was never
+    there.
     """
     execution = armed_attempt(runtime)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     evidence = ProjectVerificationFailureEvidence(
         "1 failed, 3 passed in 0.01s",
         0.5,
-        KeptEvidence(ArtifactHash.of(b"the redacted tail"), redacted=True),
-        NOTHING_TO_KEEP,
+        kept_output,
+        kept_candidate_diff,
     )
 
     outcome = store.complete_success(
@@ -246,36 +281,4 @@ def test_a_redacted_verification_tails_words_say_so_in_the_stored_reason(
         outcome.attempt.failure_code
         is AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED
     )
-    assert "output redacted" in _stored_verification_failure_words(runtime, execution)
-
-
-@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
-def test_a_verification_tail_that_could_not_be_kept_names_the_reason_in_the_stored_reason(
-    runtime,
-) -> None:
-    """The degrade path's own words, not just that `retention_failure` was set.
-
-    `test_project_verification.py` already proves `execute_agent_attempt`
-    degrades the words instead of abandoning the attempt when a wired
-    publisher answers but cannot write; this proves the durable sentence the
-    store composes from that degrade names the reason, not only the exit code.
-    """
-    execution = armed_attempt(runtime)
-    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
-    evidence = ProjectVerificationFailureEvidence(
-        "1 failed, 3 passed in 0.01s",
-        0.5,
-        KeptEvidence(None, retention_failure="artifact write unavailable"),
-        NOTHING_TO_KEEP,
-    )
-
-    outcome = store.complete_success(
-        execution,
-        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS),
-        redemption_for(execution, 1),
-        evidence,
-    )
-
-    assert isinstance(outcome, AgentAttemptFailed)
-    words = _stored_verification_failure_words(runtime, execution)
-    assert "output could not be kept: artifact write unavailable" in words
+    assert expected_words in _stored_verification_failure_words(runtime, execution)

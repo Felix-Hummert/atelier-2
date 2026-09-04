@@ -70,6 +70,7 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_forks import RunForkCommandId
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.contracts.tool_grants_v3 import (
     MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES,
     ToolGrantCapability,
@@ -522,6 +523,7 @@ def test_a_completed_verification_tool_node_can_be_forked_without_an_effect_rece
 
 
 @pytest.mark.proves("a-nonzero-project-verification-fails-the-attempt-durably-named")
+@pytest.mark.proves("a-rejected-attempts-own-diff-is-kept-as-a-readable-artifact")
 def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
     failing_verification_runtime: tuple[DbosRuntime, Path, Path],
 ) -> None:
@@ -532,7 +534,11 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
     zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`, and no
     `tool_redemptions` row -- not because a failed attempt has nowhere to put
     one since V39, but because a check that exited 1 redeemed nothing. What
-    remains is the named failure.
+    remains is the named failure -- and, because a reader who sees no receipt
+    must still be able to tell a builder that answered from one that did not,
+    the schema revision and value hash of the answer the provider gave stand in
+    that failure's own receipt (#1156), which is the second sentence this run
+    proves.
     """
     started_runtime, _scratch_root, _cwd_record = failing_verification_runtime
     workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
@@ -685,6 +691,7 @@ def test_an_attempt_that_left_the_pinned_tree_alone_ends_without_running_the_che
 
 
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+@pytest.mark.proves("a-rejected-attempts-own-diff-is-kept-as-a-readable-artifact")
 def test_a_nonzero_project_verification_keeps_its_output_and_names_it_in_the_refusal(
     pytest_style_failing_verification_runtime: tuple[DbosRuntime, Path, Path],
 ) -> None:
@@ -695,6 +702,11 @@ def test_a_nonzero_project_verification_keeps_its_output_and_names_it_in_the_ref
     command, pytest's own summary line and the address of an artifact holding
     the check's full retained output -- reachable through the same
     `GET /artifacts/{hash}` door #1089 already opened, not a new wire concept.
+
+    Beside it stands the other half of the same question (#1156): what the
+    check said no *to*. Both addresses are read back from the same live
+    receipt, because a sentence naming an artifact nobody fetched would prove
+    the words and not the evidence.
     """
     started_runtime, _scratch_root, _cwd_record = (
         pytest_style_failing_verification_runtime
@@ -737,13 +749,25 @@ def test_a_nonzero_project_verification_keeps_its_output_and_names_it_in_the_ref
     assert re.search(r"after \d+ s", words) is not None, words
     assert "1 failed, 4 passed in 0.10s" in words
 
+    artifacts = DbosArtifactStore(started_runtime.engine)
     artifact_match = re.search(r"output artifact sha256:([0-9a-f]{64})", words)
     assert artifact_match is not None, words
-    artifact = DbosArtifactStore(started_runtime.engine).read_artifact(
-        ArtifactHash(artifact_match.group(1))
-    )
+    artifact = artifacts.read_artifact(ArtifactHash(artifact_match.group(1)))
     assert isinstance(artifact, Artifact)
     assert artifact.content == PYTEST_STYLE_VERIFICATION_TAIL
+
+    diff_match = re.search(r"candidate diff artifact sha256:([0-9a-f]{64})", words)
+    assert diff_match is not None, words
+    kept_diff = artifacts.read_artifact(ArtifactHash(diff_match.group(1)))
+    assert isinstance(kept_diff, Artifact)
+    patch = kept_diff.content.decode("utf-8")
+    assert WHAT_THE_AGENT_MADE in patch
+    assert MADE_BY_THE_AGENT.strip() in patch
+    # Nothing this provider wrote has a credential shape, so the patch is kept
+    # whole: a receipt claiming a redaction here would say the reader is looking
+    # at something other than what the check refused.
+    assert REDACTION_MARKER not in patch
+    assert "candidate diff redacted" not in words
 
 
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")

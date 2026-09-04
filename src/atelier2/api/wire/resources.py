@@ -37,6 +37,7 @@ from atelier2.api.references import (
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
 )
 from atelier2.contracts.agent_definitions import (
     MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
@@ -1012,6 +1013,22 @@ CancellationDispositionName = Literal[
     AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
     AgentAttemptCancellationDisposition.REAPED_AFTER_KILL,
     AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH,
+]
+
+# Same closed-union form again, for the name a failed attempt ends under: the
+# event schema and the projection that fills it read this one union instead of
+# each keeping the tokens by hand. What holds it at the owner's whole
+# membership is a case per member in the served-vocabulary suite, which nothing
+# did while `CANDIDATE_CAPTURE_FAILED` stood in the owner and in no wire (#642).
+AgentAttemptFailureCodeName = Literal[
+    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+    AgentAttemptFailureCode.PROCESS_OUTPUT_LIMIT_EXCEEDED,
+    AgentAttemptFailureCode.PROCESS_SUPERVISION_FAILED,
+    AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
+    AgentAttemptFailureCode.AGENT_REFUSED,
+    AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+    AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED,
+    AgentAttemptFailureCode.CANDIDATE_UNCHANGED,
 ]
 
 

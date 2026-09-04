@@ -14,6 +14,7 @@ from atelier2.api.references import (
     SHA256_HASH_PATTERN,
 )
 from atelier2.api.wire.resources import (
+    AgentAttemptFailureCodeName,
     ApiModel,
     CancellationDispositionName,
     EffectReceiptResource,
@@ -58,16 +59,7 @@ class AgentFailedEventResourceV3(RunEventBaseResourceV3):
     """
 
     event: Literal["AGENT_FAILED"]
-    failure_code: Literal[
-        "PROCESS_EXITED_UNSUCCESSFULLY",
-        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
-        "PROCESS_SUPERVISION_FAILED",
-        "OUTPUT_SCHEMA_REFUSED",
-        "AGENT_REFUSED",
-        "PROJECT_VERIFICATION_FAILED",
-        "CANDIDATE_CAPTURE_FAILED",
-        "CANDIDATE_UNCHANGED",
-    ]
+    failure_code: AgentAttemptFailureCodeName
     reason: str | None
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]

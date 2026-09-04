@@ -131,10 +131,11 @@ class GitCandidateTreeStore:
         """Name what stands in this lease, anchoring nothing under this attempt.
 
         Everything a capture does except the last step, which is why a capture
-        is written on top of it rather than beside it: one reading of one leased
-        directory, so the tree an attempt is asked about before it pays for a
-        check and the tree it keeps afterwards can never be two different
-        readings of the same words.
+        is written on top of it rather than beside it: the tree an attempt is
+        asked about before it pays for a check and the tree it keeps afterwards
+        are two readings taken at two moments, and they share this one
+        implementation, so they can differ only in what the lease held by then
+        -- never in what reading a leased directory means.
 
         The failure normalization is the same and is here for the same reason: a
         directory swapped under the reading, and a staging directory the machine
