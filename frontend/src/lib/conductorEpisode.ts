@@ -144,6 +144,34 @@ export function conductorConversationShape(
     : null;
 }
 
+/**
+ * Every non-terminal run that could become the one live conductor
+ * conversation, newest first: the tie-break a redeploy needs, since a run
+ * still on a since-retired conductor revision must lose to one just started
+ * on the current revision with the same timestamp.
+ *
+ * Shared with `WorkbenchPage.svelte`'s own selection (#1148 REVISE M3): that
+ * caller walks this order lazily, resolving one candidate's revision at a
+ * time and stopping at the first conductor-shaped one, instead of resolving
+ * every distinct revision the run list carries up front -- a cost that would
+ * otherwise scale with the number of distinct workflows shown, not with how
+ * many of them could ever be selected.
+ */
+export function orderedConductorCandidates(runs: readonly RunV3[]): RunV3[] {
+  return runs
+    .filter(
+      (run) =>
+        (run.state === "STARTED" || run.state === "WAITING_INPUT" || run.state === "WAITING_RECONCILIATION") &&
+        hasStartedStamp(run)
+    )
+    .sort((a, b) => {
+      const aStamp = a.started_at as string;
+      const bStamp = b.started_at as string;
+      if (aStamp !== bStamp) return aStamp > bStamp ? -1 : 1;
+      return a.public_run_reference > b.public_run_reference ? -1 : 1;
+    });
+}
+
 /** The one live conductor conversation is the newest started, non-terminal run. */
 export function newestConductorConversation(
   runs: readonly RunV3[],
@@ -153,21 +181,9 @@ export function newestConductorConversation(
     typeof workflowRevisionHashes === "string"
       ? workflowRevisionHash === workflowRevisionHashes
       : workflowRevisionHashes.has(workflowRevisionHash);
-  const candidates = runs.filter(
-    (run) =>
-      belongsToConductor(run.workflow_revision_hash) &&
-      (run.state === "STARTED" || run.state === "WAITING_INPUT" || run.state === "WAITING_RECONCILIATION") &&
-      hasStartedStamp(run)
+  return (
+    orderedConductorCandidates(runs).find((run) => belongsToConductor(run.workflow_revision_hash)) ?? null
   );
-  return candidates.reduce<RunV3 | null>((newest, run) => {
-    if (newest === null) return run;
-    const newestStamp = newest.started_at as string;
-    const runStamp = run.started_at as string;
-    return runStamp > newestStamp ||
-      (runStamp === newestStamp && run.public_run_reference > newest.public_run_reference)
-      ? run
-      : newest;
-  }, null);
 }
 
 function hasStartedStamp(run: RunV3): run is RunV3 & { started_at: string } {
