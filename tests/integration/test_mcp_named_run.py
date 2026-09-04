@@ -13,18 +13,28 @@ from pathlib import Path
 from threading import Thread
 
 import pytest
+import sqlalchemy as sa
 import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import (
+    artifacts,
+    context_packages_v3,
+    node_execution_requests_v3,
+    run_inputs_v3,
+    runs,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_project_reference
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.runs import RunState
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 from atelier2.host.mcp_tools import McpToolName
 from tests.host.test_mcp_server import StdioMcpSession
@@ -65,6 +75,40 @@ graph_inputs:
     schema:
       ref: order-schema
       revision: {ANY_JSON_SCHEMA.revision_hash.value}
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Review the ordered material.
+    inputs:
+      - name: {ORDER_NAME}
+        from:
+          graph_input: {ORDER_NAME}
+""".encode()
+    + declared_output()
+)
+STRICT_ORDER_WORKFLOW_NAME = "mcp-strict-order-line"
+STRICT_ORDER_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    b'{"type": "object", "properties": {"portions": {"type": "integer", '
+    b'"minimum": 1}}, "required": ["portions"], "additionalProperties": false}',
+)
+"""A schema a JSON-object diff order (`{"diff": "..."}`) never satisfies.
+
+The strict-order line exists only to prove #438's refusal half: an artifact
+whose bytes read as JSON but not as this shape is refused at start, by name,
+before any run exists -- and the artifact that named it stays exactly where
+`publish_artifact` left it.
+"""
+STRICT_ORDERED_DOCUMENT = (
+    f"""format_version: 3
+name: {STRICT_ORDER_WORKFLOW_NAME}
+graph_inputs:
+  - name: {ORDER_NAME}
+    schema:
+      ref: order-schema
+      revision: {STRICT_ORDER_SCHEMA.revision_hash.value}
 nodes:
   - id: implement
     type: agent
@@ -309,6 +353,238 @@ def wait_for_terminal(client: StdioMcpSession, reference: str) -> dict[str, obje
             return payload
         time.sleep(0.025)
     raise AssertionError(f"run stayed {observed.get('state')!r}, expected terminal")
+
+
+def publish_schema(app: FastAPI, revision: PublishedRevision) -> None:
+    """Publish one schema revision a strict-order line's graph input pins."""
+    response = TestClient(app).post(
+        API_PREFIX + "/schema-revisions",
+        content=revision.document,
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code in (200, 201), response.text
+
+
+def stored_run_input(runtime: DbosRuntime, run_id: str) -> tuple[bytes, str]:
+    """The exact bytes and content hash this run's order was stored under."""
+    with runtime.engine.connect() as connection:
+        row = (
+            connection.execute(
+                sa.select(run_inputs_v3.c.value, run_inputs_v3.c.value_hash).where(
+                    run_inputs_v3.c.run_id == run_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    return bytes(row["value"]), str(row["value_hash"])
+
+
+def stored_context_package_manifest(
+    runtime: DbosRuntime, run_id: str, revision_hash: str, node_id: str
+) -> bytes:
+    """The manifest of one node's persisted context-package/v3, read back."""
+    execution_id = NodeExecutionId.for_node(
+        RunId(run_id), WorkflowRevisionHash(revision_hash), node_id
+    )
+    with runtime.engine.connect() as connection:
+        package_hash = connection.scalar(
+            sa.select(node_execution_requests_v3.c.context_package_hash).where(
+                node_execution_requests_v3.c.node_execution_id == execution_id.value
+            )
+        )
+        manifest = connection.scalar(
+            sa.select(context_packages_v3.c.manifest).where(
+                context_packages_v3.c.package_hash == package_hash
+            )
+        )
+    assert package_hash is not None and manifest is not None
+    return bytes(manifest)
+
+
+def artifact_row_count(runtime: DbosRuntime, artifact_hash: str) -> int:
+    """How many artifact rows this address names -- one when publish is honest."""
+    with runtime.engine.connect() as connection:
+        count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(artifacts)
+            .where(artifacts.c.artifact_hash == artifact_hash)
+        )
+    assert count is not None
+    return count
+
+
+def run_row_count(runtime: DbosRuntime, run_id: str) -> int:
+    """Whether a refused start left a run row behind."""
+    with runtime.engine.connect() as connection:
+        count = connection.scalar(
+            sa.select(sa.func.count()).select_from(runs).where(runs.c.run_id == run_id)
+        )
+    assert count is not None
+    return count
+
+
+@pytest.mark.proves("a-full-pull-request-diff-reaches-its-agent-as-an-artifact")
+@pytest.mark.proves("a-run-input-binds-as-a-materialized-package-member")
+def test_the_mcp_published_hash_is_the_stored_order_the_package_member_and_the_job_bytes(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """One ~100 KB diff, published through MCP: the same identity in four places.
+
+    `publish_artifact` answers a hash; the started run's stored order carries
+    that same hash under those same bytes; the node's persisted context-package
+    names the same hash as its material member; and the job the agent executor
+    actually opened contains the diff whole, not a hash standing in for it.
+    #438's slice 2 (#1142), proven through the MCP door rather than the HTTP
+    route or the CLI that `349-a-full-diff-reaches-its-agent.toml` and
+    `295-the-record-family-gets-its-writer.toml` already cover.
+    """
+    started_runtime, recording = runtime
+    app = application(started_runtime)
+    line = publish_named_line(app, ORDERED_DOCUMENT)
+    diff = json.dumps({"diff": "x" * 100_000}).encode()
+    assert len(diff) > 6 * MAXIMUM_INSTANCE_DOCUMENT_BYTES
+    run_id = "mcp/one-identity"
+
+    with live_server(app) as service_url:
+        client = StdioMcpSession(service_url)
+        try:
+            published, publish_failed = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value,
+                {"content_base64": base64.standard_b64encode(diff).decode("ascii")},
+            )
+            assert not publish_failed, published
+            address = str(published["artifact_hash"])
+
+            started, start_failed = client.call_tool(
+                McpToolName.START_RUN.value,
+                {
+                    "name": ARTIFACT_WORKFLOW_NAME,
+                    "run_id": run_id,
+                    "agent_bindings": [
+                        {
+                            "role": "builder",
+                            "agent_configuration_revision_hash": (
+                                line.configuration_hash
+                            ),
+                        }
+                    ],
+                    "orders": [{"name": ORDER_NAME, "artifact_hash": address}],
+                },
+            )
+            assert not start_failed, started
+            revision_hash = str(started["workflow_revision_hash"])
+
+            started_runtime.launch()
+            ended = wait_for_terminal(client, str(started["public_run_reference"]))
+        finally:
+            client.close()
+
+    assert ended["state"] == RunState.COMPLETED.value
+
+    stored_value, stored_hash = stored_run_input(started_runtime, run_id)
+    assert stored_value == diff
+    assert stored_hash == address
+
+    manifest = stored_context_package_manifest(
+        started_runtime, run_id, revision_hash, "implement"
+    )
+    assert address.encode("ascii") in manifest
+
+    assert recording.opened is not None
+    assert diff in recording.opened.requests[0].job_bytes
+
+
+@pytest.mark.proves("publishing-the-same-bytes-twice-through-mcp-stays-one-artifact")
+def test_republishing_the_same_bytes_through_mcp_answers_one_hash_and_one_artifact(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """The same bytes, published twice through MCP: one hash, one stored row.
+
+    #438 lines 5 and 10: a second publish of identical bytes is not a second
+    identity and not an error -- it answers the address the first publish
+    already minted.
+    """
+    started_runtime, _recording = runtime
+    app = application(started_runtime)
+    diff = json.dumps({"diff": "y" * 100_000}).encode()
+    encoded = base64.standard_b64encode(diff).decode("ascii")
+
+    with live_server(app) as service_url:
+        client = StdioMcpSession(service_url)
+        try:
+            first, first_failed = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value, {"content_base64": encoded}
+            )
+            assert not first_failed, first
+            second, second_failed = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value, {"content_base64": encoded}
+            )
+            assert not second_failed, second
+        finally:
+            client.close()
+
+    address = str(first["artifact_hash"])
+    assert second["artifact_hash"] == address
+    assert artifact_row_count(started_runtime, address) == 1
+
+
+@pytest.mark.proves(
+    "a-schema-refused-start-leaves-its-named-artifact-usable-and-writes-no-run"
+)
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_a_schema_refused_start_leaves_the_mcp_published_artifact_usable_and_writes_no_run(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """A start the pinned schema refuses leaves its named artifact untouched.
+
+    #438 line 9/11/12: an order whose bytes do not satisfy the schema the
+    document pinned is refused by name before any run row exists, and the
+    artifact that named it is unaffected -- still readable at its own address.
+    """
+    started_runtime, _recording = runtime
+    app = application(started_runtime)
+    publish_schema(app, STRICT_ORDER_SCHEMA)
+    line = publish_named_line(app, STRICT_ORDERED_DOCUMENT)
+    diff = json.dumps({"diff": "z" * 100_000}).encode()
+    run_id = "mcp/refused-schema"
+
+    with live_server(app) as service_url:
+        client = StdioMcpSession(service_url)
+        try:
+            published, publish_failed = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value,
+                {"content_base64": base64.standard_b64encode(diff).decode("ascii")},
+            )
+            assert not publish_failed, published
+            address = str(published["artifact_hash"])
+
+            refused, start_failed = client.call_tool(
+                McpToolName.START_RUN.value,
+                {
+                    "name": STRICT_ORDER_WORKFLOW_NAME,
+                    "run_id": run_id,
+                    "agent_bindings": [
+                        {
+                            "role": "builder",
+                            "agent_configuration_revision_hash": (
+                                line.configuration_hash
+                            ),
+                        }
+                    ],
+                    "orders": [{"name": ORDER_NAME, "artifact_hash": address}],
+                },
+            )
+        finally:
+            client.close()
+
+    assert start_failed, refused
+    assert str(refused["type"]).endswith("run-input-refused")
+    assert run_row_count(started_runtime, run_id) == 0
+
+    reread = TestClient(app).get(f"{API_PREFIX}/artifacts/{address}")
+    assert reread.status_code == 200
+    assert reread.content == diff
 
 
 @pytest.mark.proves("a-stdio-client-lists-starts-and-reads-a-named-run")
