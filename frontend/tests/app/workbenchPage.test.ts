@@ -687,6 +687,55 @@ describe("the workbench conductor conversation", () => {
     expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
   });
 
+  // #1078 review finding 6: the pending-first-message catch above
+  // (`refreshConductorRun`) had no test naming the root cause Opus's field
+  // report traced -- a run that started fine but whose first `getRun` read
+  // failed used to swallow that failure silently, dropping the message with
+  // no error and no way back. It now reaches the same failed-line/Resend
+  // path any other delivery failure does.
+  it("keeps the first message and offers Resend when the run starts but its first read fails", async () => {
+    const run = conductorRunFixture();
+    const start = vi.fn(async () => ({ status: 201, value: run }));
+    const getRun = vi.fn(async () => run);
+    getRun.mockRejectedValueOnce(new Error("network down"));
+    const answer = vi.fn<CockpitApi["answer"]>(async () => ({ status: 200, value: run }));
+    openChat({
+      ...conductorConnectionOverrides(),
+      listRuns: listRunsForConductor(null),
+      getRun,
+      start,
+      answer
+    });
+    const { screen, waitFor, fireEvent } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    await screen.findByText(conductorConversationCopy.composerHint);
+
+    await say("the first message");
+
+    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(answer).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
+      "value",
+      "the first message"
+    );
+    const failedLine = screen.getByText(workbenchPageCopy.conductorMessageFailed).closest("li");
+    expect(failedLine?.classList.contains("conversation-line-failed")).toBe(true);
+    expect(failedLine?.textContent).toContain("the first message");
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: workbenchPageCopy.resendConductorMessage })
+    );
+
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+    const sentBody = JSON.parse(atob(answer.mock.calls[0]?.[0].body_base64 ?? "{}")) as {
+      answer_base64: string;
+    };
+    expect(atob(sentBody.answer_base64)).toBe("the first message");
+    await waitFor(() => expect(screen.queryByText(workbenchPageCopy.conductorMessageFailed)).toBeNull());
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
+  });
+
   // Finding 2 (#959 review): the old guard allowed only WAITING_INPUT and
   // COMPLETED, so a FAILED conversation blocked Send forever and survived a
   // reload via `restoreConductorConversation`. Every terminal state now

@@ -493,9 +493,10 @@
   /** The transcript's own Resend control: the same send path, the failed text. */
   async function resendFailedConductorMessage(): Promise<void> {
     if (failedConductorMessage === null) return;
-    const message = failedConductorMessage;
-    failedConductorMessage = null;
-    await attemptSend(message);
+    // Cleared inside `attemptSend`, only once its guards pass and only for
+    // this exact message (#1078 review): an early return here must not lose
+    // the standing failed line.
+    await attemptSend(failedConductorMessage);
   }
 
   /**
@@ -519,7 +520,10 @@
         return;
       }
       conductorDeliveryFailure = null;
-      failedConductorMessage = null;
+      // Cleared only when this attempt is for the standing failed message
+      // (#1078 review): an unrelated new send must not destroy a failed
+      // line that was never resent.
+      if (failedConductorMessage === message) failedConductorMessage = null;
       if (conductorRun?.state === "WAITING_INPUT") {
         await deliverConductorMessage(conductorRun, message);
       } else {
@@ -536,13 +540,13 @@
         }
       }
     } else {
-      // The local-chat fallback never leaves this page (no write to confirm
-      // anything against), so it keeps its own prior behaviour: the raw,
-      // untrimmed composer text, exactly as before B4 touched only the
-      // conductor-connected sends above.
-      sendChatTurn(typed);
+      // The local-chat fallback stays on this page, but it shares the one
+      // send path every other branch uses (#1078 review): the caller's own
+      // already-trimmed `message`, and the composer clears only when it
+      // still holds the exact text that was sent.
+      sendChatTurn(message);
       transcript = currentChatTranscript();
-      typed = "";
+      if (typed.trim() === message) typed = "";
     }
     await tick();
     composer.focus();
@@ -564,8 +568,10 @@
       conductorRun = outcome.run;
       // The write is confirmed (or accepted-uncertain, #959's own retry
       // journal still covers that case) -- only now does the composer that
-      // held this exact text actually clear (#1078 B4).
-      typed = "";
+      // held this exact text actually clear (#1078 B4), and only when it
+      // still holds it: a resend or a deferred first message can confirm a
+      // send while the composer already moved on to something else.
+      if (typed.trim() === message) typed = "";
     } catch (error) {
       // A retry of an already-open wait with edited text can conflict with
       // its own earlier, differently-worded attempt still in the journal
