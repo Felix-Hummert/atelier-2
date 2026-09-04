@@ -83,7 +83,11 @@ from atelier2.contracts.queue_projection import (
     QueueItemState,
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
-from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
+from atelier2.contracts.run_projections import (
+    MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS,
+    NodeState,
+    PublicAgentAttemptState,
+)
 from atelier2.contracts.when import RECORDED_AT_PATTERN
 
 
@@ -1536,8 +1540,41 @@ class RunResourceV3(ApiModel):
         return self
 
 
+class RunListRowResource(ApiModel):
+    """A listed row for one run whose own projection could be told."""
+
+    kind: Literal["run"]
+    run: RunResourceV3
+
+
+class DefectiveRunRowResource(ApiModel):
+    """A listed row for a run whose own projection failed (#1042).
+
+    The other rows on the same page prove nothing about this one: a list
+    dies for none of them just because this run's own projection could not
+    be told, so this is the row it becomes instead. `problem_code` is the
+    closed, typed reason; `detail` is `bounded_run_row_defect_detail`'s
+    curated, bounded reason -- never the run's own durable bytes, and never
+    the store exception's own message, which carries no bound of its own. The
+    exception's full text stays in the per-run process journal entry only.
+    """
+
+    kind: Literal["defective"]
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    problem_code: Literal["durable-state-corrupt"]
+    detail: str = Field(
+        min_length=1, max_length=MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS
+    )
+
+
+AnyRunListRowResource = Annotated[
+    RunListRowResource | DefectiveRunRowResource,
+    Field(discriminator="kind"),
+]
+
+
 class VersionedRunPageResource(ApiModel):
-    items: tuple[RunResourceV3, ...]
+    items: tuple[AnyRunListRowResource, ...]
     next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
 
 

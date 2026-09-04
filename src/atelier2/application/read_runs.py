@@ -17,6 +17,7 @@ from atelier2.application.refusals import (
     ReadUnavailable,
 )
 from atelier2.contracts.run_projections import (
+    DefectiveRunProjection,
     NodeDetail,
     RunPage,
     RunProjection,
@@ -52,7 +53,7 @@ class RunNotFound:
 
 @dataclass(frozen=True)
 class RunsListed:
-    runs: tuple[RunProjection, ...]
+    runs: tuple[RunProjection | DefectiveRunProjection, ...]
     next_after: RunId | None
 
 

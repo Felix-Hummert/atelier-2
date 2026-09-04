@@ -197,8 +197,8 @@ def test_get_run_and_node_detail_name_abandoned_with_the_run_ending(
 
     assert listed.status_code == 200
     assert run.status_code == 200
-    assert listed.json()["items"] == [run.json()]
-    listed_run = listed.json()["items"][0]
+    assert listed.json()["items"] == [{"kind": "run", "run": run.json()}]
+    listed_run = listed.json()["items"][0]["run"]
     assert listed_run["state"] == ending.value
     assert listed_run["current_node_id"] == NODE_ID
     assert listed_run["node_rail"][0]["state"] == _node_state(ending).value

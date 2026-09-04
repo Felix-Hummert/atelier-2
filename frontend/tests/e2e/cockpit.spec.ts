@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import type { RunListRow } from "../../src/api/client";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import {
   catalogPageCopy,
@@ -19,6 +20,7 @@ import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
+import { healthyRunListItems } from "../support/runListRows";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
@@ -2026,8 +2028,8 @@ test("the Workbench pins a run that is waiting for a person, by its catalog name
   await expect(async () => {
     const listed = await page.request.get(`${api}/runs?state=WAITING_INPUT&limit=50`);
     expect(listed.status()).toBe(200);
-    const body = await listed.json();
-    expect(body.items.some((item: { run_id: string }) => item.run_id === runId)).toBe(true);
+    const body = (await listed.json()) as { items: RunListRow[] };
+    expect(healthyRunListItems(body.items).some((run) => run.run_id === runId)).toBe(true);
   }).toPass({ timeout: 15_000 });
 
   await page.goto("/atelier");

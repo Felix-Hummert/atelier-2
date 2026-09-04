@@ -3,10 +3,12 @@
 
   import {
     type CockpitApi,
+    type DefectiveRunRow,
     type RunEvent,
     type RunEventSubscription,
     type RunV3
   } from "../api/client";
+  import DefectiveRunRowItem from "../components/DefectiveRunRow.svelte";
   import PinnedDecision from "../components/PinnedDecision.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ReadState from "../components/ReadState.svelte";
@@ -57,7 +59,7 @@
   } from "../lib/readResource";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
-  import { newestReadOfEachRun, resolveWorkflowName } from "../lib/runList";
+  import { newestReadOfEachRun, resolveWorkflowName, splitRunListRows } from "../lib/runList";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { loadPendingWaitAnswer } from "../lib/waitAnswerDelivery";
   import { humanMove, runHasEnded, runStanding, standingMarks } from "../lib/runState";
@@ -96,6 +98,8 @@
 
   type WorkbenchRuns = {
     runs: RunV3[];
+    /** Runs whose own projection failed (#1042): read apart, shown apart. */
+    defective: DefectiveRunRow[];
     /** Null when the described catalog could not be read this round: enrichment, not a gate. */
     workflowNames: ReadonlyMap<string, string | null> | null;
   };
@@ -303,10 +307,9 @@
             revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name])
           )
         : null;
-      confirm(begun.generation, {
-        runs: newestReadOfEachRun(runReadings.flatMap((reading) => reading.runs)),
-        workflowNames
-      });
+      const rows = newestReadOfEachRun(runReadings.flatMap((reading) => reading.runs));
+      const { runs, defective } = splitRunListRows(rows);
+      confirm(begun.generation, { runs, defective, workflowNames });
     } catch {
       live = failRead(live, begun.generation, {
         kind: "unavailable",
@@ -600,6 +603,8 @@
       at: run.current_node_id,
       move: humanMove(run.state)
     }));
+  /** Runs whose own projection failed (#1042): named, never folded into an empty shelf. */
+  $: defective = snapshot?.defective ?? [];
 </script>
 
 <section class="workbench surface" aria-labelledby="workbench-title">
@@ -685,6 +690,17 @@
             {/if}
           </a>
         </li>
+      {/each}
+    </ul>
+  {/if}
+
+  <!-- A run whose own projection failed (#1042): named apart from the shelf
+       it moves runs it could read on, never folded into an empty state and
+       never opened -- there is no graph this room can show for it. -->
+  {#if defective.length > 0}
+    <ul class="living-shelf" aria-label={wrapDisplayCopy(workbenchPageCopy.defectiveRunsLabel)}>
+      {#each defective as row (row.public_run_reference)}
+        <DefectiveRunRowItem {row} />
       {/each}
     </ul>
   {/if}

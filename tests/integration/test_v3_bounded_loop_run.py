@@ -88,7 +88,7 @@ from tests.scenarios.agents import (
     emitting,
     publish_checked_model_registry,
 )
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import durable_queries, healthy_runs
 from tests.scenarios.durable_state import (
     canonical_loopback_effects,
     canonical_runtime_settings,
@@ -349,8 +349,8 @@ def test_a_live_second_round_and_its_healthy_peer_remain_readable(
         assert found.projection.current_agent_attempt is not None
         assert found.projection.current_agent_attempt.node_execution_id == execution
         assert isinstance(listed, RunPage), listed
-        assert {item.run.run_id for item in listed.runs} == {RUN, HEALTHY_RUN}
-        loop = next(item for item in listed.runs if item.run.run_id == RUN)
+        assert {item.run.run_id for item in healthy_runs(listed)} == {RUN, HEALTHY_RUN}
+        loop = next(item for item in healthy_runs(listed) if item.run.run_id == RUN)
         assert loop.current_agent_attempt is not None
         assert loop.current_agent_attempt.node_execution_id == execution
         assert isinstance(detailed, NodeDetailFound), detailed
@@ -398,7 +398,7 @@ def test_a_completed_three_round_loop_has_one_public_query_truth(
     assert found.projection.run.state is RunState.COMPLETED
     assert found.projection.run.current_round_ordinal == LOOPED_LINE_MAXIMUM_ROUNDS
     assert isinstance(listed, RunPage), listed
-    assert [item.run.run_id for item in listed.runs] == [RUN]
+    assert [item.run.run_id for item in healthy_runs(listed)] == [RUN]
     assert isinstance(detailed, NodeDetailFound), detailed
     handed = next(
         request
@@ -458,8 +458,9 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
     assert found.projection.current_agent_attempt is not None
     assert found.projection.current_agent_attempt.node_execution_id == execution
     assert isinstance(listed, RunPage), listed
-    assert listed.runs[0].current_agent_attempt is not None
-    assert listed.runs[0].current_agent_attempt.node_execution_id == execution
+    listed_run = healthy_runs(listed)[0]
+    assert listed_run.current_agent_attempt is not None
+    assert listed_run.current_agent_attempt.node_execution_id == execution
     assert isinstance(detailed, NodeDetailFound), detailed
     assert detailed.detail.state is NodeState.FAILED
     assert detailed.detail.answer is None

@@ -12,7 +12,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
-import { revisionHash, startedRun } from "../support/runV3";
+import { revisionHash, runRow, startedRun } from "../support/runV3";
 
 /**
  * REQ-UIQ-08: a surface that exceeds its interaction budget is a defect.
@@ -170,7 +170,7 @@ function historyApi(rows: number): Partial<CockpitApi> {
   const runs = Array.from({ length: rows }, (_, index) => historyRun(index));
   return {
     listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
-      items: state === "COMPLETED" ? runs : [],
+      items: state === "COMPLETED" ? runs.map(runRow) : [],
       next_after: null
     }))
   };
@@ -206,7 +206,7 @@ function workbenchApi(rows: number): Partial<CockpitApi> {
   });
   return {
     listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
-      items: state === "STARTED" ? runs : [],
+      items: state === "STARTED" ? runs.map(runRow) : [],
       next_after: null
     }))
   };

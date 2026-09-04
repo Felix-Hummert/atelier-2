@@ -19,8 +19,17 @@ export const historyPageCopy = {
   title: "History",
   looking: readStateCopy.looking,
   retry: "Retry",
+  /**
+   * Completed and failed runs are read as two separate durable lists
+   * (#1109 delta MEDIUM): when one stops partway, its own Retry names which
+   * list it resumes, rather than two identical "Retry" buttons that both
+   * happen to restart everything.
+   */
+  retryList: {
+    completed: "Retry completed runs",
+    failed: "Retry failed runs"
+  },
   listUnavailable: "History unavailable",
-  listIncomplete: "History incomplete",
   emptyTitle: "No finished runs yet",
   emptyDescription: "Runs land here once they finish — start one from the Catalog.",
   emptyNext: "Open the Catalog",
@@ -68,6 +77,16 @@ export const historyPageCopy = {
 
 export function periodChipLabel(days: number): string {
   return `${days} days`;
+}
+
+/**
+ * Names where a partial read stopped, beside the pages it already showed
+ * (#1042 review, A2). A partial answer always beats none: this never
+ * replaces the rows above it, only names the cursor the next page would
+ * have started from and offers the one honest next move, Retry.
+ */
+export function readingStoppedAt(cursor: string): string {
+  return `Reading stopped at ${cursor} — showing what already loaded.`;
 }
 
 export function historyFindingsHighest(count: number, severity: string): string {
