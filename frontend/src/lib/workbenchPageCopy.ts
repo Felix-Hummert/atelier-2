@@ -35,8 +35,6 @@ export const workbenchPageCopy = {
    * `streamStatus.ts` owns it for every surface that holds a stream.
    */
   streamUnstartable: "The live hold on this workshop could not start.",
-  eventUnapplied: "What changed could not be read.",
-  retryEvent: "Retry",
   runsUnavailable: "Workbench runs unavailable",
   runsLabel: "workbench runs",
   workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",
