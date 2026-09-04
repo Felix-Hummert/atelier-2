@@ -359,6 +359,34 @@ def test_a_workflow_and_an_agent_may_carry_the_same_name(
     )
 
 
+def test_a_lineage_admits_no_member_of_another_kind(
+    runtime: DbosRuntime,
+) -> None:
+    """The kind travels with the request, so it decides which door is even open.
+
+    Under the agent kind the workflow lineage does not exist at all, and under
+    the workflow kind the agent's hash is nothing the workflow door published.
+    """
+
+    api = client(runtime)
+    workflow_lineage_id = api.post(
+        LINEAGES, json=founding(WORKFLOW, published_over_http(api, WORKFLOW))
+    ).json()["lineage_id"]
+    agent_hash = published_over_http(api, AGENT, SECOND_NAME)
+    members = f"{LINEAGES}/{workflow_lineage_id}/members"
+
+    under_its_own_kind = api.post(members, json=membership(AGENT, agent_hash))
+    under_the_lineage_kind = api.post(members, json=membership(WORKFLOW, agent_hash))
+
+    assert under_its_own_kind.status_code == 404, under_its_own_kind.text
+    assert under_its_own_kind.json()["type"].endswith("catalog-lineage-missing")
+    assert under_the_lineage_kind.status_code == 409, under_the_lineage_kind.text
+    assert under_the_lineage_kind.json()["type"].endswith(
+        "catalog-revision-unpublished"
+    )
+    assert api.get(by_name_path(WORKFLOW, NAME)).json()["revision_number"] == 1
+
+
 def test_retiring_the_agent_lineage_leaves_the_workflow_name_answering(
     runtime: DbosRuntime,
 ) -> None:

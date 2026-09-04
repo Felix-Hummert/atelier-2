@@ -256,7 +256,9 @@ test("captures every surface at both widths", async ({ page }) => {
   expect(
     (
       await page.request.post("/atelier/api/v1/catalog-lineages", {
-        data: { kind: "workflow", catalog_revision_hash: iterateHash,
+        data: {
+          kind: "workflow",
+          catalog_revision_hash: iterateHash,
           actor: "shots",
           activated_at: "2026-08-23T00:00:00Z"
         }

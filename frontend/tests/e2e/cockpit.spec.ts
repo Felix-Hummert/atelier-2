@@ -306,7 +306,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
       workflow_format_version: 3,
       run_id: runId,
       public_run_reference: publicRunReference,
-      catalog_revision_hash: workflowRevisionHash,
+      workflow_revision_hash: workflowRevisionHash,
       workflow_name: workflowName,
       agent_binding_set_hash: responseHash,
       run_configuration_revision_hash: responseHash,
@@ -365,7 +365,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
   await expect.poll(() => receivedStart).not.toBeNull();
   expect(receivedStart).toEqual(expect.objectContaining({
     workflow_format_version: 3,
-    catalog_revision_hash: workflowRevisionHash,
+    workflow_revision_hash: workflowRevisionHash,
     agent_bindings: [{ role: "builder", agent_configuration_revision_hash: configurationHash }],
     orders: []
   }));
@@ -623,7 +623,9 @@ test("Catalog start sheet refuses an array order schema before starting", async 
   });
   expect(workflow.status()).toBe(201);
   const admitted = await page.request.post(`${api}/catalog-lineages`, {
-    data: { kind: "workflow", catalog_revision_hash: (await workflow.json()).workflow_revision_hash,
+    data: {
+      kind: "workflow",
+      catalog_revision_hash: (await workflow.json()).workflow_revision_hash,
       actor: "e2e",
       activated_at: "2026-08-26T00:00:00Z"
     }
@@ -915,7 +917,7 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
       workflow_format_version: 3,
       run_id: runId,
       public_run_reference: publicRunReference,
-      catalog_revision_hash: workflowRevisionHash,
+      workflow_revision_hash: workflowRevisionHash,
       workflow_name: workflowName,
       agent_binding_set_hash: responseHash,
       run_configuration_revision_hash: responseHash,
@@ -962,7 +964,7 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
   expect(receivedStart).toEqual({
     workflow_format_version: 3,
     run_id: expect.any(String),
-    catalog_revision_hash: workflowRevisionHash,
+    workflow_revision_hash: workflowRevisionHash,
     agent_bindings: [{ role: "builder", agent_configuration_revision_hash: configurationHash }],
     orders: []
   });
@@ -1723,7 +1725,9 @@ test("opening a Catalog detail draws its nodes before a run exists", async ({
   });
   expect(published.status()).toBe(201);
   const admitted = await page.request.post(`${api}/catalog-lineages`, {
-    data: { kind: "workflow", catalog_revision_hash: (await published.json()).workflow_revision_hash,
+    data: {
+      kind: "workflow",
+      catalog_revision_hash: (await published.json()).workflow_revision_hash,
       actor: "e2e",
       activated_at: "2026-08-26T00:00:00Z"
     }
@@ -1805,7 +1809,9 @@ test("a declared order is a material field on start, and the typed value travels
   });
   expect(published.status()).toBe(201);
   const admitted = await page.request.post(`${api}/catalog-lineages`, {
-    data: { kind: "workflow", catalog_revision_hash: (await published.json()).workflow_revision_hash,
+    data: {
+      kind: "workflow",
+      catalog_revision_hash: (await published.json()).workflow_revision_hash,
       actor: "e2e",
       activated_at: "2026-08-26T00:00:00Z"
     }
@@ -1907,7 +1913,9 @@ test("the Catalog detail names the admitted head of a V3 lineage", async ({
   const newestHash = (await newestPublished.json()).workflow_revision_hash as string;
 
   const founded = await page.request.post(`${api}/catalog-lineages`, {
-    data: { kind: "workflow", catalog_revision_hash: olderHash,
+    data: {
+      kind: "workflow",
+      catalog_revision_hash: olderHash,
       actor: "e2e",
       activated_at: "2026-08-17T00:00:00Z"
     }
@@ -1915,7 +1923,9 @@ test("the Catalog detail names the admitted head of a V3 lineage", async ({
   expect(founded.status()).toBe(201);
   const lineageId = (await founded.json()).lineage_id as string;
   const admitted = await page.request.post(`${api}/catalog-lineages/${lineageId}/members`, {
-    data: { kind: "workflow", catalog_revision_hash: newestHash,
+    data: {
+      kind: "workflow",
+      catalog_revision_hash: newestHash,
       actor: "e2e",
       activated_at: "2026-08-17T00:00:01Z"
     }
