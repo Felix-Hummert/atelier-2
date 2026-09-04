@@ -592,10 +592,12 @@ def test_the_published_conductor_configuration_is_startable_where_doors_are_arme
         assert settings.provider_probe_receipt_directory is not None
         settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
         now = datetime.now(UTC)
+        assert runtime.settings.provider_probe_receipt_provider_layer_digest is not None
         receipt = ProviderProbeReceipt(
             ProviderProbeVectorId("atelier-doors-claude-opus-4-6"),
             configuration.revision_hash,
             WorkflowRevisionHash("b" * 64),
+            runtime.settings.provider_probe_receipt_provider_layer_digest,
             settings.source_commit,
             recorded_instant(now - timedelta(minutes=1)),
             recorded_instant(now + timedelta(hours=1)),
