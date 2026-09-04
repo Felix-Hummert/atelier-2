@@ -16,8 +16,9 @@ nodes:
     type: agent
     role: builder
     kind: build
-    # The pinned grant carries Grok 4.6's committer identity, so the node
-    # pins the model -- receipt committer and pushing model cannot diverge.
+    # The pinned grant carries Grok 4.6's committer identity. The pin below
+    # is the cast's default for an unbound role; a start that binds this
+    # role explicitly owns matching the committer itself.
     model: grok-4.6
     mode: headless_with_tools
     instruction: >-
@@ -33,8 +34,8 @@ nodes:
       Your edited workspace is the candidate: the atelier captures it and
       publishes it through the push-atelier-commit grant on its own, so you
       call no tool to publish and none exists here. Return a JSON object
-      whose "summary" says what you changed and why, and whose "diff" is the
-      unified diff of exactly that change.
+      whose "summary" says what you changed and why, and whose
+      "changed_paths" lists every file path your change touched.
     tools:
       - ref: run-project-verification
         revision: "a64dd78cdc218418bfeb28a54e8c61c1fd296da2cfcb628c3daabf491023eb9c"
@@ -54,20 +55,22 @@ nodes:
       - name: candidate_report
         schema:
           ref: issue_to_pr_candidate_report
-          revision: "a2889159cb1840b789a9830094ab909f51e6ccae98c25d344d84fa3d1a1473fb"
+          revision: "75404f58fedf7c46bf4b55a43f3840ce21b6710e4057a1863c904127de0f15ee"
   - id: review
     type: agent
     role: reviewer
     kind: review
     family_differs_from: builder
+    binding_constraint:
+      distinct_from: build
     mode: headless
     depends_on: [build]
     instruction: >-
       Judge the candidate carried under "candidate_report" against the work
       item carried under "context"; that item's body is the contract the
-      change owes. The builder's own summary and diff are your only evidence:
-      you cannot read files, run anything, or use tools in this headless
-      call, so where the report is too thin to judge, answer cannot-judge
+      change owes. The builder's own summary and changed paths are your only
+      evidence: you cannot read files, run anything, or use tools in this
+      headless call, so where the report is too thin to judge, answer cannot-judge
       with the reason instead of guessing. Approve when nothing you find
       blocks the pull request; otherwise revise. Revise only with at least
       one finding; cannot-judge must carry a reason.
@@ -92,6 +95,15 @@ nodes:
       report it judged. The commit is already pushed to its own branch;
       what you release here is the pull request. Answer "open-pr" to open
       it. There is no second answer -- to refuse, cancel this run.
+    inputs:
+      - name: review_result
+        from:
+          node: review
+          output: result
+      - name: candidate_report
+        from:
+          node: build
+          output: candidate_report
     outputs:
       - name: authorization
         schema:

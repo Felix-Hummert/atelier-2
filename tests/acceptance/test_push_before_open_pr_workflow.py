@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -88,6 +86,7 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.projects import run_git
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
 
@@ -104,36 +103,17 @@ _WRITE_CANDIDATE = (
 )
 
 
-def _git(repository: Path, *arguments: str) -> str:
-    environment = {
-        **os.environ,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_AUTHOR_NAME": "fixture",
-        "GIT_AUTHOR_EMAIL": "fixture@example.test",
-        "GIT_COMMITTER_NAME": "fixture",
-        "GIT_COMMITTER_EMAIL": "fixture@example.test",
-    }
-    completed = subprocess.run(
-        ("git", "-C", str(repository), *arguments),
-        env=environment,
-        capture_output=True,
-        check=True,
-    )
-    return completed.stdout.decode().strip()
-
-
 def _repositories(root: Path) -> tuple[Path, Path, str]:
     project = root / "project"
     project.mkdir()
-    _git(project, "init", "--quiet", "--initial-branch=main")
+    run_git(project, "init", "--quiet", "--initial-branch=main")
     (project / "base.txt").write_text("base\n", encoding="utf-8")
-    _git(project, "add", "base.txt")
-    _git(project, "commit", "--quiet", "-m", "base")
-    base = _git(project, "rev-parse", "HEAD")
+    run_git(project, "add", "base.txt")
+    run_git(project, "commit", "--quiet", "-m", "base")
+    base = run_git(project, "rev-parse", "HEAD")
     remote = root / "remote.git"
-    _git(root, "init", "--bare", "--quiet", str(remote))
-    _git(project, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
+    run_git(root, "init", "--bare", "--quiet", str(remote))
+    run_git(project, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
     return project, remote, base
 
 
@@ -397,11 +377,11 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         push_receipt = PushAtelierCommitReceipt.from_result_bytes(
             bytes(receipts[0].result)
         )
-        assert push_receipt.commit_oid == _git(
+        assert push_receipt.commit_oid == run_git(
             remote, "rev-parse", push_receipt.full_ref
         )
         assert push_receipt.parent == base
-        assert push_receipt.candidate_tree == _git(
+        assert push_receipt.candidate_tree == run_git(
             remote, "rev-parse", f"{push_receipt.commit_oid}^{{tree}}"
         )
         assert push_receipt.author == author

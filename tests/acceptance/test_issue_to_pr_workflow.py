@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +20,7 @@ from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
     effect_intents,
     effect_receipts,
+    run_events,
     runs,
     tool_redemptions,
 )
@@ -64,6 +63,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
+    RunEventKind,
     SubmitWaitAnswerRequest,
     WaitAnswerActor,
 )
@@ -99,7 +99,7 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
-from tests.scenarios.projects import declaring_verification, git_project
+from tests.scenarios.projects import declaring_verification, git_project, run_git
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command, submit_wait_answer
 
@@ -114,11 +114,20 @@ REVIEW_NODE = "review"
 WAIT_NODE = "authorize_pr"
 BUILDER_PROVIDER = ProviderId("exact")
 REVIEWER_PROVIDER = ProviderId("other")
-"""Two provider families, because the document refuses to cast them as one.
+"""Two provider families -- this scenario's own arrangement, not `resolve_start_bindings`'s doing.
 
-`family_differs_from: builder` is resolved against the provider each bound
-configuration names, so a chain whose reviewer shares the builder's provider is
-refused at the start rather than reviewed by the builder's own family.
+`resolve_start_bindings`, the graph-level start check, never reads
+`family_differs_from`; only `cast_unbound_roles` does. The starter still runs
+that cast ahead of `resolve_start_bindings` for every V3 start, including one
+naming both roles explicitly, so a request colliding `build` and `review` on
+one configuration is refused there first --
+`test_a_start_refuses_the_same_configuration_bound_to_build_and_review` proves
+it, at the real `POST /runs` door. `review`'s own `binding_constraint:
+distinct_from: build` is a second, independent guarantee living inside
+`resolve_start_bindings` itself: unreachable through that exact collision,
+because the two roles can never share a configuration hash without also
+sharing a provider, but it would still hold if a later document ever dropped
+`family_differs_from` from this pair.
 """
 
 CANDIDATE_FILE_NAME = "candidate.txt"
@@ -126,7 +135,7 @@ CANDIDATE_FILE_BYTES = b"what the builder changed\n"
 CANDIDATE_REPORT = json.dumps(
     {
         "summary": "Wrote the line the item asked for.",
-        "diff": f"--- /dev/null\n+++ b/{CANDIDATE_FILE_NAME}\n+what the builder changed\n",
+        "changed_paths": [CANDIDATE_FILE_NAME],
     }
 ).encode()
 REVIEW_RESULT = json.dumps({"findings": [], "verdict": "approve"}).encode()
@@ -144,25 +153,6 @@ _EDIT_THEN_REPORT = (
     "pathlib.Path(sys.argv[1]).write_bytes(bytes.fromhex(sys.argv[2]));"
     "os.write(1,bytes.fromhex(sys.argv[3]))"
 )
-
-
-def _git(repository: Path, *arguments: str) -> str:
-    environment = {
-        **os.environ,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_AUTHOR_NAME": "fixture",
-        "GIT_AUTHOR_EMAIL": "fixture@example.test",
-        "GIT_COMMITTER_NAME": "fixture",
-        "GIT_COMMITTER_EMAIL": "fixture@example.test",
-    }
-    completed = subprocess.run(
-        ("git", "-C", str(repository), *arguments),
-        env=environment,
-        capture_output=True,
-        check=True,
-    )
-    return completed.stdout.decode().strip()
 
 
 def _project_and_remote(root: Path, verification_record: Path) -> tuple[Path, Path]:
@@ -187,8 +177,8 @@ def _project_and_remote(root: Path, verification_record: Path) -> tuple[Path, Pa
         ),
     )
     remote = root / "remote.git"
-    _git(root, "init", "--bare", "--quiet", str(remote))
-    _git(project, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
+    run_git(root, "init", "--bare", "--quiet", str(remote))
+    run_git(project, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
     return project, remote
 
 
@@ -218,6 +208,50 @@ def _executors() -> tuple[RecordingAgentExecutorFactoryV2, ...]:
             command=emitting(REVIEW_RESULT),
         ),
     )
+
+
+def _runtime(
+    tmp_path: Path,
+) -> tuple[DbosRuntime, GitHubEffectAdapterFactory, Path, Path]:
+    """The runtime this workflow's tests share: real git, fake GitHub, fake agents.
+
+    Returns the runtime, the recording GitHub adapter, the bare remote the push
+    reaches, and the file the declared verification writes the candidate into --
+    every one of them a caller may need to assert against once a run has moved.
+    """
+    verification_record = tmp_path / "verification.txt"
+    project, remote = _project_and_remote(tmp_path, verification_record)
+    github = GitHubEffectAdapterFactory(
+        tmp_path / "github.sqlite",
+        AdapterRevision("github-open-pr-v1"),
+        EffectDestination("platform"),
+    )
+    push = GitTransportEffectAdapterFactory(
+        tmp_path / CANDIDATE_STORE_DIRECTORY_NAME,
+        GitRemote("local-issue-to-pr-test", str(remote)),
+        AdapterRevision("git-push-v1"),
+        EffectDestination("git"),
+    )
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "issue-to-pr-workflow-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+            project_id=PROJECT,
+            bootstrap_project_root=project,
+        ),
+        EffectAdapterRegistry(
+            (
+                EffectAdapterRegistration(AdapterOperationName.OPEN_PR, github),
+                EffectAdapterRegistration(
+                    AdapterOperationName.PUSH_ATELIER_COMMIT, push
+                ),
+            )
+        ),
+        _executors(),
+    )
+    runtime.initialize_storage()
+    return runtime, github, remote, verification_record
 
 
 def _publish_workflow(
@@ -385,38 +419,7 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
     builder attempt's own continuation; what the Wait releases is the pull
     request, and only the exact release opens it.
     """
-    verification_record = tmp_path / "verification.txt"
-    project, remote = _project_and_remote(tmp_path, verification_record)
-    github = GitHubEffectAdapterFactory(
-        tmp_path / "github.sqlite",
-        AdapterRevision("github-open-pr-v1"),
-        EffectDestination("platform"),
-    )
-    push = GitTransportEffectAdapterFactory(
-        tmp_path / CANDIDATE_STORE_DIRECTORY_NAME,
-        GitRemote("local-issue-to-pr-test", str(remote)),
-        AdapterRevision("git-push-v1"),
-        EffectDestination("git"),
-    )
-    runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
-            "issue-to-pr-workflow-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
-            project_id=PROJECT,
-            bootstrap_project_root=project,
-        ),
-        EffectAdapterRegistry(
-            (
-                EffectAdapterRegistration(AdapterOperationName.OPEN_PR, github),
-                EffectAdapterRegistration(
-                    AdapterOperationName.PUSH_ATELIER_COMMIT, push
-                ),
-            )
-        ),
-        _executors(),
-    )
-    runtime.initialize_storage()
+    runtime, github, remote, verification_record = _runtime(tmp_path)
     try:
         workflow, bindings, (author, committer) = _publish_workflow(runtime)
         response = _start(runtime, workflow, bindings)
@@ -474,9 +477,18 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
             waiting_node = connection.scalar(
                 sa.select(runs.c.current_node_id).where(runs.c.run_id == RUN.value)
             )
+            waiting_question = connection.scalar(
+                sa.select(run_events.c.payload).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.node_id == WAIT_NODE,
+                    run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+                )
+            )
         assert bytes(reviewed) == REVIEW_RESULT
         assert waiting_node == WAIT_NODE
         assert github.recorded_pull_requests() == ()
+        assert waiting_question is not None
+        assert REVIEW_RESULT.decode("utf-8") in bytes(waiting_question).decode("utf-8")
 
         wait_execution = NodeExecutionId.for_node(
             RUN, workflow.revision_hash, WAIT_NODE
@@ -534,7 +546,7 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
         )
         assert push_receipt.author == author
         assert push_receipt.committer == committer
-        assert push_receipt.commit_oid == _git(
+        assert push_receipt.commit_oid == run_git(
             remote, "rev-parse", push_receipt.full_ref
         )
         opened = OpenPullRequest.from_canonical_bytes(intents[1].request.payload)
@@ -547,5 +559,48 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
         )
         assert CANDIDATE_REPORT.decode("utf-8") in recorded.body
         assert REVIEW_RESULT.decode("utf-8") not in recorded.body
+    finally:
+        runtime.close()
+
+
+def test_a_start_refuses_the_same_configuration_bound_to_build_and_review(
+    tmp_path: Path,
+) -> None:
+    """Binding one configuration to both `build` and `review` is refused at the door.
+
+    A same-configuration collision between these two roles can never reach
+    `resolve_start_bindings`'s own `binding_constraint` check here: the
+    starter's always-running `cast_unbound_roles` seam refuses it first,
+    because the two roles can never share a configuration hash without also
+    sharing a provider, and `review` declares `family_differs_from: builder`.
+    What this proves is the shipped document's actual behavior at the real
+    door -- not which of its two independent guarantees answers.
+    """
+    runtime, _, _, _ = _runtime(tmp_path)
+    try:
+        workflow, bindings, _ = _publish_workflow(runtime)
+        builder_binding = next(
+            binding for binding in bindings.bindings if binding.role.value == "builder"
+        )
+        colliding = AgentBindingSet(
+            tuple(
+                AgentBinding(
+                    binding.role, builder_binding.agent_configuration_revision_hash
+                )
+                for binding in bindings.bindings
+            )
+        )
+
+        response = _start(runtime, workflow, colliding)
+
+        assert response.status_code == 422, response.text
+        problem = response.json()
+        assert problem["type"].endswith(":uncast-agent-roles")
+        (uncast_reviewer,) = problem["uncast_roles"]
+        assert uncast_reviewer["role"] == "reviewer"
+        assert uncast_reviewer["reason"] == "family-difference-unavailable"
+        assert uncast_reviewer["family_differs_from"] == "builder"
+        with runtime.engine.connect() as connection:
+            assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
     finally:
         runtime.close()

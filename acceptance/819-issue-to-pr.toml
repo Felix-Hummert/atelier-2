@@ -17,7 +17,12 @@ story = "https://github.com/FlexOr2/atelier-2/issues/819"
 # as the first follow-up slice, and until it lands the review's evidence is the
 # builder's statement about its work. `revise` and `cannot-judge` reach the
 # operator at the Wait rather than routing anywhere; the fix rounds of #819 are
-# not in this line at all.
+# not in this line at all. The pull request body is the candidate report's
+# JSON, not prose; rendering it into a readable body is #819's next slice.
+# Slice 1b ships the catalog document with the deployment's own push-identity
+# pins (author Felix Hummert, committer Grok 4.6), superseding the 27.08.2026
+# reservation by the plan review -- the pins are owned by the deployment's
+# push grant and adapter operation, not by the catalog.
 
 [[sentence]]
 id = "issue-to-pr-builds-reviews-waits-and-opens-the-pull-request"

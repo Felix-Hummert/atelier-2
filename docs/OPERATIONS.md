@@ -880,6 +880,40 @@ The live composition still requires a loopback bind. An agent-authored
 an unknown GitHub readback pauses at the agent node for an operator decision,
 rather than refusing admission or reporting completion before a receipt exists.
 
+### Publish the issue-to-pr catalog
+
+`serve_live_update.sh`'s Git-source intake admits only `workflows/*.yaml`; a
+schema, budget, grant, or adapter operation a shipped workflow pins is never
+picked up by that intake and must be published by hand before the workflow
+that pins it can start. For `workflows/issue-to-pr.yaml`, this is a landing
+operation, in this order:
+
+1. Publish its three schemas --
+   `workflows/schemas/issue_to_pr_candidate_report.json`,
+   `workflows/schemas/code_review_result.json`, and
+   `workflows/schemas/issue_to_pr_release_decision.json` -- through
+   `POST /atelier/api/v1/schema-revisions`, one call per document.
+2. Publish `workflows/budgets/push-implement.json` through
+   `POST /atelier/api/v1/budget-revisions` if the live catalog does not
+   already carry it (`push-before-open-pr` publishes the same budget).
+3. Publish the two adapter operations through
+   `POST /atelier/api/v1/adapter-operation-revisions`: `open-pr` is exactly
+   the bytes `{"operation":"open-pr"}`; `push-atelier-commit` carries this
+   deployment's own author and committer identity, so it has no canonical
+   bytes here.
+4. Publish the two tool grants through
+   `POST /atelier/api/v1/tool-grant-revisions`, after step 3: the
+   `run-project-verification` grant is exactly the bytes
+   `{"capability":"run-project-verification"}`; the `push-atelier-commit`
+   grant names step 3's operation by its own returned hash, so it cannot be
+   published first.
+
+Only once every schema, budget, grant, and operation above has returned its
+hash does the Git-source intake admit `workflows/issue-to-pr.yaml` itself --
+an unresolved pin refuses the whole document. The live hashes are the
+landing's own evidence; this runbook does not copy them, for the same reason
+the canary's four hashes above are not copied either.
+
 ## Pin an executor toolchain
 
 The atelier owns the executor copies it serves. The operator's daily CLI
