@@ -82,7 +82,6 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
-from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 from atelier2.ports.agent_attempts import (
     AgentAttemptExecutionOutcome,
     AgentAttemptFailed,
@@ -1492,23 +1491,18 @@ def test_a_supervised_provider_answer_becomes_exactly_one_durable_receipt(
 def test_the_largest_durable_answer_survives_the_supervised_provider_frame(
     tmp_path: Path,
 ) -> None:
-    """The write door reads the same instance-document bound the hand-off does.
+    """The output door reads its own route bound, not the inline-order default.
 
-    Both the success write (`agent_attempt_store.py`) and the round hand-off
-    (`run_store.py`'s `refuse_an_output_its_schema_does_not_admit`) judge a
-    produced output's declared schema over `read_instance_document`'s own
-    default, `MAXIMUM_INSTANCE_DOCUMENT_BYTES` (#1078 edge 1 review: judging
-    the same bytes under two different bounds let the write admit a report
-    the hand-off would later refuse). The provider frame itself still admits
-    a far larger raw answer (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`,
-    `test_a_decoded_result_one_byte_past_its_bound_fails_the_attempt` pins
-    that door); this proves the smaller, shared schema bound the write and
-    hand-off actually enforce. The answer is wrapped as one JSON string of
+    Route-owned bounds (schemas_v3.py): an agent output arrives through the
+    provider frame, whose door is MAXIMUM_AGENT_OUTPUT_BYTES_V2 -- not the
+    smaller inline-order default a declared-output schema would otherwise
+    inherit (#901 slice 5 first exposed the collision; the door is fixed in
+    agent_attempt_store.py). The answer is wrapped as one JSON string of
     exactly that many bytes, since the declared output is schema-validated
     JSON now.
     """
-    answer = json.dumps("a" * (MAXIMUM_INSTANCE_DOCUMENT_BYTES - 2))
-    assert len(answer) == MAXIMUM_INSTANCE_DOCUMENT_BYTES
+    answer = json.dumps("a" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - 2))
+    assert len(answer) == MAXIMUM_AGENT_OUTPUT_BYTES_V2
 
     outcome, receipts = durably_attempted(
         tmp_path, emitting_claude(success_envelope(answer)), "claude/frame-edge"

@@ -104,7 +104,6 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
-from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 from atelier2.contracts.when import RecordedAt
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -2628,28 +2627,20 @@ def test_start_refusals_precede_run_queue_event_and_rebind_mutation(
         production_empty.close()
 
 
-@pytest.mark.parametrize(
-    ("output_size", "accepted"),
-    [
-        (MAXIMUM_INSTANCE_DOCUMENT_BYTES, True),
-        (MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1, False),
-    ],
-)
+@pytest.mark.parametrize(("output_size", "accepted"), [(49_152, True), (49_153, False)])
 def test_the_output_schema_door_admits_the_route_bound_and_refuses_one_byte_past_it(
     tmp_path: Path, output_size: int, accepted: bool
 ) -> None:
-    """The write door reads the same bound the hand-off does, and nothing past it.
+    """The output door reads MAXIMUM_AGENT_OUTPUT_BYTES_V2, not the inline-order default.
 
-    Both the success write (`agent_attempt_store.py`) and the round hand-off
-    (`run_store.py`'s `refuse_an_output_its_schema_does_not_admit`) judge a
-    produced output's declared schema over `read_instance_document`'s own
-    default, `MAXIMUM_INSTANCE_DOCUMENT_BYTES` (#1078 edge 1 review, which
-    named the pair of doors judging under two different bounds as the bug:
-    a report the write once admitted could die at the hand-off instead). A
-    byte over that bound is refused before any receipt is written, and the
-    refusal itself is one committed attempt event -- unlike the pre-V3
-    receipt-construction guard this replaces, a refusal here is durable
-    rather than a raised exception nothing recorded.
+    Route-owned bounds (schemas_v3.py): an agent output arrives through the
+    provider frame, whose door is 49_152 bytes, not the 16_384-byte inline
+    door a declared-output schema would otherwise inherit by default (#901
+    slice 5 first exposed the collision; the door is fixed in
+    agent_attempt_store.py). A byte over that bound is refused before any
+    receipt is written, and the refusal itself is one committed attempt
+    event -- unlike the pre-V3 receipt-construction guard this replaces, a
+    refusal here is durable rather than a raised exception nothing recorded.
     """
     factories = (
         RecordingAgentExecutorFactoryV2(

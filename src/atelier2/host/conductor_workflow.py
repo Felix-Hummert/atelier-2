@@ -23,12 +23,13 @@ also reads its own report from the round before (`previous_report`, the
 previous-round self-edge `is_previous_round_data_edge` carries), honestly
 absent in round one. There is no reloaded transcript: what the agent
 remembers across rounds is exactly what its own last report's
-`carried_context` says, bounded by the report's own instance-document byte
-seam (`MAXIMUM_INSTANCE_DOCUMENT_BYTES`, `atelier2.contracts.schemas_v3` --
-the module that reads every produced report against it, both at the success
-write and at the round hand-off) and marked honestly when that bound forced a
-cut. `CONDUCTOR_LOOP_MAXIMUM_ROUNDS` caps the conversation at 24 rounds;
-round 25 starts a new, unrelated run.
+`carried_context` says, bounded by the report's own produced-output byte
+bound (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`, `atelier2.contracts.agents` -- the
+one bound the success write and the round hand-off both apply to a produced
+report, `atelier2.adapters.dbos.agent_attempt_store` and
+`atelier2.adapters.dbos.run_store`) and marked honestly when that bound
+forced a cut. `CONDUCTOR_LOOP_MAXIMUM_ROUNDS` caps the conversation at 24
+rounds; round 25 starts a new, unrelated run.
 
 RECURSION FENCE, slice 1. A conductor that can start catalog workflows must
 not start itself: a conductor starting conductors would be an unbounded billed
@@ -85,13 +86,15 @@ _REPORT_CARRIED_CONTEXT_FIELD = "carried_context"
 _REPORT_CARRIED_CONTEXT_TRUNCATED_FIELD = "carried_context_truncated"
 
 # `carried_context` (and the report around it) has exactly one size bound:
-# `MAXIMUM_INSTANCE_DOCUMENT_BYTES`, the byte seam `schemas_v3.read_instance_document`
-# already enforces on every produced report, both at the success write and at
-# the round hand-off (`atelier2.adapters.dbos.run_store`). A separate,
-# code-point-counted `maxLength` here would measure a different unit than that
-# seam and could let a multibyte-heavy round through a check that then fails
-# at the seam (#658 P3 review); reusing the one byte bound instead of adding a
-# second, narrower one closes that gap rather than naming it again.
+# `MAXIMUM_AGENT_OUTPUT_BYTES_V2`, the produced-output bound
+# `agent_attempt_store.py`'s success write and `run_store.py`'s round
+# hand-off both apply to every produced report (#1078 edge 1: the two doors
+# must read one bound, or a report the write admits can still die at the
+# hand-off). A separate, code-point-counted `maxLength` here would measure a
+# different unit than that bound and could let a multibyte-heavy round
+# through a check that then fails at the doors (#658 P3 review); reusing the
+# one byte bound instead of adding a second, narrower one closes that gap
+# rather than naming it again.
 
 
 def _canonical_schema_bytes(schema: dict[str, object]) -> bytes:

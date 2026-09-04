@@ -46,6 +46,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.workflow_ids import answer_workflow_id_for
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBindingSetHash,
     AgentConfigurationRevisionHash,
     AgentExecutionRequestHash,
@@ -637,9 +638,20 @@ def why_a_value_its_declared_schema_refuses(
     promised the schema it would honour, so a `"string"`-typed schema still
     demands a JSON-encoded instance here -- unlike an authored value's own
     door, `why_a_wait_node_does_not_admit_an_answer`.
+
+    The byte bound belongs to the route the value arrived by
+    (`schemas_v3.py`'s `read_instance_document` docstring): a produced output
+    arrives through the provider frame, whose route bound is
+    `MAXIMUM_AGENT_OUTPUT_BYTES_V2`, not `read_instance_document`'s smaller
+    inline-order default. This is the same bound the write door applies
+    (`agent_attempt_store.py`'s `_declared_output_schema_refusal`) to the same
+    payload, so a report the write admits is not later refused here under a
+    narrower bound (#1078 edge 1).
     """
     schema = _pinned_schema_or_conflict(session, node_id, declared)
-    verdict = read_instance_document(payload, schema)
+    verdict = read_instance_document(
+        payload, schema, maximum_bytes=MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    )
     return str(verdict) if isinstance(verdict, InstanceRefused) else None
 
 

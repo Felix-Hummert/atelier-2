@@ -49,7 +49,11 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import read_stored_artifact
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.node_records import keep_node_receipt
-from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
+from atelier2.adapters.dbos.run_store import (
+    load_graph,
+    load_node_outputs,
+    run_from_record_with_bindings,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempt_receipts_v3,
@@ -116,6 +120,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     DeclaredContextPackage,
     DeclaredContextPackageHash,
+    DeliveredOutput,
     NodeExecutionRequestHash,
     NodeReceipt,
     NodeReceiptReason,
@@ -134,6 +139,7 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
+from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationTerminalConflict,
@@ -649,19 +655,22 @@ def test_a_schema_refusal_orders_one_repair_that_can_succeed(
 
 
 @pytest.mark.proves("the-write-and-hand-off-judge-a-report-under-one-byte-bound")
-def test_a_report_between_the_two_historical_bounds_is_refused_with_a_repair(
+def test_a_report_between_the_two_historical_bounds_is_admitted_and_delivered(
     runtime: DbosRuntime,
 ) -> None:
-    """A report the write door once admitted must not die at the hand-off (#1078 edge 1).
+    """A report between the two historical bounds survives both doors (#1078 edge 1).
 
-    Before this fix the write door's schema read carried
-    `MAXIMUM_AGENT_OUTPUT_BYTES_V2` (49_152 bytes) while the hand-off applied
-    `read_instance_document`'s own default, `MAXIMUM_INSTANCE_DOCUMENT_BYTES`
-    (16_384 bytes): a report between the two passed the write as a success and
-    then killed the run as `NodeOutputSchemaRefused` once a later round read it
-    back. The write door now applies the same bound, so a report this size is
-    refused here instead -- at ordinal one, which orders a repair round rather
-    than ending the run.
+    The write door (`agent_attempt_store.py`) and the round hand-off
+    (`run_store.py`) once disagreed about which bound judges a produced
+    report: the write read the route bound an agent output actually arrives
+    by, `MAXIMUM_AGENT_OUTPUT_BYTES_V2` (49_152 bytes), while the hand-off fell
+    back to `read_instance_document`'s smaller inline-order default,
+    `MAXIMUM_INSTANCE_DOCUMENT_BYTES` (16_384 bytes) -- so a report between the
+    two passed the write as a success and then killed the run as
+    `NodeOutputSchemaRefused` once a later round read it back. Both doors now
+    read the same route bound, so a report this size is admitted at the write,
+    and the exact bytes the hand-off then hands the downstream node that reads
+    them are the ones the write admitted.
     """
     assert MAXIMUM_INSTANCE_DOCUMENT_BYTES < MAXIMUM_AGENT_OUTPUT_BYTES_V2
     padding = "x" * (MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1)
@@ -669,6 +678,41 @@ def test_a_report_between_the_two_historical_bounds_is_refused_with_a_repair(
     assert (
         MAXIMUM_INSTANCE_DOCUMENT_BYTES < len(answered) < MAXIMUM_AGENT_OUTPUT_BYTES_V2
     )
+    execution = armed_attempt(
+        runtime,
+        document=reviewed_planning_document(PADDED_PLAN_SCHEMA),
+        schema=PADDED_PLAN_SCHEMA,
+    )
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(execution, AgentExecutionResult(answered))
+
+    assert isinstance(outcome, AgentAttemptSucceeded), outcome
+    revision_hash = execution.request.workflow_revision_hash
+    with runtime.engine.connect() as connection:
+        graph = load_graph(connection, revision_hash)
+        assert isinstance(graph, WorkflowGraphV3)
+        successor = graph.node(SUCCESSOR)
+        assert isinstance(successor, AgentNodeV3)
+        delivered = load_node_outputs(connection, RUN, revision_hash, graph, successor)
+    assert delivered == (DeliveredOutput(NODE, "plan", answered),)
+
+
+@pytest.mark.proves("the-write-and-hand-off-judge-a-report-under-one-byte-bound")
+def test_a_report_past_the_shared_bound_is_refused_with_a_repair(
+    runtime: DbosRuntime,
+) -> None:
+    """A report one byte past the shared bound is refused, not admitted (#1078 edge 1).
+
+    The write door and the round hand-off now read one shared route bound,
+    `MAXIMUM_AGENT_OUTPUT_BYTES_V2`: a report one byte past it is refused at
+    the write, at ordinal one, which orders a repair round rather than ending
+    the run.
+    """
+    overhead = len(json.dumps({"steps": 3, "notes": ""}).encode())
+    padding = "x" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1 - overhead)
+    answered = json.dumps({"steps": 3, "notes": padding}).encode()
+    assert len(answered) == MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1
     execution = armed_attempt(runtime, schema=PADDED_PLAN_SCHEMA)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
 
