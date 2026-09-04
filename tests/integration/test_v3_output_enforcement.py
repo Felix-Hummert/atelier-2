@@ -666,7 +666,9 @@ def test_a_report_between_the_two_historical_bounds_is_refused_with_a_repair(
     assert MAXIMUM_INSTANCE_DOCUMENT_BYTES < MAXIMUM_AGENT_OUTPUT_BYTES_V2
     padding = "x" * (MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1)
     answered = json.dumps({"steps": 3, "notes": padding}).encode()
-    assert MAXIMUM_INSTANCE_DOCUMENT_BYTES < len(answered) < MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    assert (
+        MAXIMUM_INSTANCE_DOCUMENT_BYTES < len(answered) < MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    )
     execution = armed_attempt(runtime, schema=PADDED_PLAN_SCHEMA)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
 
@@ -691,7 +693,9 @@ def test_a_report_between_the_two_historical_bounds_is_refused_with_a_repair(
                 ).order_by(agent_attempts.c.attempt_ordinal)
             ).all()
         )
-    assert str(receipt["reason"]).startswith("output-schema-refused: instance-too-large")
+    assert str(receipt["reason"]).startswith(
+        "output-schema-refused: instance-too-large"
+    )
     assert attempts == (
         (1, AgentAttemptState.FAILED.value),
         (2, AgentAttemptState.PREPARED.value),
