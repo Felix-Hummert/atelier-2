@@ -443,11 +443,11 @@ def test_a_runner_that_never_connects_invents_no_evidence_and_withdraws_its_leas
 
 def test_the_driver_never_names_the_legacy_process_execution_ports() -> None:
     """`#540` C-3.4's own acceptance line: no call in this module ever
-    touches `AgentProcessRunner` or `AgentAttemptWorkspaceOwner` -- the local-
+    touches `AgentSession` or `AgentAttemptWorkspaceOwner` -- the local-
     process path's own carrier ports, which this Runner-lease path replaces
     rather than reuses."""
     source = inspect.getsource(driver_module)
-    assert "AgentProcessRunner" not in source
+    assert "AgentSession" not in source
     assert "AgentAttemptWorkspaceOwner" not in source
 
 

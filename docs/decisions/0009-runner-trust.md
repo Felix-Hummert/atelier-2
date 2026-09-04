@@ -108,12 +108,12 @@ generation/invocation and pinned Runner-manifest identity. It hosts the Agent
 Executor Adapters for Claude, Claude-tools, Codex, Grok and Grok-tools, and owns
 provider CLI and local credential resolution, ephemeral workspace
 materialization and containment, bounded collection and terminal evidence. A
-provider process is its child, not a Runner; the existing `AgentProcessRunner`
-port is a lower, Serve-local predecessor, not this boundary. (2026-09-04 amendment,
-[ADR 0020](0020-provider-boundary.md): that Serve-local path is where every live
-attempt actually runs, and it owns the session port until this boundary has a
-caller; the containment rules of this section are what the port must satisfy
-when it moves.)
+provider process is its child, not a Runner; the existing `AgentSession`
+port is a lower, Serve-local predecessor, not this boundary. (2026-09-04
+amendment, [ADR 0020](0020-provider-boundary.md): that Serve-local path is where
+every live attempt actually runs, and it owns the session port until this
+boundary has a caller; the containment rules of this section are what the port
+must satisfy when it moves.)
 
 An **Effect Worker** is a separate worker role for one prepared `EffectIntent`.
 It hosts the existing Effect Adapter contract under an operation-scoped grant

@@ -1563,7 +1563,7 @@ def _resolve_admitted_canary_revisions(
     one production list of catalog names a canary vector may resolve under
     (`contracts/provider_probe_receipts.py`, read by `host/provider_canary.py`
     too); resolution itself reuses `DbosCatalogStore.resolve_name`, the same
-    lookup `GET /workflow-revisions/by-name/{name}` answers from, not a second
+    lookup `GET /catalog-revisions/by-name/{kind}/{name}` answers from, not a second
     mechanism.
     """
 

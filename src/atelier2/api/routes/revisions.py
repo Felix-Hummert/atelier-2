@@ -18,6 +18,10 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import (
     API_PREFIX,
+    CATALOG_LINEAGE_MEMBERS_PATH,
+    CATALOG_LINEAGE_RETIREMENTS_PATH,
+    CATALOG_LINEAGES_PATH,
+    CATALOG_REVISION_BY_NAME_PATH,
     LIBRARY_ADDITION_PATH,
     LIBRARY_ADDITIONS_PATH,
     LIBRARY_RECOGNITIONS_PATH,
@@ -788,7 +792,7 @@ def _asked_position(position: str) -> object:
 
 
 @router.post(
-    API_PREFIX + "/workflow-lineages",
+    CATALOG_LINEAGES_PATH,
     response_model=CatalogAdmissionResource,
     status_code=201,
 )
@@ -796,7 +800,7 @@ async def found_catalog_lineage_route(
     request: FoundCatalogLineageRequestResource,
     context: ApiContext = api_context_dependency,
 ) -> CatalogAdmissionResource:
-    """Admit one revision under the name its authoring format owns."""
+    """Admit one revision of any kind under the name its authoring format owns."""
 
     try:
         display_name = (
@@ -812,8 +816,8 @@ async def found_catalog_lineage_route(
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.found_catalog_lineage(
-            RevisionKind.WORKFLOW,
-            PublishedRevisionHash(request.workflow_revision_hash),
+            request.kind,
+            PublishedRevisionHash(request.catalog_revision_hash),
             display_name,
             actor,
             activated_at,
@@ -823,7 +827,7 @@ async def found_catalog_lineage_route(
 
 
 @router.post(
-    API_PREFIX + "/workflow-lineages/{lineage_id}/members",
+    CATALOG_LINEAGE_MEMBERS_PATH,
     response_model=CatalogAdmissionResource,
     status_code=201,
 )
@@ -846,9 +850,9 @@ async def admit_catalog_member_route(
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.admit_catalog_member(
-            RevisionKind.WORKFLOW,
+            request.kind,
             identity,
-            PublishedRevisionHash(request.workflow_revision_hash),
+            PublishedRevisionHash(request.catalog_revision_hash),
             actor,
             activated_at,
         ),
@@ -857,7 +861,7 @@ async def admit_catalog_member_route(
 
 
 @router.post(
-    API_PREFIX + "/workflow-lineages/{lineage_id}/retirements",
+    CATALOG_LINEAGE_RETIREMENTS_PATH,
     status_code=204,
 )
 async def retire_catalog_lineage_route(
@@ -902,14 +906,14 @@ def _admission_resource(result: object) -> CatalogAdmissionResource:
             return CatalogAdmissionResource(
                 display_name=display_name.value,
                 lineage_id=lineage.lineage_id.value,
-                workflow_revision_hash=revision.revision_hash.value,
+                catalog_revision_hash=revision.revision_hash.value,
                 revision_number=1,
             )
         case CatalogMemberAdmitted(lineage, revision, revision_number, display_name):
             return CatalogAdmissionResource(
                 display_name=display_name.value,
                 lineage_id=lineage.lineage_id.value,
-                workflow_revision_hash=revision.revision_hash.value,
+                catalog_revision_hash=revision.revision_hash.value,
                 revision_number=revision_number,
             )
         case CatalogAdmissionExisting(lineage, revision, revision_number, display_name):
@@ -918,7 +922,7 @@ def _admission_resource(result: object) -> CatalogAdmissionResource:
             return CatalogAdmissionResource(
                 display_name=display_name.value,
                 lineage_id=lineage.lineage_id.value,
-                workflow_revision_hash=revision.revision_hash.value,
+                catalog_revision_hash=revision.revision_hash.value,
                 revision_number=revision_number,
             )
         case CatalogRevisionUnpublished():
@@ -952,18 +956,20 @@ def _admission_resource(result: object) -> CatalogAdmissionResource:
 
 
 @router.get(
-    API_PREFIX + "/workflow-revisions/by-name/{name}",
+    CATALOG_REVISION_BY_NAME_PATH,
     response_model=CatalogNameResolutionResource,
 )
 async def get_revision_by_name(
+    kind: RevisionKind,
     name: str,
     position: str = "head",
     context: ApiContext = api_context_dependency,
 ) -> CatalogNameResolutionResource:
-    """Answer which revision a catalog name holds, and nothing about running it.
+    """Answer which revision a catalog name holds under one kind.
 
-    Registered before `/{workflow_revision_hash}` on purpose: that path would
-    otherwise claim `by-name` and refuse every name as a malformed hash.
+    The kind is part of the address because a name is only unique within one:
+    a workflow and an agent may both be called `review-bounded-diff`, and each
+    names its own lineage.
     """
 
     try:
@@ -976,16 +982,14 @@ async def get_revision_by_name(
     asked: object = position if position == "head" else _asked_position(position)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.resolve_catalog_name(
-            RevisionKind.WORKFLOW, query, asked
-        ),
+        lambda: context.use_cases.resolve_catalog_name(kind, query, asked),
     )
     match result:
         case CatalogNameResolved(lineage_id, revision, revision_number, display_name):
             return CatalogNameResolutionResource(
                 display_name=display_name.value,
                 lineage_id=lineage_id.value,
-                workflow_revision_hash=revision.revision_hash.value,
+                catalog_revision_hash=revision.revision_hash.value,
                 revision_number=revision_number,
             )
         case CatalogNameLineageRetired():

@@ -52,15 +52,18 @@ hardened, and not treated as the foundation.
 
 ### 1. One session port, owned by the path that carries the live attempts
 
-The session port is `AgentSession`: `open`, `send(prompt)`, correlated events
-(tool called, tool returned, permission requested), `decide(permission)`,
-`cancel`, and one terminal result with its meter. It replaces the one-way
-`AgentProcessRunner` port in `ports/agent_executions.py`, whose shape is the
-reason a provider cannot ask a question mid-turn.
+The session port is `AgentSession` in `ports/agent_executions.py`, which today
+arms an attempt, runs one invocation and gives supervision up. This record
+grows it into a duplex conversation: `send(prompt)`, correlated events (tool
+called, tool returned, permission requested), `decide(permission)`, `cancel`,
+and one terminal result with its meter. A one-way process that writes a payload
+and reads until end of file is the reason a provider cannot ask a question
+mid-turn.
 
 Its owner is the path that runs the live attempts:
-`application/execute_agent_attempt.py` with `adapters/agent_process_watchdog.py`
-as the first `AgentSession` implementation. The Agent Runner
+`application/execute_agent_attempt.py`, with `AgentProcessSupervisor` — the
+watchdog-backed implementation every live attempt has gone through — as the
+first implementation of the port. The Agent Runner
 (`runner/session.py`, `runner/executors.py`) is frozen inventory under the
 2026-09-04 ruling, not the owner. When a caller for it exists — isolation for
 foreign repositories, or more than one user — the same port moves behind the
@@ -192,9 +195,10 @@ execution.
 
 ## Order
 
-Step 0 is #1178, re-cut to the live path: the existing provider child lifetime
-moves behind the `AgentSession` port with the watchdog as its implementation,
-preserving bytes, cancel, reconnect and terminal evidence. Then: duplex events
+Step 0 is #1178, cut to the live path: the existing provider child lifetime
+moves behind the `AgentSession` port with the watchdog-backed supervisor as its
+implementation, preserving bytes, cancel, reconnect and terminal evidence,
+before any provider changes. Then: duplex events
 with correlation, permission receipts and policy binding, proven against a fake
 provider; Grok; Claude; Codex; an open model; transcript v3. A provider's live
 proof is one real `issue-to-pr` run reaching its review node with that builder.

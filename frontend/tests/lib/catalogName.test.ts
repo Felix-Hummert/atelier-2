@@ -49,7 +49,7 @@ describe("what a published name is to the catalog", () => {
     const ask = vi.fn(async () => ({
       display_name: "diff-review",
       lineage_id: lineageId,
-      workflow_revision_hash: hash,
+      catalog_revision_hash: hash,
       revision_number: 1
     }));
 

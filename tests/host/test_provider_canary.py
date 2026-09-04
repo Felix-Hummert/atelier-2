@@ -33,6 +33,7 @@ from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeVectorId,
     read_provider_probe_receipt,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
@@ -53,6 +54,7 @@ from atelier2.host.provider_canary import (
     write_provider_canary_receipt_atomic,
 )
 
+CATALOG_NAME_PREFIX = f"/catalog-revisions/by-name/{RevisionKind.WORKFLOW.value}/"
 SOURCE_COMMIT = "a" * 40
 CONFIGURATION_HASH = "b" * 64
 TERMINAL_HASH = "c" * 64
@@ -156,7 +158,7 @@ class FakeHttp:
                 self.configuration_page_reads += 1
                 return page
             return encoded(items=self.configurations, next_after_revision_hash=None)
-        if path.startswith("/workflow-revisions/by-name/"):
+        if path.startswith(CATALOG_NAME_PREFIX):
             if self.catalog_unavailable:
                 raise ProviderCanaryServerUnavailable("workflow catalog timed out")
             name = path.rsplit("/", 1)[-1]
@@ -166,7 +168,7 @@ class FakeHttp:
                 CatalogNameResolutionResource(
                     display_name=name,
                     lineage_id="4" * 64,
-                    workflow_revision_hash=workflow_hash,
+                    catalog_revision_hash=workflow_hash,
                     revision_number=1,
                 )
                 .model_dump_json()
@@ -439,7 +441,7 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     resolved = {
         path
         for method, path, _body in http.calls
-        if method == "GET" and path.startswith("/workflow-revisions/by-name/")
+        if method == "GET" and path.startswith(CATALOG_NAME_PREFIX)
     }
     assert set(starts_by_configuration) == {CONFIGURATION_HASH, "f" * 64}
     assert starts_by_configuration[CONFIGURATION_HASH] == {
@@ -454,8 +456,8 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
         ],
     }
     assert resolved == {
-        "/workflow-revisions/by-name/provider-canary-headless",
-        "/workflow-revisions/by-name/provider-canary-workspace-tools",
+        f"{CATALOG_NAME_PREFIX}provider-canary-headless",
+        f"{CATALOG_NAME_PREFIX}provider-canary-workspace-tools",
     }
     # Discovery (health, listing, workflow resolution) is a strictly earlier,
     # single-threaded phase: every workflow-resolution GET precedes every
@@ -468,7 +470,7 @@ def test_each_configured_vector_starts_exactly_one_matching_workflow_and_receipt
     assert all(
         index < first_start_index
         for index, (method, path, _body) in enumerate(http.calls)
-        if method == "GET" and path.startswith("/workflow-revisions/by-name/")
+        if method == "GET" and path.startswith(CATALOG_NAME_PREFIX)
     )
     assert report.failed == 0
     receipts = read_receipts(state_directory)
@@ -1074,11 +1076,11 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
             answer = encoded(
                 items=(configuration(),), next_after_revision_hash=None
             ).decode()
-        elif full_url.endswith(f"/workflow-revisions/by-name/{workflow_name}"):
+        elif full_url.endswith(f"{CATALOG_NAME_PREFIX}{workflow_name}"):
             answer = CatalogNameResolutionResource(
                 display_name=workflow_name,
                 lineage_id="4" * 64,
-                workflow_revision_hash=workflow_hash,
+                catalog_revision_hash=workflow_hash,
                 revision_number=1,
             ).model_dump_json()
         elif full_url.endswith("/runs") and method == "POST":
@@ -1161,12 +1163,12 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
             )
         elif "/agent-configuration-revisions?" in full_url:
             answer = encoded(items=(configuration(),), next_after_revision_hash=None)
-        elif full_url.endswith(f"/workflow-revisions/by-name/{workflow_name}"):
+        elif full_url.endswith(f"{CATALOG_NAME_PREFIX}{workflow_name}"):
             answer = (
                 CatalogNameResolutionResource(
                     display_name=workflow_name,
                     lineage_id="4" * 64,
-                    workflow_revision_hash=workflow_hash,
+                    catalog_revision_hash=workflow_hash,
                     revision_number=1,
                 )
                 .model_dump_json()

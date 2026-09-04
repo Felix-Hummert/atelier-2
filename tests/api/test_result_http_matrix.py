@@ -17,6 +17,7 @@ from atelier2.adapters.markdown_agent_definitions import (
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
+from atelier2.api.openapi import CATALOG_LINEAGES_PATH
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.catalog_v3 import (
     CatalogLineageDisplayName,
@@ -1190,6 +1191,17 @@ def _ports(case: RouteResultCase) -> ApiPorts:
     )
 
 
+def _catalog_admission_body() -> dict[str, str]:
+    """One admission body, spelled as the kind-generic door reads it."""
+
+    return {
+        "kind": RevisionKind.WORKFLOW.value,
+        "catalog_revision_hash": REVISION.revision_hash.value,
+        "actor": "operator",
+        "activated_at": "2026-08-27T12:00:00Z",
+    }
+
+
 def _request(client: TestClient, case: RouteResultCase):
     if case.operation == "publish":
         document = b"not a workflow" if case.source == "invalid-publish" else DOCUMENT
@@ -1234,24 +1246,11 @@ def _request(client: TestClient, case: RouteResultCase):
             "/atelier/api/v1/workflow-revisions/" + REVISION.revision_hash.value
         )
     if case.operation == "lineage-found":
-        return client.post(
-            "/atelier/api/v1/workflow-lineages",
-            json={
-                "workflow_revision_hash": REVISION.revision_hash.value,
-                "actor": "operator",
-                "activated_at": "2026-08-27T12:00:00Z",
-            },
-        )
+        return client.post(CATALOG_LINEAGES_PATH, json=_catalog_admission_body())
     if case.operation == "lineage-member":
         return client.post(
-            "/atelier/api/v1/workflow-lineages/"
-            + REVISION.revision_hash.value
-            + "/members",
-            json={
-                "workflow_revision_hash": REVISION.revision_hash.value,
-                "actor": "operator",
-                "activated_at": "2026-08-27T12:00:00Z",
-            },
+            f"{CATALOG_LINEAGES_PATH}/{REVISION.revision_hash.value}/members",
+            json=_catalog_admission_body(),
         )
     if case.operation == "start":
         return client.post(
