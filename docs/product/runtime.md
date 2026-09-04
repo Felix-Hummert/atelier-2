@@ -73,7 +73,10 @@ revision, bound by the composition root and handed down as a dispatch parameter
 rather than folded into the request an attempt is identified by; it grants
 nothing today, and no provider channel this runtime opens can ask yet, so a
 question would be refused under that revision's hash
-([ADR 0020](../decisions/0020-provider-boundary.md) §3).
+([ADR 0020](../decisions/0020-provider-boundary.md) §3). Every answer -- refusal
+as much as grant -- becomes an append-only `permission_receipts` row bound to the
+attempt, the question's correlation id and that revision hash before the
+provider is told it, and an answer that cannot be kept is never given.
 
 Schema V27 stages the Core half of the external Runner handoff. A disposable
 #301-A witness candidate now exercises a real codec against it end to end

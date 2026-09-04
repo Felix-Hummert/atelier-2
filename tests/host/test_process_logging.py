@@ -25,7 +25,7 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     WatchdogGenerationId,
 )
-from atelier2.contracts.agent_permissions import GRANTS_NOTHING
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING, PermissionReceipt
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
@@ -314,6 +314,9 @@ class _FailingAttemptStore:
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimedByThisCall:
         del execution
         return AgentAttemptClaimedByThisCall(self._attempt)
+
+    def record_permission_decision(self, receipt: PermissionReceipt) -> None:
+        raise AssertionError(receipt)
 
     def complete_known_failure(
         self,

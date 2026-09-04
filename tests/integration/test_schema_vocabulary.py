@@ -23,6 +23,11 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     RunnerEvidenceAcceptancePhase,
 )
+from atelier2.contracts.agent_permissions import (
+    PermissionAuthority,
+    PermissionEffect,
+    PermissionScopeKind,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -406,6 +411,12 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
         AgentConfigurationRevisionFormatVersion
     ),
     "agent_receipts_v2.auth_mode": _values(AuthMode),
+    "permission_receipts.effect": _values(PermissionEffect),
+    "permission_receipts.scope_kind": _values(PermissionScopeKind),
+    "permission_receipts.authority": _values(PermissionAuthority),
+    # An answer is one of two, and the row spells it the way SQLite spells a
+    # boolean; what the two stand for is the receipt's own `granted`.
+    "permission_receipts.granted": frozenset({0, 1}),
     "auth_profile_revisions.auth_mode": _values(AuthMode),
     "effect_intents.state": _values(EffectIntentState),
     "effect_intents.operation_name": _values(AdapterOperationName),
@@ -520,6 +531,10 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "agent_attempts.runner_terminal_evidence_hash",
         "agent_attempts.transcript_artifact_hash",
         "agent_attempts.workflow_revision_hash",
+        "permission_receipts.attempt_id",
+        "permission_receipts.correlation_id",
+        "permission_receipts.policy_revision_hash",
+        "permission_receipts.receipt_hash",
         "agent_attempt_receipts_v3.artifact_hash",
         "agent_attempt_receipts_v3.receipt_hash",
         "agent_attempt_receipts_v3.schema_revision_hash",
@@ -678,6 +693,8 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "host_project_model_defaults.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
     "run_agent_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "tool_redemptions.node_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "permission_receipts.scope_value": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "permission_receipts.decided_at": 20,
     "run_events.cancellation_command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "catalog_lineages.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
     "published_revisions.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,

@@ -496,6 +496,20 @@ def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
     )
 
 
+def _restore_v50_permission_ledger_predecessor(
+    connection: sqlite3.Connection,
+) -> None:
+    """Take back the ledger V51 added, leaving every other table alone.
+
+    V51 is additive, so a predecessor of it differs from today only by not
+    carrying the ledger; dropping it is the whole restoration.
+    """
+
+    for trigger in schema_module._PERMISSION_RECEIPT_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    connection.execute(f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}")
+
+
 def _restore_v49_attempt_failure_vocabulary(connection: sqlite3.Connection) -> None:
     """Take back the failure code V50 added, keeping every stored attempt.
 
@@ -503,15 +517,17 @@ def _restore_v49_attempt_failure_vocabulary(connection: sqlite3.Connection) -> N
     declaration admits eight, in the table's own CHECK and in its transition
     trigger alike. Rebuilding it in the shape V49 published is what makes such
     a store's fingerprint the one its declared version claims -- and it is the
-    same rebuild the hop performs, run the other way.
+    same rebuild the hop performs, run the other way. Past the ledger V51
+    added, which a V49 store predates just as a V50 one does.
     """
 
+    _restore_v50_permission_ledger_predecessor(connection)
     schema_module._rebuild_product_table(
         connection,
         agent_attempts,
         "agent_attempts_after_candidate_unchanged",
         schema_module._AGENT_ATTEMPTS_TRIGGERS,
-        SCHEMA_VERSION,
+        50,
         49,
         trigger_source=schema_module._V49_AGENT_ATTEMPT_TRIGGERS,
     )
@@ -6367,6 +6383,80 @@ def test_every_failed_transition_admits_the_unchanged_tree_only_after_the_v50_ho
             "FAILED",
             AgentAttemptFailureCode.CANDIDATE_UNCHANGED.value,
         )
+
+
+def _populated_v50_store_with(database_path: Path) -> None:
+    """A published V50 store holding one started run standing at an armed attempt."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v50_permission_ledger_predecessor(connection)
+        _write_armed_attempt(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 50")
+        connection.commit()
+        _require_product_shape(connection, 50)
+
+
+def _dumped_rows(connection: sqlite3.Connection) -> frozenset[str]:
+    """Every dumped statement except the version the hop is expected to raise."""
+
+    return frozenset(
+        statement
+        for statement in connection.iterdump()
+        if "atelier_schema_versions" not in statement
+    )
+
+
+def test_a_populated_v50_store_gains_the_permission_ledger_with_its_rows_intact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The ledger arrives empty beside a live-shaped store that keeps everything.
+
+    Nothing is backfilled: an attempt armed before this ledger existed answered
+    whatever it answered under a policy nobody wrote down, and a row invented
+    for it would be an authorisation that never authorised anything.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _populated_v50_store_with(database_path)
+    with sqlite3.connect(database_path) as connection:
+        standing = _dumped_rows(connection)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert _dumped_rows(connection) > standing
+        assert connection.execute(
+            "SELECT count(*) FROM permission_receipts"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
+        _require_product_shape(connection, SCHEMA_VERSION)
+
+
+def test_a_v50_store_already_carrying_a_permission_ledger_is_refused_whole(
+    tmp_path: Path,
+) -> None:
+    """Rows this hop did not write are not rows it may build a ledger around."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _populated_v50_store_with(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE permission_receipts (mine TEXT)")
+        connection.commit()
+
+    with pytest.raises(StoreMigrationRefused, match="permission_receipts"):
+        migrate_store(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (50,)
 
 
 REDEEMED_AUTH = AuthProfileRevision(

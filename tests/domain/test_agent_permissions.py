@@ -1,10 +1,14 @@
-"""What a provider may do is decided against one bound policy revision.
+"""What a provider may do is decided against one bound policy revision, and kept.
 
-ADR 0020 §3. The grant branch has no caller before the first asking provider
-channel (`#1177` step 2) and is deliberately not exercised here.
+ADR 0020 §2 and §3. No deployment grants anything before the first asking
+provider channel (`#1177` step 2), so the refusals here are what a live run
+answers; a granted receipt appears only where the record has to say that a yes
+and a no are two different facts.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import pytest
 
@@ -16,11 +20,14 @@ from atelier2.contracts.agent_permissions import (
     PermissionEffect,
     PermissionPolicyRevision,
     PermissionPolicyRevisionHash,
+    PermissionReceipt,
+    PermissionReceiptHash,
     PermissionRequest,
     PermissionScope,
     PermissionScopeKind,
     decide,
 )
+from atelier2.contracts.when import RecordedAt
 from tests.scenarios.agents import agent_attempt_execution, agent_execution_request_v2
 
 THE_LEASE = PermissionScope(PermissionScopeKind.PATH_PREFIX, "/lease/")
@@ -153,4 +160,102 @@ def test_a_known_call_of_a_known_attempt_keeps_its_pinned_question_id() -> None:
         A_KNOWN_ATTEMPT, 1
     ) == PermissionCorrelationId(
         "9209b5360192f7135218df0f6af1a830e0645848111a55d2dffd19b6653884e6"
+    )
+
+
+A_SECOND_ATTEMPT = AgentAttemptId("ffeeddccbbaa99887766554433221100" * 2)
+WHEN_IT_WAS_DECIDED = RecordedAt("2026-09-05T08:00:00Z")
+
+
+def a_receipt(
+    policy: PermissionPolicyRevision = MAY_READ_THE_LEASE,
+    effect: PermissionEffect = PermissionEffect.WORKSPACE_READ,
+    scope: PermissionScope = THE_LEASE,
+    attempt_id: AgentAttemptId = A_KNOWN_ATTEMPT,
+    call_ordinal: int = 1,
+    decided_at: RecordedAt = WHEN_IT_WAS_DECIDED,
+) -> PermissionReceipt:
+    """The receipt of one attempt asking one thing and being answered."""
+
+    question = PermissionRequest(
+        effect, scope, PermissionCorrelationId.for_call(attempt_id, call_ordinal)
+    )
+    return PermissionReceipt.of(
+        attempt_id, question, decide(policy, question), decided_at
+    )
+
+
+def test_a_receipt_carries_what_was_asked_and_what_the_policy_answered() -> None:
+    kept = a_receipt()
+
+    assert kept.attempt_id == A_KNOWN_ATTEMPT
+    assert kept.correlation_id == PermissionCorrelationId.for_call(A_KNOWN_ATTEMPT, 1)
+    assert (kept.effect, kept.scope) == (PermissionEffect.WORKSPACE_READ, THE_LEASE)
+    assert kept.granted is True
+    assert kept.policy_revision_hash == MAY_READ_THE_LEASE.revision_hash
+    assert kept.authority is PermissionAuthority.POLICY
+    assert kept.decided_at == WHEN_IT_WAS_DECIDED
+
+
+def test_a_refused_question_is_a_receipt_like_any_other() -> None:
+    """What a run refused is a fact it records, not a gap a reader infers."""
+
+    refused = a_receipt(policy=GRANTS_NOTHING)
+
+    assert refused.granted is False
+    assert refused.policy_revision_hash == GRANTS_NOTHING.revision_hash
+    assert refused.correlation_id == a_receipt().correlation_id
+
+
+def test_one_decision_written_at_two_instants_is_one_receipt() -> None:
+    """The clock records the writing; it never decides which receipt this is.
+
+    A recovered attempt asks its questions again and is answered again, seconds
+    or days later. Were the instant part of the identity, that second write
+    would be a second authorisation of a decision nobody made twice.
+    """
+
+    written_later = a_receipt(decided_at=RecordedAt("2026-09-06T09:30:00Z"))
+
+    assert written_later.decided_at != a_receipt().decided_at
+    assert written_later.receipt_hash == a_receipt().receipt_hash
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        pytest.param(
+            lambda: a_receipt(call_ordinal=2), id="another-question-of-this-attempt"
+        ),
+        pytest.param(
+            lambda: a_receipt(attempt_id=A_SECOND_ATTEMPT), id="another-attempt"
+        ),
+        pytest.param(
+            lambda: a_receipt(effect=PermissionEffect.WORKSPACE_WRITE),
+            id="another-effect",
+        ),
+        pytest.param(lambda: a_receipt(scope=ANOTHER_DIRECTORY), id="another-scope"),
+        pytest.param(
+            lambda: a_receipt(policy=GRANTS_NOTHING), id="another-answer-and-authority"
+        ),
+    ],
+)
+def test_receipts_that_record_anything_different_are_different_receipts(
+    other: Callable[[], PermissionReceipt],
+) -> None:
+    """Everything a reader would judge the decision by is inside its identity."""
+
+    assert other().receipt_hash != a_receipt().receipt_hash
+
+
+def test_a_known_decision_keeps_the_receipt_identity_it_was_landed_with() -> None:
+    """A stored receipt is addressed by this hash, so its framing is pinned.
+
+    A change to the framing domain, to the field order, or to how an answer is
+    spelled inside it would silently re-address every receipt the store holds,
+    while every relative comparison above stayed green.
+    """
+
+    assert a_receipt().receipt_hash == PermissionReceiptHash(
+        "63b9c58079c8dc5f39f41582e0415e18e2d0cddc781951328d5b7ec83279a27d"
     )

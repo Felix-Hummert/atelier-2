@@ -20,6 +20,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceReadback,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_permissions import PermissionReceipt
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.artifacts import ArtifactHash
@@ -379,6 +380,26 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
     ) -> AgentExecutorBindingRefusalResult: ...
 
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult: ...
+
+    def record_permission_decision(self, receipt: PermissionReceipt) -> None:
+        """Keep one answered permission question, before its answer is handed out.
+
+        The authorisation ledger of ADR 0020 §2: a permission is authorisation,
+        and an authorisation written after the effect it allowed is none. A
+        refusal is a row for the same reason a grant is -- what a run refused is
+        a fact about that run, not an absence a reader has to infer.
+
+        The same question of the same attempt is one row however often it is
+        asked again: a recovered attempt re-runs its provider, which asks the
+        same call under the same correlation id and is answered by the same
+        bound policy. A *different* answer under that id is not a second
+        receipt but a contradiction, and it is raised.
+
+        Raises rather than returning a refusal, because a caller holding an
+        answer it could not keep has no decision to give: the write is what
+        makes the decision one.
+        """
+        ...
 
     def complete_success(
         self,

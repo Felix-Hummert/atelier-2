@@ -13,11 +13,15 @@ from atelier2.application.publish_artifact import (
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
+    AgentAttemptId,
     ProcessExitSignature,
     receipted_agent_answer,
 )
 from atelier2.contracts.agent_permissions import (
+    PermissionDecision,
     PermissionPolicyRevision,
+    PermissionReceipt,
+    PermissionRequest,
     PolicyPermissionDecider,
 )
 from atelier2.contracts.agents import AgentExecutionResult
@@ -57,6 +61,33 @@ from atelier2.ports.project_verification import (
 )
 
 _LOG = logging.getLogger("atelier2")
+
+
+@dataclass(frozen=True, slots=True)
+class _DecisionsKeptBeforeTheyAnswer:
+    """The bound policy, answering only questions it has already written down.
+
+    ADR 0020 §3 makes the receipt the authorisation itself, so the order here is
+    the whole contract: the policy decides, the ledger keeps that decision, and
+    only then does the answer travel back to the provider. A write that fails
+    therefore produces no answer at all -- the error rises through the session,
+    this attempt's driver stops and reaps its process, and the `LAUNCH_ARMED`
+    attempt is left to the convergence that owns every attempt whose driver is
+    gone. What must never happen is the opposite order: a provider acting on a
+    permission whose only record died with the process that granted it.
+    """
+
+    attempt_id: AgentAttemptId
+    policy: PolicyPermissionDecider
+    store: AgentAttemptStore
+    clock: Callable[[], RecordedAt]
+
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
+        decision = self.policy.decide(request)
+        self.store.record_permission_decision(
+            PermissionReceipt.of(self.attempt_id, request, decision, self.clock())
+        )
+        return decision
 
 
 def execute_agent_attempt(
@@ -104,9 +135,10 @@ def execute_agent_attempt(
 
     `permissions` is the authorisation this execution runs under, bound by
     whoever dispatched it; the decider handed to the session answers every
-    question against exactly that revision. It has no default: an authority
-    nobody named is an authority nobody bound, and this call would then run
-    under one its dispatcher never chose.
+    question against exactly that revision, and keeps each answer in the store
+    before the provider is told it. It has no default: an authority nobody
+    named is an authority nobody bound, and this call would then run under one
+    its dispatcher never chose.
 
     `artifacts` is where a verification that exits nonzero publishes the tail of
     what it printed and the patch it rejected, so the words the attempt ends
@@ -163,7 +195,14 @@ def execute_agent_attempt(
             project.source.materialize(project.pin, lease)
         invocation = AgentProcessInvocation(command, lease)
         completion = session.launch_and_wait(
-            execution, invocation, PolicyPermissionDecider(permissions)
+            execution,
+            invocation,
+            _DecisionsKeptBeforeTheyAnswer(
+                execution.attempt_id,
+                PolicyPermissionDecider(permissions),
+                store,
+                clock,
+            ),
         )
         result = _with_recorded_transcript(
             executor.decode_process_completion(invocation, completion), clock

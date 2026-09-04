@@ -51,6 +51,7 @@ from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
     effect_intents,
     effect_receipts,
+    permission_receipts,
     run_events,
     runs,
     tool_redemptions,
@@ -103,6 +104,15 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
     WatchdogGenerationId,
     process_exit_verdict,
+)
+from atelier2.contracts.agent_permissions import (
+    PermissionAuthority,
+    PermissionCorrelationId,
+    PermissionEffect,
+    PermissionPolicyRevisionHash,
+    PermissionReceipt,
+    PermissionScope,
+    PermissionScopeKind,
 )
 from atelier2.contracts.agent_refusals import (
     AGENT_REFUSAL_SCHEMA,
@@ -165,6 +175,7 @@ from atelier2.contracts.tool_grants_v3 import (
     ToolRedemptionReceipt,
 )
 from atelier2.contracts.verdicts import Verdict, read_verdict
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows import (
     NodeCompletion,
     RunCompletes,
@@ -212,6 +223,10 @@ from atelier2.ports.agent_attempts import (
     RunnerTerminalEvidenceRefusal,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt
+
+
+class PermissionReceiptConflict(RunTransitionConflict):
+    """One question of one attempt contradicts its durable permission receipt."""
 
 
 def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
@@ -1200,6 +1215,46 @@ def _keep_tool_redemption(
         )
 
 
+def _permission_receipt_values(receipt: PermissionReceipt) -> dict[str, object]:
+    """One answered question as its row, in the ledger's own spelling."""
+
+    return {
+        "attempt_id": receipt.attempt_id.value,
+        "correlation_id": receipt.correlation_id.value,
+        "effect": receipt.effect.value,
+        "scope_kind": receipt.scope.kind.value,
+        "scope_value": receipt.scope.value,
+        "granted": receipt.granted,
+        "policy_revision_hash": receipt.policy_revision_hash.value,
+        "authority": receipt.authority.value,
+        "decided_at": receipt.decided_at.value,
+        "receipt_hash": receipt.receipt_hash.value,
+    }
+
+
+def _permission_receipt_from_record(record: Mapping[Any, Any]) -> PermissionReceipt:
+    """The receipt this row holds, re-derived rather than trusted."""
+
+    try:
+        return PermissionReceipt(
+            AgentAttemptId(str(record["attempt_id"])),
+            PermissionCorrelationId(str(record["correlation_id"])),
+            PermissionEffect(str(record["effect"])),
+            PermissionScope(
+                PermissionScopeKind(str(record["scope_kind"])),
+                str(record["scope_value"]),
+            ),
+            bool(record["granted"]),
+            PermissionPolicyRevisionHash(str(record["policy_revision_hash"])),
+            PermissionAuthority(str(record["authority"])),
+            RecordedAt(str(record["decided_at"])),
+        )
+    except ValueError as error:
+        raise PermissionReceiptConflict(
+            "durable permission receipt is not one this product wrote"
+        ) from error
+
+
 def _insert_attempt_event(
     connection: Any,
     attempt: AgentAttempt,
@@ -1892,6 +1947,41 @@ class DbosAgentAttemptStore:
                 )
                 return AgentAttemptSucceeded(durable, completion)
             raise AssertionError("closed agent attempt state was not exhaustive")
+
+    def record_permission_decision(self, receipt: PermissionReceipt) -> None:
+        """Insert, then read back what stands, and compare the two identities.
+
+        The identity rather than the whole row, because the row also carries
+        when it was written and the receipt does not: a recovered attempt asks
+        its question again seconds or days later, and that second write must
+        find the answer it already gave rather than a disagreement about which
+        second the clock read.
+        """
+
+        with canonical_write_transaction(self._engine) as connection:
+            connection.execute(
+                permission_receipts.insert()
+                .prefix_with("OR IGNORE")
+                .values(_permission_receipt_values(receipt))
+            )
+            stored = (
+                connection.execute(
+                    sa.select(permission_receipts).where(
+                        permission_receipts.c.attempt_id == receipt.attempt_id.value,
+                        permission_receipts.c.correlation_id
+                        == receipt.correlation_id.value,
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            if (
+                _permission_receipt_from_record(stored).receipt_hash
+                != receipt.receipt_hash
+            ):
+                raise PermissionReceiptConflict(
+                    "durable permission receipt differs from the decision offered"
+                )
 
     def observe_process(
         self,

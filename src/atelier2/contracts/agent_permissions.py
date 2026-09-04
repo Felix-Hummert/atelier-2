@@ -17,9 +17,11 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Self
 
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.when import RecordedAt
 
 MINIMUM_PERMISSION_CALL_ORDINAL = 1
 MAXIMUM_PERMISSION_CALL_ORDINAL = 0xFFFFFFFFFFFFFFFF
@@ -219,3 +221,79 @@ class PolicyPermissionDecider:
 
     def decide(self, request: PermissionRequest) -> PermissionDecision:
         return decide(self.policy, request)
+
+
+class PermissionReceiptHash(Sha256Hash):
+    """The immutable identity of one `agent-permission-receipt/v1`."""
+
+
+# The two answers are spelled as words in a receipt's preimage rather than as a
+# packed flag: the preimage is where an identity is checked by hand, and a byte
+# there says nothing about which of the two facts it stands for.
+_GRANTED_ANSWER = b"granted"
+_REFUSED_ANSWER = b"refused"
+
+
+@dataclass(frozen=True)
+class PermissionReceipt:
+    """One answered question, as the authorisation ledger keeps it (ADR 0020 §2).
+
+    Written before its decision is given out, because an authorisation recorded
+    after the effect it permitted is not an authorisation. It carries what was
+    asked, what was answered, and the revision hash the answer stands on, so a
+    later reader re-derives the decision from the record instead of trusting it.
+
+    `decided_at` stays out of the identity, as every recording instant in this
+    product does (`contracts/when.py`): when a decision was written is metadata
+    about the writing, and two writes of one decision are one receipt whatever
+    second the clock read.
+    """
+
+    attempt_id: AgentAttemptId
+    correlation_id: PermissionCorrelationId
+    effect: PermissionEffect
+    scope: PermissionScope
+    granted: bool
+    policy_revision_hash: PermissionPolicyRevisionHash
+    authority: PermissionAuthority
+    decided_at: RecordedAt
+    receipt_hash: PermissionReceiptHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "receipt_hash", self._hash())
+
+    @classmethod
+    def of(
+        cls,
+        attempt_id: AgentAttemptId,
+        request: PermissionRequest,
+        decision: PermissionDecision,
+        decided_at: RecordedAt,
+    ) -> Self:
+        """The receipt of this attempt answering exactly this question."""
+
+        return cls(
+            attempt_id,
+            decision.correlation_id,
+            request.effect,
+            request.scope,
+            decision.granted,
+            decision.policy_revision_hash,
+            decision.authority,
+            decided_at,
+        )
+
+    def _hash(self) -> PermissionReceiptHash:
+        return PermissionReceiptHash.of(
+            frame(
+                "agent-permission-receipt/v1",
+                self.attempt_id.value.encode("ascii"),
+                self.correlation_id.value.encode("ascii"),
+                self.effect.value.encode("ascii"),
+                self.scope.kind.value.encode("ascii"),
+                self.scope.value.encode("utf-8"),
+                _GRANTED_ANSWER if self.granted else _REFUSED_ANSWER,
+                self.policy_revision_hash.value.encode("ascii"),
+                self.authority.value.encode("ascii"),
+            )
+        )
