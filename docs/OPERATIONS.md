@@ -1372,6 +1372,12 @@ file it stands in is the whole justification:
 An entry naming something the gate no longer reports is red too: when a caller
 arrives, or the code goes, its entry goes with it.
 
+A third static gate in the same `quality` job, `ruff check --select ANN401`
+scoped to `src/atelier2/contracts`, `ports`, `application`, and `api`, proves
+only that none of those four packages accepts a parameter typed directly as
+`Any` -- it says nothing about a nested `dict[str, Any]` or about return
+types.
+
 ## The duplicate ratchet
 
 `uv run --locked python scripts/check_architecture.py` also refuses copied
