@@ -56,8 +56,11 @@ from atelier2.contracts.agent_transcripts import (
     MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
     AssistantTurn,
     AttemptTranscript,
+    ToolCalled,
+    ToolReturned,
     TranscriptEvent,
     UnrecognisedProviderOutput,
+    Usage,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -85,14 +88,23 @@ GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
     "headless-print-json-output-schema/v3"
 )
 
-# The final envelope follows the same escaping bound as the durable answer;
-# values before it are the transcript. Measured on grok 1.0.4 / grok-4.6
-# (#392): `--output-format json` may concatenate several JSON values without a
-# record separator. Strings before the final envelope are turn narration; only
-# the final envelope's `text` is the answer. A frame therefore reserves room
-# independently for one envelope and one bounded transcript, rather than
-# making progress messages consume the answer allowance.
+# The largest final envelope one call of either operation may write. It is
+# deliberately larger than the durable answer bound: the answer travels inside
+# a JSON envelope, where JSON string escaping expands one source byte to at
+# most six frame bytes, and the rest is the envelope's own metadata allowance.
 GROK_SUBSCRIPTION_ENVELOPE_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+
+# The largest raw standard-output frame one whole call may write, for either
+# operation. The two halves are added rather than shared because they bound
+# different things -- the final answer, and the story that reached it -- and a
+# single number would silently trade one against the other.
+#
+# The tool-free operation writes one `--output-format json` envelope and
+# nothing else. The workspace-tool operation writes an NDJSON stream whose last
+# line is a terminal envelope of the same size class, preceded by exactly the
+# turns and tool results a transcript may keep: one whole transcript's worth is
+# therefore that half's allowance, and a stream past it is one whose steps this
+# repository could not have kept whole anyway.
 GROK_SUBSCRIPTION_FRAME_BYTES = (
     GROK_SUBSCRIPTION_ENVELOPE_BYTES + MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
 )
@@ -105,6 +117,20 @@ _VERSION_PROBE_OUTPUT_BYTES = 4_096
 
 _OUTPUT_FORMAT_FLAG = "--output-format"
 _JSON_OUTPUT_FORMAT = "json"
+# The format that publishes the turns and tool calls as well as the answer.
+# Measured 04.09.2026 against grok 1.0.5 / grok-4.6 in the workspace-tool
+# vector: standard output is pure NDJSON in the Anthropic Messages API wire
+# format -- a `system` init line, whole `assistant` and `user` messages
+# carrying `text`, `thinking`, `tool_use` and `tool_result` blocks, and last a
+# `result` line naming `is_error`, the answer text and, where a schema was
+# declared, `structured_output`. Whole messages, not deltas: the sibling
+# `streaming-json` writes the same session as one NDJSON line per generated
+# token (186 lines and 13,155 bytes for the same four-turn task, against 9,891
+# bytes here) and its terminal line carries no whole answer text at all.
+# `--json-schema` documents that it implies `--output-format json`; measured in
+# the same runs, an explicit format beside it wins and the structured answer
+# still arrives on the terminal line.
+_STREAMING_MESSAGES_JSON_OUTPUT_FORMAT = "streaming-messages-json"
 _JSON_SCHEMA_FLAG = "--json-schema"
 _MODEL_FLAG = "--model"
 _MAXIMUM_TURNS_FLAG = "--max-turns"
@@ -209,6 +235,33 @@ _SHELL_VALUE = "/bin/bash"
 _TERMINAL_TYPE_VALUE = "xterm-256color"
 _TEXT_FIELD = "text"
 _STRUCTURED_OUTPUT_FIELD = "structuredOutput"
+
+# The stream vocabulary of `streaming-messages-json`, read off the measured
+# capture named at `_STREAMING_MESSAGES_JSON_OUTPUT_FORMAT`. The terminal
+# line spells its structured answer in snake case, unlike the `camelCase`
+# field the one-envelope format above uses, so the two names stand apart.
+_LINE_TYPE_FIELD = "type"
+_ASSISTANT_LINE_TYPE = "assistant"
+_USER_LINE_TYPE = "user"
+_RESULT_LINE_TYPE = "result"
+_MESSAGE_FIELD = "message"
+_CONTENT_FIELD = "content"
+_TEXT_BLOCK_TYPE = "text"
+_TOOL_USE_BLOCK_TYPE = "tool_use"
+_TOOL_RESULT_BLOCK_TYPE = "tool_result"
+_TOOL_NAME_FIELD = "name"
+_TOOL_INPUT_FIELD = "input"
+_TOOL_USE_ID_FIELD = "id"
+_ANSWERED_TOOL_USE_ID_FIELD = "tool_use_id"
+_RESULT_FIELD = "result"
+_ERROR_FLAG_FIELD = "is_error"
+_STREAM_STRUCTURED_OUTPUT_FIELD = "structured_output"
+_USAGE_FIELD = "usage"
+_INPUT_TOKENS_FIELD = "input_tokens"
+_OUTPUT_TOKENS_FIELD = "output_tokens"
+_CACHE_READ_TOKENS_FIELD = "cache_read_input_tokens"
+_CACHE_CREATION_TOKENS_FIELD = "cache_creation_input_tokens"
+_RECORD_SEPARATOR = "\n"
 _SINGLE_PROMPT_FLAG = "-p"
 _MEASURED_INLINE_PROMPT_BYTES = 30_000
 _PROMPT_LIMIT_REFUSAL = (
@@ -242,6 +295,35 @@ class GrokContainmentUnattested(ValueError):
 @dataclass(frozen=True)
 class GrokProviderEndedWithoutFinalMessage(AgentExecutionFailure):
     """Grok ended after progress messages without publishing a final envelope."""
+
+    code: AgentAttemptFailureCode = field(
+        default=AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+        init=False,
+    )
+
+
+@dataclass(frozen=True)
+class GrokProviderEndedWithoutToolUse(AgentExecutionFailure):
+    """Grok ended a workspace-tool session that never opened a single door.
+
+    Not a bad answer -- an answer to a call that never happened. Measured
+    04.09.2026 on grok 1.0.5 / grok-4.6 (`#1165`): `--json-schema` constrains
+    *every* assistant message rather than the last one, and the CLI ends the
+    session at the first message that carries no tool call. The narration a
+    model writes before its first tool call is therefore pressed into the
+    report form, and where that narration happens to carry no tool call the
+    session ends right there -- with a schema-valid report about work nobody
+    did. It is a coin flip, not a flag error: the same vector answered after
+    three real tool-using turns in the runs beside it.
+
+    A binding that asked for `HEADLESS_WITH_TOOLS` asked for a call that acts
+    where it stands, so a session with no tool call is this provider ending
+    early, and the attempt says so instead of publishing the preamble as a
+    candidate report. It carries the same code as its sibling above because it
+    is the same fact about the same call: this process left no answer this
+    executor may use. The stream it did write is kept, so a reader sees the
+    preamble that ended it.
+    """
 
     code: AgentAttemptFailureCode = field(
         default=AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
@@ -366,14 +448,19 @@ def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, 
     """The `--json-schema` pair, or nothing where the node declared none.
 
     These are the exact published document bytes the output seam later
-    judges -- not a second serialization. Measured on grok 1.0.4: the flag
-    constrains the model and implies `--output-format json`; a provider that
-    ignores it is still refused by the seam. The CLI accepts
-    `{"type":"string"}` and refuses a boolean schema (`true`) with
-    "must be a JSON object describing a JSON Schema"; this seam does not
-    rewrite that form. A schema-bearing result carries `structuredOutput`,
-    which this adapter serializes without deciding whether it satisfies the
+    judges -- not a second serialization. The flag constrains the model and,
+    left alone, implies `--output-format json`; a provider that ignores it is
+    still refused by the seam. The CLI accepts `{"type":"string"}` and refuses
+    a boolean schema (`true`) with "must be a JSON object describing a JSON
+    Schema"; this seam does not rewrite that form. A schema-bearing result
+    carries its structured answer, which each operation reads from its own
+    wire shape and serializes without deciding whether it satisfies the
     contract; the output seam remains the final judge.
+
+    What the flag constrains is every assistant message, not the last one
+    (measured 04.09.2026, grok 1.0.5 / grok-4.6, `#1165`) -- which is why the
+    operation that acts with tools refuses a session that ended before its
+    first tool call rather than reading such a message as an answer.
     """
     if declared_output_schema_bytes is None:
         return ()
@@ -657,12 +744,15 @@ def _headless_arguments(
 
 
 def _json_values(standard_output: bytes) -> tuple[object, ...] | None:
-    """Read every JSON value Grok concatenated onto standard output.
+    """Read every JSON value the tool-free `--output-format json` call wrote.
 
-    Grok 1.0.4 does not put a separator between its JSON values. `raw_decode`
-    returns the first value and the character where the next one begins, which
-    makes it the framing owner instead of treating a whole stream as one JSON
-    instance. Invalid UTF-8 and an unreadable value leave the raw frame for the
+    Grok puts no separator between JSON values, so `raw_decode` is the framing
+    owner here instead of treating a whole frame as one JSON instance: it
+    returns the first value and the character where the next one begins.
+    Measured 04.09.2026 on grok 1.0.5 / grok-4.6, this format writes exactly
+    one value even across several model calls, so a second value is the shape
+    this reader refuses to mistake for one. Invalid UTF-8 and an unreadable
+    value leave the raw frame for the
     transcript rather than inventing a partial answer.
     """
 
@@ -710,8 +800,15 @@ def _grok_transcript(values: Sequence[object]) -> AttemptTranscript | None:
     )
 
 
-def _final_grok_envelope_text(values: Sequence[object]) -> str | None:
-    """The final provider answer, never a progress value or a partial envelope."""
+def _tool_free_envelope_text(values: Sequence[object]) -> str | None:
+    """The tool-free call's answer: the `text` of the one envelope it wrote.
+
+    Only the tool-free operation reads this. Its sibling with tools writes an
+    NDJSON stream whose terminal line names the answer in its own field, so
+    that operation never has to read one envelope's `text` -- which for a
+    tool-using call is the concatenation of every schema-shaped message the
+    session produced rather than its answer (`#1165`).
+    """
 
     final_value = values[-1]
     if not isinstance(final_value, dict):
@@ -727,6 +824,191 @@ def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | N
         return None
     return AttemptTranscript.of(
         [UnrecognisedProviderOutput(standard_output.decode("utf-8", "replace"))]
+    )
+
+
+def _stream_lines(standard_output: bytes) -> tuple[str, ...]:
+    """Every line of this stream that carries anything, as text.
+
+    Split on the line feed alone, because that is the record separator NDJSON
+    names: `splitlines` also cuts at U+2028, U+2029, form feed and carriage
+    return, every one of which a JSON string may legally contain, so one model
+    quoting a line separator would have its own answer torn into halves that
+    parse as neither. Decoding replaces what is not UTF-8 rather than refusing
+    the frame: the bytes a failing process wrote are the diagnosis somebody is
+    looking for, and what survives is still bounded and redacted by the
+    transcript contract before it is kept.
+    """
+
+    return tuple(
+        line
+        for line in standard_output.decode("utf-8", "replace").split(_RECORD_SEPARATOR)
+        if line.strip()
+    )
+
+
+def _stream_entry(line: str) -> dict[str, object] | None:
+    """This line read as one stream entry, or nothing where it is not one.
+
+    Every way the parser can refuse a line is contained, not bad syntax alone:
+    a JSON integer of more than a few thousand digits raises a plain
+    `ValueError` from the interpreter's own conversion limit, and a deeply
+    nested document raises `RecursionError`. Either one escaping here would end
+    the attempt on an exception nobody stored, over a line this executor was in
+    any case only ever going to keep as text.
+    """
+
+    try:
+        entry: object = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _message_content_blocks(entry: dict[str, object]) -> tuple[object, ...]:
+    """The content blocks this message line carries, or none."""
+
+    message = entry.get(_MESSAGE_FIELD)
+    if not isinstance(message, dict):
+        return ()
+    content = message.get(_CONTENT_FIELD)
+    return tuple(content) if isinstance(content, list) else ()
+
+
+def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent:
+    """One content block as the step it is, or as the output it stays.
+
+    Every block yields something. A shape this executor does not name -- a
+    thinking block, a kind a release adds tomorrow -- is kept as the provider's
+    own output rather than dropped, because a line that IS recognised is
+    exactly where a dropped block hides best.
+
+    `tool_names` is how a result finds the door it answered: the provider names
+    the tool on the call and refers back to it by id afterwards, so the call
+    leaves its name here for the result to read. A result whose call this
+    executor never saw keeps the id instead of borrowing another tool's name.
+    """
+
+    if isinstance(block, dict):
+        shape = block.get(_LINE_TYPE_FIELD)
+        if shape == _TEXT_BLOCK_TYPE:
+            spoken = block.get(_TEXT_FIELD)
+            if isinstance(spoken, str):
+                return AssistantTurn(spoken)
+        elif shape == _TOOL_USE_BLOCK_TYPE:
+            name = block.get(_TOOL_NAME_FIELD)
+            if isinstance(name, str):
+                called_id = block.get(_TOOL_USE_ID_FIELD)
+                if isinstance(called_id, str):
+                    tool_names[called_id] = name
+                return ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
+        elif shape == _TOOL_RESULT_BLOCK_TYPE:
+            answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
+            if isinstance(answered_id, str):
+                answer = block.get(_CONTENT_FIELD)
+                return ToolReturned(
+                    tool_names.get(answered_id, answered_id),
+                    answer if isinstance(answer, str) else _canonical_json(answer),
+                )
+    return UnrecognisedProviderOutput(_canonical_json(block))
+
+
+def _token_count(usage: dict[str, object], field_name: str) -> int | None:
+    """One nonnegative token count this usage record states, or nothing."""
+
+    counted = usage.get(field_name, 0)
+    if type(counted) is not int or counted < 0:
+        return None
+    return counted
+
+
+def _usage_step(entry: dict[str, object]) -> Usage | None:
+    """What this terminal line says the whole call spent, where it says it whole.
+
+    The terminal line is the one this is read from: it carries the provider's
+    own total, while the per-message records would have to be added up here and
+    this module would then be the second place deciding what an attempt cost.
+    """
+
+    usage = entry.get(_USAGE_FIELD)
+    if not isinstance(usage, dict):
+        return None
+    counts = tuple(
+        _token_count(usage, field_name)
+        for field_name in (
+            _INPUT_TOKENS_FIELD,
+            _OUTPUT_TOKENS_FIELD,
+            _CACHE_READ_TOKENS_FIELD,
+            _CACHE_CREATION_TOKENS_FIELD,
+        )
+    )
+    if any(count is None for count in counts):
+        return None
+    read, written, cached, created = counts
+    return Usage(read or 0, written or 0, cached or 0, created or 0)
+
+
+def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent, ...]:
+    """The steps one stream line stands for, keeping whole what it does not.
+
+    A line this executor cannot read as steps is kept as the provider's own
+    output rather than dropped: the session header, a line shape a release
+    added, and whatever a call that never produced a stream printed instead all
+    arrive here, and each is evidence about an episode somebody is reading
+    precisely because nothing explained it.
+    """
+
+    entry = _stream_entry(line)
+    if entry is None:
+        return (UnrecognisedProviderOutput(line),)
+    shape = entry.get(_LINE_TYPE_FIELD)
+    steps: tuple[TranscriptEvent, ...] = ()
+    if shape in {_ASSISTANT_LINE_TYPE, _USER_LINE_TYPE}:
+        steps = tuple(
+            _block_step(block, tool_names) for block in _message_content_blocks(entry)
+        )
+    elif shape == _RESULT_LINE_TYPE:
+        spent = _usage_step(entry)
+        steps = () if spent is None else (spent,)
+    return steps if steps else (UnrecognisedProviderOutput(line),)
+
+
+@dataclass(frozen=True)
+class GrokStreamedSession:
+    """One workspace-tool call read back from the stream it wrote.
+
+    `terminal_envelope` is the stream's own last word rather than a guess: the
+    CLI names its terminal line, so a call that died mid-stream has none here
+    instead of having its last progress line read as an answer.
+
+    `opened_a_door` is read from the steps before they become a transcript,
+    because a transcript drops its oldest steps to stay within the document
+    bound -- asking the kept steps whether a tool ran would answer "no" for
+    exactly the long sessions that used the most tools.
+    """
+
+    steps: tuple[TranscriptEvent, ...]
+    terminal_envelope: dict[str, object] | None
+    opened_a_door: bool
+
+    @property
+    def transcript(self) -> AttemptTranscript | None:
+        """What this call did, or an honest nothing where it wrote no line."""
+
+        return AttemptTranscript.of(self.steps) if self.steps else None
+
+
+def _streamed_session(standard_output: bytes) -> GrokStreamedSession:
+    """Read one whole `--output-format streaming-messages-json` call back."""
+
+    lines = _stream_lines(standard_output)
+    tool_names: dict[str, str] = {}
+    steps = tuple(step for line in lines for step in _line_steps(line, tool_names))
+    terminal = _stream_entry(lines[-1]) if lines else None
+    if terminal is not None and terminal.get(_LINE_TYPE_FIELD) != _RESULT_LINE_TYPE:
+        terminal = None
+    return GrokStreamedSession(
+        steps, terminal, any(isinstance(step, ToolCalled) for step in steps)
     )
 
 
@@ -817,12 +1099,11 @@ class GrokSubscriptionExecutor:
             return _unusable_provider_answer(_grok_transcript(values))
         if not values:
             return GrokProviderEndedWithoutFinalMessage()
-        # Last value wins: only the final JSON value can be the envelope. Measured
-        # on grok 1.0.4 / grok-4.6 (#392), values before it are progress messages;
-        # a progress value after an envelope is therefore
-        # GrokProviderEndedWithoutFinalMessage. `text` is the final answer and
-        # `thought` is narration. `--json-schema`
-        # adds `structuredOutput` as the parsed form of `text`, not a later value.
+        # Last value wins: only the final JSON value can be the envelope, and
+        # measured 04.09.2026 on grok 1.0.5 / grok-4.6 this format writes
+        # exactly one -- a call that wrote none ended without a final message.
+        # `text` is the answer and `thought` is narration; `--json-schema` adds
+        # `structuredOutput` as the parsed form of `text`, not a later value.
         schema_bearing = (
             isinstance(command, GrokSubscriptionProcessCommand)
             and command.declared_output_schema_bytes is not None
@@ -848,7 +1129,7 @@ class GrokSubscriptionExecutor:
                 separators=(",", ":"),
             ).encode("utf-8")
         else:
-            text = _final_grok_envelope_text(values)
+            text = _tool_free_envelope_text(values)
             if text is None:
                 return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
             output_bytes = text.encode("utf-8")
@@ -927,8 +1208,14 @@ GROK_WORKSPACE_TOOLS_EXECUTOR_KEY = AgentExecutorKey(
 # argument vector differs from the tool-free one in the tool grant, and that
 # decision is what an operational identity stands for, so every durable
 # attempt record keeps saying which of the two ran.
+# V3 is the wire change: the vector asks for `--output-format
+# streaming-messages-json` instead of `json`, so the process publishes every
+# turn and tool call on its way to the same structured answer, and a session
+# that opened no door at all is refused instead of published (`#1165`). A
+# different vector reaching a different wire shape is a different operation,
+# so no attempt recorded under V2 is read as having run it.
 GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-workspace-tools-json-output-schema/v2"
+    "headless-workspace-tools-streaming-messages-json-output-schema/v3"
 )
 
 # Headless user-guide names `run_terminal_cmd`; Getting Started names
@@ -1054,7 +1341,7 @@ def _workspace_tool_arguments(
     return (
         str(executable),
         _OUTPUT_FORMAT_FLAG,
-        _JSON_OUTPUT_FORMAT,
+        _STREAMING_MESSAGES_JSON_OUTPUT_FORMAT,
         *_json_schema_flag(declared_output_schema_bytes),
         _MODEL_FLAG,
         model,
@@ -1213,10 +1500,18 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
     IDs, so this executor does not pretend it validates them.
 
     WHAT IT KEEPS. Every other flag and the whole private HOME of the
-    tool-free call, unchanged: inline `-p`, `--output-format json`, the
-    inert compatibility configuration, no memory, no subagents, no web
-    search, a bounded turn count. Schema-bearing calls take `structuredOutput`;
-    calls without a schema take nonempty `text`.
+    tool-free call, unchanged: inline `-p`, the inert compatibility
+    configuration, no memory, no subagents, no web search, a bounded turn
+    count.
+
+    WHAT IT READS. Not the tool-free call's one envelope. This vector asks for
+    `--output-format streaming-messages-json`, so the call publishes its turns
+    and its tool calls as NDJSON and names its own terminal line
+    (`_streamed_session`). Schema-bearing calls take that line's
+    `structured_output`; calls without a schema take its nonempty `result`.
+    A session whose stream shows no tool call at all is refused as
+    `GrokProviderEndedWithoutToolUse` rather than answered -- see that class
+    for the measurement, and `#1165` for the live pass that found it.
 
     WHAT IT DOES NOT CLAIM. No operating-system isolation. The process runs as
     the serving user, and the named tools reach every path that user reaches
@@ -1258,6 +1553,50 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
             declared_output_schema_bytes,
             maximum_assistant_turns,
         )
+
+    def decode_process_completion(
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        """Read one workspace-tool call back from the stream it wrote.
+
+        The stream is what this operation has that its tool-free sibling does
+        not: the turns and the doors, in the order the CLI wrote them, and a
+        terminal line the CLI names itself rather than one this module picks
+        out. Every way through here carries whatever the call did write, the
+        refusals included -- what a call wrote before it ended is the only
+        account of an ending an exit code explains nothing about.
+        """
+
+        session = _streamed_session(completion.standard_output)
+        transcript = session.transcript
+        if completion.return_code != 0:
+            return _unusable_provider_answer(transcript)
+        envelope = session.terminal_envelope
+        if envelope is None or envelope.get(_ERROR_FLAG_FIELD) is not False:
+            return GrokProviderEndedWithoutFinalMessage(transcript)
+        if not session.opened_a_door:
+            return GrokProviderEndedWithoutToolUse(transcript)
+        command = invocation.command
+        if (
+            isinstance(command, GrokSubscriptionProcessCommand)
+            and command.declared_output_schema_bytes is not None
+        ):
+            # Absent and null decode alike, as in the tool-free sibling: null
+            # is the CLI's own no-answer sentinel, never a model answer.
+            structured_output = envelope.get(_STREAM_STRUCTURED_OUTPUT_FIELD)
+            if structured_output is None:
+                return GrokProviderEndedWithoutFinalMessage(transcript)
+            output_bytes = json.dumps(
+                structured_output, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        else:
+            answer = envelope.get(_RESULT_FIELD)
+            if not isinstance(answer, str) or not answer:
+                return GrokProviderEndedWithoutFinalMessage(transcript)
+            output_bytes = answer.encode("utf-8")
+        if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
+            return _unusable_provider_answer(transcript)
+        return AgentExecutionResult(output_bytes, transcript)
 
 
 @dataclass(frozen=True)
