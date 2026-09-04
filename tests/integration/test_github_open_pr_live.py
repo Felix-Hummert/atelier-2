@@ -102,6 +102,9 @@ class _FakeGitHubServer:
     pull_request_searches: int = 0
 
     pull_request_search_answer: httpx.Response | None = None
+    fail_pull_request_search_on_page: int | None = None
+    """Which page (1-indexed) of a pull-request listing answers a failure."""
+
     _next_number: int = 1
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -114,6 +117,10 @@ class _FakeGitHubServer:
             )
         if request.method == "GET" and path == f"{prefix}/pulls":
             self.pull_request_searches += 1
+            if self.fail_pull_request_search_on_page == int(
+                request.url.params.get("page", 1)
+            ):
+                return httpx.Response(404, json={"message": "not found"})
             if self.pull_request_search_answer is not None:
                 return self.pull_request_search_answer
             if self.stale_pull_request_searches > 0:
@@ -608,6 +615,53 @@ def test_the_marker_decides_which_of_a_branch_s_pull_requests_is_this_request_s(
     assert isinstance(read, EffectReceipt)
     assert read.effect_id == performed.effect_id
     assert server.pull_request_searches - searches_before_the_marker_moved == 2
+
+
+def test_a_marker_found_on_an_earlier_page_survives_a_later_page_s_failure(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    """A marker already proven on page one is never discarded by page two."""
+
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        performed = published(adapter.execute(intent))
+        server.pull_requests = server.pull_requests + [
+            _decoy_pull_request(number, f"release/{number}")
+            for number in range(1000, 1000 + PULL_REQUESTS_PER_LISTING_PAGE - 1)
+        ]
+        server.fail_pull_request_search_on_page = 2
+        searches_before_the_read = server.pull_request_searches
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+    finally:
+        adapter.close()
+
+    assert isinstance(read, EffectReceipt)
+    assert read.effect_id == performed.effect_id
+    assert server.pull_request_searches - searches_before_the_read == 1
+
+
+def test_an_absent_marker_with_a_later_page_s_failure_stays_unknown(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    """A failure reached before the marker is found leaves the outcome unknown."""
+
+    server.pull_requests = [
+        _decoy_pull_request(number, f"release/{number}")
+        for number in range(1000, 1000 + PULL_REQUESTS_PER_LISTING_PAGE)
+    ]
+    server.fail_pull_request_search_on_page = 2
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+    finally:
+        adapter.close()
+
+    assert isinstance(read, EffectUnknownOutcome)
+    assert read.reason is not None
+    assert read.reason.failure_code == 404
+    assert server.pull_request_searches == 2
 
 
 def test_a_listing_that_never_ends_is_unknown_rather_than_a_loop_nobody_sees(

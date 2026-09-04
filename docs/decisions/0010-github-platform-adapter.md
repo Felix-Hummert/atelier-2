@@ -531,6 +531,15 @@ pre-send absence, because only the pre-send read has nothing else it could
 mean. The zero-OID lease on the push itself, unchanged, remains the protection
 against a double send: an authoritative pre-send absence only clears the
 operation to attempt its one create-only, compare-and-swapped send.
+**Named residual gap, accepted for this slice (head ruling, issue #1210):**
+DBOS may replay `durable_effect`'s resolving step after a crash using the
+`OBSERVE` step's already-memoized pre-send absence, and if the ref was removed
+between the crash and the replay, the replayed `execute` finds absence again
+and pushes once more — fenced only by the zero-OID lease admitting solely the
+same deterministic commit (proven at the workflow level by
+`tests/crash/test_git_transport_effect_recovery.py::test_a_replayed_resolve_after_ref_removal_pushes_the_same_commit_once_more`),
+never a durable "send attempted" claim; closing it needs a schema hop on
+`effect_intents` and is its own slice, serial after #1216.
 
 Which of the two a read is, the adapter cannot know and does not decide: a
 process that died between its push and its receipt leaves the remote looking

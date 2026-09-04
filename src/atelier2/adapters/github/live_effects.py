@@ -195,15 +195,6 @@ class _PullRequestSearchFailed:
     reason: UnknownOutcomeReason
 
 
-@dataclass(frozen=True)
-class _ListedPullRequests:
-    """Every pull request GitHub named for one exact head branch, all pages."""
-
-    pull_requests: tuple[dict[str, Any], ...]
-    status_code: int
-    duration_milliseconds: int
-
-
 type _PullRequestSearch = (
     _RecordedPullRequest | _NoPullRequestOnBranch | _PullRequestSearchFailed
 )
@@ -437,41 +428,17 @@ class LiveGitHubEffectAdapter:
         The branch answers about itself as a whole: several pull requests can
         stand on one head with different bases, so the marker decides which of
         them is this request's, and a listing that names others but not this
-        one is no absence -- it is a state this adapter may not act on.
+        one is no absence -- it is a state this adapter may not act on. Each
+        page is examined for the marker as it arrives, so a marker already
+        proven on an earlier page is returned at once: a later page's failure
+        never discards it. Only a failure reached before the marker is found
+        leaves the outcome unknown.
         """
 
         branch = request.head_branch.value
-        listed = self._list_pull_requests_on_branch(branch)
-        if isinstance(listed, _PullRequestSearchFailed):
-            return listed
         request_hash = intent.request.request_hash.value
-        for pull_request in listed.pull_requests:
-            body = pull_request.get("body")
-            body = body if isinstance(body, str) else ""
-            if body_carries_request_hash(body, request_hash):
-                number = _integer_field(
-                    pull_request, "number", "pull request search result"
-                )
-                return _RecordedPullRequest(branch, number, body)
-        if not listed.pull_requests:
-            return _NoPullRequestOnBranch(
-                listed.status_code, listed.duration_milliseconds
-            )
-        return _PullRequestSearchFailed(
-            UnknownOutcomeReason(
-                listed.status_code,
-                listed.duration_milliseconds,
-                "the head branch carries pull requests, none of them this request's",
-            )
-        )
-
-    def _list_pull_requests_on_branch(
-        self, branch: str
-    ) -> _ListedPullRequests | _PullRequestSearchFailed:
-        """Every pull request GitHub names for this head, in every state."""
-
         started = time.monotonic()
-        listed: list[dict[str, Any]] = []
+        listed_any = False
         for page in range(1, MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1):
             try:
                 response = self._client.rest.pulls.list(
@@ -495,10 +462,25 @@ class LiveGitHubEffectAdapter:
                         raw_response.status_code, elapsed, raw_response.text
                     )
                 )
-            listed.extend(answered)
+            listed_any = listed_any or bool(answered)
+            for pull_request in answered:
+                body = pull_request.get("body")
+                body = body if isinstance(body, str) else ""
+                if body_carries_request_hash(body, request_hash):
+                    number = _integer_field(
+                        pull_request, "number", "pull request search result"
+                    )
+                    return _RecordedPullRequest(branch, number, body)
             if len(answered) < PULL_REQUESTS_PER_LISTING_PAGE:
-                return _ListedPullRequests(
-                    tuple(listed), raw_response.status_code, elapsed
+                if not listed_any:
+                    return _NoPullRequestOnBranch(raw_response.status_code, elapsed)
+                return _PullRequestSearchFailed(
+                    UnknownOutcomeReason(
+                        raw_response.status_code,
+                        elapsed,
+                        "the head branch carries pull requests, "
+                        "none of them this request's",
+                    )
                 )
         return _PullRequestSearchFailed(
             UnknownOutcomeReason(
