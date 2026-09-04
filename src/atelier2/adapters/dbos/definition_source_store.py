@@ -32,11 +32,14 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.catalog_store import (
     admit_member_in,
+    current_display_name,
+    current_head_revision_hash,
     found_lineage_in,
     persist_workflow_publication,
     revision_owner,
 )
 from atelier2.adapters.dbos.schema import (
+    catalog_lineage_members,
     catalog_source_intakes,
     host_definition_source_revisions,
     host_definition_source_selections,
@@ -78,6 +81,7 @@ from atelier2.ports.definition_sources import (
     DefinitionSourceMissing,
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
+    PathAdopted,
     PathAlreadyInCatalog,
     PathIntaken,
     ReadDefinitionSourceResult,
@@ -188,12 +192,28 @@ class DbosDefinitionSources:
         published = PublishedRevision(RevisionKind.WORKFLOW, selected.revision.document)
         persist_workflow_publication(connection, selected.revision)
         previous = standing.get(selected.path)
-        admission = (
-            found_lineage_in(
+        adopted: CatalogLineageId | None = None
+        if previous is None:
+            admission = found_lineage_in(
                 connection, published, selected.display_name, actor, intaken_at
             )
-            if previous is None
-            else admit_member_in(
+            if isinstance(
+                admission, CatalogAdmissionNameHeld
+            ) and not _a_source_has_fed(connection, admission.holder):
+                # #660 A3: nobody has ever fed this name's lineage from a
+                # source, so it is a manual import -- adopt it rather than
+                # refuse, becoming its new head and leaving its history alone.
+                adopted = admission.holder
+                admission = admit_member_in(
+                    connection,
+                    admission.holder,
+                    published,
+                    selected.display_name,
+                    actor,
+                    intaken_at,
+                )
+        else:
+            admission = admit_member_in(
                 connection,
                 _lineage_holding(connection, previous),
                 published,
@@ -201,7 +221,6 @@ class DbosDefinitionSources:
                 actor,
                 intaken_at,
             )
-        )
         match admission:
             case CatalogLineageFounded() | CatalogMemberAdmitted():
                 intake = SourceIntake(
@@ -215,6 +234,8 @@ class DbosDefinitionSources:
                     commit,
                 )
                 _insert_intake(connection, intake, actor, intaken_at)
+                if adopted is not None:
+                    return PathAdopted(intake, adopted)
                 return PathIntaken(intake)
             case CatalogAdmissionExisting(lineage, _, _, held_name):
                 # Founding reaches the lineage these exact bytes started, whatever
@@ -231,8 +252,73 @@ class DbosDefinitionSources:
                             published.revision_hash, lineage.lineage_id
                         ),
                     )
+                if previous is None and _a_source_has_fed(
+                    connection, lineage.lineage_id
+                ):
+                    # #660 A3 only lets an *unsourced* lineage be adopted.
+                    # Once any source -- this one included -- has fed this
+                    # lineage, its name is genuinely held: a further
+                    # byte-identical delivery does not get to attach its own
+                    # provenance to somebody else's continuity, or its next,
+                    # differing delivery could re-head that lineage as if it
+                    # had always been this source's own.
+                    return SourceIntakeRefused(
+                        selected.path,
+                        CatalogAdmissionNameHeld(held_name, lineage.lineage_id),
+                    )
+                if previous is None and published.revision_hash != (
+                    current_head_revision_hash(connection, lineage.lineage_id)
+                ):
+                    # These bytes founded the lineage, but a later revision
+                    # now stands as its head: the repository no longer
+                    # carries what this name serves, so reporting it present
+                    # would let a stale delivery answer for served bytes it
+                    # is not.
+                    return SourceIntakeRefused(
+                        selected.path,
+                        CatalogAdmissionRevisionOwned(
+                            published.revision_hash, lineage.lineage_id
+                        ),
+                    )
+                if previous is None:
+                    # A first intake byte-identical to the lineage's own
+                    # founding revision changes nothing in the catalog, but
+                    # this source has still taken the path in for the first
+                    # time and earns the same provenance any other first
+                    # intake would.
+                    _insert_intake(
+                        connection,
+                        _founding_intake(
+                            source_id, selected, commit, published.revision_hash
+                        ),
+                        actor,
+                        intaken_at,
+                    )
                 return PathAlreadyInCatalog(
                     selected.path, RevisionKind.WORKFLOW, published.revision_hash
+                )
+            case CatalogAdmissionRevisionOwned(revision_hash, owner) if (
+                previous is None
+                and not _a_source_has_fed(connection, owner)
+                and current_display_name(connection, owner) == selected.display_name
+                and revision_hash == current_head_revision_hash(connection, owner)
+            ):
+                # #660 A3's sibling case: these exact bytes already sit as the
+                # current head of the lineage this path's own name holds.
+                # Nobody has ever fed that lineage from a source, so it is the
+                # path's own lineage under another guise, not a foreign entry
+                # -- report it present and record provenance rather than
+                # refusing the whole batch. A match against anything but the
+                # head falls through to the loud refusal below: it is a real
+                # revision of that lineage, but not the one the name serves.
+                _insert_intake(
+                    connection,
+                    _founding_intake(source_id, selected, commit, revision_hash),
+                    actor,
+                    intaken_at,
+                )
+                return PathAlreadyInCatalog(
+                    selected.path, RevisionKind.WORKFLOW, revision_hash
                 )
             case (
                 CatalogAdmissionNameHeld()
@@ -378,6 +464,39 @@ def _intake_from_record(record: Mapping[Any, Any]) -> SourceIntake:
     )
 
 
+def _a_source_has_fed(connection: Connection, lineage_id: CatalogLineageId) -> bool:
+    """Whether any source has ever taken a revision into this lineage.
+
+    A lineage a source founded or joined carries a `catalog_source_intakes`
+    row under every revision hash it holds as a member; a lineage a manual
+    import founded carries none. `#660` A3 lets the intake adopt a name-held
+    or revision-owned lineage only while this answers `False` -- once any
+    source, this one included, has fed it, adopting it again would let a name
+    silently move which lineage a path's own continuity means. No caller
+    needs which source fed it, only whether one has.
+    """
+
+    return (
+        connection.scalar(
+            sa.select(catalog_source_intakes.c.source_id)
+            .select_from(
+                catalog_source_intakes.join(
+                    catalog_lineage_members,
+                    sa.and_(
+                        catalog_lineage_members.c.revision_hash
+                        == catalog_source_intakes.c.revision_hash,
+                        catalog_source_intakes.c.revision_kind
+                        == RevisionKind.WORKFLOW.value,
+                    ),
+                )
+            )
+            .where(catalog_lineage_members.c.lineage_id == lineage_id.value)
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def _lineage_holding(
     connection: Connection, previous: SourceIntake
 ) -> CatalogLineageId:
@@ -395,6 +514,32 @@ def _lineage_holding(
             "a recorded source intake names a revision no catalog lineage holds"
         )
     return owner
+
+
+def _founding_intake(
+    source_id: DefinitionSourceId,
+    selected: SelectedIntake,
+    commit: SourceCommit,
+    revision_hash: PublishedRevisionHash,
+) -> SourceIntake:
+    """The first intake row a path earns when it is recognised present, not admitted.
+
+    Shared by the `CatalogAdmissionExisting` and `CatalogAdmissionRevisionOwned`
+    recognise-as-present arms of `_take_in`: both run only for a path's first
+    delivery (`previous is None`), so the intake number is always
+    `_FIRST_INTAKE_NUMBER`. The admitted arm (`CatalogLineageFounded` |
+    `CatalogMemberAdmitted`) also serves a path's later deliveries and keeps
+    its own numbering instead of calling this.
+    """
+
+    return SourceIntake(
+        source_id,
+        selected.path,
+        _FIRST_INTAKE_NUMBER,
+        RevisionKind.WORKFLOW,
+        revision_hash,
+        commit,
+    )
 
 
 def _insert_intake(

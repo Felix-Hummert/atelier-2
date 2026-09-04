@@ -9,7 +9,10 @@
 - Date: 2026-08-15, amended 2026-09-03
   ([#976](https://github.com/FlexOr2/atelier-2/issues/976)): the
   composed-preview clause in "Required proofs for implementation" is retired,
-  per the amendment beside it
+  per the amendment beside it; amended 2026-09-04
+  ([#1122](https://github.com/FlexOr2/atelier-2/issues/1122)): a source's
+  first intake may adopt a name-held lineage no source has ever fed, per the
+  amendment beside decision 2
 - Depends on: [ADR 0001](0001-durable-runtime.md),
   [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md)
   (ACCEPTED), and **ADR 0006 amendment A1** below, which acceptance of this record
@@ -312,6 +315,29 @@ failure this record exists to prevent. Consequence, accepted and visible: moving
 a file is a new path with no prior admission, and the catalog offers no lineage for it
 rather than guessing — the operator admits it into the existing lineage himself, an ordinary
 admission with an ordinary actor.
+
+**2026-09-04 amendment (issue [#1122](https://github.com/FlexOr2/atelier-2/issues/1122),
+PO decision by the head as product owner in [#660](https://github.com/FlexOr2/atelier-2/issues/660)
+A3): a source's first intake of a path may adopt a name-held lineage no source
+has ever fed.** The paragraph above still governs every later intake: the
+lineage a `(source id, path)` joins is fixed at its first admission, and a
+name never moves it again. What it left unstated is what happens at that
+*first* admission when the authored name is already held by a lineage no
+source has ever fed — a manual import. Before this amendment,
+`found_lineage_in` refused that as `CatalogAdmissionNameHeld`, so a
+repository-delivered definition could never enter the catalog under a name an
+operator had once typed by hand; the deploy-intake belief this fixed lived
+against the live catalog since `4d002184`. Now that first admission adopts
+the unsourced lineage instead: the source revision becomes its new head,
+carrying provenance (source, commit, path, `intaken_at`); the manual
+revisions already in the lineage are untouched and remain its history; the
+lineage id — unchanged since decision 1 derives it from the founding revision
+— never moves. A name held by a lineage a source has already fed, this
+source or another, still refuses: adopting that would let a second `(source
+id, path)` silently claim a continuity the first one already owns. Bytes an
+unsourced lineage already serves as its current revision under the same name
+are recognised as present and gain the same provenance; the lineage id and
+its history are untouched.
 
 **Sync semantics: publication is explicit, and drift is visible.** Drift is derived, never a
 state anyone sets, and it is two independent readings that mirror this record's own
