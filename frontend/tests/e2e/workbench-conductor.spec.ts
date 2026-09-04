@@ -931,6 +931,42 @@ test("a second tab reconstructs the same open conversation and starts nothing si
   }
 });
 
+test("a mocked 5xx on the wait answer keeps the composer text and its own Resend delivers the same message", async ({
+  page
+}) => {
+  // #1078 B4 (Opus field report): a typed message twice vanished on send with
+  // no POST and no error. This proves the fix against a real failed POST
+  // rather than the component-level mocks in workbenchPage.test.ts: the
+  // composer keeps the words, the transcript carries the failed line with
+  // Resend, and Resend's own POST is the round that actually lands.
+  const seededConductor = await resetAndSeedConductor(page);
+  await startConversationOverUi(page, "Round 1.", seededConductor.workflow_revision_hash);
+
+  let refusedOnce = false;
+  await page.route("**/atelier/api/v1/runs/**/answers", async (route) => {
+    if (refusedOnce) {
+      await route.continue();
+      return;
+    }
+    refusedOnce = true;
+    await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+  });
+
+  const secondMessage = "Round 2, after the mocked 5xx.";
+  await page.getByLabel(workbenchPageCopy.composerLabel).fill(secondMessage);
+  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
+
+  await expect(page.getByText(workbenchPageCopy.conductorMessageFailed)).toBeVisible();
+  await expect(page.getByLabel(workbenchPageCopy.composerLabel)).toHaveValue(secondMessage);
+
+  await page.getByRole("button", { name: workbenchPageCopy.resendConductorMessage }).click();
+
+  await expect(page.getByText(workbenchPageCopy.conductorMessageFailed)).toHaveCount(0);
+  await expect(page.getByLabel(workbenchPageCopy.composerLabel)).toHaveValue("");
+  await expect(page.getByText(secondMessage)).toBeVisible();
+  expect(refusedOnce).toBe(true);
+});
+
 test("a poisoned mutation journal shows one sentence and one door, and forgetting it heals the room without a reload", async ({
   page
 }) => {

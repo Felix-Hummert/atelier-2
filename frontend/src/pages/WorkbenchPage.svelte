@@ -134,6 +134,14 @@
   let firstConversationMessage: string | null = null;
   let conductorDeliveryBusy = false;
   let conductorDeliveryFailure: string | null = null;
+  /**
+   * Every conductor message that failed to send, kept apart from the durable
+   * transcript (none of them ever became one of its events) so each can
+   * stand in the conversation with its own resend control instead of
+   * vanishing the moment the composer moved on, or a second failure erasing
+   * the first (#1078 B4, #1078 review).
+   */
+  let failedConductorMessages: string[] = [];
   let typed = "";
   let expandedPinReference: string | null = null;
   let composer: { focus(): void };
@@ -303,7 +311,23 @@
       } else {
         conductorDeliveryBusy = refreshed.state === "STARTED" || refreshed.state === "WAITING_RECONCILIATION";
       }
-    } catch {
+    } catch (error) {
+      if (firstConversationMessage !== null) {
+        // The run itself did start (`send` already got a run back), so this
+        // read failure is not "nothing was sent" -- it is the one message
+        // still waiting to become that run's first wait answer. Swallowing
+        // it here left the composer empty with no error and no way back
+        // (#1078 B4): it now fails the same way any other delivery does,
+        // with the text kept and a resend in the transcript.
+        const pendingMessage = firstConversationMessage;
+        firstConversationMessage = null;
+        conductorDeliveryBusy = false;
+        recordFailedConductorMessage(
+          pendingMessage,
+          humanErrorMessage(error, runPageCopy.answerUnconfirmed)
+        );
+        return;
+      }
       // The stream remains the durable transcript. The next frame retries the
       // canonical run read without replacing it with a guess.
     }
@@ -503,7 +527,39 @@
    */
   async function send(event: Event): Promise<void> {
     event.preventDefault();
-    const message = typed.trim();
+    await attemptSend(typed.trim());
+  }
+
+  /**
+   * The transcript's own Resend control: the same send path, the failed
+   * text -- but narrowed to the conductor path only (#1078 fix round 3,
+   * finding 3). A fresh message while the link is "unreadable" may still be
+   * answered by the local-chat fallback below in `attemptSend` (by design,
+   * `chatTranscript.ts`); a message that already failed to reach the
+   * conductor must never take that fallback instead, or a Resend the
+   * operator meant for the real conversation would be answered by a house
+   * sentence that never reached it. The failed line stays standing,
+   * unchanged, until the link reads "connected" again.
+   */
+  async function resendFailedConductorMessage(message: string): Promise<void> {
+    if (conductorLink.kind !== "connected") return;
+    // Removed inside `attemptSend`, only once its guards pass and only for
+    // this exact message (#1078 review): an early return here must not lose
+    // the standing failed line, and a second failure elsewhere in the list
+    // must not disappear either (#1078 review).
+    await attemptSend(message);
+  }
+
+  /**
+   * The one place a conductor message leaves the composer, whether typed and
+   * submitted or resent from a failed line. The composer's own text is never
+   * cleared here before a write is confirmed (#1078 B4): the connected
+   * branches below only ever clear `typed` once `deliverConductorMessage`
+   * itself confirms a send, and a failure instead appends the attempted text
+   * to `failedConductorMessages` so the transcript can offer Resend on each
+   * failed line without the operator having to remember or retype it.
+   */
+  async function attemptSend(message: string): Promise<void> {
     if (message.length === 0 || $connectionState === "reconnecting" || composerLocked) return;
     if (conductorLink.kind === "connected") {
       if (
@@ -515,7 +571,10 @@
         return;
       }
       conductorDeliveryFailure = null;
-      typed = "";
+      // Removed only when this attempt is for a standing failed message of
+      // its own (#1078 review): an unrelated new send, or a second failure,
+      // must not destroy a failed line that was never resent.
+      failedConductorMessages = failedConductorMessages.filter((failed) => failed !== message);
       if (conductorRun?.state === "WAITING_INPUT") {
         await deliverConductorMessage(conductorRun, message);
       } else {
@@ -528,17 +587,25 @@
         } catch (error) {
           conductorDeliveryBusy = false;
           firstConversationMessage = null;
-          typed = message;
-          conductorDeliveryFailure = humanErrorMessage(error, conductorChatCopy.startRefused);
+          recordFailedConductorMessage(message, humanErrorMessage(error, conductorChatCopy.startRefused));
         }
       }
     } else {
-      sendChatTurn(typed);
+      // The local-chat fallback stays on this page, but it shares the one
+      // send path every other branch uses (#1078 review): the caller's own
+      // already-trimmed `message`, and the composer clears only when it
+      // still holds the exact text that was sent.
+      sendChatTurn(message);
       transcript = currentChatTranscript();
-      typed = "";
+      if (typed.trim() === message) typed = "";
     }
     await tick();
     composer.focus();
+  }
+
+  function recordFailedConductorMessage(message: string, reason: string): void {
+    failedConductorMessages = [...failedConductorMessages, message];
+    conductorDeliveryFailure = reason;
   }
 
   async function deliverConductorMessage(run: RunV3, message: string): Promise<void> {
@@ -546,18 +613,22 @@
     try {
       const outcome = await answerConductorWait(cockpitApi, mutationJournal, run, message);
       if (outcome.kind === "failed") {
-        typed = message;
-        conductorDeliveryFailure = outcome.message;
+        recordFailedConductorMessage(message, outcome.message);
         return;
       }
       conductorRun = outcome.run;
+      // The write is confirmed (or accepted-uncertain, #959's own retry
+      // journal still covers that case) -- only now does the composer that
+      // held this exact text actually clear (#1078 B4), and only when it
+      // still holds it: a resend or a deferred first message can confirm a
+      // send while the composer already moved on to something else.
+      if (typed.trim() === message) typed = "";
     } catch (error) {
       // A retry of an already-open wait with edited text can conflict with
       // its own earlier, differently-worded attempt still in the journal
-      // (mutationJournal.ts) -- the composer unlocks and keeps the words
-      // instead of leaving the room silently stuck (#959).
-      typed = message;
-      conductorDeliveryFailure = humanErrorMessage(error, runPageCopy.answerUnconfirmed);
+      // (mutationJournal.ts) -- the failed line's Resend reuses this same
+      // function instead of leaving the room silently stuck (#959).
+      recordFailedConductorMessage(message, humanErrorMessage(error, runPageCopy.answerUnconfirmed));
     } finally {
       conductorDeliveryBusy = false;
     }
@@ -626,6 +697,22 @@
     conductorLink.kind === "unbound" ||
     conductorLink.kind === "not-startable" ||
     conductorLink.kind === "reading";
+  // Send's own condition -- a busy or locked composer cannot send behind the
+  // operator's back.
+  $: sendDisabled =
+    $connectionState === "reconnecting" ||
+    conductorDeliveryBusy ||
+    composerLocked ||
+    (conductorRun !== null && conductorRun.state !== "WAITING_INPUT" && !runHasEnded(conductorRun.state));
+  // The transcript's own Resend narrows further than Send (#1078 fix round
+  // 3, finding 3): every reason `sendDisabled` names still applies, plus one
+  // Resend alone must refuse -- the link reading "unreadable" -- because a
+  // fresh message there is allowed to fall into the local-chat fallback by
+  // design, but a message that already failed the real conductor must never
+  // take that fallback on Resend. `resendFailedConductorMessage` reads the
+  // same `conductorLink.kind !== "connected"` guard, so the two can never
+  // drift apart.
+  $: resendDisabled = sendDisabled || conductorLink.kind !== "connected";
   $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
     expandedPinReference = pins[0]?.run.public_run_reference ?? null;
   }
@@ -757,7 +844,7 @@
     </ul>
   {/if}
 
-  {#if conversationTranscript.length === 0}
+  {#if conversationTranscript.length === 0 && failedConductorMessages.length === 0}
     <div class="workbench-empty card empty-state">
       <h2>{wrapDisplayCopy(workbenchPageCopy.emptyTitle)}</h2>
       {#if conductorLink.kind === "connected"}
@@ -806,6 +893,38 @@
           </p>
         </li>
       {/each}
+      {#each failedConductorMessages as failedMessage (failedMessage)}
+        <!-- Never one of the durable transcript's own events (the write it
+             would have produced never confirmed, #1078 B4): a local line,
+             kept only until its own Resend or a later successful send for
+             the same text removes it -- a second failure stands beside the
+             first rather than replacing it (#1078 review). Keyed by the
+             message text itself, not position: an index key would let
+             removing an earlier failure reuse a later failure's own DOM
+             node and event handler instead of destroying the right one. -->
+        <li class="conversation-line conversation-line-you conversation-line-failed">
+          <p class="conversation-message">
+            <span class="conversation-speaker">{wrapDisplayCopy(speakerLabels.you)}</span>
+            {failedMessage}
+          </p>
+          <p class="conversation-failed-notice" role="status">
+            {wrapDisplayCopy(workbenchPageCopy.conductorMessageFailed)}
+            <!-- `resendDisabled`, not `sendDisabled` (#1078 fix round 3,
+                 finding 3): while the link reads "unreadable" the composer
+                 hint below already names why nothing can go out
+                 (`conductorChatCopy.connectionUnknown`), and this same
+                 sentence is why Resend stays locked here too, instead of
+                 silently answering this failed line from the local-chat
+                 fallback that hint describes. -->
+            <button
+              type="button"
+              disabled={resendDisabled}
+              onclick={() => resendFailedConductorMessage(failedMessage)}
+              {...{ [workbenchQuestionAttribute]: workbenchQuestions.resendConductorMessage.id }}
+            >{wrapDisplayCopy(workbenchPageCopy.resendConductorMessage)}</button>
+          </p>
+        </li>
+      {/each}
     </ol>
     <!-- One link for the whole conversation, because the whole conversation is
          one run (#658). Per line it was the episode model speaking, where each
@@ -840,10 +959,7 @@
       <button
         class="primary"
         type="submit"
-        disabled={$connectionState === "reconnecting" || conductorDeliveryBusy || composerLocked ||
-          (conductorRun !== null &&
-            conductorRun.state !== "WAITING_INPUT" &&
-            !runHasEnded(conductorRun.state))}
+        disabled={sendDisabled}
         {...{ [workbenchQuestionAttribute]: workbenchQuestions.saySomething.id }}
       >{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
@@ -1055,6 +1171,25 @@
     color: var(--ink-dim);
     font-size: var(--text-2xs);
     font-weight: var(--weight-strong);
+  }
+
+  /* The one line that never became a durable transcript event: the same
+     attention color every other refusal on this page already wears
+     (`.notice`, `styles.css`), so a failed send reads as a problem at a
+     glance rather than as an ordinary reply. */
+  .conversation-line-failed .conversation-message {
+    border-color: color-mix(in srgb, var(--signal-attention-mark) 45%, var(--line));
+  }
+
+  .conversation-failed-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    max-width: 92%;
+    margin: var(--space-1) 0 0;
+    margin-left: auto;
+    color: var(--signal-attention);
+    font-size: var(--text-xs);
   }
 
   .composer {

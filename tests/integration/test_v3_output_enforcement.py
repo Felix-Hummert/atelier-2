@@ -49,7 +49,11 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import read_stored_artifact
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.node_records import keep_node_receipt
-from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
+from atelier2.adapters.dbos.run_store import (
+    load_graph,
+    load_node_outputs,
+    run_from_record_with_bindings,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempt_receipts_v3,
@@ -92,6 +96,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -115,6 +120,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     DeclaredContextPackage,
     DeclaredContextPackageHash,
+    DeliveredOutput,
     NodeExecutionRequestHash,
     NodeReceipt,
     NodeReceiptReason,
@@ -132,6 +138,8 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
+from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationTerminalConflict,
@@ -172,6 +180,13 @@ PLAN_SCHEMA = PublishedRevision(
     b'"minimum": 1}}, "required": ["steps"], "additionalProperties": false}',
 )
 """What the node's author asked for: one object naming how many steps it plans."""
+
+PADDED_PLAN_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    b'{"type": "object", "properties": {"steps": {"type": "integer", '
+    b'"minimum": 1}, "notes": {"type": "string"}}, "required": ["steps"]}',
+)
+"""The same plan, with room for a `notes` field a size-bound test can pad."""
 
 NODE = "plan"
 SUCCESSOR = "review"
@@ -636,6 +651,96 @@ def test_a_schema_refusal_orders_one_repair_that_can_succeed(
         2,
         RunState.COMPLETED.value,
         AgentAttemptState.FAILED.value,
+    )
+
+
+def test_a_report_between_the_two_historical_bounds_is_admitted_and_delivered(
+    runtime: DbosRuntime,
+) -> None:
+    """A report between the two historical bounds survives both doors (#1078 edge 1).
+
+    The write door (`agent_attempt_store.py`) and the round hand-off
+    (`run_store.py`) once disagreed about which bound judges a produced
+    report: the write read the route bound an agent output actually arrives
+    by, `MAXIMUM_AGENT_OUTPUT_BYTES_V2` (49_152 bytes), while the hand-off fell
+    back to `read_instance_document`'s smaller inline-order default,
+    `MAXIMUM_INSTANCE_DOCUMENT_BYTES` (16_384 bytes) -- so a report between the
+    two passed the write as a success and then killed the run as
+    `NodeOutputSchemaRefused` once a later round read it back. Both doors now
+    read the same route bound, so a report this size is admitted at the write,
+    and the exact bytes the hand-off then hands the downstream node that reads
+    them are the ones the write admitted.
+    """
+    assert MAXIMUM_INSTANCE_DOCUMENT_BYTES < MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    padding = "x" * (MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1)
+    answered = json.dumps({"steps": 3, "notes": padding}).encode()
+    assert (
+        MAXIMUM_INSTANCE_DOCUMENT_BYTES < len(answered) < MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    )
+    execution = armed_attempt(
+        runtime,
+        document=reviewed_planning_document(PADDED_PLAN_SCHEMA),
+        schema=PADDED_PLAN_SCHEMA,
+    )
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(execution, AgentExecutionResult(answered))
+
+    assert isinstance(outcome, AgentAttemptSucceeded), outcome
+    revision_hash = execution.request.workflow_revision_hash
+    with runtime.engine.connect() as connection:
+        graph = load_graph(connection, revision_hash)
+        assert isinstance(graph, WorkflowGraphV3)
+        successor = graph.node(SUCCESSOR)
+        assert isinstance(successor, AgentNodeV3)
+        delivered = load_node_outputs(connection, RUN, revision_hash, graph, successor)
+    assert delivered == (DeliveredOutput(NODE, "plan", answered),)
+
+
+def test_a_report_past_the_shared_bound_is_refused_with_a_repair(
+    runtime: DbosRuntime,
+) -> None:
+    """A report one byte past the shared bound is refused, not admitted (#1078 edge 1).
+
+    The write door and the round hand-off now read one shared route bound,
+    `MAXIMUM_AGENT_OUTPUT_BYTES_V2`: a report one byte past it is refused at
+    the write, at ordinal one, which orders a repair round rather than ending
+    the run.
+    """
+    overhead = len(json.dumps({"steps": 3, "notes": ""}).encode())
+    padding = "x" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1 - overhead)
+    answered = json.dumps({"steps": 3, "notes": padding}).encode()
+    assert len(answered) == MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1
+    execution = armed_attempt(runtime, schema=PADDED_PLAN_SCHEMA)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(execution, AgentExecutionResult(answered))
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    assert outcome.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
+    with runtime.engine.connect() as connection:
+        receipt = (
+            connection.execute(
+                sa.select(agent_attempt_receipts_v3).where(
+                    agent_attempt_receipts_v3.c.attempt_id == execution.attempt_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        attempts = tuple(
+            connection.execute(
+                sa.select(
+                    agent_attempts.c.attempt_ordinal, agent_attempts.c.state
+                ).order_by(agent_attempts.c.attempt_ordinal)
+            ).all()
+        )
+    assert str(receipt["reason"]).startswith(
+        "output-schema-refused: instance-too-large"
+    )
+    assert attempts == (
+        (1, AgentAttemptState.FAILED.value),
+        (2, AgentAttemptState.PREPARED.value),
     )
 
 
