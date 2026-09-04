@@ -669,6 +669,26 @@ class SourceDefinition:
     shingles: frozenset[tuple[str, ...]]
 
 
+def _own_scope_nodes(definition: FunctionDefinition) -> Iterator[ast.AST]:
+    """Definition and its descendants, stopping at a nested scope's boundary.
+
+    A nested function, lambda, or class keeps its own parameters and locals,
+    including any `global`/`nonlocal` it declares, out of the enclosing
+    definition's bindings: only the nested def's own name is a local of the
+    enclosing scope, and its body is scanned separately when that nested
+    definition is walked on its own.
+    """
+    stack: list[ast.AST] = [definition]
+    while stack:
+        node = stack.pop()
+        yield node
+        if node is not definition and isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
 def _names_bound_by(definition: FunctionDefinition) -> dict[str, str]:
     """Every name this definition binds itself, numbered in source order.
 
@@ -682,7 +702,7 @@ def _names_bound_by(definition: FunctionDefinition) -> dict[str, str]:
     """
     bound: list[tuple[int, int, str]] = []
     external: set[str] = set()
-    for node in ast.walk(definition):
+    for node in _own_scope_nodes(definition):
         if isinstance(node, ast.arg):
             bound.append((node.lineno, node.col_offset, node.arg))
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):

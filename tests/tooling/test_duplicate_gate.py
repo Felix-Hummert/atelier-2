@@ -92,6 +92,40 @@ def a_function_of(shared_lines: int, extra_line: bool = False) -> str:
     )
 
 
+def a_nonlocal_counting_function(
+    function_name: str, local_name: str, helper_name: str
+) -> str:
+    """An outer function whose own local a nested helper reaches with `nonlocal`."""
+    return f"""
+def {function_name}(values: list[int]) -> int:
+    {local_name} = 0
+    def {helper_name}(step: int) -> None:
+        nonlocal {local_name}
+        {local_name} = {local_name} + step
+    for value in values:
+        if value < 0:
+            raise ValueError("negative")
+        {helper_name}(value * 2)
+    return {local_name}
+"""
+
+
+def a_global_touching_function(function_name: str, global_name: str) -> str:
+    """A module-level global and a function that reaches it with `global`."""
+    return f"""
+{global_name} = 0
+
+
+def {function_name}(values: list[int]) -> int:
+    global {global_name}
+    for value in values:
+        if value < 0:
+            raise ValueError("negative")
+        {global_name} = {global_name} + value * 2
+    return {global_name}
+"""
+
+
 def scratch_project(
     tmp_path: Path, modules: dict[str, str], baseline: str = ""
 ) -> Path:
@@ -271,6 +305,35 @@ def test_a_copy_stays_a_copy_however_its_own_names_are_spelled(
     assert len(problems_of(project)) == 1
 
 
+def test_a_nested_nonlocal_does_not_block_normalising_the_outer_local(
+    tmp_path: Path,
+) -> None:
+    """A nested `nonlocal` is the nested scope's business, not the outer one's.
+
+    Renaming the outer local a nested helper reaches with `nonlocal` is still
+    just renaming -- the pair stays a copy -- while two functions that each
+    `global` a *different* name at their own level are reaching different
+    state, so that name difference must still keep them apart.
+    """
+    project = scratch_project(
+        tmp_path,
+        {
+            "first": a_nonlocal_counting_function("gathered", "count", "add_step"),
+            "second": a_nonlocal_counting_function("totalled", "total", "bump"),
+            "global_first": a_global_touching_function("accumulate_one", "counter_one"),
+            "global_second": a_global_touching_function(
+                "accumulate_two", "counter_two"
+            ),
+        },
+    )
+
+    problems = problems_of(project)
+
+    assert len(problems) == 1
+    assert "atelier2.first.gathered" in problems[0]
+    assert "atelier2.second.totalled" in problems[0]
+
+
 @pytest.mark.parametrize(
     ("modules", "why"),
     [
@@ -312,15 +375,13 @@ def test_what_is_not_a_copy_keeps_the_gate_quiet(
 def test_a_baseline_that_is_not_a_list_of_pairs_is_refused_by_name(
     tmp_path: Path, baseline: str
 ) -> None:
-    script = load_architecture_script()
-    project = scratch_project(
-        tmp_path, {"first": a_summing_function()}, baseline=baseline
-    )
+    project = copied_project(tmp_path)
+    (project / DUPLICATE_BASELINE).write_text(baseline, encoding="utf-8")
 
-    with pytest.raises(
-        script.ArchitecturePreflightError, match=script.DUPLICATE_BASELINE_FILE
-    ):
-        script.duplicate_problems(project)
+    result = run_gate(project)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert str(DUPLICATE_BASELINE) in result.stderr, result.stderr
 
 
 def test_two_definitions_sharing_a_qualified_name_are_refused(tmp_path: Path) -> None:
