@@ -424,10 +424,10 @@ def test_a_json_encoded_string_stays_a_string_that_carries_its_own_quotes() -> N
 def test_the_produced_value_door_keeps_demanding_json_for_a_string_schema() -> None:
     """`read_instance_document` (agent/node output) is untouched by this rule.
 
-    A produced value already arrives under its own executor's JSON-encoding
-    promise (`atelier2.adapters.claude_subscription`'s StructuredOutput
-    wrap/unwrap, #1061), so the same bytes read differently through the two
-    doors on purpose.
+    A produced value already arrives as the document its executor asked the
+    provider for -- `atelier2.adapters.claude_subscription` closes the job with
+    the declared schema and takes the answer as written (#1188) -- so the same
+    bytes read differently through the two doors on purpose.
     """
     quoted = read_instance_document(b'"hi"', AN_UNBOUNDED_STRING)
     bare = read_instance_document(b"hi", AN_UNBOUNDED_STRING)

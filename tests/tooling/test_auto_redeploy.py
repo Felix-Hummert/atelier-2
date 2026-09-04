@@ -315,15 +315,22 @@ def install_date_stub(bin_directory: Path) -> None:
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 with Path(os.environ["ATELIER2_TEST_COMMAND_LOG"]).open(
     "a", encoding="utf-8"
 ) as handle:
     handle.write(json.dumps(["date", *sys.argv[1:]]) + "\\n")
-if sys.argv[1:] != ["+%s"]:
+now = datetime.fromtimestamp(
+    int(os.environ["ATELIER2_TEST_NOW_SECONDS"]), tz=UTC
+)
+if sys.argv[1:] == ["+%s"]:
+    print(int(now.timestamp()))
+elif sys.argv[1:] == ["-u", "+%Y-%m-%dT%H:%M:%SZ"]:
+    print(now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+else:
     raise SystemExit(2)
-print(os.environ["ATELIER2_TEST_NOW_SECONDS"])
 """,
     )
 
@@ -399,6 +406,9 @@ class AutoRedeployHarness:
             **os.environ,
             **GIT_IDENTITY,
             "PATH": f"{self.bin_directory}{os.pathsep}{os.environ['PATH']}",
+            # Isolated so the watcher's redeploy-status.json lands under
+            # tmp_path, never under the real operator's home directory.
+            "XDG_DATA_HOME": str(self.tmp_path / "xdg-data-home"),
             "ATELIER2_TEST_COMMAND_LOG": str(self.command_log),
             "ATELIER2_TEST_RUN_REQUEST_COUNT": str(self.tmp_path / "run-request-count"),
             "ATELIER2_TEST_CHECK_REQUEST_COUNT": str(
@@ -433,6 +443,21 @@ class AutoRedeployHarness:
     @property
     def staged_serve_live_update(self) -> Path:
         return self.git_admin_directory / "serve_live_update.sh"
+
+    @property
+    def redeploy_status_file(self) -> Path:
+        return (
+            self.tmp_path
+            / "xdg-data-home"
+            / "atelier2"
+            / "live-store"
+            / "redeploy-status.json"
+        )
+
+    def redeploy_status(self) -> dict[str, object] | None:
+        if not self.redeploy_status_file.exists():
+            return None
+        return json.loads(self.redeploy_status_file.read_text(encoding="utf-8"))
 
     def checkout_status(self) -> str:
         return run_git(self.deploy, "status", "--porcelain")
@@ -933,7 +958,9 @@ def test_dirty_or_non_main_checkouts_warn_and_count_without_failing(
 ) -> None:
     harness, _, _ = prepare_pending_deploy(tmp_path)
     if guard == "dirty":
-        (harness.deploy / "local.txt").write_text("operator work\n", encoding="utf-8")
+        # A change to a TRACKED path -- what a fast-forward would silently
+        # discard -- is what must still block (#1186).
+        (harness.deploy / "payload.txt").write_text("operator work\n", encoding="utf-8")
     else:
         run_git(harness.deploy, "switch", "--quiet", "-c", "operator-work")
 
@@ -943,6 +970,66 @@ def test_dirty_or_non_main_checkouts_warn_and_count_without_failing(
     assert harness.invocations("serve_live_update") == []
     assert harness.state("auto-redeploy.failures") == 1
     assert "user.warning" in harness.priorities()
+
+
+def test_an_untracked_path_in_the_checkout_does_not_block_the_watchers_own_gate(
+    tmp_path: Path,
+) -> None:
+    """The root cause #1186 fixes: an untracked `scratchpad/` directory
+    stalled 21 ticks in a row at the watcher's own preflight, even though
+    nothing tracked had changed. Whatever serve_live_update.sh's own,
+    unmodified preflight then decides is that script's own concern -- this
+    only pins that the watcher itself hands the tick onward instead of
+    refusing it as dirty."""
+    harness, _, target_commit = prepare_pending_deploy(tmp_path)
+    scratchpad = harness.deploy / "scratchpad"
+    scratchpad.mkdir()
+    (scratchpad / "notes.txt").write_text("operator scratch\n", encoding="utf-8")
+
+    completed = harness.run()
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.invocations("serve_live_update") == [
+        ["serve_live_update", target_commit]
+    ]
+    assert "tracked checkout is dirty" not in harness.journal()
+
+
+def test_a_failing_tick_writes_the_redeploy_status_file_the_last_success_intact(
+    tmp_path: Path,
+) -> None:
+    harness, _, target_commit = prepare_pending_deploy(tmp_path)
+    harness.run()  # a successful deploy first, to seed a last success
+    harness.commit("v3\n")  # a pending commit so the dirty check is reached
+    (harness.deploy / "payload.txt").write_text("operator work\n", encoding="utf-8")
+
+    completed = harness.run(ATELIER2_TEST_NOW_SECONDS="2000000100")
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.redeploy_status() == {
+        "failure_count": 1,
+        "last_failure_reason": "tracked checkout is dirty",
+        "last_failure_at": "2033-05-18T03:35:00Z",
+        "last_success_commit": target_commit,
+        "last_success_at": "2033-05-18T03:33:20Z",
+    }
+
+
+def test_a_successful_deploy_writes_the_redeploy_status_file_and_clears_failures(
+    tmp_path: Path,
+) -> None:
+    harness, _, target_commit = prepare_pending_deploy(tmp_path)
+
+    completed = harness.run()
+
+    assert completed.returncode == 0, completed.stderr
+    assert harness.redeploy_status() == {
+        "failure_count": 0,
+        "last_failure_reason": None,
+        "last_failure_at": None,
+        "last_success_commit": target_commit,
+        "last_success_at": "2033-05-18T03:33:20Z",
+    }
 
 
 def test_successful_deploy_and_nothing_to_do_reset_both_counters(

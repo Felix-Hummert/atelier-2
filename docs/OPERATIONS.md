@@ -696,7 +696,11 @@ landing on `main` reaches it without an operator hand.** A systemd user timer
 `scripts/auto_redeploy.sh`. The watcher serializes timer and hand runs in the
 checkout's Git admin directory, fetches `origin/main`, and compares it with the
 commit reported by live health. A matching commit is a no-op. Otherwise the
-watcher requires a clean `main` checkout, checks for running runs, then walks
+watcher requires a clean `main` checkout on its **tracked** paths -- an
+untracked file or directory (the operator's own scratch files, a build
+artefact) never blocks a deploy, because the deploy only ever fetches and
+fast-forwards, which cannot touch anything git does not already track (#1186)
+-- checks for running runs, then walks
 `main`'s first-parent history back from the fetched commit (bounded to
 `green_ancestor_search_depth` commits) for the newest commit with green
 GitHub checks, so continuous merges landing faster than CI never starve live
@@ -742,16 +746,25 @@ systemctl --user enable --now atelier2-auto-redeploy.timer
 
 The Git admin directory holds `auto-redeploy.failures`, `auto-redeploy.busy`,
 `auto-redeploy.last-alert`, and `auto-redeploy.last-busy-alert`. A successful
-deploy or genuine no-op clears both streaks. Dirty or non-`main` checkouts warn
-and increment the failure streak but leave the tree untouched. The third
-consecutive failure, and the first repeat at least one hour later while the
-streak persists, logs at error priority and fails that oneshot tick; other
-failure ticks exit successfully. Every deferred tick names the runs it waits for
--- public reference, state, and start time -- and the tenth in a row, then at
-most hourly while the streak persists, repeats that at warning priority; a busy
-tick never fails the unit. Inspect the tagged journal and unit state
-with `journalctl --user -t atelier2-autodeploy -e` and
-`systemctl --user status atelier2-auto-redeploy.service`.
+deploy or genuine no-op clears both streaks. A dirty tracked checkout or a
+non-`main` checkout warns and increments the failure streak but leaves the
+tree untouched. The third consecutive failure, and the first repeat at least
+one hour later while the streak persists, logs at error priority and fails
+that oneshot tick; other failure ticks exit successfully. Every deferred tick
+names the runs it waits for -- public reference, state, and start time -- and
+the tenth in a row, then at most hourly while the streak persists, repeats
+that at warning priority; a busy tick never fails the unit. Inspect the
+tagged journal and unit state with `journalctl --user -t atelier2-autodeploy
+-e` and `systemctl --user status atelier2-auto-redeploy.service`.
+
+A standing failure streak is also visible without the journal: on every tick
+that resolves to a success or a failure, the watcher writes its own outcome
+(`failure_count`, the last failure's reason and instant, the last success's
+commit and instant) to `redeploy-status.json` beside the live database
+(`${XDG_DATA_HOME:-$HOME/.local/share}/atelier2/live-store`); once
+`failure_count` reaches three, `GET /health` names it as
+`redeploy: {blocked_since, reason}`, and a status file that exists but does
+not parse is named as unreadable rather than read as "no problem" (#1186).
 
 ### Live provider canaries
 
@@ -1099,6 +1112,16 @@ and only one of them is a builder.
 * `--claude-atelier-doors` arms `claude-atelier-doors/v1`. Its tools are the
   atelier's own API doors and it removes every built-in with `--tools=`; it is
   the conductor's executor and touches no file of the project.
+
+None of the three hands Anthropic the output schema its node declared. The API
+refuses a schema whose root is an `allOf`, `anyOf` or `oneOf` as a tool's input
+schema, and `code_review_result` -- what every reviewer of `issue-to-pr`
+declares -- is exactly such a document, so a Claude review node died after
+seconds with `api_error: API Error: 400` and no model was ever reached. The
+declared schema now closes the job in words, and the answer is judged against
+it at the output seam. A node whose answer carries no value that schema admits
+fails there as `OUTPUT_SCHEMA_REFUSED` after its one repair round, which reads
+in the receipt as a refused output rather than as a provider error.
 
 Without `--claude-workspace-tools`, this deployment has no Claude builder for
 `workflows/issue-to-pr.yaml`: its build node pins both grants above, and a
