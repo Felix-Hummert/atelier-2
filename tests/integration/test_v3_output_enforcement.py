@@ -92,6 +92,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -132,6 +133,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationTerminalConflict,
@@ -172,6 +174,13 @@ PLAN_SCHEMA = PublishedRevision(
     b'"minimum": 1}}, "required": ["steps"], "additionalProperties": false}',
 )
 """What the node's author asked for: one object naming how many steps it plans."""
+
+PADDED_PLAN_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    b'{"type": "object", "properties": {"steps": {"type": "integer", '
+    b'"minimum": 1}, "notes": {"type": "string"}}, "required": ["steps"]}',
+)
+"""The same plan, with room for a `notes` field a size-bound test can pad."""
 
 NODE = "plan"
 SUCCESSOR = "review"
@@ -636,6 +645,56 @@ def test_a_schema_refusal_orders_one_repair_that_can_succeed(
         2,
         RunState.COMPLETED.value,
         AgentAttemptState.FAILED.value,
+    )
+
+
+@pytest.mark.proves("the-write-and-hand-off-judge-a-report-under-one-byte-bound")
+def test_a_report_between_the_two_historical_bounds_is_refused_with_a_repair(
+    runtime: DbosRuntime,
+) -> None:
+    """A report the write door once admitted must not die at the hand-off (#1078 edge 1).
+
+    Before this fix the write door's schema read carried
+    `MAXIMUM_AGENT_OUTPUT_BYTES_V2` (49_152 bytes) while the hand-off applied
+    `read_instance_document`'s own default, `MAXIMUM_INSTANCE_DOCUMENT_BYTES`
+    (16_384 bytes): a report between the two passed the write as a success and
+    then killed the run as `NodeOutputSchemaRefused` once a later round read it
+    back. The write door now applies the same bound, so a report this size is
+    refused here instead -- at ordinal one, which orders a repair round rather
+    than ending the run.
+    """
+    assert MAXIMUM_INSTANCE_DOCUMENT_BYTES < MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    padding = "x" * (MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1)
+    answered = json.dumps({"steps": 3, "notes": padding}).encode()
+    assert MAXIMUM_INSTANCE_DOCUMENT_BYTES < len(answered) < MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    execution = armed_attempt(runtime, schema=PADDED_PLAN_SCHEMA)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(execution, AgentExecutionResult(answered))
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    assert outcome.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
+    with runtime.engine.connect() as connection:
+        receipt = (
+            connection.execute(
+                sa.select(agent_attempt_receipts_v3).where(
+                    agent_attempt_receipts_v3.c.attempt_id == execution.attempt_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        attempts = tuple(
+            connection.execute(
+                sa.select(
+                    agent_attempts.c.attempt_ordinal, agent_attempts.c.state
+                ).order_by(agent_attempts.c.attempt_ordinal)
+            ).all()
+        )
+    assert str(receipt["reason"]).startswith("output-schema-refused: instance-too-large")
+    assert attempts == (
+        (1, AgentAttemptState.FAILED.value),
+        (2, AgentAttemptState.PREPARED.value),
     )
 
 
