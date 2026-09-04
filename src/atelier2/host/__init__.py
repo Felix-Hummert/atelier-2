@@ -114,7 +114,6 @@ from atelier2.host.serving import (
     event_poll_backoff,
     serve,
 )
-from atelier2.host.webhook_delivery import WebhookDeliverySettings
 from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import ProjectVerificationUndeclared
 
@@ -343,7 +342,6 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             grok_workspace_tools_start_refusal=grok.workspace_tools_start_refusal,
             codex_subscription=codex.settings,
             codex_start_refusal=codex.start_refusal,
-            webhook=_webhook_settings(parser, parsed),
             runner_lease_root=parsed.runner_lease_root,
             runner_image=parsed.runner_image,
             runner_image_digest=parsed.runner_image_digest,
@@ -359,8 +357,6 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return 0
     except ValueError as refusal:
-        # The webhook signing key file is read once at startup; an unreadable or
-        # empty file fails the whole start rather than serving with delivery off.
         parser.error(str(refusal))
     except GitHubCredentialUnresolvable as refusal:
         # The live-GitHub token is read once by reference when the effect adapter
@@ -668,29 +664,6 @@ def _attested_agent_scratch_root(
     return root
 
 
-def _webhook_settings(
-    parser: argparse.ArgumentParser, parsed: argparse.Namespace
-) -> WebhookDeliverySettings | None:
-    """The attention feed's outbound delivery, declared all-or-nothing.
-
-    A target URL and a signing-key file path go together: exactly one of them
-    is a half-configured webhook, refused here before the server exists rather
-    than served with delivery silently off. `WebhookDeliverySettings` owns the
-    URL's own validity.
-    """
-
-    url: str | None = parsed.webhook_url
-    signing_key_file: Path | None = parsed.webhook_signing_key_file
-    if url is None and signing_key_file is None:
-        return None
-    if url is None or signing_key_file is None:
-        parser.error(
-            "--webhook-url and --webhook-signing-key-file are declared together "
-            "or not at all"
-        )
-    return WebhookDeliverySettings(url, signing_key_file)
-
-
 def _declared_project_id(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
 ) -> ProjectId | None:
@@ -975,12 +948,6 @@ def _argument_parser() -> argparse.ArgumentParser:
         choices=tuple(mode.value for mode in CodexSandboxMode),
         default=CodexSandboxMode.READ_ONLY.value,
     )
-    # The cross-project attention feed's outbound delivery (`#433`). Both flags
-    # or neither: a URL without a signing-key file, or the reverse, is a
-    # half-configured webhook and is refused rather than served with delivery
-    # silently off.
-    serve_parser.add_argument("--webhook-url")
-    serve_parser.add_argument("--webhook-signing-key-file", type=Path)
     # The Runner-lease deployment (`#540` C-4). All six or none: a `RUNNER_LEASE`
     # carrier served with only part of its manifest would leave the runner
     # session guessing at the rest, so `DbosRuntimeSettings.__post_init__` --

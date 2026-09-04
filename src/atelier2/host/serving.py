@@ -62,7 +62,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.github import (
     live_github_effect_registry,
@@ -76,7 +75,6 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
 )
-from atelier2.adapters.http_webhook_transport import open_webhook_transport
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.markdown_agent_definitions import (
     parse_agent_definition,
@@ -137,12 +135,6 @@ from atelier2.host.provider_canary import (
     provider_layer_digest,
 )
 from atelier2.host.run_command import REQUEST_TIMEOUT_SECONDS
-from atelier2.host.webhook_delivery import (
-    WebhookDeliveryLoop,
-    WebhookDeliverySettings,
-    resolve_signing_key,
-    webhook_delivery_lifespan,
-)
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     AgentAttemptWorkspaceLease,
@@ -333,13 +325,6 @@ class HostSettings:
     runner_console_container: str | None = None
     runner_core_identity_directory: Path | None = None
     runner_accept_timeout_seconds: float | None = None
-    # The cross-project attention feed's outbound delivery (`#433` phase 2):
-    # declared all-or-nothing by `WebhookDeliverySettings`, which owns the URL
-    # and the signing-key file path. `None` serves the API with no delivery
-    # loop; a value starts the first lifespan background task in
-    # `compose_application`. Not the project-scoped configuration channel
-    # (`#425`), because the attention page is project-wide.
-    webhook: WebhookDeliverySettings | None = None
     # The provider-probe receipt gate's evidence directory (`#1013`): `None`
     # takes the same default `atelier2 provider-canary` already writes to
     # (`default_provider_canary_state_directory`, reused rather than a second
@@ -1324,23 +1309,7 @@ def compose_application(
         # construction rather than by two readings agreeing today.
         limits = settings.limits
         queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
-        webhook = settings.webhook
-        if webhook is not None:
-            # The signing key is read once, here, and lives only in the loop
-            # that holds it (ADR 0009 §6). A key file that will not resolve
-            # fails the whole start rather than serving with delivery quietly
-            # off.
-            signing_key = resolve_signing_key(webhook.signing_key_path)
-            transport = open_webhook_transport(webhook.target_url)
-            delivery_loop = WebhookDeliveryLoop(
-                DbosWebhookDeliveryPublisher(runtime.engine),
-                queries,
-                transport,
-                signing_key,
-            )
-            lifespan = webhook_delivery_lifespan(delivery_loop, transport)
-        else:
-            lifespan = None
+        lifespan = None
         if close_runtime_at_shutdown:
             lifespan = _close_runtime_at_shutdown(runtime, lifespan)
         artifact_store = DbosArtifactStore(runtime.engine)

@@ -83,6 +83,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    AgentSession,
 )
 from atelier2.ports.durable_runs import (
     DurablePublishedRunResult,
@@ -874,3 +875,51 @@ def failing_agent_executor_factory(
         open_failure=open_failure,
         close_failure=close_failure,
     )
+
+
+@dataclass
+class FakeAgentSession(AgentSession):
+    """The `AgentSession` an application test drives when no child should run.
+
+    Every launch answers with the completion the scenario scripted, so a test
+    of what an attempt *does* with a provider's ending never pays for
+    supervision -- which the process-seam integration tests own and prove on
+    their own.
+
+    Stopping is deliberately not faked: a disposition invented here would be
+    the one thing about a cancelled attempt that nobody supervised, so a
+    scenario that stops an attempt drives the real session instead.
+    """
+
+    completion: AgentProcessCompletion = field(
+        default_factory=lambda: AgentProcessCompletion(0, b"", b"")
+    )
+    """The one ending every launch answers with; by default a clean, silent exit."""
+
+    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
+        return prepared_agent_attempt(execution)
+
+    def launch_and_wait(
+        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+    ) -> AgentProcessCompletion:
+        del execution, invocation
+        return self.completion
+
+    def cancel(self, attempt: AgentAttempt) -> Never:
+        del attempt
+        raise NotImplementedError(_NO_FAKED_SUPERVISION)
+
+    def recover(self, attempt: AgentAttempt) -> Never:
+        del attempt
+        raise NotImplementedError(_NO_FAKED_SUPERVISION)
+
+    def release(self, attempt: AgentAttempt) -> None:
+        del attempt
+
+    def finalize(self, execution: AgentAttemptExecution) -> None:
+        del execution
+
+
+_NO_FAKED_SUPERVISION = (
+    "a scenario that stops a live attempt needs the real session, not this fake"
+)
