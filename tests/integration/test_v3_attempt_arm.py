@@ -41,10 +41,10 @@ from atelier2.adapters.dbos.run_store import (
     run_from_record_with_bindings,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime
-from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
+from atelier2.adapters.dbos.schema import run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.workflow import _node_binding
-from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
+from atelier2.application.compose_node_job import node_job
 from atelier2.application.project_node_rail import NodeRailAttempt, project_node_rail
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -71,11 +71,7 @@ from atelier2.contracts.workflows import RunCompletes, RunContinues
 from atelier2.contracts.workflows_v3 import AgentNodeV3
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
-from atelier2.ports.run_queries import (
-    NodeDetailFound,
-    QueryDurableStateCorrupt,
-    RunFound,
-)
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.integration.test_v3_agent_start import publish
 from tests.integration.test_v3_ordered_run import order, publish_ordered_workflow, start
 from tests.scenarios.agents import (
@@ -91,7 +87,6 @@ from tests.scenarios.workflows import declared_output
 
 RUN = RunId("v3/attempt")
 ORDERED_RUN = RunId("v3/ordered-query")
-LEGACY_STRING_ORDERED_RUN = RunId("v3/legacy-string-ordered-query")
 CURRENT_STRING_ORDERED_RUN = RunId("v3/current-string-ordered-query")
 INSTRUCTION = b"Do the one thing this chain is for."
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
@@ -195,17 +190,17 @@ def started_ordered_v3_attempt(runtime: DbosRuntime) -> AgentAttemptExecution:
     )
 
 
-def started_string_ordered_v3_attempts(
+def started_string_ordered_v3_attempt(
     runtime: DbosRuntime, run_id: RunId
-) -> tuple[AgentAttemptExecution, AgentAttemptExecution]:
-    """The legacy and current requests one declared string order would prepare."""
+) -> AgentAttemptExecution:
+    """The request one raw declared string order prepares (#1091)."""
     workflow, bindings = publish_ordered_workflow(runtime, STRING_ORDER_SCHEMA)
     created = start(
         runtime,
         workflow,
         bindings,
         run_id,
-        order(b'"the authored string order"', STRING_ORDER_SCHEMA),
+        order(b"the authored string order", STRING_ORDER_SCHEMA),
     )
     assert isinstance(created, DurableRunCreated)
     revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
@@ -223,33 +218,19 @@ def started_string_ordered_v3_attempts(
         orders = load_run_inputs(connection, run.run_id, node)
         binding = run.agent_bindings[0]
 
-    def prepared_under(
-        composition_version: NodeJobCompositionVersion,
-    ) -> AgentAttemptExecution:
-        request = AgentExecutionRequestV2(
-            NodeExecutionId.for_node(run_id, revision_hash, run.current_node_id),
-            run_id,
-            revision_hash,
-            run.current_node_id,
-            ResolvedAgentBinding(
-                binding.role, binding.configuration, binding.auth_profile
-            ),
-            AgentExecutorOperationalIdentity("exact-operation"),
-            node_job(
-                node.instruction, orders, composition_version=composition_version
-            ).encode("utf-8"),
-        )
-        return AgentAttemptExecution(
-            request,
-            AgentAttemptId.for_execution(
-                request.node_execution_id, request.request_hash
-            ),
-            1,
-        )
-
-    return (
-        prepared_under(NodeJobCompositionVersion.LEGACY),
-        prepared_under(NodeJobCompositionVersion.CURRENT),
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, revision_hash, run.current_node_id),
+        run_id,
+        revision_hash,
+        run.current_node_id,
+        ResolvedAgentBinding(binding.role, binding.configuration, binding.auth_profile),
+        AgentExecutorOperationalIdentity("exact-operation"),
+        node_job(node.instruction, orders).encode("utf-8"),
+    )
+    return AgentAttemptExecution(
+        request,
+        AgentAttemptId.for_execution(request.node_execution_id, request.request_hash),
+        1,
     )
 
 
@@ -284,66 +265,24 @@ def test_get_run_attaches_a_prepared_v3_attempt_that_carries_an_order(
     assert attempt.state is PublicAgentAttemptState.PREPARED
 
 
-@pytest.mark.parametrize(
-    ("run_id", "composition_version"),
-    (
-        (LEGACY_STRING_ORDERED_RUN, NodeJobCompositionVersion.LEGACY),
-        (CURRENT_STRING_ORDERED_RUN, NodeJobCompositionVersion.CURRENT),
-    ),
-)
 def test_a_prepared_string_order_attempt_projects_under_its_hashed_composition(
     runtime: DbosRuntime,
-    run_id: RunId,
-    composition_version: NodeJobCompositionVersion,
 ) -> None:
-    legacy, current = started_string_ordered_v3_attempts(runtime, run_id)
-    execution = (
-        legacy if composition_version is NodeJobCompositionVersion.LEGACY else current
-    )
+    execution = started_string_ordered_v3_attempt(runtime, CURRENT_STRING_ORDERED_RUN)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
-    store.prepare(current)
-    if composition_version is NodeJobCompositionVersion.LEGACY:
-        with runtime.engine.begin() as connection:
-            connection.exec_driver_sql("DROP TRIGGER agent_attempts_state_transition")
-            connection.execute(
-                agent_attempts.update()
-                .where(agent_attempts.c.attempt_id == current.attempt_id.value)
-                .values(
-                    attempt_id=legacy.attempt_id.value,
-                    request_hash=legacy.request.request_hash.value,
-                )
-            )
+    store.prepare(execution)
 
-    found = durable_queries(runtime.engine).get_run(run_id)
+    found = durable_queries(runtime.engine).get_run(CURRENT_STRING_ORDERED_RUN)
 
     assert isinstance(found, RunFound)
     attempt = found.projection.current_agent_attempt
     assert attempt is not None
     assert attempt.request_hash == execution.request.request_hash
-    detail = durable_queries(runtime.engine).get_node_detail(run_id, "cook")
+    detail = durable_queries(runtime.engine).get_node_detail(
+        CURRENT_STRING_ORDERED_RUN, "cook"
+    )
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.WORKING
-
-
-def test_a_legacy_request_hash_with_another_attempt_identity_still_conflicts(
-    runtime: DbosRuntime,
-) -> None:
-    legacy, current = started_string_ordered_v3_attempts(
-        runtime, LEGACY_STRING_ORDERED_RUN
-    )
-    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
-    store.prepare(current)
-    with runtime.engine.begin() as connection:
-        connection.exec_driver_sql("DROP TRIGGER agent_attempts_state_transition")
-        connection.execute(
-            agent_attempts.update()
-            .where(agent_attempts.c.attempt_id == current.attempt_id.value)
-            .values(request_hash=legacy.request.request_hash.value)
-        )
-
-    found = durable_queries(runtime.engine).get_run(LEGACY_STRING_ORDERED_RUN)
-
-    assert isinstance(found, QueryDurableStateCorrupt)
 
 
 def test_get_run_answers_a_v3_agent_run_with_no_attempt_rows(

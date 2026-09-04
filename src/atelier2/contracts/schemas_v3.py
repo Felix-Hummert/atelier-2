@@ -8,7 +8,12 @@ and it is deliberately a pure function over bytes so that both the reference
 resolution and the instance evaluation ask exactly one owner. Both halves live
 here: `read_schema_document` says whether published bytes are a schema this
 product can enforce, and `read_instance_document` says whether exact bytes are a
-value one of those schemas admits.
+value one of those schemas admits -- always read as JSON, because a produced
+value already comes back under a promise its own executor made.
+`read_authored_instance_document` asks the same question of a value a caller
+authored instead of one an executor produced: it reads bytes as raw text
+rather than a second JSON encoding when the schema's own top-level `type` is
+`"string"`, through `instance_for_schema`, the one owner of that decision.
 
 The profile is a closed subset of JSON Schema Draft 2020-12, and every bound in
 it exists to keep evaluation decidable, local and cheap:
@@ -360,12 +365,9 @@ def read_instance_document(
             InstanceRefusal.INSTANCE_TOO_LARGE,
             f"{len(instance)} bytes exceeds {maximum_bytes}",
         )
-    try:
-        text = instance.decode("utf-8")
-    except UnicodeDecodeError as broken:
-        return InstanceRefused(InstanceRefusal.INSTANCE_NOT_UTF8, broken.reason)
-    if text.startswith(_BYTE_ORDER_MARK):
-        return InstanceRefused(InstanceRefusal.INSTANCE_CARRIES_BYTE_ORDER_MARK)
+    text = _decoded_text(instance)
+    if isinstance(text, InstanceRefused):
+        return text
     decoded = _decoded_json(text)
     if isinstance(decoded, SchemaRefused):
         return _as_instance_refusal(decoded)
@@ -376,6 +378,95 @@ def read_instance_document(
     if violation is not None:
         return violation
     return InstanceAccepted(decoded.value)
+
+
+def read_authored_instance_document(
+    instance: bytes,
+    schema: SchemaAccepted,
+    maximum_bytes: int = MAXIMUM_INSTANCE_DOCUMENT_BYTES,
+) -> InstanceVerdict:
+    """Whether these exact bytes are a value a caller authored, that the schema admits.
+
+    A produced value (`read_instance_document`) always arrives JSON-encoded: it
+    comes back from an executor whose own structured-output help already
+    promised the schema it would honour. An authored value -- an order a start
+    supplies, or an answer a person types at a wait -- carries no such promise,
+    so this is the one door that lets a schema whose own top-level `type` is
+    exactly `"string"` read the artifact's raw UTF-8 text as its value
+    directly, rather than demanding it JSON-encoded a second time
+    (`instance_for_schema` is the one decision). Every other schema still
+    demands a JSON-encoded instance: an object or an array has no text of its
+    own to be one.
+
+    The bound, decode and bounds order otherwise matches `read_instance_document`
+    for the same reasons; see that function's docstring.
+    """
+    if len(instance) > maximum_bytes:
+        return InstanceRefused(
+            InstanceRefusal.INSTANCE_TOO_LARGE,
+            f"{len(instance)} bytes exceeds {maximum_bytes}",
+        )
+    decoded = instance_for_schema(instance, schema.schema)
+    if isinstance(decoded, InstanceRefused):
+        return decoded
+    bounded = _bounded_instance(decoded)
+    if bounded is not None:
+        return bounded
+    violation = _first_violation(decoded, schema.schema)
+    if violation is not None:
+        return violation
+    return InstanceAccepted(decoded)
+
+
+def instance_for_schema(instance: bytes, schema: Schema) -> JsonValue | InstanceRefused:
+    """The one JSON value or plain text `instance`'s bytes are, judged by `schema`'s own top type.
+
+    A schema whose top-level `type` is exactly `"string"` reads these bytes as
+    the string directly: the published bytes ARE the value, so a
+    JSON-encoded string arrives as a string that still carries its own
+    quotes -- there is no second, compatibility-preserving reading, because
+    Atelier is a prototype that owes no encoding it never promised (see
+    `docs/PRODUCT.md`). Every other schema -- object, array, number, boolean,
+    a nested schema, or one that names no top-level `type` at all -- keeps
+    demanding a JSON-encoded instance, decoded by the same rules a schema
+    document itself is decoded by: canonical numbers, unique keys.
+
+    UTF-8 decoding and the byte-order-mark refusal are judged here rather than
+    by a caller, because the `"string"` branch has no JSON decode step left to
+    judge them.
+    """
+    text = _decoded_text(instance)
+    if isinstance(text, InstanceRefused):
+        return text
+    if isinstance(schema, dict) and schema.get("type") == "string":
+        return text
+    decoded = _decoded_json(text)
+    if isinstance(decoded, SchemaRefused):
+        return _as_instance_refusal(decoded)
+    return decoded.value
+
+
+def _decoded_text(instance: bytes) -> str | InstanceRefused:
+    """The exact UTF-8 text `instance`'s bytes are, or the refusal naming where they break.
+
+    Shared by every instance reader that must decode bytes to text before doing
+    anything else with them (`read_instance_document`, `instance_for_schema`):
+    invalid UTF-8 names the exact byte offset it broke at
+    (`UnicodeDecodeError.start`), because the ruled sentence for this refusal
+    is the place, not only the reason -- a person cannot fix "invalid start
+    byte" without knowing where in the artifact it is. A byte-order mark is
+    refused by its own name, never silently stripped.
+    """
+    try:
+        text = instance.decode("utf-8")
+    except UnicodeDecodeError as broken:
+        return InstanceRefused(
+            InstanceRefusal.INSTANCE_NOT_UTF8,
+            f"{broken.reason} at byte {broken.start}",
+        )
+    if text.startswith(_BYTE_ORDER_MARK):
+        return InstanceRefused(InstanceRefusal.INSTANCE_CARRIES_BYTE_ORDER_MARK)
+    return text
 
 
 # Where a JSON document may begin. A declared value the profile admits is an

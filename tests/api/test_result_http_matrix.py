@@ -1322,6 +1322,7 @@ def _success_body(operation: str) -> object:
                         "revision": schema_revision,
                     },
                     "kind": "free",
+                    "string_typed": False,
                     "values": None,
                 }
             ],

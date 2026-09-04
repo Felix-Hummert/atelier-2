@@ -522,24 +522,25 @@ def compose_agent_node_job_for_attempt(
     orders: tuple[Any, ...],
     results: tuple[Any, ...],
     *,
-    base_composition_version: NodeJobCompositionVersion,
     target_node_execution_id: NodeExecutionId,
     target_attempt_ordinal: int,
     prior_refusal_receipt: OutputSchemaRefusalReceipt | None,
 ) -> bytes:
-    """Compose one attempt from an explicit base and a fully validated receipt."""
-    if base_composition_version not in {
-        NodeJobCompositionVersion.LEGACY,
-        NodeJobCompositionVersion.CURRENT,
-    }:
-        raise ValueError("an agent job base version must be legacy or current")
+    """Compose one attempt, repaired under its prior refusal receipt when one exists.
+
+    Every attempt renders under `NodeJobCompositionVersion.CURRENT`, repaired
+    to `OUTPUT_SCHEMA_REPAIR` exactly where a fully validated prior refusal
+    receipt names the repair -- the base version is no longer a caller's
+    choice (#1091 retired the `LEGACY` rendering rule it once selected
+    between).
+    """
     if prior_refusal_receipt is not None:
         if target_attempt_ordinal != REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
             raise RunTransitionConflict("repair receipt is not prior to its target")
         composition_version = NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR
         repair = OutputSchemaRepair(prior_refusal_receipt.reason)
     else:
-        composition_version = base_composition_version
+        composition_version = NodeJobCompositionVersion.CURRENT
         repair = None
     if not isinstance(target_node_execution_id, NodeExecutionId):
         raise TypeError("attempt composition requires a typed execution identity")
@@ -601,21 +602,10 @@ def _validate_request(
         node,
         orders,
         results,
-        base_composition_version=NodeJobCompositionVersion.CURRENT,
         target_node_execution_id=request.node_execution_id,
         target_attempt_ordinal=target_attempt_ordinal,
         prior_refusal_receipt=prior_receipt,
     )
-    if prior_receipt is None and authored_job != request.job_bytes:
-        authored_job = compose_agent_node_job_for_attempt(
-            node,
-            orders,
-            results,
-            base_composition_version=NodeJobCompositionVersion.LEGACY,
-            target_node_execution_id=request.node_execution_id,
-            target_attempt_ordinal=target_attempt_ordinal,
-            prior_refusal_receipt=None,
-        )
     if (
         node.role != request.resolved_binding.role.value
         or authored_job != request.job_bytes
@@ -655,7 +645,6 @@ def _output_schema_repair_request(
             node,
             request.round_ordinal,
         ),
-        base_composition_version=NodeJobCompositionVersion.CURRENT,
         target_node_execution_id=request.node_execution_id,
         target_attempt_ordinal=target_ordinal,
         prior_refusal_receipt=prior_receipt,
