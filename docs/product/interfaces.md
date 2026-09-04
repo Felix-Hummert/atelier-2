@@ -56,16 +56,7 @@ live holder adds each identity it emits and resets the set when the second
 advances. Second-precision instants make two waits in one second the normal
 case, so lexicographic `(recorded_at, run_id, seq) > cursor` is not the resume
 rule. Pre-V22 events whose instant is NULL
-stay off the feed rather than inventing a time. An operator who configures a
-webhook target and a signing-key file receives the same attention events as
-outbound HTTP POSTs, without a client holding
-the stream: a background delivery loop signs each payload with HMAC-SHA256 over
-its exact bytes, carries the event's `(run_id, event_sequence)` identity for the
-receiver's own dedup, and advances its one durable cursor only after a 2xx — so
-a receiver sees every attention event at least once, and a stuck receiver holds
-the cursor on its event rather than skipping ahead. The signing key is read once
-from its file at startup and never re-read; a webhook declared with only one of
-the two settings fails the start rather than delivering to nowhere. A served V2
+stay off the feed rather than inventing a time. A served V2
 run also names the state of every node of the revision it is bound to, so a reader
 is told where each node stands instead of computing it: one pure function in the
 core derives that rail from the run snapshot, that revision, and the events since,

@@ -205,9 +205,8 @@ ignore_imports = [
 ]
 unmatched_ignore_imports_alerting = "error"
 
-# The outbound webhook transport and every GitHub credential exchange are the
-# only production callers of httpx; a fifth import site would otherwise reach
-# the network with no declared owner.
+# Every GitHub credential exchange is the only production caller of httpx; a
+# fourth import site would otherwise reach the network with no declared owner.
 [[tool.importlinter.contracts]]
 id = "httpx-owner"
 name = "httpx stays inside its declared transport owners"
@@ -217,7 +216,6 @@ forbidden_modules = ["httpx"]
 allow_indirect_imports = true
 as_packages = true
 ignore_imports = [
-    "atelier2.adapters.http_webhook_transport -> httpx",
     "atelier2.adapters.github.observation -> httpx",
     "atelier2.adapters.github.live_effects -> httpx",
     "atelier2.adapters.github.project_connections -> httpx",
