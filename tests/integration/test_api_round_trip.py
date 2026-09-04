@@ -327,7 +327,7 @@ class FirstUseModelInspector:
 
 
 @pytest.mark.proves("a-consumer-writes-every-request-out-of-the-answers-it-read")
-def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
+def test_a_consumer_drives_four_round_trips_renaming_only_the_catalog_hash(
     runtime: DbosRuntime,
 ) -> None:
     """Name to start, run to answer, catalog to start, artifact to order.
@@ -336,7 +336,9 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
     the document, names it, asks the catalog what that name holds, asks the
     listing what format that revision is, publishes the material its order
     carries, starts the run, waits for the person, answers, and reads the ended
-    run. Every field of every request above came out of `carried`.
+    run. Every field of every request above came out of `carried`, except the
+    admission's `catalog_revision_hash`, which `catalogued` names as the one
+    crossing this wire renames.
     """
 
     client = durable_api_client(runtime)

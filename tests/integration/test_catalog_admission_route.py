@@ -359,6 +359,7 @@ def test_a_workflow_and_an_agent_may_carry_the_same_name(
     )
 
 
+@pytest.mark.proves("an-admission-the-catalog-refuses-is-named-by-its-own-reason")
 def test_a_lineage_admits_no_member_of_another_kind(
     runtime: DbosRuntime,
 ) -> None:
