@@ -19,6 +19,10 @@ export default defineConfig({
   resolve: { conditions: ["browser"] },
   test: {
     environment: "jsdom",
-    include: ["tests/**/*.test.ts"]
+    include: ["tests/**/*.test.ts"],
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,svelte}"]
+    }
   }
 });

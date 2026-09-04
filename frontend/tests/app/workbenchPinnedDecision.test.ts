@@ -149,6 +149,10 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the Workbench pins open decisions (#580)", () => {
+  // This test drives more real interactions (three sends, two navigations)
+  // than its neighbours, so v8 coverage instrumentation's overhead pushes it
+  // past the default 5s timeout; the raised timeout accommodates the
+  // instrumented run without hiding a real regression.
   it("proves(the-workbench-pins-an-open-decision-until-it-is-answered): holds the decision through continued chatting and a walk away and back, then retires it once answered on the shared audited path", async () => {
     const waiting = waitingRun();
     const answer = vi.fn(async (mutation: { body_base64: string }) => {
@@ -213,7 +217,7 @@ describe("the Workbench pins open decisions (#580)", () => {
       },
       { timeout: 3_000 }
     );
-  });
+  }, 15_000);
 
   it("proves(the-workbench-pins-an-open-decision-until-it-is-answered): renders a string-typed enum's own raw text and sends it verbatim, never JSON-quoted (#1091 PR #1108 finding 1)", async () => {
     const waiting = waitingRun();
