@@ -981,10 +981,12 @@ that admits an item automatically: at the next sweep, every inspected proposal
 whose tracker item carries that label is admitted under the `AUTOMATION_RULE`
 authority and starts within the cap. The label is read from the tracker at
 that moment, so removing it in the tracker before the sweep withholds the
-admission; a human sets it there, and the atelier never writes it. Omitting
-the field (or sending `null`) turns automatic admission off, and `"*"` is
-refused: the policy names one label, and "admit everything" is not a ruled
-value.
+admission; a human sets it there, and the atelier never writes it. Spell it
+exactly as the tracker spells it, capitalisation included: `Bereit` and
+`bereit` are two different labels here, and a policy naming one admits nothing
+carrying the other. Omitting the field (or sending `null`) turns automatic
+admission off, and `"*"` is refused: the policy names one label, and "admit
+everything" is not a ruled value.
 
 Two things this does not do. It admits nothing that has no inspected proposal
 yet -- the label says "go", never which workflow or priority to go with, so
