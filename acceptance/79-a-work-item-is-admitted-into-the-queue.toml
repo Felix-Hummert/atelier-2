@@ -10,3 +10,9 @@ text = "An observed item receives one typed proposal containing its priority, wo
 [[sentence]]
 id = "the-v43-hop-invents-no-queue-decision"
 text = "Migrating the live V43 queue rows into the V44 Phase-D state preserves every recorded identity and admission but invents no priority, authorization, dependency or launch; an old admission whose launch cannot be proved waits visibly for review instead of being started again."
+
+# PHASE D2 (SLICE A2): A QUEUE-STARTED RUN CARRIES THE ITEM IT IS ABOUT.
+
+[[sentence]]
+id = "a-refused-queue-start-stays-at-its-item-while-the-sweep-continues"
+text = "When a queued item is started and the start is refused, the failure is visible at that item, and the other admitted items still advance in the same sweep."

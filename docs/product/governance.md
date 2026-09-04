@@ -271,6 +271,19 @@ rather than published as an artifact. The catalog start sheet offers those
 observed items as a picker; a run started there carries the observed revision
 as the order value.
 
+The queue sweep (`application/advance_queue.py`, `#1145`, #79 slice A2) starts
+an admitted item through that same door rather than empty: when the bound
+revision declares exactly one `graph_input` pinned to the work-item schema,
+the sweep starts with `WorkItemOrderValue` naming the item's own tracker
+reference and `bindings=()`, never `None` -- a bare request refuses an order.
+A revision with no `graph_inputs` still starts exactly as before. A revision
+that declares anything else -- more than one input, or one pinned to a
+different schema -- is material the sweep has no way to fill; it leaves the
+item `REQUIRED_ORDER_UNAVAILABLE`, the same blocker an unreachable or
+unconnected tracker already carries, and the rest of the sweep still runs.
+The sweep still fires only at process launch (`DbosRuntime.launch()`); a live
+trigger beyond that boot-time sweep is the next #79 slice.
+
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,
 production query-admission bounds, a V3 one-agent document, and

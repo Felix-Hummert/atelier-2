@@ -1269,13 +1269,19 @@ def compose_application(
         *_subscription_executor_registrations(settings),
         *_runner_lease_executor_registrations(settings),
     )
-    # Read once: the same connection record composes the effect adapter and,
-    # further down, the tracker observation source the import door drives.
+    # Read once: the same connection record composes the effect adapter, the
+    # queue sweep's own work-item reads, and the import door's tracker source.
     source_connection = _project_source_connection(settings)
+    tracker_item_source = (
+        None
+        if source_connection is None
+        else live_github_issue_source(source_connection)
+    )
     runtime = DbosRuntime(
         settings.runtime_settings(),
         _effect_adapters(settings, source_connection),
         subscription_executors,
+        tracker_item_source,
     )
     try:
         if source_connection is not None:
@@ -1355,11 +1361,7 @@ def compose_application(
                     / MANAGED_PROJECT_SOURCE_CREDENTIALS_DIRECTORY
                 ),
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
-                tracker_item_source=(
-                    None
-                    if source_connection is None
-                    else live_github_issue_source(source_connection)
-                ),
+                tracker_item_source=tracker_item_source,
                 model_registry_inspector=HostProviderModelInspector(
                     runtime.agent_executor_registry,
                     settings.codex_subscription,

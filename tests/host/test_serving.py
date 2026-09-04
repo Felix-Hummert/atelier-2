@@ -36,8 +36,47 @@ from atelier2.adapters.codex_subscription import (
     CodexSandboxMode,
     CodexSubscriptionSettings,
 )
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
+from atelier2.adapters.dbos.run_store import load_run_orders
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.grok_subscription import GrokSubscriptionSettings
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogLineageDisplayName,
+)
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
+from atelier2.contracts.queue_projection import (
+    ConfirmQueueProposal,
+    PlanQueueItem,
+    QueueAdmissionRationale,
+    QueueAutomationDisposition,
+    QueueItemAdmitted,
+    QueueItemProposed,
+    QueueItemTrackerObservation,
+    QueuePriorityRank,
+    QueueProjectionRevision,
+    QueueProjectPolicyRevision,
+    QueueProposal,
+    TrackerItemReference,
+    WorkItemReference,
+)
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+    read_work_item_order_document,
+)
 from atelier2.host import main
 from atelier2.host.serving import (
     HostSettings,
@@ -46,12 +85,18 @@ from atelier2.host.serving import (
     compose_application,
 )
 from atelier2.ports.agent_executions import AgentExecutorCarrier
+from atelier2.ports.issue_observation import WorkItemRevisionObserved
+from atelier2.ports.published_revisions import CatalogLineageFounded
+from atelier2.ports.queue_projection import QueueItemsPage, QueueItemsReconciled
 from tests.integration.test_claude_atelier_doors import doors_deployment, doors_flags
 from tests.integration.test_claude_subscription import (
     INTROSPECTING_CLAUDE,
     parsing_claude,
 )
 from tests.scenarios.agents import agent_scratch_root, claude_subscription_deployment
+from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.runs import publish_revision
+from tests.scenarios.workflows import graph_input_wait_line
 
 _ACCEPT_TIMEOUT_SECONDS = 5.0
 
@@ -609,3 +654,132 @@ def test_codex_model_discovery_removes_its_private_home_after_a_failing_run(
     reported_home = (tmp_path / "observed-home.txt").read_text()
     assert reported_home != str(settings.credential_directory)
     assert not Path(reported_home).exists()
+
+
+_QUEUE_STARTED_PROJECT = ProjectId("studio")
+
+
+def test_a_queue_started_run_carries_the_admitted_items_tracker_reference(
+    tmp_path: Path,
+) -> None:
+    """A2 (`#1145`): a run the queue sweep starts is pinned to the item it is about.
+
+    Through `DbosRuntime` composed exactly as `compose_application` composes
+    it -- `tracker_item_source` injected the same way `_effect_adapters` is --
+    because a genuine `compose_application` connected to a live GitHub project
+    would reach the real network for the sweep's own tracker read, and this
+    slice's subject is the queue's order-filling decision, not the GitHub
+    adapter's HTTP contract (`tests/integration/test_github_observation.py`
+    owns that). The bound document declares one `graph_input` pinned to the
+    work-item schema, the same shape `workflows/issue-to-pr.yaml` declares,
+    without that file's agent role -- proving `advance_queue`'s own decision
+    needs no agent-configuration or model-registry setup beside it.
+    """
+
+    tracker_reference = TrackerItemReference("gh:9001")
+    revision = ObservedWorkItemRevision(
+        tracker_reference,
+        WorkItemKind.ISSUE,
+        b"push the candidate before the pull request opens",
+        WorkItemChangeMarker('W/"9001"'),
+        RecordedAt("2026-09-04T09:00:00Z"),
+    )
+    tracker = FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(revision))
+    project_root = tmp_path / "operator-project"
+    project_root.mkdir()
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "durable.sqlite",
+            "queue-carries-item-test",
+            project_id=_QUEUE_STARTED_PROJECT,
+            bootstrap_project_root=project_root,
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        tracker_item_source=tracker,
+    )
+    try:
+        engine = runtime.engine
+        catalog = DbosCatalogStore(engine)
+        work_item_schema = PublishedRevision(
+            RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT
+        )
+        approval_schema = PublishedRevision(RevisionKind.SCHEMA, b"true")
+        document = graph_input_wait_line(WORK_ITEM_ORDER_SCHEMA_REVISION.value)
+        published = PublishedRevision(RevisionKind.WORKFLOW, document)
+        for revision_to_publish in (work_item_schema, approval_schema, published):
+            catalog.publish_revision(revision_to_publish)
+        # The catalog registry (lineage, name resolution) and the durable
+        # workflow-revision store the starter reads by hash are two owners of
+        # the same bytes (ADR 0007); a start needs both published.
+        publish_revision(engine, WorkflowRevision(document))
+        founded = catalog.found_lineage(
+            published,
+            CatalogLineageDisplayName("queue-carries-item"),
+            CatalogActor("operator"),
+            CatalogActivatedAt("2026-09-04T09:00:00Z"),
+        )
+        assert isinstance(founded, CatalogLineageFounded)
+
+        queue = DbosQueueProjectionStore(engine)
+        item_reference = WorkItemReference(_QUEUE_STARTED_PROJECT, tracker_reference)
+        observed_at = RecordedAt("2026-09-04T09:00:00Z")
+        queue.put_policy(
+            QueueProjectPolicyRevision(_QUEUE_STARTED_PROJECT, 1, 1, None), 0
+        )
+        reconciled = queue.reconcile_open_items(
+            _QUEUE_STARTED_PROJECT,
+            (
+                (
+                    item_reference,
+                    QueueItemTrackerObservation("push before the pr", observed_at),
+                ),
+            ),
+            observed_at,
+        )
+        assert isinstance(reconciled, QueueItemsReconciled)
+        proposed = queue.plan(
+            PlanQueueItem(
+                item_reference,
+                QueueProposal(
+                    QueuePriorityRank(1),
+                    founded.lineage.lineage_id,
+                    (),
+                    QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+                    1,
+                ),
+                QueueProjectionRevision(0),
+            )
+        )
+        assert isinstance(proposed, QueueItemProposed)
+        admitted = queue.confirm(
+            ConfirmQueueProposal(
+                item_reference,
+                proposed.revision,
+                QueueAdmissionRationale("operator approved the inspected proposal"),
+            )
+        )
+        assert isinstance(admitted, QueueItemAdmitted)
+
+        runtime.launch()
+
+        page = queue.list_items(None, MAXIMUM_PAGE_ITEMS)
+        assert isinstance(page, QueueItemsPage)
+        (snapshot,) = [
+            item for item in page.items if item.item_reference == item_reference
+        ]
+        assert snapshot.launch_binding is not None
+        run_id = snapshot.launch_binding.run_id
+
+        with engine.connect() as connection:
+            orders_by_run = load_run_orders(connection, [run_id.value])
+        (order,) = orders_by_run[run_id.value]
+        assert order.schema_revision == WORK_ITEM_ORDER_SCHEMA_REVISION
+        decoded = read_work_item_order_document(order.value)
+        assert decoded is not None
+        assert decoded.reference == tracker_reference
+    finally:
+        runtime.close()

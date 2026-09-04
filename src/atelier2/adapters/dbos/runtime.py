@@ -72,6 +72,7 @@ from atelier2.adapters.runner_tls import (
     encode_core_peer_document,
     pin_tls_13,
 )
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.advance_queue import advance_queue
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,
@@ -158,6 +159,7 @@ from atelier2.ports.effects import (
     EffectAdapterRegistry,
     OpenEffectAdapterRegistry,
 )
+from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.project_verification import DeclaredProject
 from atelier2.ports.published_revisions import CatalogNameFound
 from atelier2.ports.runner_leases import RunnerLeaseWithdrawn
@@ -442,6 +444,7 @@ class _BoundRuntime:
     agent_process_supervisor: AgentProcessSupervisor | None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
     declared_project: DeclaredProject | None
+    tracker_item_source: TrackerItemSource | None
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
@@ -886,6 +889,7 @@ def _open_binding(
     agent_registry: AgentExecutorRegistry,
     effect_registry: EffectAdapterRegistry,
     effect_bindings: tuple[EffectAdapterBinding, ...],
+    tracker_item_source: TrackerItemSource | None,
 ) -> _BoundRuntime:
     canonical_database = settings.database_path.resolve()
     # H2's sole concrete adapter binds its resolved external SQLite path here.
@@ -1106,6 +1110,7 @@ def _open_binding(
         agent_process_supervisor,
         agent_workspace_owner,
         declared_project_source,
+        tracker_item_source,
     )
 
 
@@ -1174,6 +1179,7 @@ class _DbosProcessOwner:
         settings: DbosRuntimeSettings,
         agent_registry: AgentExecutorRegistry,
         effect_registry: EffectAdapterRegistry,
+        tracker_item_source: TrackerItemSource | None = None,
     ) -> _BoundRuntime:
         with self._lock:
             agent_manifest = agent_registry.manifest
@@ -1185,6 +1191,7 @@ class _DbosProcessOwner:
                     agent_registry,
                     effect_registry,
                     effect_bindings,
+                    tracker_item_source,
                 )
             elif (
                 self._bound.settings.binding(
@@ -1388,6 +1395,9 @@ class _DbosProcessOwner:
                 bound.settings,
                 bound.agent_executor_registry,
             ),
+            workflow_document_parser=parse_workflow_document,
+            served_project=bound.settings.project_id,
+            tracker=bound.tracker_item_source,
         )
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:
@@ -1519,6 +1529,7 @@ class DbosRuntime:
         agent_executor_factories_v2: tuple[
             AgentExecutorFactoryV2 | AgentExecutorRegistration, ...
         ] = (),
+        tracker_item_source: TrackerItemSource | None = None,
     ) -> None:
         self._close_lock = threading.Lock()
         registry = AgentExecutorRegistry(
@@ -1539,7 +1550,7 @@ class DbosRuntime:
             )
         )
         self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(
-            settings, registry, effect_registry
+            settings, registry, effect_registry, tracker_item_source
         )
 
     @property
