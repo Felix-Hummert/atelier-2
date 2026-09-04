@@ -31,6 +31,14 @@ Do not duplicate guidance. Update the owner.
 No new item without a named caller, and no hardening without usage evidence
 (operator ruling 04.09.2026).
 
+A rule a machine can check belongs in the repository's checks, not in a sentence
+every agent must remember. What only judgement can see belongs to a scheduled
+agent audit at a fixed cadence, and one audit run yields one distributor item.
+
+An index, vector store, or knowledge graph over the code needs a named consumer
+and a measurement that beats plain search; localisation is a measured problem,
+not an assumed one.
+
 ## Code
 
 - Identify the owner, state, configuration, failure modes, and verification
@@ -48,6 +56,14 @@ No new item without a named caller, and no hardening without usage evidence
   naming it — an open sentence or named gap on the owning item — and waits for
   usage evidence. A review judges the slice against its declared sentences, not
   against all conceivable hardness. (Operator + coordinator ruling, 16.08.2026.)
+- Keep a slice inside three production files and a hundred changed production
+  lines — additions and deletions counted apart, tests and generated files
+  excluded. Above that corridor the dispatch names in one sentence why the
+  change does not split; the corridor is reported, never gated, because a check
+  cannot judge a cut.
+- Generate what a generator produces deterministically, for declared derived
+  artefacts only; once its generator exists, an empty regeneration diff is the
+  gate.
 - Code reached only by tests is dead code: reachability counts from real
   entry points — composition root, routes, CLI, workflows — and a test is not
   a caller (operator ruling 04.09.2026).
@@ -59,6 +75,9 @@ No new item without a named caller, and no hardening without usage evidence
   defect.
 - Use readable, fully written names. Avoid abbreviations unless established.
 - Prefer typed state over loose dictionaries and string protocols.
+- No direct `Any` parameter in the contract, port, application, and API layers.
+  `ANN401` proves exactly that and nothing more: a nested `dict[str, Any]` stays
+  counted debt that must not grow.
 - Put behavior with the module that owns the decision.
 - Keep side effects visible at the call site.
 - Keep pure logic pure when side effects are not part of the contract.
@@ -66,8 +85,17 @@ No new item without a named caller, and no hardening without usage evidence
   services behind narrow boundaries.
 - Use comments only for unavoidable why: external constraints, security reasons,
   protocol quirks, data-loss risks, or non-obvious tradeoffs.
+- Keep ageing narrative out of changed source lines: a new comment or docstring
+  does not carry "formerly", "superseded", "replaced X with Y", "since PR", a
+  date, or an issue number as provenance. A durable reason citing a decision
+  record stays allowed.
 - Do not add inline static-analysis suppressions. Fix the design, narrow the
   code, or change central policy with verification.
+- Hold size and complexity with ratchets, not repository-wide allowlists. Files
+  from eight hundred lines, functions from sixty, and cyclomatic complexity
+  above fifteen are debt-entry thresholds, not quality seals: compared per path
+  and qualified symbol between base and head, a new violation or the growth of
+  an existing one is red, and an unresolvable base is red too.
 
 ## Configuration
 
@@ -101,6 +129,11 @@ Before adding a literal, constant, default, or fixture value, classify its owner
 
 - Reuse code only when the same domain idea, owner, and invariant are present.
 - Remove duplication when duplicated code must evolve together.
+- Hold duplication with a ratchet over a baseline of known pairs: a new
+  near-identical function pair is red, an orphaned baseline entry is red, and
+  the baseline shrinks in slices with an owner.
+- A review of new code asks which existing owner was checked before it was
+  written.
 - Keep short duplication when abstraction would hide meaning or couple unrelated
   concepts.
 - Use maintained libraries for solved hard problems when the standard library is
@@ -128,6 +161,8 @@ Before adding a literal, constant, default, or fixture value, classify its owner
 - After the contract exists, write the failing behavioral test first for risky
   behavior, implement the smallest behavior, then refactor under the same test.
 - Add focused tests for new behavior and regression tests for bug fixes.
+- Put a regression test at the observable boundary that owns the defect; use a
+  port fake only when the defect crosses a port boundary.
 - Coverage is evidence, not the goal. Do not add tests that only execute lines.
 - Keep tests deterministic, cheap, and safe to run in parallel.
 - Whenever tests run, use the repository's configured parallel execution.
@@ -135,6 +170,10 @@ Before adding a literal, constant, default, or fixture value, classify its owner
   process-global state another test can observe.
 - Use temporary state or fakes for filesystem, process, network, clock,
   randomness, and external services.
+- Core unit tests import no adapter: an adapter-bound module moves whole into
+  the integration suite, and a remaining exception carries one registered module
+  marker, never a path allowlist. From the first move the count per core
+  directory is a ratchet that must not grow, with zero as its target.
 - For agent or provider behavior, verify repeatability, perturbation tolerance,
   failure handling, and safety bounds; one successful transcript is not proof.
 - For fixture values and expected results, follow Value Ownership.
