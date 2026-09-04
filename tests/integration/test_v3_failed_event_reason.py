@@ -6,7 +6,11 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
-from atelier2.adapters.dbos.schema import agent_attempt_receipts_v3, agent_attempts
+from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
+    agent_attempts,
+    node_receipts_v3,
+)
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import node_rail_resources, run_resource
 from atelier2.api.wire.events import AgentFailedEventResourceV3
@@ -14,21 +18,30 @@ from atelier2.api.wire.resources import RunResourceV3
 from atelier2.application.project_node_rail import project_node_rail
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
-from atelier2.contracts.node_records_v3 import NodeReceiptReason
+from atelier2.contracts.artifacts import ArtifactHash
+from atelier2.contracts.node_records_v3 import (
+    NodeReceiptReason,
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.run_projections import (
     NodeState,
     PublicAgentAttemptState,
     RunPage,
 )
-from atelier2.ports.agent_attempts import AgentAttemptFailed
+from atelier2.ports.agent_attempts import (
+    AgentAttemptFailed,
+    ProjectVerificationFailureEvidence,
+)
 from atelier2.ports.agent_executions import AgentExecutionResult
 from atelier2.ports.run_queries import NodeDetailFound, RunFound
+from tests.integration.test_redeemed_proof import redemption_for
 from tests.integration.test_v3_output_enforcement import (
     NODE,
     PLAN_SCHEMA,
     RUN,
     SUCCESSOR,
+    THE_ANSWER_THE_SCHEMA_ADMITS,
     THE_ANSWER_THE_SCHEMA_REFUSES,
     armed_attempt,
     repair_attempt,
@@ -180,3 +193,88 @@ def test_list_and_events_name_the_same_failed_node(runtime) -> None:
     assert get_rail[0].attempt is not None
     assert get_rail[0].attempt.ordinal == 2
     assert get_rail[0].attempt.state == PublicAgentAttemptState.FAILED
+
+
+def _stored_verification_failure_words(runtime, execution) -> str:
+    """The composed `PROJECT_VERIFICATION_FAILED` reason this attempt's node
+    receipt carries, unwrapped from its judged JSON envelope."""
+
+    with runtime.engine.connect() as connection:
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id
+                == execution.request.node_execution_id.value
+            )
+        )
+    words, _schema_revision, _value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    return words
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_redacted_verification_tails_words_say_so_in_the_stored_reason(
+    runtime,
+) -> None:
+    """The durable reason names a redaction, not just the fields that caused it.
+
+    `test_project_verification.py` already proves `execute_agent_attempt`
+    computes `ProjectVerificationFailureEvidence(redacted=True)` for a tail
+    carrying a credential shape; this proves what the store composes from
+    that evidence into the sentence an operator actually reads.
+    """
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    evidence = ProjectVerificationFailureEvidence(
+        "1 failed, 3 passed in 0.01s",
+        ArtifactHash.of(b"the redacted tail"),
+        0.5,
+        redacted=True,
+    )
+
+    outcome = store.complete_success(
+        execution,
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS),
+        redemption_for(execution, 1),
+        evidence,
+    )
+
+    assert isinstance(outcome, AgentAttemptFailed)
+    assert (
+        outcome.attempt.failure_code
+        is AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED
+    )
+    assert "output redacted" in _stored_verification_failure_words(runtime, execution)
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_verification_tail_that_could_not_be_kept_names_the_reason_in_the_stored_reason(
+    runtime,
+) -> None:
+    """The degrade path's own words, not just that `retention_failure` was set.
+
+    `test_project_verification.py` already proves `execute_agent_attempt`
+    degrades the words instead of abandoning the attempt when a wired
+    publisher answers but cannot write; this proves the durable sentence the
+    store composes from that degrade names the reason, not only the exit code.
+    """
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    evidence = ProjectVerificationFailureEvidence(
+        "1 failed, 3 passed in 0.01s",
+        None,
+        0.5,
+        redacted=False,
+        retention_failure="artifact write unavailable",
+    )
+
+    outcome = store.complete_success(
+        execution,
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS),
+        redemption_for(execution, 1),
+        evidence,
+    )
+
+    assert isinstance(outcome, AgentAttemptFailed)
+    words = _stored_verification_failure_words(runtime, execution)
+    assert "output could not be kept: artifact write unavailable" in words
