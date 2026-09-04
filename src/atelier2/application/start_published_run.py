@@ -35,6 +35,7 @@ from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
+    DurableAgentExecutorWithoutWorkspaceFileTools,
     DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
     DurablePublishedRunStarter,
@@ -241,6 +242,13 @@ def start_published_run(
         case DurableAgentExecutorBindingUnavailable():
             return AgentExecutorBindingUnavailable()
         case DurableAgentExecutorCapabilityUnavailable():
+            return AgentExecutorBindingUnavailable()
+        case DurableAgentExecutorWithoutWorkspaceFileTools():
+            # The same answer the two refusals above give, for the same reason
+            # an asker can act on: the executor this role was cast to cannot
+            # serve what its node asks for. Which of the three it was stays
+            # readable in the durable refusal itself, where the role and the
+            # executor revision are named.
             return AgentExecutorBindingUnavailable()
         case DurableBindingConstraintRefused(node, distinct_from):
             return BindingConstraintRefused(node, distinct_from)
