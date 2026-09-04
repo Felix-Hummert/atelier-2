@@ -254,7 +254,20 @@ configuration binding a non-subscription profile to this executor is refused
 before any process is prepared, and V1 admits only a personal `max` or `pro`
 credential, refusing a Team, Enterprise, absent or unreadable one, because an
 account outside that set can be handed administrator-managed settings when the
-CLI starts. It attests exactly one execution capability,
+CLI starts. No output schema a node declared reaches Anthropic on any of the
+three Claude vectors: the API refuses a schema whose root is an `allOf`,
+`anyOf` or `oneOf` as a tool's input schema, and the review contract of
+`issue-to-pr` is exactly such a document, so every Claude reviewer died on an
+HTTP 400 before a model started. The declared schema closes the job instead —
+its exact published document bytes, the same ones the output seam judges the
+answer against — and the answer is the terminal `result` text the CLI names
+itself. Which bytes of that text are the declared value is the schema house's
+own question, not each adapter's: the whole answer, or the one JSON document it
+carries, each judged by the same rule that judges any value, because one brief
+really came back bare, fenced and introduced by a sentence. Narrowing never
+repairs, so an answer carrying no value the schema admits travels on unchanged
+and the seam refuses it as `OUTPUT_SCHEMA_REFUSED`. It attests exactly one
+execution capability,
 `headless`, because a print call is the only shape it can serve, so a node
 demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider

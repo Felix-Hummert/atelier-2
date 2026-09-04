@@ -1100,6 +1100,16 @@ and only one of them is a builder.
   atelier's own API doors and it removes every built-in with `--tools=`; it is
   the conductor's executor and touches no file of the project.
 
+None of the three hands Anthropic the output schema its node declared. The API
+refuses a schema whose root is an `allOf`, `anyOf` or `oneOf` as a tool's input
+schema, and `code_review_result` -- what every reviewer of `issue-to-pr`
+declares -- is exactly such a document, so a Claude review node died after
+seconds with `api_error: API Error: 400` and no model was ever reached. The
+declared schema now closes the job in words, and the answer is judged against
+it at the output seam. A node whose answer carries no value that schema admits
+fails there as `OUTPUT_SCHEMA_REFUSED` after its one repair round, which reads
+in the receipt as a refused output rather than as a provider error.
+
 Without `--claude-workspace-tools`, this deployment has no Claude builder for
 `workflows/issue-to-pr.yaml`: its build node pins both grants above, and a
 start that casts a Claude role onto either of the other two executors is
