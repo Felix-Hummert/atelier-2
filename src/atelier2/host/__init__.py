@@ -52,6 +52,7 @@ from atelier2.application.project_connections import (
     ConnectionProjectUnknown,
     ProjectSourceConnectionCollision,
     ProjectSourceConnectionConflict,
+    ProjectSourceConnectionMoved,
     ProjectSourceConnectionPublished,
     ProjectSourceConnectionUnchanged,
     UnpublishableConnection,
@@ -129,6 +130,13 @@ reference, the chosen auth method, and the connecting actor. GitHub requires a
 branchless owner/name address and a separate nonempty source ref. The credential
 value itself never enters the record; the host resolves it from the named
 directory at composition. Repeating the exact same connect changes nothing.
+
+An active connection of the same source kind at a different address refuses
+by default, to catch a typo. `--move` instead publishes two revisions: the
+old address continues as `DISCONNECTED`, and the new address is `CONNECTED`
+-- history stays, nothing is deleted. A running serve reads the connection
+only at startup, so a moved connection needs one restart to take effect; the
+auto-redeploy performs that restart on its next deploy.
 """
 
 MIGRATE_DESCRIPTION = """\
@@ -525,6 +533,7 @@ def _connect(parsed: argparse.Namespace) -> int:
             channel,
             channel,
             source_ref=parsed.source_ref,
+            move=parsed.move,
         )
     finally:
         engine.dispose()
@@ -543,6 +552,20 @@ def _connect(parsed: argparse.Namespace) -> int:
                 f"{revision.source_kind.value} source "
                 f"{revision.source_address.value!r}; revision "
                 f"{revision.revision_number} is unchanged"
+            )
+            return 0
+        case ProjectSourceConnectionMoved(disconnected, connected):
+            print(
+                f"disconnected {disconnected.source_kind.value} source "
+                f"{disconnected.source_address.value!r} from project "
+                f"{disconnected.project_id.value!r} as revision "
+                f"{disconnected.revision_number}"
+            )
+            print(
+                f"connected project {connected.project_id.value!r} to "
+                f"{connected.source_kind.value} source "
+                f"{connected.source_address.value!r} as revision "
+                f"{connected.revision_number}"
             )
             return 0
         case ConnectionProjectUnknown():
@@ -1008,6 +1031,16 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--actor",
         required=True,
         help="the operator accountable for this connect",
+    )
+    connect_parser.add_argument(
+        "--move",
+        action="store_true",
+        help=(
+            "when an active connection of the same source kind names a "
+            "different address, disconnect it and connect the given address "
+            "instead, publishing both revisions; without this flag that "
+            "conflict is refused"
+        ),
     )
     add_definition_source_parser(commands)
     resolve_parser = commands.add_parser(

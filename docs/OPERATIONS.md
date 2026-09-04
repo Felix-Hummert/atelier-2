@@ -933,6 +933,16 @@ The live composition still requires a loopback bind. An agent-authored
 an unknown GitHub readback pauses at the agent node for an operator decision,
 rather than refusing admission or reporting completion before a receipt exists.
 
+`connect` refuses when a project already has an active connection at a
+different address of the same source kind, to catch a typo. When the source
+genuinely moved — the connected repository was renamed or transferred —
+`atelier2 connect --move ...` publishes two revisions in the same command:
+the old address continues as `DISCONNECTED`, and the given address is
+published `CONNECTED`; the command prints both revision numbers, and nothing
+is deleted. The running serve read the connection once at startup, so it
+needs one restart to pick up the move; the auto-redeploy performs that
+restart on its next deploy, and there is no reason to force one sooner.
+
 ### Publish the issue-to-pr catalog
 
 `serve_live_update.sh`'s Git-source intake admits only `workflows/*.yaml`; a
