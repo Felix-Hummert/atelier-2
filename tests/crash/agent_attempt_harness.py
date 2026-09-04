@@ -40,6 +40,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -76,6 +77,7 @@ from atelier2.ports.run_queries import (
     RunFound,
 )
 from tests.scenarios.agents import (
+    NOTHING_IS_PERMITTED,
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
     agent_attempt_execution,
@@ -593,6 +595,7 @@ def main(root: Path, mode: str) -> None:
                 lease.agent_process_supervisor,
                 runtime_workspace_owner(lease),
                 replace(project, candidates=DiesOnceTheWorkIsKept(project.candidates)),
+                permissions=GRANTS_NOTHING,
             )
             raise AssertionError("the kept candidate was supposed to end this process")
         if mode == "read-candidate":
@@ -610,6 +613,7 @@ def main(root: Path, mode: str) -> None:
                 store,
                 lease.agent_process_supervisor,
                 runtime_workspace_owner(lease),
+                permissions=GRANTS_NOTHING,
             )
             found = durable_queries(lease.engine).get_run(exact_request.run_id)
             if isinstance(found, RunFound):
@@ -648,7 +652,7 @@ def launch_attempt(
     )
     threading.Thread(
         target=lease.agent_process_supervisor.launch_and_wait,
-        args=(execution, invocation),
+        args=(execution, invocation, NOTHING_IS_PERMITTED),
         daemon=True,
     ).start()
     wait_for_file(ready)

@@ -68,6 +68,12 @@ that transition is written.
 When a declared output schema refuses an agent's answer, the engine gives that
 same agent one durable repair round carrying the refusal reason; a second refusal
 ends the run under `OUTPUT_SCHEMA_REFUSED`.
+Every locally dispatched execution carries one immutable permission policy
+revision, bound by the composition root and handed down as a dispatch parameter
+rather than folded into the request an attempt is identified by; it grants
+nothing today, and no provider channel this runtime opens can ask yet, so a
+question would be refused under that revision's hash
+([ADR 0020](../decisions/0020-provider-boundary.md) §3).
 
 Schema V27 stages the Core half of the external Runner handoff. A disposable
 #301-A witness candidate now exercises a real codec against it end to end
@@ -218,7 +224,11 @@ last of its own words with every credential shape taken out. The effect store
 logs that account, structured, the moment the outcome enters reconciliation;
 carrying it into the durable record an operator reads without the log is a
 named follow-up (#1210). An operator-authorized send is still fenced by a
-create-only lease.
+create-only lease. The live-GitHub `open-pr` adapter renders that PR's own
+title and body from the candidate's summary and changed paths rather than its
+raw report, stating the default `Literal acceptance sentence(s): none`
+exemption the repository's own acceptance gate reads, never the report's bare
+JSON.
 
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --

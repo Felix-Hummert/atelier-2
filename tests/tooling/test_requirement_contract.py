@@ -101,7 +101,7 @@ def test_the_current_requirement_shelf_matches_its_registry() -> None:
     shelf = read_requirement_shelf(PROJECT_ROOT)
 
     assert shelf.document_count == 7
-    assert shelf.legacy_count == 3
+    assert shelf.legacy_count == 2
 
 
 @pytest.mark.proves("legacy-requirement-bytes-are-frozen-until-migration")

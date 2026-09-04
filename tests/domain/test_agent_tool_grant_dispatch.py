@@ -32,6 +32,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import (
@@ -73,6 +74,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PermissionDecider,
 )
 from atelier2.ports.agent_tool_effects import (
     AgentToolEffectDelivered,
@@ -189,8 +191,12 @@ class _RecordingSupervisor:
         return prepared_agent_attempt(execution)
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
+        del permissions
         del execution, invocation
         return AgentProcessCompletion(0, b'"ok"', b"")
 
@@ -287,6 +293,7 @@ def _drive(
         workspaces,  # type: ignore[arg-type]
         project,
         _UnreachedArtifactPublisher(),  # type: ignore[arg-type]
+        permissions=GRANTS_NOTHING,
     )
     return store, supervisor, workspaces
 
@@ -340,6 +347,7 @@ def test_a_capability_no_redeemer_performs_is_refused_by_name(tmp_path: Path) ->
             supervisor,  # type: ignore[arg-type]
             workspaces,  # type: ignore[arg-type]
             project,
+            permissions=GRANTS_NOTHING,
         )
 
     assert raised.value.capability == "open-pr"
@@ -386,6 +394,7 @@ def test_a_non_verification_grant_needs_no_artifact_publisher_to_reach_its_own_r
             workspaces,  # type: ignore[arg-type]
             project,
             None,
+            permissions=GRANTS_NOTHING,
         )
 
     assert raised.value.capability == "open-pr"

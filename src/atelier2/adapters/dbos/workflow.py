@@ -109,6 +109,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_permissions import PermissionPolicyRevision
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
@@ -621,6 +622,7 @@ def register_durable_run_workflow(
     ],
     agent_attempt_store: AgentAttemptStore,
     agent_session: AgentSession | None,
+    agent_permission_policy: PermissionPolicyRevision,
     agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
     project: DeclaredProject | None,
     artifact_publisher: ArtifactPublisher,
@@ -671,6 +673,7 @@ def register_durable_run_workflow(
             _declared_workspace_owner(agent_workspace_owner),
             pinned_project(binding, project),
             artifact_publisher,
+            permissions=agent_permission_policy,
         )
 
     def agent_node_attempt(

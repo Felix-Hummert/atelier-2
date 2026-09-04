@@ -32,6 +32,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -66,6 +67,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PermissionDecider,
 )
 from atelier2.ports.artifacts import ArtifactCreated, PublishArtifactResult
 from atelier2.ports.candidate_store import CandidateTreeStore
@@ -527,6 +529,7 @@ class _RefusedAttempt:
             _SilentSupervisor(),  # type: ignore[arg-type]
             self.workspaces,  # type: ignore[arg-type]
             project,
+            permissions=GRANTS_NOTHING,
         )
 
     @property
@@ -757,8 +760,12 @@ class _RecordingSupervisor:
         return prepared_agent_attempt(execution)
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
+        del permissions
         del execution
         write_into_checkout(invocation.lease.working_directory, self.leaves)
         return AgentProcessCompletion(0, b'"ok"', b"")
@@ -819,6 +826,7 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
         ),
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         clock=lambda: TRANSCRIPT_RECORDED_AT,
+        permissions=GRANTS_NOTHING,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)
@@ -896,6 +904,7 @@ def _drive_through_a_real_failing_verification(
             THE_GRANT,
         ),
         artifacts,  # type: ignore[arg-type]
+        permissions=GRANTS_NOTHING,
     )
 
 
@@ -1030,6 +1039,7 @@ def test_a_zero_exit_verification_never_publishes_an_artifact(
             THE_GRANT,
         ),
         publisher,  # type: ignore[arg-type]
+        permissions=GRANTS_NOTHING,
     )
 
     assert publisher.published == []
@@ -1121,6 +1131,7 @@ def test_a_provider_that_left_the_pinned_tree_alone_ends_before_any_check_runs(
             THE_GRANT,
         ),
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
+        permissions=GRANTS_NOTHING,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)
@@ -1202,6 +1213,7 @@ def test_a_credential_shape_in_the_rejected_patch_is_redacted_before_it_is_kept(
             THE_GRANT,
         ),
         publisher,  # type: ignore[arg-type]
+        permissions=GRANTS_NOTHING,
     )
 
     evidence = store.verification_failure_evidence

@@ -25,6 +25,7 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
@@ -49,6 +50,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PermissionDecider,
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
@@ -93,6 +95,7 @@ def test_a_failed_attempt_emits_exactly_one_parseable_json_line(
         _FailingAttemptStore(execution),
         _SilentSupervisor(),
         workspaces,
+        permissions=GRANTS_NOTHING,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)
@@ -432,8 +435,12 @@ class _SilentSupervisor:
         return prepared_agent_attempt(execution)
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
+        del permissions
         del execution, invocation
         return AgentProcessCompletion(1, b"", b"")
 

@@ -933,6 +933,16 @@ The live composition still requires a loopback bind. An agent-authored
 an unknown GitHub readback pauses at the agent node for an operator decision,
 rather than refusing admission or reporting completion before a receipt exists.
 
+`connect` refuses when a project already has an active connection at a
+different address of the same source kind, to catch a typo. When the source
+genuinely moved — the connected repository was renamed or transferred —
+`atelier2 connect --move ...` publishes two revisions in the same command:
+the old address continues as `DISCONNECTED`, and the given address is
+published `CONNECTED`; the command prints both revision numbers, and nothing
+is deleted. The running serve read the connection once at startup, so it
+needs one restart to pick up the move; the auto-redeploy performs that
+restart on its next deploy, and there is no reason to force one sooner.
+
 ### Publish the issue-to-pr catalog
 
 `serve_live_update.sh`'s Git-source intake admits only `workflows/*.yaml`; a
@@ -1320,6 +1330,24 @@ was not reached at 96 on 2026-08-19 (`ed6376b`) and stays leftover.
 Writer-lock, process spawn, watchdog cgroup, and memory are named only when
 the harness observes them.
 
+## Land a pull request
+
+**`gh pr merge --auto --merge` queues a pull request; it does not merge it on
+the spot.** GitHub's merge queue builds a merge candidate from one or more
+armed pull requests, runs `ci.yml` once against that candidate on the
+`merge_group` event, and merges the pull request only once the ruleset's
+required checks report green on that run; a red candidate leaves its pull
+request out of the queue instead of blocking the ones behind it. This
+replaces re-arming a pull request by hand after every trunk landing: the queue
+absorbs a `main` move by rebuilding the candidate itself, instead of leaving a
+`BEHIND` pull request to `cancel-in-progress` its own in-flight run.
+
+The one-time ruleset step this depends on -- turning on "Require merge queue"
+on the `main-protection` ruleset (merge method `merge`, group size cap 5,
+admitting only non-failing pull requests) -- is an operator/head step done
+once, through `gh api`, after this change lands; the queue has no effect on
+pull requests opened before that step runs.
+
 ## Dead-code gates
 
 Two gates keep code that nothing reaches out of the tree, and they do not yet
@@ -1354,6 +1382,12 @@ file it stands in is the whole justification:
 An entry naming something the gate no longer reports is red too: when a caller
 arrives, or the code goes, its entry goes with it.
 
+A third static gate in the same `quality` job, `ruff check --select ANN401`
+scoped to `src/atelier2/contracts`, `ports`, `application`, and `api`, proves
+only that none of those four packages accepts a parameter typed directly as
+`Any` -- it says nothing about a nested `dict[str, Any]` or about return
+types.
+
 ## The duplicate ratchet
 
 `uv run --locked python scripts/check_architecture.py` also refuses copied
@@ -1365,6 +1399,18 @@ names the pairs this tree already carries. A pair that is not listed turns the
 gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
 two one owner *and* deleting its entry.
+
+## SonarCloud and CodeQL
+
+`sonar-project.properties` at the repository root lets SonarCloud's Automatic
+Analysis (public project `FlexOr2_atelier-2` in organisation `flexor2`, Free
+plan, no token, no CI step) read the source, test, and exclusion layout and
+comment on every pull request through the SonarCloud GitHub app. It measures
+duplication, cognitive complexity, and issues on new code. CodeQL's default
+setup, enabled directly on GitHub, scans Python, JavaScript/TypeScript, and
+Actions on the same pushes. Neither is a required check yet -- that follows
+the measurement week described in #1203, which compares Sonar's findings
+against the duplicate ratchet above and the `C901` complexity count.
 
 ## Code rules: gates, metrics, audit
 

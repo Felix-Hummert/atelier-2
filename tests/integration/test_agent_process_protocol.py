@@ -37,6 +37,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     MAXIMUM_SIGNED_INT64,
@@ -53,6 +54,7 @@ from atelier2.ports.agent_executions import (
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
+    NOTHING_IS_PERMITTED,
     SCENARIO_PROVIDER_FRAME_BYTES,
     RecordingAgentExecutorV2,
     agent_attempt_execution,
@@ -507,7 +509,9 @@ for thread in threads:
         supervisor.prepare(execution)
         store.claim(execution)
 
-        completion = supervisor.launch_and_wait(execution, invocation)
+        completion = supervisor.launch_and_wait(
+            execution, invocation, NOTHING_IS_PERMITTED
+        )
 
         assert completion.standard_output == b"o" * SCENARIO_PROVIDER_FRAME_BYTES
         assert (
@@ -600,9 +604,11 @@ def test_supervision_admits_the_declared_frame_and_refuses_one_byte_more(
 
         if excess_bytes:
             with pytest.raises(RuntimeError, match="did not return a process"):
-                supervisor.launch_and_wait(execution, invocation)
+                supervisor.launch_and_wait(execution, invocation, NOTHING_IS_PERMITTED)
         else:
-            completion = supervisor.launch_and_wait(execution, invocation)
+            completion = supervisor.launch_and_wait(
+                execution, invocation, NOTHING_IS_PERMITTED
+            )
             assert completion.standard_output == b"o" * declared_frame_bytes
     finally:
         runtime.close()
@@ -634,6 +640,7 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
             store,
             runtime.agent_process_supervisor,
             workspaces,
+            permissions=GRANTS_NOTHING,
         )
         with pytest.raises(RuntimeError, match="did not return a process"):
             execute_agent_attempt(
@@ -642,6 +649,7 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
                 store,
                 runtime.agent_process_supervisor,
                 workspaces,
+                permissions=GRANTS_NOTHING,
             )
 
         assert isinstance(accepted, AgentAttemptSucceeded)
@@ -704,7 +712,9 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
         assert partial_wait.recv(8) == b'{"return'
         partial_wait.close()
 
-        completion = supervisor.launch_and_wait(execution, invocation)
+        completion = supervisor.launch_and_wait(
+            execution, invocation, NOTHING_IS_PERMITTED
+        )
 
         assert completion.standard_output == b'"done"'
         assert counter.read_bytes() == b"x"
@@ -808,7 +818,7 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
             == terminal_before_start
         )
         with pytest.raises(AgentProcessOwnerNotLocal):
-            supervisor.launch_and_wait(execution, invocation)
+            supervisor.launch_and_wait(execution, invocation, NOTHING_IS_PERMITTED)
         assert not counter.exists()
 
         attempt = store.load(execution.attempt_id)
@@ -914,7 +924,7 @@ def test_real_transport_failures_retain_exact_durable_launch_authority(
         owned.endpoint = peer_endpoint
         try:
             with pytest.raises(AgentProcessOwnerNotLocal):
-                supervisor.launch_and_wait(execution, invocation)
+                supervisor.launch_and_wait(execution, invocation, NOTHING_IS_PERMITTED)
         finally:
             owned.endpoint = real_endpoint
             if peer_thread is not None:

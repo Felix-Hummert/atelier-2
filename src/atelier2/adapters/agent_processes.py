@@ -37,6 +37,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
     AgentSession,
+    PermissionDecider,
 )
 
 MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS = 2
@@ -187,8 +188,16 @@ class AgentProcessSupervisor(AgentSession):
             return durable
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+        self,
+        execution: AgentAttemptExecution,
+        invocation: AgentProcessInvocation,
+        permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
+        # A print-mode child has no channel to ask on: it is launched with
+        # whatever the provider CLI was configured to allow and answers nothing
+        # back. The authority is carried so that the seam is the same one an
+        # asking session uses; this one never puts a question to it.
+        del permissions
         launch_request = _launch_request(invocation)
         launch_frame = encode_control_frame(launch_request)
         if len(launch_frame) > MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES:

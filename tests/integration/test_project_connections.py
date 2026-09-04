@@ -33,6 +33,7 @@ from atelier2.application.project_connections import (
     ConnectionProjectUnknown,
     ConnectProjectSourceResult,
     PlatformConnectionUnknown,
+    ProjectSourceConnectionMoved,
     ProjectSourceConnectionPublished,
     ProjectSourceConnectionRead,
     ProjectSourceConnectionUnchanged,
@@ -101,18 +102,21 @@ def _connect(
     credential_directory: Path,
     *,
     project_id: str = "studio",
+    source_kind: str = "github",
     source_address: str = "acme/studio",
+    move: bool = False,
 ) -> ConnectProjectSourceResult:
     channel = DbosHostConfigurationChannel(engine)
     return connect_project_source(
         project_id,
-        "github",
+        source_kind,
         source_address,
         credential_directory,
         "personal-access-token",
         "felix",
         channel,
         channel,
+        move=move,
     )
 
 
@@ -252,6 +256,163 @@ def test_connecting_a_different_active_source_refuses_to_retarget_it(
     )
     assert isinstance(read, ProjectSourceConnectionRead)
     assert read.revision.source_address == SourceAddress("acme/studio")
+
+
+def test_move_disconnects_the_active_source_and_connects_a_new_address(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    channel = DbosHostConfigurationChannel(engine)
+    first = _connect(engine, credential_directory)
+    assert isinstance(first, ProjectSourceConnectionPublished)
+
+    moved = _connect(
+        engine, credential_directory, source_address="acme/studio-2", move=True
+    )
+
+    assert isinstance(moved, ProjectSourceConnectionMoved)
+    assert moved.disconnected.source_id == first.revision.source_id
+    assert moved.disconnected.revision_number == first.revision.revision_number + 1
+    assert moved.disconnected.lifecycle is ProjectSourceConnectionLifecycle.DISCONNECTED
+    assert moved.disconnected.source_address == first.revision.source_address
+    assert moved.connected.source_id != first.revision.source_id
+    assert moved.connected.revision_number == 1
+    assert moved.connected.source_address == SourceAddress("acme/studio-2")
+    assert moved.connected.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+
+    read = get_project_source_connection(
+        "studio", DbosHostConfigurationChannel(engine), GITHUB_CONNECTOR
+    )
+    assert isinstance(read, ProjectSourceConnectionRead)
+    assert read.revision == moved.connected
+
+    latest_per_source = channel.latest_project_source_connection_revisions(
+        ProjectId("studio")
+    )
+    assert isinstance(latest_per_source, tuple)
+    assert set(latest_per_source) == {moved.disconnected, moved.connected}
+    assert _connection_revision_count(engine) == 3
+    with engine.connect() as connection:
+        original_row_still_present = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(host_project_source_connection_revisions)
+            .where(
+                host_project_source_connection_revisions.c.revision_hash
+                == first.revision.revision_hash.value
+            )
+        )
+    assert original_row_still_present == 1
+
+
+def test_move_to_a_previously_disconnected_address_resumes_its_own_history(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    channel = DbosHostConfigurationChannel(engine)
+    original = _connect(engine, credential_directory, source_address="acme/mirror")
+    assert isinstance(original, ProjectSourceConnectionPublished)
+    assert (
+        disconnect_project_source(
+            ProjectId("studio"),
+            ProjectId("studio"),
+            original.revision.source_id,
+            channel,
+            channel,
+        )
+        == ProjectSourceDisconnectedSuccessfully()
+    )
+    current = _connect(engine, credential_directory, source_address="acme/studio")
+    assert isinstance(current, ProjectSourceConnectionPublished)
+
+    moved = _connect(
+        engine, credential_directory, source_address="acme/mirror", move=True
+    )
+
+    assert isinstance(moved, ProjectSourceConnectionMoved)
+    assert moved.disconnected.source_id == current.revision.source_id
+    assert moved.connected.source_id == original.revision.source_id
+    assert moved.connected.revision_number == 3
+    assert moved.connected.source_address == SourceAddress("acme/mirror")
+    assert moved.connected.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+
+
+def test_move_against_the_already_active_address_is_unchanged(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    first = _connect(engine, credential_directory)
+    assert isinstance(first, ProjectSourceConnectionPublished)
+
+    again = _connect(engine, credential_directory, move=True)
+
+    assert again == ProjectSourceConnectionUnchanged(first.revision)
+    assert _connection_revision_count(engine) == 1
+
+
+def test_move_refuses_a_source_kind_change_and_leaves_the_old_source_connected(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, credential_directory = connected_workshop
+    first = _connect(engine, credential_directory)
+    assert isinstance(first, ProjectSourceConnectionPublished)
+
+    moved = _connect(
+        engine,
+        credential_directory,
+        source_kind="gitlab",
+        source_address="acme/studio",
+        move=True,
+    )
+
+    assert moved == ApplicationProjectSourceConnectionConflict()
+    read = get_project_source_connection(
+        "studio", DbosHostConfigurationChannel(engine), GITHUB_CONNECTOR
+    )
+    assert isinstance(read, ProjectSourceConnectionRead)
+    assert read.revision == first.revision
+    assert read.revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+    assert _connection_revision_count(engine) == 1
+
+
+def test_resuming_a_move_after_a_disconnect_only_crash_yields_one_connected_source(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    """Simulates a crash between the move's two writes: the old address is
+    already `DISCONNECTED`, but the target was never written. Re-running the
+    move must connect the target without leaving two active sources."""
+    engine, credential_directory = connected_workshop
+    channel = DbosHostConfigurationChannel(engine)
+    first = _connect(engine, credential_directory)
+    assert isinstance(first, ProjectSourceConnectionPublished)
+    assert (
+        disconnect_project_source(
+            ProjectId("studio"),
+            ProjectId("studio"),
+            first.revision.source_id,
+            channel,
+            channel,
+        )
+        == ProjectSourceDisconnectedSuccessfully()
+    )
+
+    resumed = _connect(
+        engine, credential_directory, source_address="acme/studio-2", move=True
+    )
+
+    assert isinstance(resumed, ProjectSourceConnectionPublished)
+    assert resumed.revision.source_address == SourceAddress("acme/studio-2")
+    latest_per_source = channel.latest_project_source_connection_revisions(
+        ProjectId("studio")
+    )
+    assert isinstance(latest_per_source, tuple)
+    connected_sources = [
+        revision
+        for revision in latest_per_source
+        if revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+    ]
+    assert connected_sources == [resumed.revision]
+    assert len(latest_per_source) == 2
+    assert _connection_revision_count(engine) == 3
 
 
 def test_connecting_a_project_without_a_root_is_refused(
@@ -591,6 +752,7 @@ def _connect_command(
     source_kind: str = "github",
     source_address: str = "acme/studio",
     source_ref: str | None = "main",
+    move: bool = False,
 ) -> list[str]:
     command = [
         "connect",
@@ -611,6 +773,8 @@ def _connect_command(
     ]
     if source_ref is not None:
         command.extend(("--source-ref", source_ref))
+    if move:
+        command.append("--move")
     return command
 
 
@@ -789,6 +953,43 @@ def test_the_connect_command_cannot_retarget_an_active_source(
         assert isinstance(read, ProjectSourceConnectionRead)
         assert read.revision.revision_number == 1
         assert read.revision.source_address == SourceAddress("acme/studio")
+    finally:
+        reopened.dispose()
+
+
+def test_the_connect_command_moves_an_active_connection_to_a_new_address(
+    connected_workshop: tuple[Engine, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine, credential_directory = connected_workshop
+    engine.dispose()
+
+    assert main(_connect_command(tmp_path, credential_directory)) == 0
+    capsys.readouterr()
+
+    exit_code = main(
+        _connect_command(
+            tmp_path,
+            credential_directory,
+            source_address="acme/renamed",
+            move=True,
+        )
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "disconnected github source 'acme/studio'" in output
+    assert "revision 2" in output
+    assert "connected project 'studio' to github source 'acme/renamed'" in output
+    assert "revision 1" in output
+    reopened = opened_channel(tmp_path)
+    try:
+        read = get_project_source_connection(
+            "studio", DbosHostConfigurationChannel(reopened), GITHUB_CONNECTOR
+        )
+        assert isinstance(read, ProjectSourceConnectionRead)
+        assert read.revision.source_address == SourceAddress("acme/renamed")
     finally:
         reopened.dispose()
 

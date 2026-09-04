@@ -16,8 +16,10 @@ different about the name:
   a parked decision cannot be parked forever.
 * `vulture_frozen.py` -- the name is built ahead of its caller and is kept
   (operator ruling 04.09.2026: freeze, do not throw away). No expiry; every
-  entry names the open item that owns the caller. Reported every run so it stays
-  visible, never red.
+  entry names the open item that owns the caller, and names the symbol where it
+  was built (`contracts/agent_permissions.py:COMMAND`), so freezing one
+  vocabulary word never vouches for a dead namesake in another module. Reported
+  every run so it stays visible, never red.
 
 An entry naming something vulture no longer reports is itself red: the lists
 shrink with the code they excuse.
@@ -75,6 +77,14 @@ class ExcusedName:
     name: str
     why: str
 
+    def excuses(self, name: str, module: str) -> bool:
+        del module
+        return name == self.name
+
+    @property
+    def label(self) -> str:
+        return self.name
+
 
 @dataclass(frozen=True)
 class PendingName(ExcusedName):
@@ -83,7 +93,17 @@ class PendingName(ExcusedName):
 
 @dataclass(frozen=True)
 class FrozenName(ExcusedName):
+    """A frozen name, excused only in the module that built it."""
+
+    module: str
     item: str
+
+    def excuses(self, name: str, module: str) -> bool:
+        return name == self.name and module == self.module
+
+    @property
+    def label(self) -> str:
+        return f"{self.module}:{self.name}"
 
 
 def _read_groups(project_root: Path, file: Path, binding: str) -> Iterator[dict]:
@@ -134,11 +154,23 @@ def read_pending(project_root: Path) -> tuple[PendingName, ...]:
 
 
 def read_frozen(project_root: Path) -> tuple[FrozenName, ...]:
-    return tuple(
-        FrozenName(name, group["why"], group["item"])
-        for group in _read_groups(project_root, FROZEN_FILE, FROZEN_BINDING)
-        for name in _validated_names(FROZEN_FILE, group, "item")
-    )
+    frozen: list[FrozenName] = []
+    for group in _read_groups(project_root, FROZEN_FILE, FROZEN_BINDING):
+        for entry in _validated_names(FROZEN_FILE, group, "item"):
+            module, name = _path_qualified(entry)
+            frozen.append(FrozenName(name, group["why"], module, group["item"]))
+    return tuple(frozen)
+
+
+def _path_qualified(entry: str) -> tuple[str, str]:
+    """Read one `module/path.py:symbol` entry, refusing a bare name."""
+    module, separator, name = entry.rpartition(":")
+    if not separator or not module.endswith(".py") or not name:
+        raise DeadCodeGateError(
+            f"{FROZEN_FILE}: {entry!r} must name the module it was built in, "
+            "as contracts/agent_permissions.py:COMMAND"
+        )
+    return module, name
 
 
 def names_used_as_keyword_arguments(source_root: Path) -> frozenset[str]:
@@ -194,8 +226,8 @@ def _report(items: Iterable[Item]) -> str:
     return "\n".join(f"  {item.get_report(add_size=True)}" for item in items)
 
 
-def _stale(excused: Iterable[ExcusedName], reported: frozenset[str]) -> tuple[str, ...]:
-    return tuple(entry.name for entry in excused if entry.name not in reported)
+def _module_of(item: Item, source_root: Path) -> str:
+    return Path(item.filename).relative_to(source_root).as_posix()
 
 
 def main() -> int:
@@ -211,15 +243,25 @@ def main() -> int:
         return 1
 
     excused = allowlist + pending + frozen
-    reported = frozenset(item.name for item in findings)
-    frozen_names = frozenset(entry.name for entry in frozen)
-    excused_names = frozenset(entry.name for entry in excused)
-    unexpected = [item for item in findings if item.name not in excused_names]
+    reported = [(item, _module_of(item, source_root)) for item in findings]
+    unexpected = [
+        item
+        for item, module in reported
+        if not any(entry.excuses(item.name, module) for entry in excused)
+    ]
     today = datetime.now(UTC).date()
     expired = [entry for entry in pending if entry.expires_on <= today]
-    stale = _stale(excused, reported)
+    stale = tuple(
+        entry.label
+        for entry in excused
+        if not any(entry.excuses(item.name, module) for item, module in reported)
+    )
 
-    frozen_findings = [item for item in findings if item.name in frozen_names]
+    frozen_findings = [
+        item
+        for item, module in reported
+        if any(entry.excuses(item.name, module) for entry in frozen)
+    ]
     if frozen_findings:
         print(
             f"Frozen ahead of a caller ({len(frozen_findings)}, not a failure):\n"

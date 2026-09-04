@@ -56,6 +56,7 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -2032,6 +2033,7 @@ def test_a_tool_free_grok_attempt_persists_the_v2_operational_identity(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             workspaces,
+            permissions=GRANTS_NOTHING,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
@@ -2198,6 +2200,7 @@ nodes:
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
     finally:
         runtime.close()
@@ -2236,6 +2239,7 @@ def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wro
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             workspaces,
+            permissions=GRANTS_NOTHING,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()

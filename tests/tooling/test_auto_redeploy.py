@@ -516,7 +516,7 @@ def test_a_green_commit_is_handed_to_the_loopback_update_without_the_watcher_mov
     assert harness.invocations("gh")[0][1:4] == [
         "api",
         "--paginate",
-        f"repos/FlexOr2/atelier-2/commits/{target_commit}/check-runs",
+        f"repos/overnightworks/atelier-2/commits/{target_commit}/check-runs",
     ]
     assert harness.state("auto-redeploy.failures") == 0
     assert harness.state("auto-redeploy.busy") == 0
