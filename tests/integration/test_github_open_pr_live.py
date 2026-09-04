@@ -22,6 +22,8 @@ from atelier2.adapters.github.composition import (
     live_github_effect_adapter_factory,
 )
 from atelier2.adapters.github.live_effects import (
+    MAXIMUM_PULL_REQUEST_LISTING_PAGES,
+    PULL_REQUESTS_PER_LISTING_PAGE,
     GitHubEffectRefused,
     LiveGitHubEffectAdapterFactory,
 )
@@ -45,6 +47,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     LogicalEffectKey,
     PerformedEffect,
+    ReadbackPhase,
 )
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
@@ -93,7 +96,11 @@ class _FakeGitHubServer:
     branches: set[str] = field(default_factory=set)
     http_calls: int = 0
     branch_ref_attempts: int = 0
-    suppress_next_pull_request_search: bool = False
+    stale_pull_request_searches: int = 0
+    """How many of the next searches answer as if the branch were still empty."""
+
+    pull_request_searches: int = 0
+
     pull_request_search_answer: httpx.Response | None = None
     _next_number: int = 1
 
@@ -106,10 +113,11 @@ class _FakeGitHubServer:
                 200, json={"name": self.base_branch, "commit": {"sha": self.base_sha}}
             )
         if request.method == "GET" and path == f"{prefix}/pulls":
+            self.pull_request_searches += 1
             if self.pull_request_search_answer is not None:
                 return self.pull_request_search_answer
-            if self.suppress_next_pull_request_search:
-                self.suppress_next_pull_request_search = False
+            if self.stale_pull_request_searches > 0:
+                self.stale_pull_request_searches -= 1
                 return httpx.Response(200, json=[])
             head = request.url.params.get("head")
             matches = [
@@ -117,7 +125,7 @@ class _FakeGitHubServer:
                 for pr in self.pull_requests
                 if head is None or pr["head"]["label"] == head
             ]
-            return httpx.Response(200, json=matches)
+            return httpx.Response(200, json=self._page(request, matches))
         if request.method == "POST" and path == f"{prefix}/git/refs":
             self.branch_ref_attempts += 1
             payload = json.loads(request.content)
@@ -167,6 +175,16 @@ class _FakeGitHubServer:
         return httpx.Response(
             404, json={"message": f"unhandled {request.method} {path}"}
         )
+
+    def _page(
+        self, request: httpx.Request, matches: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """The slice of the listing GitHub answers for the requested page."""
+
+        per_page = int(request.url.params.get("per_page", len(matches) + 1))
+        page = int(request.url.params.get("page", 1))
+        start = (page - 1) * per_page
+        return matches[start : start + per_page]
 
 
 @pytest.fixture
@@ -448,7 +466,7 @@ def test_a_second_execute_finds_the_same_pull_request_and_does_not_create_a_twin
     try:
         first = published(adapter.execute(intent))
         second = published(adapter.execute(intent))
-        read = adapter.readback(intent)
+        read = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
     finally:
         adapter.close()
 
@@ -479,7 +497,7 @@ def test_execute_converges_on_a_concurrently_created_pull_request_instead_of_rai
         # This attempt's own search misses the pull request the "concurrent"
         # execute above already created, so it proceeds to create and hits the
         # pull request race GitHub's own uniqueness constraint refuses.
-        server.suppress_next_pull_request_search = True
+        server.stale_pull_request_searches = 1
         loser = published(adapter.execute(intent))
     finally:
         adapter.close()
@@ -497,7 +515,7 @@ def test_a_branch_carrying_no_pull_request_is_an_absence_that_licenses_the_creat
     intent = effect_intent()
     adapter = factory.open()
     try:
-        read = adapter.readback(intent)
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
         performed = adapter.execute(intent)
     finally:
         adapter.close()
@@ -523,6 +541,12 @@ def test_a_branch_carrying_no_pull_request_is_an_absence_that_licenses_the_creat
             "not a listing",
             id="unreadable-listing",
         ),
+        pytest.param(
+            httpx.Response(201, json=[]),
+            201,
+            "[]",
+            id="empty-listing-under-another-status",
+        ),
     ],
 )
 def test_a_listing_that_did_not_resolve_creates_nothing_and_keeps_what_github_said(
@@ -536,7 +560,7 @@ def test_a_listing_that_did_not_resolve_creates_nothing_and_keeps_what_github_sa
     intent = effect_intent()
     adapter = factory.open()
     try:
-        read = adapter.readback(intent)
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
         performed = adapter.execute(intent)
     finally:
         adapter.close()
@@ -550,6 +574,129 @@ def test_a_listing_that_did_not_resolve_creates_nothing_and_keeps_what_github_sa
         assert outcome.reason.duration_milliseconds >= 0
 
 
+def _decoy_pull_request(number: int, base: str) -> dict[str, Any]:
+    """Another pull request standing on the same head branch, not this request's."""
+
+    return {
+        "number": number,
+        "body": f"an earlier attempt onto {base}\n",
+        "title": "decoy",
+        "draft": False,
+        "head": {"label": f"{OWNER}:{HEAD_BRANCH.value}"},
+        "base": {"ref": base},
+    }
+
+
+def test_the_marker_decides_which_of_a_branch_s_pull_requests_is_this_request_s(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    """Several pull requests may stand on one head, over more than one page."""
+
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        performed = published(adapter.execute(intent))
+        server.pull_requests = [
+            _decoy_pull_request(number, f"release/{number}")
+            for number in range(1000, 1000 + PULL_REQUESTS_PER_LISTING_PAGE)
+        ] + server.pull_requests
+        searches_before_the_marker_moved = server.pull_request_searches
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+    finally:
+        adapter.close()
+
+    assert isinstance(read, EffectReceipt)
+    assert read.effect_id == performed.effect_id
+    assert server.pull_request_searches - searches_before_the_marker_moved == 2
+
+
+def test_a_listing_that_never_ends_is_unknown_rather_than_a_loop_nobody_sees(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    server.pull_requests = [
+        _decoy_pull_request(number, f"release/{number}")
+        for number in range(
+            PULL_REQUESTS_PER_LISTING_PAGE * MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1
+        )
+    ]
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+    finally:
+        adapter.close()
+
+    assert isinstance(read, EffectUnknownOutcome)
+    assert read.reason is not None
+    assert "did not end within" in read.reason.detail
+    assert server.pull_request_searches == MAXIMUM_PULL_REQUEST_LISTING_PAGES
+
+
+def test_a_branch_whose_pull_requests_are_all_foreign_licenses_no_create(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    server.pull_requests = [_decoy_pull_request(1000, "release/1000")]
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert len(server.pull_requests) == 1
+    for outcome in (read, performed):
+        assert isinstance(outcome, EffectUnknownOutcome)
+        assert outcome.reason is not None
+        assert "none of them this request's" in outcome.reason.detail
+
+
+def test_an_empty_listing_after_a_create_attempt_is_unknown_and_opens_no_twin(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    """The listing that has not caught up cannot license a second create."""
+
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        published(adapter.execute(intent))
+        server.stale_pull_request_searches = 1
+        read = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        adapter.close()
+
+    assert isinstance(read, EffectUnknownOutcome)
+    assert read.reason is not None
+    assert read.reason.failure_code == 200
+    assert "a create was already attempted" in read.reason.detail
+    assert len(server.pull_requests) == 1
+
+
+def test_a_listing_still_stale_after_the_uniqueness_refusal_reports_unknown(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    """A create GitHub refused, whose winner stays unreadable, is unknown.
+
+    The request was sent, so its outcome belongs to the operator's
+    reconciliation rather than to an exception thrown over a sent request.
+    """
+
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        winner = published(adapter.execute(intent))
+        server.stale_pull_request_searches = 2
+        outcome = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(outcome, EffectUnknownOutcome)
+    assert outcome.reason is not None
+    assert outcome.reason.failure_code == 422
+    assert len(server.pull_requests) == 1
+    assert server.pull_requests[0]["number"] == int(winner.effect_id.value)
+
+
 def test_a_credential_github_echoed_never_reaches_the_kept_reason(
     factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
 ) -> None:
@@ -560,7 +707,7 @@ def test_a_credential_github_echoed_never_reaches_the_kept_reason(
     intent = effect_intent()
     adapter = factory.open()
     try:
-        read = adapter.readback(intent)
+        read = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
     finally:
         adapter.close()
 
@@ -580,9 +727,13 @@ def test_an_untyped_open_pr_payload_fails_loud_before_any_github_call(
 ) -> None:
     intent = effect_intent(malformed_open_pr_payload, typed=False)
     adapter = factory.open()
+    reaching_the_destination = {
+        "readback": lambda: adapter.readback(intent, ReadbackPhase.BEFORE_SEND),
+        "execute": lambda: adapter.execute(intent),
+    }
     try:
         with pytest.raises(GitHubEffectRefused, match="canonical open-pr request"):
-            getattr(adapter, operation)(intent)
+            reaching_the_destination[operation]()
     finally:
         adapter.close()
 
@@ -597,7 +748,7 @@ def test_no_token_appears_in_any_adapter_output(
     adapter = factory.open()
     try:
         performed = published(adapter.execute(intent))
-        read = adapter.readback(intent)
+        read = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
     finally:
         adapter.close()
 

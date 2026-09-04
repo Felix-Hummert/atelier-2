@@ -49,6 +49,7 @@ from atelier2.contracts.effects import (
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
     PerformedEffect,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -95,10 +96,10 @@ class UnknownReadbackAdapter:
         self._owner = owner
         self._delegate = delegate
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         if self._owner.unknown:
             return EffectUnknownOutcome(intent.reference)
-        return self._delegate.readback(intent)
+        return self._delegate.readback(intent, phase)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         if self._owner.execute_unknown:

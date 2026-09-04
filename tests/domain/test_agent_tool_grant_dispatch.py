@@ -51,6 +51,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     LogicalEffectKey,
     PerformedEffect,
+    ReadbackPhase,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
@@ -429,7 +430,7 @@ class _ScriptedEffectAdapter:
     readback_calls: int = field(default=0, init=False)
     execute_calls: int = field(default=0, init=False)
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         del intent
         self.readback_calls += 1
         return self.readback_result

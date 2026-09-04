@@ -44,6 +44,7 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -51,6 +52,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandState,
     ReconcileDetermination,
     UnknownOutcomeReason,
+    destination_holds_nothing,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
@@ -431,7 +433,34 @@ def test_adapter_readback_cannot_spoof_operator_provenance(
     response = found_receipt(intent, source, ReconcileCommandId("forged-command"))
 
     with pytest.raises(EffectAdapterResponseConflict):
-        intent.authorize_adapter_readback(response)
+        intent.authorize_adapter_readback(response, ReadbackPhase.BEFORE_SEND)
+
+
+def test_an_absence_read_after_a_send_attempt_is_refused(
+    intent: EffectIntent,
+) -> None:
+    """Only a read that no send precedes may establish an absence."""
+
+    with pytest.raises(EffectAdapterResponseConflict):
+        intent.authorize_adapter_readback(
+            authoritative_absence(intent), ReadbackPhase.AFTER_SEND
+        )
+
+
+def test_a_destination_holding_nothing_means_the_phase_it_was_read_in(
+    intent: EffectIntent,
+) -> None:
+    reason = UnknownOutcomeReason(0, 1, "the destination holds nothing")
+
+    before = destination_holds_nothing(
+        intent.reference, ReadbackPhase.BEFORE_SEND, reason
+    )
+    after = destination_holds_nothing(
+        intent.reference, ReadbackPhase.AFTER_SEND, reason
+    )
+
+    assert before == EffectAbsence(intent.reference)
+    assert after == EffectUnknownOutcome(intent.reference, reason)
 
 
 @pytest.mark.parametrize(
@@ -465,7 +494,7 @@ class _RegistryAdapter:
     def __init__(self, identity: str) -> None:
         self.identity = identity
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         return EffectUnknownOutcome(intent.reference)
 
     def execute(self, intent: EffectIntent) -> EffectUnknownOutcome:

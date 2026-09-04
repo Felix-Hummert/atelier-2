@@ -275,8 +275,13 @@ class EffectReceiptReference:
 class EffectAbsence:
     """The destination itself reports it never performed the referenced request.
 
-    Only a readback can establish this. An operator who finds nothing authorizes
-    an execution instead; that authorization is not an authoritative absence.
+    Only a readback taken before the first send can establish this, because
+    only there does a destination holding nothing have a single meaning (ADR
+    0010 decision 5, as amended 2026-09-05). Once a send was attempted, that
+    same empty answer may equally be a ref someone removed or a listing that
+    has not caught up, so `ReadbackPhase.AFTER_SEND` reads it as
+    `EffectUnknownOutcome`. An operator who finds nothing authorizes an
+    execution instead; that authorization is not an authoritative absence.
     """
 
     outcome: ClassVar[EffectOutcome] = EffectOutcome.AUTHORITATIVE_NOT_FOUND
@@ -338,6 +343,37 @@ class EffectUnknownOutcome:
 
 
 type EffectReadback = EffectReceipt | EffectAbsence | EffectUnknownOutcome
+
+
+class ReadbackPhase(StrEnum):
+    """Whether anything can already have been sent for the intent being read.
+
+    The adapter cannot answer this about itself: a process that died between
+    its send and its receipt leaves the destination looking exactly like one
+    that was never asked. Only the durable owner of the intent knows which of
+    the two it is asking about, so it names the phase, and the phase decides
+    what an empty answer is allowed to mean.
+    """
+
+    BEFORE_SEND = "BEFORE_SEND"
+    AFTER_SEND = "AFTER_SEND"
+
+
+def destination_holds_nothing(
+    intent_reference: EffectIntentReference,
+    phase: ReadbackPhase,
+    reason: UnknownOutcomeReason | None,
+) -> EffectAbsence | EffectUnknownOutcome:
+    """What a destination that answered and holds nothing means in this phase.
+
+    Every adapter asks here rather than deciding for itself, because the
+    difference is not about the destination at all: before a send there is
+    nothing an empty answer could hide, and after one there always is.
+    """
+
+    if phase is ReadbackPhase.AFTER_SEND:
+        return EffectUnknownOutcome(intent_reference, reason)
+    return EffectAbsence(intent_reference)
 
 
 @dataclass(frozen=True)
@@ -428,7 +464,9 @@ class EffectIntent:
                 "a determination must present the prepared intent and its request"
             )
 
-    def authorize_adapter_readback(self, readback: EffectReadback) -> None:
+    def authorize_adapter_readback(
+        self, readback: EffectReadback, phase: ReadbackPhase
+    ) -> None:
         self.authorize_readback(readback)
         if (
             isinstance(readback, EffectReceipt)
@@ -436,6 +474,10 @@ class EffectIntent:
         ):
             raise EffectAdapterResponseConflict(
                 "an effect adapter may establish only ADAPTER_READBACK provenance"
+            )
+        if isinstance(readback, EffectAbsence) and phase is ReadbackPhase.AFTER_SEND:
+            raise EffectAdapterResponseConflict(
+                "an absence read after a send attempt proves nothing and is refused"
             )
 
     def resolve_reconciliation(

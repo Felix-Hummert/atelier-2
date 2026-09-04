@@ -40,7 +40,9 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     LogicalEffectKey,
     PerformedEffect,
+    ReadbackPhase,
     UnknownOutcomeReason,
+    destination_holds_nothing,
 )
 
 _HOOK_FREE_ARGUMENTS = ("-c", f"core.hooksPath={os.devnull}")
@@ -80,7 +82,15 @@ class _RemoteRefFound:
 
 @dataclass(frozen=True, slots=True)
 class _RemoteRefAbsent:
-    """The remote answered, and it holds no such ref."""
+    """The remote answered, and it holds no such ref.
+
+    What that proves depends on when it was read, so the observation keeps what
+    a reader after a send needs to report: the status the read exited with, and
+    how long it took.
+    """
+
+    exit_status: int
+    duration_milliseconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,10 +130,26 @@ def _unreadable(
 def _unknown(
     intent: EffectIntent, observation: _RemoteRefObservation
 ) -> EffectUnknownOutcome:
-    return EffectUnknownOutcome(
-        intent.reference,
-        observation.reason if isinstance(observation, _RemoteRefUnreadable) else None,
-    )
+    return EffectUnknownOutcome(intent.reference, _unknown_reason(observation))
+
+
+def _unknown_reason(observation: _RemoteRefObservation) -> UnknownOutcomeReason | None:
+    """What to report about a read whose answer resolved nothing.
+
+    A ref the remote does not advertise is an answer, not a failure, so after a
+    send it reports the read's own successful status rather than pretending git
+    refused anything.
+    """
+
+    if isinstance(observation, _RemoteRefUnreadable):
+        return observation.reason
+    if isinstance(observation, _RemoteRefAbsent):
+        return UnknownOutcomeReason(
+            observation.exit_status,
+            observation.duration_milliseconds,
+            "the remote advertises no such ref, and a send was already attempted",
+        )
+    return None
 
 
 class GitCommandRunner(Protocol):
@@ -217,14 +243,16 @@ class GitTransportEffectAdapter:
         self._closed = False
 
     def readback(
-        self, intent: EffectIntent
+        self, intent: EffectIntent, phase: ReadbackPhase
     ) -> EffectReceipt | EffectAbsence | EffectUnknownOutcome:
         request = self._authorized_request(intent)
         self._verify_candidate(request)
         expected = request.expected_commit_oid(intent.request.request_hash.value)
         observation = self._remote_ref(request.head_branch.full_ref)
         if isinstance(observation, _RemoteRefAbsent):
-            return EffectAbsence(intent.reference)
+            return destination_holds_nothing(
+                intent.reference, phase, _unknown_reason(observation)
+            )
         if not isinstance(observation, _RemoteRefFound) or observation.oid != expected:
             return _unknown(intent, observation)
         performed = self._performed(request, expected)
@@ -240,6 +268,10 @@ class GitTransportEffectAdapter:
         self._verify_candidate(request)
         expected = request.expected_commit_oid(intent.request.request_hash.value)
         full_ref = request.head_branch.full_ref
+        # This read only re-reads a send the caller already holds a pre-send
+        # absence or an operator's determination for; the create-only lease
+        # below is what fences the send itself. The read taken after it is
+        # `_receipt_after_send`, which never reads a missing ref as an absence.
         observation = self._remote_ref(full_ref)
         if isinstance(observation, _RemoteRefFound) and observation.oid == expected:
             return self._performed(request, expected)
@@ -272,7 +304,7 @@ class GitTransportEffectAdapter:
         """Publish one reviewed replacement tree through the existing push fence."""
 
         push_intent = self._reviewed_documentation_push_intent(intent, request)
-        observed = self.readback(push_intent)
+        observed = self.readback(push_intent, ReadbackPhase.BEFORE_SEND)
         if isinstance(observed, EffectReceipt):
             return
         performed = self.execute(push_intent)
@@ -522,7 +554,7 @@ class GitTransportEffectAdapter:
             return _unreadable(result, elapsed)
         lines = result.stdout.decode("utf-8", errors="replace").splitlines()
         if not lines:
-            return _RemoteRefAbsent()
+            return _RemoteRefAbsent(result.returncode, elapsed)
         if len(lines) != 1:
             return _unreadable(result, elapsed)
         oid, separator, name = lines[0].partition("\t")

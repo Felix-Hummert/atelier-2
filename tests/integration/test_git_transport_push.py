@@ -40,6 +40,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     LogicalEffectKey,
     PerformedEffect,
+    ReadbackPhase,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
@@ -158,10 +159,12 @@ def test_push_creates_the_declared_commit_and_replay_finds_no_twin(
     expected = request.expected_commit_oid(intent.request.request_hash.value)
     adapter = factory.open()
     try:
-        assert isinstance(adapter.readback(intent), EffectAbsence)
+        assert isinstance(
+            adapter.readback(intent, ReadbackPhase.BEFORE_SEND), EffectAbsence
+        )
         performed = adapter.execute(intent)
         replay = adapter.execute(intent)
-        readback = adapter.readback(intent)
+        readback = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
     finally:
         adapter.close()
 

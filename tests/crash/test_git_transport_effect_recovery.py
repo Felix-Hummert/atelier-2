@@ -38,6 +38,7 @@ from atelier2.contracts.effects import (
     EffectReceipt,
     EffectUnknownOutcome,
     OperatorAuthoritativeAbsence,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -479,12 +480,63 @@ def test_restart_reads_the_exact_commit_without_pushing_a_twin(tmp_path: Path) -
 
     recovered = _factory(store, remote).open()
     try:
-        receipt = recovered.readback(intent)
+        receipt = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
     finally:
         recovered.close()
     assert isinstance(receipt, EffectReceipt)
     assert receipt.effect_id.value == request.expected_commit_oid(
         intent.request.request_hash.value
+    )
+
+
+def test_a_ref_removed_after_an_accepted_push_stays_unknown_and_pushes_nothing(
+    tmp_path: Path,
+) -> None:
+    """The push landed, the answer did not, and then the ref was gone.
+
+    A read taken after a send cannot tell a remote that never received the push
+    from one that no longer holds it, so it reports the unknown outcome it has
+    instead of the absence that would license a second push (ADR 0010 decision
+    5, as amended 2026-09-05).
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    from tests.integration.test_git_transport_push import HEAD_BRANCH, _factory
+
+    factory = _factory(store, remote, CrashAfterAcceptedPush())
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        with pytest.raises(RuntimeError, match="injected crash"):
+            adapter.execute(intent)
+    finally:
+        adapter.close()
+    subprocess.run(
+        ("git", "-C", str(remote), "update-ref", "-d", HEAD_BRANCH.full_ref),
+        capture_output=True,
+        check=True,
+    )
+
+    push_attempts = tmp_path / "push-attempts"
+    recovered = _factory(
+        store, remote, PushAttemptRecordingRunner(push_attempts)
+    ).open()
+    try:
+        outcome = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        recovered.close()
+
+    assert isinstance(outcome, EffectUnknownOutcome)
+    assert outcome.reason is not None
+    assert "a send was already attempted" in outcome.reason.detail
+    assert not push_attempts.exists()
+    assert (
+        subprocess.run(
+            ("git", "-C", str(remote), "rev-parse", "--verify", HEAD_BRANCH.full_ref),
+            capture_output=True,
+            check=False,
+        ).returncode
+        != 0
     )
 
 

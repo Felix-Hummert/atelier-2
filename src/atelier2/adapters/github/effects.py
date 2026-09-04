@@ -35,7 +35,10 @@ from atelier2.contracts.effects import (
     EffectIntentMismatch,
     EffectReceipt,
     EffectResult,
+    EffectUnknownOutcome,
     PerformedEffect,
+    ReadbackPhase,
+    destination_holds_nothing,
 )
 
 _SQLITE_LOCK_TIMEOUT_SECONDS = 30.0
@@ -207,7 +210,8 @@ class GitHubEffectAdapterFactory:
     @property
     def proves_absence(self) -> bool:
         # The fake platform lists every pull request it ever created, so a
-        # missing marker is an authoritative absence (ADR 0010 §5).
+        # missing marker before a send is an authoritative absence (ADR 0010
+        # §5). After one, no destination's silence proves anything (#1210).
         return True
 
     def open(self) -> GitHubEffectAdapter:
@@ -277,12 +281,16 @@ class GitHubEffectAdapter:
         self._documentation_publisher = documentation_publisher
         self._closed = False
 
-    def readback(self, intent: EffectIntent) -> EffectReceipt | EffectAbsence:
+    def readback(
+        self, intent: EffectIntent, phase: ReadbackPhase
+    ) -> EffectReceipt | EffectAbsence | EffectUnknownOutcome:
         self._authorize_binding(intent)
         open_pull_request(intent.request)
         record = self._load(intent.request.request_hash.value)
         if record is None:
-            return EffectAbsence(intent.reference)
+            # Nothing failed and nothing was measured here, so the phase alone
+            # decides, and there is nothing this store could quote as a reason.
+            return destination_holds_nothing(intent.reference, phase, None)
         return self._receipt(intent, record)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect:

@@ -42,6 +42,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     OperatorAuthoritativeAbsence,
     PerformedEffect,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -89,7 +90,7 @@ class _UnprovableEffectAdapter:
     so it asks the operator, which is the standing this module reads.
     """
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         return EffectUnknownOutcome(intent.reference)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect:

@@ -14,7 +14,8 @@
   rule amended 2026-09-05 (head ruling, usage evidence pass 9, issue #1210) — an
   `ls-remote` and a `pulls?head=…` search with nothing to read for the exact
   expected ref/head are authoritative absence before send; the post-send
-  readback rule is unchanged
+  readback rule is unchanged, and which of the two a read is the intent's
+  durable owner names (`ReadbackPhase`), never the adapter
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -531,6 +532,18 @@ mean. The zero-OID lease on the push itself, unchanged, remains the protection
 against a double send: an authoritative pre-send absence only clears the
 operation to attempt its one create-only, compare-and-swapped send.
 
+Which of the two a read is, the adapter cannot know and does not decide: a
+process that died between its push and its receipt leaves the remote looking
+exactly like one that was never asked. The durable owner of the intent names
+it, as `ReadbackPhase` on the port's `readback`, and the effect contract
+refuses an absence answered for `AFTER_SEND` outright. So the amendment holds
+only where the phase says it may: the observing step of `durable_effect`,
+which runs before that workflow's resolving step ever reaches an `execute` and
+is replayed rather than read again after a recovery. The reconciliation path
+reads `AFTER_SEND`, because an intent reaches that door only behind an unknown
+outcome and an ambiguous send is one of the two ways to get one; there the
+operator's own determination, never the read, licenses the execution.
+
 **The credential handoff is normative, not left to whatever a subprocess call
 happens to do.** The credential — the token in the PAT method — never reaches
 the git subprocess as a literal value in its argument vector, per decision 3's
@@ -600,7 +613,15 @@ bytes — tree OID, base commit, branch, identity — do not exist without it.
   `UNKNOWN`, because only the pre-send search has nothing else it could mean.
   GitHub's own head+base uniqueness constraint (422 on a second `POST`) remains
   the protection against a double send; an authoritative pre-send absence only
-  clears the operation to attempt its one create.
+  clears the operation to attempt its one create, and a create that constraint
+  refuses whose winner the listing still does not name reports `UNKNOWN` with
+  what GitHub said rather than raising over a request that was sent.
+  Authoritative here means exactly the answer the ruling names: HTTP `200`
+  with an empty list, read across every page of the listing, with the marker
+  deciding which of a branch's pull requests is this request's. Any other
+  status, an unreadable body, or a branch naming only foreign pull requests is
+  `UNKNOWN`. As for the push above, the phase is named by the intent's durable
+  owner (`ReadbackPhase`), never decided by the adapter.
 - **The ambiguous retry needs no new state, because a durable one already precedes
   the send.** `EffectIntentState.PREPARED` is written durably before any request
   leaves the adapter, so a crash between send and receipt always leaves a prepared

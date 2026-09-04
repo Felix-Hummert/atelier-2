@@ -11,6 +11,7 @@ from atelier2.contracts.effects import (
     EffectReadback,
     EffectUnknownOutcome,
     PerformedEffect,
+    ReadbackPhase,
     ReconcileCommand,
     ReconcileCommandSnapshot,
 )
@@ -54,7 +55,15 @@ type DurableReconciliationResult = (
 
 
 class EffectAdapter(Protocol):
-    def readback(self, intent: EffectIntent) -> EffectReadback: ...
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
+        """Read what the destination holds for one intent, in a named phase.
+
+        `ReadbackPhase.AFTER_SEND` forbids `EffectAbsence`: an adapter reading
+        nothing there reports `EffectUnknownOutcome` carrying what the
+        destination said, because a send whose answer was lost looks from here
+        exactly like one that never happened.
+        """
+        ...
 
     def execute(
         self, intent: EffectIntent
@@ -69,11 +78,12 @@ class EffectAdapterFactory(Protocol):
 
     @property
     def proves_absence(self) -> bool:
-        """Whether a not-found readback from this adapter is an authoritative absence.
+        """Whether a pre-send not-found from this adapter is an authoritative absence.
 
         A false answer means the effect lifecycle records UNKNOWN and waits for
         operator reconciliation before execution. Adapters retain this capability
         because the effect contract, rather than run admission, owns that distinction.
+        Nothing here licenses anything after a send; `ReadbackPhase` decides that.
         """
         ...
 

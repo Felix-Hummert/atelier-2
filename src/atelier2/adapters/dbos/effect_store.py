@@ -63,6 +63,7 @@ from atelier2.contracts.effects import (
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
     PerformedEffect,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -431,9 +432,19 @@ def observe_adapter(
     logical_key: str,
     revision_hash: str,
 ) -> EncodedEffectResolution:
+    """Read the destination before this intent has sent anything.
+
+    This is the observing step of `durable_effect`, and it runs before that
+    workflow's own resolving step ever reaches an adapter's `execute`. A
+    recovery replays the outcome this step recorded rather than reading again,
+    so nothing was ever sent when this read happens -- which is exactly what
+    lets a destination holding nothing be the authoritative absence that
+    licenses the send (ADR 0010 decision 5, as amended 2026-09-05).
+    """
+
     intent = load_intent(session, logical_key, revision_hash)
-    readback = adapter.readback(intent)
-    intent.authorize_adapter_readback(readback)
+    readback = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+    intent.authorize_adapter_readback(readback, ReadbackPhase.BEFORE_SEND)
     return encode_readback(readback)
 
 
@@ -473,7 +484,7 @@ def resolve_observation(
         return {"outcome": "UNKNOWN"}
     performed = adapter.execute(intent)
     if isinstance(performed, EffectUnknownOutcome):
-        intent.authorize_adapter_readback(performed)
+        intent.authorize_adapter_readback(performed, ReadbackPhase.AFTER_SEND)
         return encode_readback(performed)
     return encode_found(
         performed,
@@ -532,8 +543,12 @@ def observe_reconcile_command(
             command_snapshot.command.command_id,
         )
     elif isinstance(determination, OperatorAuthoritativeAbsence):
-        readback = adapter.readback(intent)
-        intent.authorize_adapter_readback(readback)
+        # An intent only reaches reconciliation behind an unknown outcome, and
+        # an ambiguous send is one of the two ways to get one, so this read may
+        # not read a silent destination as an absence. What licenses the
+        # execution that follows is the operator's own determination.
+        readback = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
+        intent.authorize_adapter_readback(readback, ReadbackPhase.AFTER_SEND)
         observed = encode_readback(readback)
         observed["operator_authorized"] = command_id
     else:
