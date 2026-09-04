@@ -313,6 +313,23 @@ as an `agent_definition` revision today, but no serving surface publishes that
 definition and no agent configuration references it; the round trip therefore
 does not yet prove the configuration-to-definition chain.
 
+The catalog carries the planner that cuts an item into buildable slices.
+`workflows/breakdown.yaml` is executable at revision `69b1b419`: one headless
+planner node reads the item body, its owner documents and the named
+accepted-sentences form it was handed, and answers with slices that each carry a
+typed priority — one positive integer rank, not a prose priority — and sort every
+handed sentence into exactly one slice, under `proves` where that slice proves
+it or under `defers` beside the one owner sentence naming who will. A slice that
+leaves a handed sentence unassigned is not an answer its schema takes, and a
+call handed no sentences says exactly that instead of reporting an empty
+assignment as a complete one (PR #960). What the planner does not do is turn its
+slices into work items: the authorised creation, with the readback and receipt
+that would make it durable, is not built (#80). A computed schedule is not part
+of it and is not owed — the operator ruled that out on 01.09.2026, and the wish
+stands as an idea of its own (#969). The form between an idea and a cuttable
+item, where a refine step proposes expectation lines until the item is regulated
+enough to cut, has its own owner (#843).
+
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically
 records a distinct success receipt with its existing event and successor. Action

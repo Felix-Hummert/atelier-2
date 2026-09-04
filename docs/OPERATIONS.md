@@ -1071,6 +1071,17 @@ This script does not alter a running Serve, download during `serve`, or resolve
 the executable path from admission. Those remain later slices of the toolchain
 item.
 
+A Grok node bound to `headless_with_tools` can now end without a candidate for a
+reason that is neither a crash nor a failed check: the pinned grok applies a
+declared output schema to *every* assistant message and ends the session at the
+first message that carries no tool call, so a model that narrates before acting
+can end its attempt on that narration. Such an attempt is refused as a provider
+failure rather than published as a report about work nobody did: the node ends
+FAILED, and only an explicit operator replacement runs it again. In the receipt
+it appears as a failed attempt whose transcript ends on one assistant turn and
+no tool call. Seeing it repeatedly for one node is a signal about that node's
+instruction, not about the deployment.
+
 ## Connect a git definition source, see where it stands, and take it in
 
 Three offline commands against a store that already exists. Only `intake`

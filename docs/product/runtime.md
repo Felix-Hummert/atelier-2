@@ -265,19 +265,20 @@ provider factory and behaves exactly as before. When the
 operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
 bound model headless through `grok --output-format json`, decodes every
-concatenated JSON value the CLI writes, keeps progress values in the attempt
-transcript, and takes only the last envelope's final answer to the output seam.
-It names an ending with no final message, rather than recording progress as an
-answer. When the node declared an
-output schema that is not a bare `type: string`, the same published
-document bytes the seam later judges travel as `--json-schema`; the
-seam remains the last instance if the provider ignores the flag. A
-bare string schema does not take that flag: the model writes free
-text and the adapter serializes it as one JSON string, because
-constraining grok 1.0.4 to a string document produced announcements
-or trailing `<|eos|>` rather than a later answer. The job travels
-through `--prompt-file` rather than the argument vector. The same
-vector pins a turn ceiling so a Diff-Review-sized order cannot run an
+concatenated JSON value the CLI writes, and takes the last one's answer to the
+output seam. Measured on grok 1.0.5, that format writes exactly one value even
+across several model calls, so a tool-free attempt that answered carries no
+transcript at all: a value standing before that envelope is a shape this reader
+keeps as evidence of an ending rather than reads as progress. It names an
+ending with no final message, rather than recording progress as an answer.
+Every output schema the node declared travels as `--json-schema`, in the same
+published document bytes the seam later judges; the seam remains the last
+instance if the provider ignores the flag. A schema whose root is a bare
+`type: string` is no exception — the CLI accepts that form, and what it refuses
+is a schema that is no JSON object at all, such as `true` — and this seam
+rewrites neither. The job travels inline through `-p`; one larger than the
+measured 30,000-byte transport bound is refused before a process exists. The
+same vector pins a turn ceiling so a Diff-Review-sized order cannot run an
 unbounded loop, and the child inherits only the serving host's search path
 plus one disposable invocation-private `HOME`/`GROK_HOME`. That home
 receives a private copy of the source `auth.json`; provider sessions and
@@ -295,26 +296,35 @@ switches Claude combines: `--tools` names the built-in IDs the model may see
 (`read_file`, `list_dir`, `grep`, `search_replace`, `run_terminal_cmd` — the
 Headless-documented shell ID; parse does not check names), and `--allow`
 names the five permission classes it may run without asking (`Read`, `Edit`,
-`Write`, `Grep`, `Bash`) under `--permission-mode dontAsk`. `--deny MCPTool`
-keeps MCP meta-tools from remaining visible. Every other containment switch
-and the private `HOME` of the tool-free call stay. It attests exactly one
+`Write`, `Grep`, `Bash`) under `--permission-mode bypassPermissions`, which is
+what a headless caller that can answer no confirmation needs; `--deny` restores
+the protected-edit floors that mode would otherwise approve and keeps MCP
+meta-tools from remaining visible. Every other containment switch and the
+private `HOME` of the tool-free call stay. Unlike that call, this one asks for
+`--output-format streaming-messages-json`, so it publishes whole assistant and
+tool messages as they happen: the attempt keeps the turns and the doors it
+opened as its transcript, and the answer is read from the terminal line the CLI
+names itself. A session whose stream shows no tool call at all is refused as a
+provider failure instead of published, so the node ends FAILED and only an
+explicit replacement runs it again — the pinned CLI applies a declared output
+schema to every assistant message and ends the session at the first message
+without a tool call, so a model that narrates before acting can otherwise end
+its attempt on that narration. It attests exactly one
 capability, `headless_with_tools`, and no other; a node reaches it only where
 its own durable binding asked for that capability, and a binding that asks
 the tool-free executor for tools, or this one for a tool-free call, is
 refused before the run exists. Because a version answer is not startability,
 and because a Clap refusal without an isolated home can exit 0, the
 deployment starts this exact argument vector once at composition with no
-credentials and a dummy `--prompt-file` in a private `HOME`, and reads that
+credentials and an empty inline prompt in a private `HOME`, and reads that
 the CLI did not refuse an argument, with an unknown flag beside it as the
 control; the marker is `unexpected argument`. Neither call reaches a model.
 The executor claims no operating-system isolation, does not use
-`--always-approve` or `bypassPermissions`, and does not pretend parse-time
-ID validation: the process runs as the serving user and its tools reach what
-that user reaches. Unlike the tool-free call, it has no billed tool-using
-answer yet on any release — that a real answer uses exactly these tools, in
-particular the Headless-documented shell ID, is the half one billed
-secret-file probe still has to establish under the operator's gate, which is
-why nothing composes this executor unless an operator armed it by name.
+`--always-approve`, and does not pretend parse-time ID validation: the process
+runs as the serving user and its tools reach what that user reaches. What a
+real answer may reach with those tools is still the half a billed secret-file
+probe has to establish under the operator's gate, which is why nothing composes
+this executor unless an operator armed it by name.
 
 Codex sits behind the same boundary, declared the same way and composed
 alongside Claude rather than instead of it. Its CLI has no prompt-file flag, so
