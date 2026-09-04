@@ -12,7 +12,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
-import { revisionHash, runRow, startedRun } from "../support/runV3";
+import { revisionHash, runRow, startedRun, waitingInput } from "../support/runV3";
 
 /**
  * REQ-UIQ-08: a surface that exceeds its interaction budget is a defect.
@@ -119,6 +119,11 @@ function hexId(index: number, fill: string): string {
   return index.toString(16).padStart(64, fill);
 }
 
+/** The event cursor a run's own public reference must agree with (`validateEventCursor`). */
+function eventCursorFor(publicRunReference: string, sequence: number): string {
+  return `event1.${publicRunReference.slice("run1.".length)}.${sequence}`;
+}
+
 function minutesAgo(minutes: number): string {
   return new Date(Date.now() - minutes * 60_000).toISOString();
 }
@@ -208,7 +213,31 @@ function workbenchApi(rows: number): Partial<CockpitApi> {
     listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
       items: state === "STARTED" ? runs.map(runRow) : [],
       next_after: null
-    }))
+    })),
+    // GET /events replays every durable attention-kind event with no cursor
+    // to resume from, so a fresh connect hands back one frame per run this
+    // dataset ever named -- exactly what a real connect does today (#1148
+    // Befund: 83 requests on an 83-run Workbench). This fake reproduces that
+    // replay so a per-run read the burst would otherwise hide shows up here.
+    openAttentionEvents: vi.fn((handlers) => {
+      handlers.opened();
+      runs.forEach((run, index) => {
+        const sequence = index + 1;
+        handlers.event(
+          JSON.stringify(
+            waitingInput(sequence, {
+              public_run_reference: run.public_run_reference,
+              cursor: eventCursorFor(run.public_run_reference, sequence)
+            })
+          )
+        );
+      });
+      return { close: vi.fn() };
+    }),
+    getRun: vi.fn(async (reference: string) =>
+      runs.find((run) => run.public_run_reference === reference) ??
+      startedRun({ public_run_reference: reference })
+    )
   };
 }
 
@@ -228,9 +257,19 @@ async function measureOpen(room: Room, rows: number): Promise<OpenCount> {
     }
   });
   try {
+    // A room fed by an attention stream can drain a burst of nudges across
+    // several sequential reads, each with its own idle gap between requests
+    // in flight (#1148): the first quiet moment is not necessarily the last
+    // one, so this waits for two consecutive idle reads to agree on the same
+    // count rather than trusting the first.
+    let previousCount = -1;
     await waitFor(() => {
       expect(visibleRowCount(room)).toBe(rows);
       expect(counting.idle()).toBe(true);
+      const currentCount = counting.requestCount();
+      const settled = currentCount === previousCount;
+      previousCount = currentCount;
+      expect(settled).toBe(true);
     });
     return { surface: room, rows, requests: counting.requestCount() };
   } finally {
