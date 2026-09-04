@@ -635,6 +635,16 @@ MINIMUM_DUPLICATE_TOKENS = 40
 # Near-identity rather than similarity: at this overlap two definitions differ in
 # a token or two, which is a copy someone made, not a family resemblance.
 DUPLICATE_JACCARD_THRESHOLD = 0.95
+# `True`, `False`, `None` and `...` reach the tokenizer as names and an operator
+# rather than as literals, but that is what they are: which one a definition
+# names says as little about it as which number it names.
+KEYWORD_LITERAL_SPELLINGS = frozenset({"True", "False", "None", "..."})
+NORMALISED_KEYWORD_LITERAL = "<constant>"
+OVERLOAD_DECORATOR = "overload"
+DUPLICATE_BASELINE_SHAPE_REFUSAL = (
+    f"{DUPLICATE_BASELINE_FILE}: every [[{DUPLICATE_BASELINE_TABLE}]] names a left "
+    "and a right qualified name"
+)
 
 FunctionDefinition = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -663,12 +673,15 @@ def _names_bound_by(definition: FunctionDefinition) -> dict[str, str]:
     """Every name this definition binds itself, numbered in source order.
 
     A copy someone renamed is still a copy, so the spelling a definition chose
-    for itself, its parameters, and its locals carries no evidence: numbering
-    them by where they are bound compares what the code does with them instead.
-    Names it does not bind -- imports, attributes, the vocabulary it calls into
-    -- keep their spelling, which is what keeps unrelated code apart.
+    for itself, its parameters, its locals, the exceptions it catches and the
+    parts it matches out carries no evidence: numbering them by where they are
+    bound compares what the code does with them instead. Names it does not bind
+    -- imports, attributes, the vocabulary it calls into -- keep their spelling,
+    which is what keeps unrelated code apart, and so does a name it declares
+    `global` or `nonlocal`, because that one reaches state outside it.
     """
     bound: list[tuple[int, int, str]] = []
+    external: set[str] = set()
     for node in ast.walk(definition):
         if isinstance(node, ast.arg):
             bound.append((node.lineno, node.col_offset, node.arg))
@@ -676,9 +689,18 @@ def _names_bound_by(definition: FunctionDefinition) -> dict[str, str]:
             bound.append((node.lineno, node.col_offset, node.id))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.append((node.lineno, node.col_offset, node.name))
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if node.name is not None:
+                bound.append((node.lineno, node.col_offset, node.name))
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest is not None:
+                bound.append((node.lineno, node.col_offset, node.rest))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            external.update(node.names)
     numbered: dict[str, str] = {}
     for _line, _column, name in sorted(bound):
-        numbered.setdefault(name, f"<name{len(numbered)}>")
+        if name not in external:
+            numbered.setdefault(name, f"<name{len(numbered)}>")
     return numbered
 
 
@@ -701,7 +723,9 @@ def _structural_tokens(definition: FunctionDefinition) -> tuple[str, ...]:
             tokenize.ENDMARKER,
         ):
             continue
-        if token.type == tokenize.STRING:
+        if token.string in KEYWORD_LITERAL_SPELLINGS:
+            tokens.append(NORMALISED_KEYWORD_LITERAL)
+        elif token.type == tokenize.STRING:
             tokens.append("<string>")
         elif token.type == tokenize.NUMBER:
             tokens.append("<number>")
@@ -732,6 +756,33 @@ def _definitions_under(
             yield from _definitions_under(child, qualified_name)
 
 
+def _decorator_name(decorator: ast.expr) -> str:
+    if isinstance(decorator, ast.Attribute):
+        return decorator.attr
+    if isinstance(decorator, ast.Name):
+        return decorator.id
+    return ""
+
+
+def _says_nothing(statement: ast.stmt) -> bool:
+    return isinstance(statement, ast.Pass) or (
+        isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
+    )
+
+
+def _declares_an_overload(definition: FunctionDefinition) -> bool:
+    """A signature of another definition rather than a definition of its own.
+
+    Several `@overload` declarations carry the implementation's qualified name
+    on purpose, and a body of `...` says nothing about what the code does, so
+    they are neither a second definition of that name nor copies of each other.
+    """
+    return any(
+        _decorator_name(decorator) == OVERLOAD_DECORATOR
+        for decorator in definition.decorator_list
+    ) and all(_says_nothing(statement) for statement in definition.body)
+
+
 def _module_name(module_path: Path, source_root: Path) -> str:
     parts = module_path.relative_to(source_root).with_suffix("").parts
     if parts and parts[-1] == "__init__":
@@ -749,6 +800,8 @@ def source_definitions(project_root: Path) -> tuple[SourceDefinition, ...]:
         for qualified_name, node in _definitions_under(
             module, _module_name(module_path, source_root)
         ):
+            if _declares_an_overload(node):
+                continue
             tokens = _structural_tokens(node)
             if len(tokens) < MINIMUM_DUPLICATE_TOKENS:
                 continue
@@ -792,6 +845,23 @@ def found_duplicates(
     return frozenset(duplicates)
 
 
+def _baseline_pairs(entries: object) -> Iterator[DuplicatePair]:
+    """The listed pairs, refusing anything the baseline's shape does not carry.
+
+    The file is edited by hand, so a table of another shape is as likely as a
+    wrong name in it, and reading it as one anyway would answer the ratchet with
+    a crash instead of a sentence about the baseline.
+    """
+    if not isinstance(entries, list):
+        raise ArchitecturePreflightError(DUPLICATE_BASELINE_SHAPE_REFUSAL)
+    for entry in entries:
+        left = entry.get("left") if isinstance(entry, dict) else None
+        right = entry.get("right") if isinstance(entry, dict) else None
+        if not isinstance(left, str) or not isinstance(right, str):
+            raise ArchitecturePreflightError(DUPLICATE_BASELINE_SHAPE_REFUSAL)
+        yield duplicate_pair(left, right)
+
+
 def read_duplicate_baseline(project_root: Path) -> frozenset[DuplicatePair]:
     """The duplicate pairs this tree already knows about, read as data."""
     path = project_root / DUPLICATE_BASELINE_FILE
@@ -802,17 +872,7 @@ def read_duplicate_baseline(project_root: Path) -> frozenset[DuplicatePair]:
         raise ArchitecturePreflightError(
             f"{DUPLICATE_BASELINE_FILE} is not readable as TOML: {error}"
         ) from error
-    entries = document.get(DUPLICATE_BASELINE_TABLE, ())
-    baseline: set[DuplicatePair] = set()
-    for entry in entries:
-        left, right = entry.get("left"), entry.get("right")
-        if not isinstance(left, str) or not isinstance(right, str):
-            raise ArchitecturePreflightError(
-                f"{DUPLICATE_BASELINE_FILE}: every [[{DUPLICATE_BASELINE_TABLE}]] "
-                "names a left and a right qualified name"
-            )
-        baseline.add(duplicate_pair(left, right))
-    return frozenset(baseline)
+    return frozenset(_baseline_pairs(document.get(DUPLICATE_BASELINE_TABLE, [])))
 
 
 def duplicate_problems(project_root: Path) -> tuple[str, ...]:

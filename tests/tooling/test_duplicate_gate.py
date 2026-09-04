@@ -1,34 +1,37 @@
 """The duplicate ratchet: copied code is red unless the baseline already names it.
 
-The check reads a source tree and a baseline file and answers with the problems
-it found, so it is driven here over scratch trees of a few functions rather than
-over the real package -- the sentence under test is what counts as a copy, and a
-real tree would only ever restate today's baseline.
+The three sentences the ratchet answers with -- a new copy is red and says where
+both stand, a listed copy is quiet, a listed pair that is gone is red -- are
+driven here the way CI drives them, by running the gate over a copy of the real
+tree. What counts as a copy is driven over scratch trees of a few functions
+instead: the sentence under test is the rule, and the real tree would only ever
+restate today's baseline.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parents[2]
+from tests.tooling.architecture_test_support import (
+    DUPLICATE_BASELINE,
+    append_to,
+    copied_project,
+    load_architecture_script,
+    recalibrate_copied_source_module_count,
+    run_gate,
+)
+
 SOURCE_PACKAGE = Path("src") / "atelier2"
-
-
-def load_architecture_script() -> ModuleType:
-    specification = importlib.util.spec_from_file_location(
-        "check_architecture", PROJECT_ROOT / "scripts/check_architecture.py"
-    )
-    assert specification is not None
-    assert specification.loader is not None
-    module = importlib.util.module_from_spec(specification)
-    sys.modules[specification.name] = module
-    specification.loader.exec_module(module)
-    return module
+# A leaf layer: a module written here reaches nothing, so a copy planted for the
+# ratchet cannot break another contract on its way to the duplicate check.
+COPY_CANVAS_PACKAGE = SOURCE_PACKAGE / "contracts"
+COPY_CANVAS_MODULES = ("copied_first", "copied_second")
+COPIED_PAIR = (
+    "atelier2.contracts.copied_first.summed",
+    "atelier2.contracts.copied_second.summed",
+)
 
 
 def a_summing_function(
@@ -59,6 +62,34 @@ def averaged(values: list[float]) -> float:
         total = total + value
     return total / len(values)
 """
+AN_OVERLOADED_FUNCTION = """
+from typing import overload
+
+
+@overload
+def formatted(value: int, width: int, fill: str, prefix: str, suffix: str) -> str: ...
+@overload
+def formatted(value: str, width: int, fill: str, prefix: str, suffix: str) -> str: ...
+def formatted(value, width, fill, prefix, suffix):
+    return f"{prefix}{value:{fill}>{width}}{suffix}"
+"""
+
+# The overlap of the pair below is arithmetic on tokens: the header is fourteen,
+# every shared line three, the return two, and the extra line three more, so the
+# two definitions overlap by (14 + 3 x lines - 4) / (14 + 3 x lines + 3). Forty-one
+# shared lines make that exactly 0.95 and forty leave it just under, which is why
+# the case at the threshold and the case below it differ by a single line.
+SHARED_LINES_AT_THE_THRESHOLD = 41
+SHARED_LINES_BELOW_THE_THRESHOLD = 40
+
+
+def a_function_of(shared_lines: int, extra_line: bool = False) -> str:
+    body = [f"    value{index} = step" for index in range(shared_lines)]
+    if extra_line:
+        body.append("    extra = step")
+    return "\n".join(
+        ["def counted(start: int, step: int) -> int:", *body, "    return start"]
+    )
 
 
 def scratch_project(
@@ -68,7 +99,7 @@ def scratch_project(
     (project / SOURCE_PACKAGE).mkdir(parents=True)
     for module, source in modules.items():
         (project / SOURCE_PACKAGE / f"{module}.py").write_text(source, encoding="utf-8")
-    (project / "duplicate_baseline.toml").write_text(baseline, encoding="utf-8")
+    (project / DUPLICATE_BASELINE).write_text(baseline, encoding="utf-8")
     return project
 
 
@@ -80,6 +111,47 @@ def a_baseline_of(*pairs: tuple[str, str]) -> str:
 
 def problems_of(project: Path) -> tuple[str, ...]:
     return load_architecture_script().duplicate_problems(project)
+
+
+def project_carrying_a_copy(tmp_path: Path) -> Path:
+    """The real tree with one function written into two of its leaf modules."""
+    project = copied_project(tmp_path)
+    for module in COPY_CANVAS_MODULES:
+        (project / COPY_CANVAS_PACKAGE / f"{module}.py").write_text(
+            a_summing_function(), encoding="utf-8"
+        )
+    recalibrate_copied_source_module_count(project)
+    return project
+
+
+def test_the_gate_refuses_a_copy_the_baseline_does_not_name_and_says_where_both_stand(
+    tmp_path: Path,
+) -> None:
+    result = run_gate(project_carrying_a_copy(tmp_path))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "duplicate-problems" in result.stderr
+    for module in COPY_CANVAS_MODULES:
+        assert str(COPY_CANVAS_PACKAGE / f"{module}.py") in result.stderr, result.stderr
+
+
+def test_the_gate_passes_when_the_baseline_names_the_copy(tmp_path: Path) -> None:
+    project = project_carrying_a_copy(tmp_path)
+    append_to(project, str(DUPLICATE_BASELINE), a_baseline_of(COPIED_PAIR))
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_gate_refuses_a_baseline_entry_whose_copy_is_gone(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    append_to(project, str(DUPLICATE_BASELINE), a_baseline_of(COPIED_PAIR))
+
+    result = run_gate(project)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "orphan baseline entry" in result.stderr
 
 
 def test_a_copy_the_baseline_does_not_name_is_refused_with_both_locations(
@@ -98,23 +170,25 @@ def test_a_copy_the_baseline_does_not_name_is_refused_with_both_locations(
     assert str(SOURCE_PACKAGE / "second.py") in problems[0]
 
 
-def test_a_copy_the_baseline_names_keeps_the_gate_quiet(tmp_path: Path) -> None:
-    project = scratch_project(
-        tmp_path,
-        {"first": a_summing_function(), "second": a_summing_function()},
-        baseline=a_baseline_of(("atelier2.first.summed", "atelier2.second.summed")),
-    )
-
-    assert problems_of(project) == ()
-
-
-def test_a_baseline_entry_written_the_other_way_round_names_the_same_pair(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "baseline_pair",
+    [
+        pytest.param(
+            ("atelier2.first.summed", "atelier2.second.summed"), id="as found"
+        ),
+        pytest.param(
+            ("atelier2.second.summed", "atelier2.first.summed"),
+            id="the other way round",
+        ),
+    ],
+)
+def test_a_copy_the_baseline_names_keeps_the_gate_quiet(
+    tmp_path: Path, baseline_pair: tuple[str, str]
 ) -> None:
     project = scratch_project(
         tmp_path,
         {"first": a_summing_function(), "second": a_summing_function()},
-        baseline=a_baseline_of(("atelier2.second.summed", "atelier2.first.summed")),
+        baseline=a_baseline_of(baseline_pair),
     )
 
     assert problems_of(project) == ()
@@ -132,6 +206,49 @@ def test_a_baseline_entry_whose_copy_is_gone_is_refused(tmp_path: Path) -> None:
     assert len(problems) == 1
     assert "orphan baseline entry, remove it" in problems[0]
     assert "atelier2.second.averaged" in problems[0]
+
+
+def test_renaming_one_side_of_a_baseline_pair_is_an_orphan_and_a_copy_again(
+    tmp_path: Path,
+) -> None:
+    project = scratch_project(
+        tmp_path,
+        {"first": a_summing_function(), "second": a_summing_function(name="added")},
+        baseline=a_baseline_of(("atelier2.first.summed", "atelier2.second.summed")),
+    )
+
+    problems = problems_of(project)
+
+    assert len(problems) == 2
+    assert any(
+        "atelier2.second.added" in problem and "is a copy of" in problem
+        for problem in problems
+    )
+    assert any(
+        "atelier2.second.summed" in problem and "orphan baseline entry" in problem
+        for problem in problems
+    )
+
+
+@pytest.mark.parametrize(
+    ("shared_lines", "expected_problems"),
+    [
+        pytest.param(SHARED_LINES_AT_THE_THRESHOLD, 1, id="exactly at the threshold"),
+        pytest.param(SHARED_LINES_BELOW_THE_THRESHOLD, 0, id="just below it"),
+    ],
+)
+def test_the_threshold_decides_a_pair_differing_by_one_line(
+    tmp_path: Path, shared_lines: int, expected_problems: int
+) -> None:
+    project = scratch_project(
+        tmp_path,
+        {
+            "first": a_function_of(shared_lines),
+            "second": a_function_of(shared_lines, extra_line=True),
+        },
+    )
+
+    assert len(problems_of(project)) == expected_problems
 
 
 @pytest.mark.parametrize(
@@ -167,6 +284,11 @@ def test_a_copy_stays_a_copy_however_its_own_names_are_spelled(
             "two functions too short to recognise again",
             id="below the minimum length",
         ),
+        pytest.param(
+            {"first": AN_OVERLOADED_FUNCTION},
+            "several @overload signatures of one function, not one function twice",
+            id="overload declarations",
+        ),
     ],
 )
 def test_what_is_not_a_copy_keeps_the_gate_quiet(
@@ -177,15 +299,27 @@ def test_what_is_not_a_copy_keeps_the_gate_quiet(
     assert problems_of(project) == (), why
 
 
-def test_a_baseline_entry_missing_a_name_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "baseline",
+    [
+        pytest.param('[[pair]]\nleft = "atelier2.first.summed"\n', id="a name missing"),
+        pytest.param('pair = ["not a table"]\n', id="a list of strings"),
+        pytest.param('pair = "atelier2.first.summed"\n', id="a bare string"),
+        pytest.param("[[pair]]\nleft = 1\nright = 2\n", id="names that are numbers"),
+        pytest.param("[[pair\n", id="not readable as TOML"),
+    ],
+)
+def test_a_baseline_that_is_not_a_list_of_pairs_is_refused_by_name(
+    tmp_path: Path, baseline: str
+) -> None:
     script = load_architecture_script()
     project = scratch_project(
-        tmp_path,
-        {"first": a_summing_function()},
-        baseline='[[pair]]\nleft = "atelier2.first.summed"\n',
+        tmp_path, {"first": a_summing_function()}, baseline=baseline
     )
 
-    with pytest.raises(script.ArchitecturePreflightError):
+    with pytest.raises(
+        script.ArchitecturePreflightError, match=script.DUPLICATE_BASELINE_FILE
+    ):
         script.duplicate_problems(project)
 
 
@@ -197,11 +331,3 @@ def test_two_definitions_sharing_a_qualified_name_are_refused(tmp_path: Path) ->
 
     with pytest.raises(script.ArchitecturePreflightError):
         script.duplicate_problems(project)
-
-
-def test_the_duplicate_check_runs_as_part_of_the_architecture_gate() -> None:
-    script = load_architecture_script()
-
-    registered = dict(script.ARCHITECTURE_PREFLIGHTS)
-
-    assert registered["duplicate-problems"] is script.duplicate_problems
