@@ -35,6 +35,7 @@ dev = [
     "ruff==0.16.2",
     "sqlglot==30.13.0",
     "vulture==2.16",
+    "pytest-cov==7.1.0",
 ]
 
 [tool.atelier2.verification]
@@ -64,6 +65,8 @@ command = [
     "--ignore=tests/crash",
     "tests",
     "-q",
+    "--cov=src/atelier2",
+    "--cov-report=xml:reports/coverage.xml",
 ]
 timeout_seconds = 1800
 
