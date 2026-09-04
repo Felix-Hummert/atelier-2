@@ -13,7 +13,8 @@
   import {
     deliverWaitAnswer,
     loadPendingWaitAnswer,
-    prepareWaitAnswer
+    prepareWaitAnswer,
+    type PendingWaitLookup
   } from "../lib/waitAnswerDelivery";
   import { confirmedDecisionLabel, decisionLabel } from "../lib/waitDecision";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
@@ -42,6 +43,11 @@
   export let navigate: (path: string) => void;
   export let compact = false;
   export let onExpand: () => void;
+  /** Reports upward that the mutation journal itself could not be read
+   * (#914, second half of #1131) -- the run page owns the one honest
+   * sentence and its one door, mirroring the Workbench, rather than this
+   * card writing that sentence into its own wait-failure slot. */
+  export let onJournalPoisoned: () => void = () => {};
 
   /** One house beat (`--beat` in styles.css): long enough to read the landed sentence. */
   const ANSWER_LANDED_HOLD_MS = 1600;
@@ -169,13 +175,24 @@
     nodeExecutionId: string,
     key: string
   ): Promise<void> {
-    const lookup = await loadPendingWaitAnswer(
-      mutationJournal,
-      publicRunReference,
-      workflowRevisionHash,
-      nodeId,
-      nodeExecutionId
-    );
+    let lookup: PendingWaitLookup;
+    try {
+      lookup = await loadPendingWaitAnswer(
+        mutationJournal,
+        publicRunReference,
+        workflowRevisionHash,
+        nodeId,
+        nodeExecutionId
+      );
+    } catch {
+      // The journal itself could not be read (#914). This card has no door
+      // of its own out of a poisoned journal -- that is the page's to show,
+      // as the Workbench already does by never mounting this component
+      // while its own journal check stays open -- so this reports upward
+      // instead of writing the sentence into its own failure slot.
+      onJournalPoisoned();
+      return;
+    }
     if (key !== loadedNodeKey) return;
     if (lookup.kind === "corrupt") {
       waitFailureMessage = lookup.message;
