@@ -70,6 +70,9 @@ jobs:
       - name: Lint frontend source
         run: npm run lint
 
+      - name: Check for dead cockpit code
+        run: npm run check:dead
+
       - name: Test frontend behavior
         run: npm test -- --reporter=default --reporter=json --outputFile=../reports/frontend.vitest.json
 
@@ -318,6 +321,9 @@ jobs:
 
       - name: Check architecture contracts
         run: uv run --locked python scripts/check_architecture.py
+
+      - name: Check for dead production code
+        run: uv run --locked python scripts/check_dead_code.py
 
       - name: Check documentation order
         env:
