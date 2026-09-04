@@ -35,7 +35,7 @@ WAITING_FOR_A_CALLER = (
             "intent, but no route or workflow calls either yet -- the run store's "
             "completion writer waits with them."
         ),
-        "item": "#1168 (Verteiler, Befund 10)",
+        "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
         "names": ("latest_model_registry_revisions", "publish_project_root_revision"),
@@ -43,7 +43,7 @@ WAITING_FOR_A_CALLER = (
             "Host-configuration reads and writes declared on the port and "
             "implemented in the DBOS adapter, with no route asking for them yet."
         ),
-        "item": "#1168 (Verteiler, Befund 10)",
+        "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
         "names": ("peak_active_queries", "abandoned_queries", "effect_adapter"),
@@ -51,7 +51,7 @@ WAITING_FOR_A_CALLER = (
             "Instrumentation the SSE runner and the DBOS runtime expose for a "
             "reader that does not exist yet; today only their tests observe them."
         ),
-        "item": "#1168 (Verteiler, Befund 10)",
+        "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
         "names": ("recorded_pull_requests", "recorded_documentation_pushes"),
@@ -60,7 +60,7 @@ WAITING_FOR_A_CALLER = (
             "adapter module; their callers are acceptance tests, and moving the "
             "fake out of src is a cut that item owns."
         ),
-        "item": "#1168 (Verteiler, Befund 10)",
+        "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
         "names": (
@@ -78,7 +78,7 @@ WAITING_FOR_A_CALLER = (
             "id was derived, the answer reader, the bound-run alias and the kind "
             "token bound. Each is proven by a domain test and named by an ADR."
         ),
-        "item": "#1168 (Verteiler, Befund 10)",
+        "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
         "names": ("PLATFORM_CONNECTION_UNKNOWN",),
@@ -98,6 +98,6 @@ WAITING_FOR_A_CALLER = (
             "answers the methods it serves today, and the table that maps every "
             "tool to its HTTP door waits for the router that reads it."
         ),
-        "item": "#1168 (Verteiler, Befund 10)",
+        "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
 )
