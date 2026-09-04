@@ -121,6 +121,18 @@ class ProjectSourceConnectionCollision:
 
 
 @dataclass(frozen=True)
+class ProjectSourceConnectionMoved:
+    """A `--move` connect: the old address disconnected, the new one connected.
+
+    Both revisions are published, and neither replaces the other in the
+    channel's history -- the old address's row stays, now `DISCONNECTED`.
+    """
+
+    disconnected: ProjectSourceConnectionRevision
+    connected: ProjectSourceConnectionRevision
+
+
+@dataclass(frozen=True)
 class ConnectionProjectUnknown:
     """The id is malformed, or names a project with no configured root."""
 
@@ -223,6 +235,7 @@ type ConnectProjectSourceResult = (
     | ProjectSourceConnectionUnchanged
     | ProjectSourceConnectionConflict
     | ProjectSourceConnectionCollision
+    | ProjectSourceConnectionMoved
     | ConnectionProjectUnknown
     | UnpublishableConnection
     | WriteUnavailable
@@ -340,6 +353,7 @@ def connect_project_source(
     source_id_generator: Callable[[], ProjectSourceId] = new_project_source_id,
     connected_at: RecordedAt | None = None,
     source_ref: str | None = None,
+    move: bool = False,
 ) -> ConnectProjectSourceResult:
     try:
         project = ProjectId(project_id)
@@ -362,11 +376,21 @@ def connect_project_source(
     active = _active_source(latest_sources)
     if isinstance(active, DurableStateCorrupt):
         return active
+    disconnected_from: ProjectSourceConnectionRevision | None = None
     if active is not None and (
         active.source_kind != typed_source_kind
         or active.source_address != typed_source_address
     ):
-        return ProjectSourceConnectionConflict()
+        if not (move and active.source_kind == typed_source_kind):
+            return ProjectSourceConnectionConflict()
+        match _connection_write_result(_disconnected_after(active), connections):
+            case ProjectSourceConnectionPublished(
+                revision
+            ) | ProjectSourceConnectionUnchanged(revision):
+                disconnected_from = revision
+            case _ as failure:
+                return failure
+        active = None
     matching_history = tuple(
         revision
         for revision in latest_sources
@@ -400,7 +424,16 @@ def connect_project_source(
         return UnpublishableConnection()
     if latest is not None and _unchanged_fields(latest, candidate):
         return ProjectSourceConnectionUnchanged(latest)
-    return _connection_write_result(candidate, connections)
+    result = _connection_write_result(candidate, connections)
+    if disconnected_from is None:
+        return result
+    match result:
+        case ProjectSourceConnectionPublished(
+            revision
+        ) | ProjectSourceConnectionUnchanged(revision):
+            return ProjectSourceConnectionMoved(disconnected_from, revision)
+        case _ as failure:
+            return failure
 
 
 def _connection_write_result(
@@ -452,6 +485,24 @@ def _active_source(
     if len(active) > 1:
         return DurableStateCorrupt()
     return None if not active else active[0]
+
+
+def _disconnected_after(
+    connected: ProjectSourceConnectionRevision,
+) -> ProjectSourceConnectionRevision:
+    return ProjectSourceConnectionRevision(
+        connected.project_id,
+        connected.source_id,
+        connected.revision_number + 1,
+        connected.source_kind,
+        connected.source_address,
+        connected.credential_directory,
+        connected.auth_method,
+        connected.connected_by,
+        ProjectSourceConnectionLifecycle.DISCONNECTED,
+        connected.connected_at,
+        connected.source_ref,
+    )
 
 
 def list_served_project_sources(
@@ -792,24 +843,7 @@ def disconnect_project_source(
     if latest.lifecycle is ProjectSourceConnectionLifecycle.DISCONNECTED:
         return ProjectSourceDisconnectedSuccessfully()
 
-    def disconnected_after(
-        connected: ProjectSourceConnectionRevision,
-    ) -> ProjectSourceConnectionRevision:
-        return ProjectSourceConnectionRevision(
-            connected.project_id,
-            connected.source_id,
-            connected.revision_number + 1,
-            connected.source_kind,
-            connected.source_address,
-            connected.credential_directory,
-            connected.auth_method,
-            connected.connected_by,
-            ProjectSourceConnectionLifecycle.DISCONNECTED,
-            connected.connected_at,
-            connected.source_ref,
-        )
-
-    candidate = disconnected_after(latest)
+    candidate = _disconnected_after(latest)
     result = _connection_write_result(candidate, connections)
     if isinstance(
         result, (ProjectSourceConnectionPublished, ProjectSourceConnectionUnchanged)
@@ -844,7 +878,7 @@ def disconnect_project_source(
             return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
-    retried_candidate = disconnected_after(refreshed)
+    retried_candidate = _disconnected_after(refreshed)
     retried = _connection_write_result(retried_candidate, connections)
     if isinstance(
         retried, (ProjectSourceConnectionPublished, ProjectSourceConnectionUnchanged)
