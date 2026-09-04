@@ -15,6 +15,7 @@ from atelier2.api.problems import (
     problem_resource,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.run_queries import (
     GetRunResult,
     ListRunsResult,
@@ -188,6 +189,7 @@ def test_health_returns_only_injected_source_identities() -> None:
             ports=empty_ports(),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
+            boot_clock=lambda: RecordedAt("2026-08-31T08:00:00Z"),
         )
     )
 
@@ -198,4 +200,5 @@ def test_health_returns_only_injected_source_identities() -> None:
         "status": "serving",
         "source_commit": "source-commit",
         "source_tree": "source-tree",
+        "serve_started_at": "2026-08-31T08:00:00Z",
     }
