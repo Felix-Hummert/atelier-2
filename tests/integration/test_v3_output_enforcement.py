@@ -654,7 +654,6 @@ def test_a_schema_refusal_orders_one_repair_that_can_succeed(
     )
 
 
-@pytest.mark.proves("the-write-and-hand-off-judge-a-report-under-one-byte-bound")
 def test_a_report_between_the_two_historical_bounds_is_admitted_and_delivered(
     runtime: DbosRuntime,
 ) -> None:
@@ -698,7 +697,6 @@ def test_a_report_between_the_two_historical_bounds_is_admitted_and_delivered(
     assert delivered == (DeliveredOutput(NODE, "plan", answered),)
 
 
-@pytest.mark.proves("the-write-and-hand-off-judge-a-report-under-one-byte-bound")
 def test_a_report_past_the_shared_bound_is_refused_with_a_repair(
     runtime: DbosRuntime,
 ) -> None:
