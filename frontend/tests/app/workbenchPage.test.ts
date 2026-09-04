@@ -736,6 +736,75 @@ describe("the workbench conductor conversation", () => {
     expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
   });
 
+  // #1078 review finding 2: a second failed send used to overwrite the
+  // first in a single `string | null` slot, silently losing whichever
+  // failed line came first. Two failures now stand as their own lines, and
+  // resending the first must not disturb the second.
+  //
+  // Both failures (and the resend) go through the same start-a-conversation
+  // path the sibling test above drives (`conductorRun` never reaches
+  // `WAITING_INPUT`): a second failure through the journaled wait-answer
+  // path instead would conflict with the first's still-uncertain journal
+  // entry for the same node execution (`mutationJournal.prepare`,
+  // "mutation identity already belongs to a different exact request") -- a
+  // different, already-covered seam, not the one this test is about. The
+  // resend is left to fail again too, so its own tail settles on the same
+  // short, already-proven `say()` path the two failures above use, rather
+  // than the longer successful-start chain (`followConductor`,
+  // `refreshConductorRun`) that has nothing to do with this finding.
+  it("keeps a second failed send as its own line, and resending the first leaves the second standing", async () => {
+    const start = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    openChat({
+      ...conductorConnectionOverrides(),
+      listRuns: listRunsForConductor(null),
+      getRun: vi.fn(async () => {
+        throw new Error("unreachable: start never succeeds in this test");
+      }),
+      start
+    });
+    const { screen, waitFor, fireEvent, within } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    await screen.findByText(conductorConversationCopy.composerHint);
+
+    await say("the first message that failed");
+    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
+    await say("the second message that failed");
+    await waitFor(() =>
+      expect(screen.getAllByText(workbenchPageCopy.conductorMessageFailed)).toHaveLength(2)
+    );
+    expect(start).toHaveBeenCalledTimes(2);
+
+    const failedLines = screen
+      .getAllByText(workbenchPageCopy.conductorMessageFailed)
+      .map((notice) => notice.closest("li"));
+    expect(failedLines[0]?.textContent).toContain("the first message that failed");
+    expect(failedLines[1]?.textContent).toContain("the second message that failed");
+
+    await fireEvent.click(
+      within(failedLines[0] as HTMLElement).getByRole("button", {
+        name: workbenchPageCopy.resendConductorMessage
+      })
+    );
+
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(3));
+    // The resend failed again, so both lines still stand -- the second
+    // untouched throughout, the first now the standing failed line's most
+    // recent attempt.
+    await waitFor(() =>
+      expect(screen.getAllByText(workbenchPageCopy.conductorMessageFailed)).toHaveLength(2)
+    );
+    const stillFailed = screen
+      .getAllByText(workbenchPageCopy.conductorMessageFailed)
+      .map((notice) => notice.closest("li")?.textContent);
+    expect(stillFailed.some((text) => text?.includes("the first message that failed"))).toBe(
+      true
+    );
+    expect(stillFailed.some((text) => text?.includes("the second message that failed"))).toBe(
+      true
+    );
+  });
   // Finding 2 (#959 review): the old guard allowed only WAITING_INPUT and
   // COMPLETED, so a FAILED conversation blocked Send forever and survived a
   // reload via `restoreConductorConversation`. Every terminal state now
@@ -936,6 +1005,37 @@ describe("the workbench conductor conversation", () => {
       expect(document.querySelector(".composer-hint")).toBeNull();
     });
 
+    it("names a not-startable configuration by its real reason, with a locked composer", async () => {
+      openChat(notStartableOverrides());
+      const { screen, within } = testingLibrary;
+      await screen.findByRole("heading", { name: "Workbench" });
+
+      // The empty room names the model and the real reason -- the exact
+      // relative "ago" wording is `when.ts`'s own concern, not pinned here.
+      const empty = within(document.querySelector(".workbench-empty") as HTMLElement);
+      await empty.findByText(/Your conductor \(claude-opus-5\) cannot start right now/);
+      expect(
+        empty.getByText(/its last provider probe failed/).textContent
+      ).toMatch(/its last provider probe failed .+ ago/);
+      expect(
+        empty.getByText(/The next canary run or a Settings change re-arms it\./).isConnected
+      ).toBe(true);
+      expect(empty.getByRole("link", { name: workbenchPageCopy.openSettings })).toHaveProperty(
+        "href",
+        expect.stringContaining("/atelier/settings")
+      );
+
+      // The empty room's own card already names the reason: HEART's "a state
+      // is shown, never restated" leaves the composer hint silent here
+      // rather than repeating the same sentence a second time on one screen
+      // (#1103).
+      expect(document.querySelector(".composer-hint")).toBeNull();
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+    });
+
     it("names the unbound role in the composer hint once a message already turned the room away from its empty card", async () => {
       const workflowResolution = {
         display_name: "conductor",
@@ -968,37 +1068,6 @@ describe("the workbench conductor conversation", () => {
       // mounts here -- the composer hint is the one place left standing to
       // carry the reason, and it names it on its own.
       expect(document.querySelector(".workbench-empty")).toBeNull();
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-
-    it("names a not-startable configuration by its real reason, with a locked composer", async () => {
-      openChat(notStartableOverrides());
-      const { screen, within } = testingLibrary;
-      await screen.findByRole("heading", { name: "Workbench" });
-
-      // The empty room names the model and the real reason -- the exact
-      // relative "ago" wording is `when.ts`'s own concern, not pinned here.
-      const empty = within(document.querySelector(".workbench-empty") as HTMLElement);
-      await empty.findByText(/Your conductor \(claude-opus-5\) cannot start right now/);
-      expect(
-        empty.getByText(/its last provider probe failed/).textContent
-      ).toMatch(/its last provider probe failed .+ ago/);
-      expect(
-        empty.getByText(/The next canary run or a Settings change re-arms it\./).isConnected
-      ).toBe(true);
-      expect(empty.getByRole("link", { name: workbenchPageCopy.openSettings })).toHaveProperty(
-        "href",
-        expect.stringContaining("/atelier/settings")
-      );
-
-      // The empty room's own card already names the reason: HEART's "a state
-      // is shown, never restated" leaves the composer hint silent here
-      // rather than repeating the same sentence a second time on one screen
-      // (#1103).
-      expect(document.querySelector(".composer-hint")).toBeNull();
       expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
         "disabled",
         true

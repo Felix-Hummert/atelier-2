@@ -137,12 +137,13 @@
   let conductorDeliveryBusy = false;
   let conductorDeliveryFailure: string | null = null;
   /**
-   * The one conductor message that failed to send, kept apart from the
-   * durable transcript (it never became one of its events) so it can stand
-   * in the conversation with its own resend control instead of vanishing the
-   * moment the composer moved on (#1078 B4).
+   * Every conductor message that failed to send, kept apart from the durable
+   * transcript (none of them ever became one of its events) so each can
+   * stand in the conversation with its own resend control instead of
+   * vanishing the moment the composer moved on, or a second failure erasing
+   * the first (#1078 B4, #1078 review).
    */
-  let failedConductorMessage: string | null = null;
+  let failedConductorMessages: string[] = [];
   let typed = "";
   let expandedPinReference: string | null = null;
   let composer: { focus(): void };
@@ -591,12 +592,12 @@
   }
 
   /** The transcript's own Resend control: the same send path, the failed text. */
-  async function resendFailedConductorMessage(): Promise<void> {
-    if (failedConductorMessage === null) return;
-    // Cleared inside `attemptSend`, only once its guards pass and only for
+  async function resendFailedConductorMessage(message: string): Promise<void> {
+    // Removed inside `attemptSend`, only once its guards pass and only for
     // this exact message (#1078 review): an early return here must not lose
-    // the standing failed line.
-    await attemptSend(failedConductorMessage);
+    // the standing failed line, and a second failure elsewhere in the list
+    // must not disappear either (#1078 review).
+    await attemptSend(message);
   }
 
   /**
@@ -604,9 +605,9 @@
    * submitted or resent from a failed line. The composer's own text is never
    * cleared here before a write is confirmed (#1078 B4): the connected
    * branches below only ever clear `typed` once `deliverConductorMessage`
-   * itself confirms a send, and a failure instead records the attempted text
-   * as `failedConductorMessage` so the transcript can offer Resend without
-   * the operator having to remember or retype it.
+   * itself confirms a send, and a failure instead appends the attempted text
+   * to `failedConductorMessages` so the transcript can offer Resend on each
+   * failed line without the operator having to remember or retype it.
    */
   async function attemptSend(message: string): Promise<void> {
     if (message.length === 0 || $connectionState === "reconnecting" || composerLocked) return;
@@ -620,10 +621,10 @@
         return;
       }
       conductorDeliveryFailure = null;
-      // Cleared only when this attempt is for the standing failed message
-      // (#1078 review): an unrelated new send must not destroy a failed
-      // line that was never resent.
-      if (failedConductorMessage === message) failedConductorMessage = null;
+      // Removed only when this attempt is for a standing failed message of
+      // its own (#1078 review): an unrelated new send, or a second failure,
+      // must not destroy a failed line that was never resent.
+      failedConductorMessages = failedConductorMessages.filter((failed) => failed !== message);
       if (conductorRun?.state === "WAITING_INPUT") {
         await deliverConductorMessage(conductorRun, message);
       } else {
@@ -653,7 +654,7 @@
   }
 
   function recordFailedConductorMessage(message: string, reason: string): void {
-    failedConductorMessage = message;
+    failedConductorMessages = [...failedConductorMessages, message];
     conductorDeliveryFailure = reason;
   }
 
@@ -891,7 +892,7 @@
     </ul>
   {/if}
 
-  {#if conversationTranscript.length === 0 && failedConductorMessage === null}
+  {#if conversationTranscript.length === 0 && failedConductorMessages.length === 0}
     <div class="workbench-empty card empty-state">
       <h2>{wrapDisplayCopy(workbenchPageCopy.emptyTitle)}</h2>
       {#if conductorLink.kind === "connected"}
@@ -940,26 +941,31 @@
           </p>
         </li>
       {/each}
-      {#if failedConductorMessage !== null}
+      {#each failedConductorMessages as failedMessage (failedMessage)}
         <!-- Never one of the durable transcript's own events (the write it
              would have produced never confirmed, #1078 B4): a local line,
-             kept only until Resend or a later successful send replaces it. -->
+             kept only until its own Resend or a later successful send for
+             the same text removes it -- a second failure stands beside the
+             first rather than replacing it (#1078 review). Keyed by the
+             message text itself, not position: an index key would let
+             removing an earlier failure reuse a later failure's own DOM
+             node and event handler instead of destroying the right one. -->
         <li class="conversation-line conversation-line-you conversation-line-failed">
           <p class="conversation-message">
             <span class="conversation-speaker">{wrapDisplayCopy(speakerLabels.you)}</span>
-            {failedConductorMessage}
+            {failedMessage}
           </p>
           <p class="conversation-failed-notice" role="status">
             {wrapDisplayCopy(workbenchPageCopy.conductorMessageFailed)}
             <button
               type="button"
               disabled={sendDisabled}
-              onclick={resendFailedConductorMessage}
+              onclick={() => resendFailedConductorMessage(failedMessage)}
               {...{ [workbenchQuestionAttribute]: workbenchQuestions.resendConductorMessage.id }}
             >{wrapDisplayCopy(workbenchPageCopy.resendConductorMessage)}</button>
           </p>
         </li>
-      {/if}
+      {/each}
     </ol>
     <!-- One link for the whole conversation, because the whole conversation is
          one run (#658). Per line it was the episode model speaking, where each
