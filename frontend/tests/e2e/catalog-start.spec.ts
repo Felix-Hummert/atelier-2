@@ -239,9 +239,8 @@ test("proves(a-v3-workflow-is-started-from-the-picker) proves(the-work-item-pick
     });
     expect(published.status()).toBe(201);
     const workflowRevisionHash = (await published.json()).workflow_revision_hash as string;
-    const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
-      data: {
-        workflow_revision_hash: workflowRevisionHash,
+    const admitted = await page.request.post("/atelier/api/v1/catalog-lineages", {
+      data: { kind: "workflow", catalog_revision_hash: workflowRevisionHash,
         actor: profileId,
         activated_at: "2026-08-26T00:00:00Z"
       }
@@ -368,9 +367,8 @@ test("starts a diff-review-shaped workflow with review_questions typed as text a
   });
   expect(published.status()).toBe(201);
   const workflowRevisionHash = (await published.json()).workflow_revision_hash as string;
-  const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
-    data: {
-      workflow_revision_hash: workflowRevisionHash,
+  const admitted = await page.request.post("/atelier/api/v1/catalog-lineages", {
+    data: { kind: "workflow", catalog_revision_hash: workflowRevisionHash,
       actor: profileId,
       activated_at: "2026-09-04T00:00:00Z"
     }
@@ -468,9 +466,8 @@ test("starts the real diff-review revision from the catalog with review_question
   });
   expect(published.status()).toBe(201);
   const workflowRevisionHash = (await published.json()).workflow_revision_hash as string;
-  const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
-    data: {
-      workflow_revision_hash: workflowRevisionHash,
+  const admitted = await page.request.post("/atelier/api/v1/catalog-lineages", {
+    data: { kind: "workflow", catalog_revision_hash: workflowRevisionHash,
       actor: profileId,
       activated_at: "2026-09-04T00:00:00Z"
     }

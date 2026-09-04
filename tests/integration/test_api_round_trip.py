@@ -40,7 +40,11 @@ from atelier2.adapters.dbos.schema import (
     host_model_registry_revisions,
     host_project_model_defaults_revisions,
 )
-from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
+from atelier2.api.openapi import (
+    API_PREFIX,
+    CATALOG_LINEAGES_PATH,
+    MODEL_REGISTRY_PATH,
+)
 from atelier2.api.references import (
     encode_canonical_base64,
     encode_public_project_reference,
@@ -51,6 +55,7 @@ from atelier2.contracts.host_configuration import (
     ProjectRootRevision,
     ProviderModelCheck,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunState
 from atelier2.ports.host_configuration import (
@@ -70,7 +75,8 @@ from tests.scenarios.durable_state import (
 )
 
 WORKFLOW_PATH = API_PREFIX + "/workflow-revisions"
-LINEAGE_PATH = API_PREFIX + "/workflow-lineages"
+LINEAGE_PATH = CATALOG_LINEAGES_PATH
+BY_NAME_PATH = API_PREFIX + f"/catalog-revisions/by-name/{RevisionKind.WORKFLOW.value}"
 SCHEMA_PATH = API_PREFIX + "/schema-revisions"
 ARTIFACT_PATH = API_PREFIX + "/artifacts"
 AUTH_PROFILE_PATH = API_PREFIX + "/auth-profile-revisions"
@@ -187,6 +193,22 @@ def carried(answer: Mapping[str, Any], *names: str) -> dict[str, Any]:
             f"the answer does not name {absent}; it names {tuple(sorted(answer))}"
         )
     return {name: answer[name] for name in names}
+
+
+def catalogued(answer: Mapping[str, Any], name: str) -> dict[str, Any]:
+    """The one crossing on this wire that does rename a value, named once here.
+
+    The catalog admits every kind through one door (#1172), so its body cannot
+    spell the hash the way the publish door of each kind spells it: a workflow
+    is published as `workflow_revision_hash`, an agent definition as
+    `agent_definition_revision_hash`, and both are admitted as
+    `catalog_revision_hash`. The alternative is one request body per kind, which
+    is the parallel copy that door family exists to remove. Everything else in
+    these round-trips still goes through `carried`, so this stays the one
+    exception rather than the first of many.
+    """
+
+    return {"catalog_revision_hash": carried(answer, name)[name]}
 
 
 def answered(response: Response, *expected: int) -> dict[str, Any]:
@@ -343,7 +365,8 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
         client.post(
             LINEAGE_PATH,
             json={
-                **carried(published, "workflow_revision_hash"),
+                "kind": RevisionKind.WORKFLOW.value,
+                **catalogued(published, "workflow_revision_hash"),
                 "actor": "operator",
                 "activated_at": "2026-08-18T00:00:00Z",
             },
@@ -352,10 +375,8 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
     )
 
     # Round-trip 1: the name answers a revision, and the start writes it back.
-    resolved = answered(
-        client.get(f"{WORKFLOW_PATH}/by-name/{admitted['display_name']}"), 200
-    )
-    assert resolved["workflow_revision_hash"] == published["workflow_revision_hash"]
+    resolved = answered(client.get(f"{BY_NAME_PATH}/{admitted['display_name']}"), 200)
+    assert resolved["catalog_revision_hash"] == published["workflow_revision_hash"]
 
     # Round-trip 3: the catalog listing answers the revision and its format,
     # which is exactly the pair a start has to state.
@@ -366,7 +387,7 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
         item
         for item in listing["items"]
         if item["workflow_revision_hash"]
-        == carried(resolved, "workflow_revision_hash")["workflow_revision_hash"]
+        == carried(resolved, "catalog_revision_hash")["catalog_revision_hash"]
     )
     detail = answered(
         client.get(f"{WORKFLOW_PATH}/{listed['workflow_revision_hash']}"), 200
