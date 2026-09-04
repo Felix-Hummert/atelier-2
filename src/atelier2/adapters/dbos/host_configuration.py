@@ -23,6 +23,8 @@ from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, ProviderId
 from atelier2.contracts.host_configuration import (
     HOST_CONFIGURATION_UNREADABLE,
+    MODEL_REGISTRY_REVISION_CONFLICT,
+    PROJECT_MODEL_DEFAULTS_REVISION_CONFLICT,
     PROJECT_ROOT_MISSING,
     ConnectionActor,
     HostConfigurationUnreadable,
@@ -374,7 +376,7 @@ def _write_model_registry_revision(
         if durable == revision:
             return ModelRegistryRevisionExisting(durable)
         raise ModelRegistryRevisionConflict(
-            f"model-registry-revision-conflict: {revision.provider_id.value!r} "
+            f"{MODEL_REGISTRY_REVISION_CONFLICT}: {revision.provider_id.value!r} "
             f"revision {revision.revision_number} already exists"
         )
     hashed = (
@@ -562,7 +564,7 @@ def _existing_project_model_defaults_revision(
         if durable == revision:
             return ProjectModelDefaultsRevisionExisting(durable)
         raise ProjectModelDefaultsRevisionConflict(
-            f"project-model-defaults-revision-conflict: {revision.project_id.value!r} "
+            f"{PROJECT_MODEL_DEFAULTS_REVISION_CONFLICT}: {revision.project_id.value!r} "
             f"revision {revision.revision_number} already exists"
         )
     hashed = (

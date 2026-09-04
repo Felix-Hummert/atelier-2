@@ -60,12 +60,9 @@ const DISPLAY_SINKS = new Set([
   "deliverCancel",
   "deliverWaitAnswer",
   "encodedContext",
-  "fingerprintLabel",
   "humanErrorMessage",
-  "infoLabel",
   "proofSealsSentence",
   "retryLabel",
-  "sealsTheseBytes",
   "wrapDisplayCopy"
 ]);
 const DISPLAY_FIELDS = new Set([
