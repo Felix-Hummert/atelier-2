@@ -1372,6 +1372,12 @@ file it stands in is the whole justification:
 An entry naming something the gate no longer reports is red too: when a caller
 arrives, or the code goes, its entry goes with it.
 
+A third static gate in the same `quality` job, `ruff check --select ANN401`
+scoped to `src/atelier2/contracts`, `ports`, `application`, and `api`, proves
+only that none of those four packages accepts a parameter typed directly as
+`Any` -- it says nothing about a nested `dict[str, Any]` or about return
+types.
+
 ## The duplicate ratchet
 
 `uv run --locked python scripts/check_architecture.py` also refuses copied
@@ -1383,6 +1389,18 @@ names the pairs this tree already carries. A pair that is not listed turns the
 gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
 two one owner *and* deleting its entry.
+
+## SonarCloud and CodeQL
+
+`sonar-project.properties` at the repository root lets SonarCloud's Automatic
+Analysis (public project `FlexOr2_atelier-2` in organisation `flexor2`, Free
+plan, no token, no CI step) read the source, test, and exclusion layout and
+comment on every pull request through the SonarCloud GitHub app. It measures
+duplication, cognitive complexity, and issues on new code. CodeQL's default
+setup, enabled directly on GitHub, scans Python, JavaScript/TypeScript, and
+Actions on the same pushes. Neither is a required check yet -- that follows
+the measurement week described in #1203, which compares Sonar's findings
+against the duplicate ratchet above and the `C901` complexity count.
 
 ## Code rules: gates, metrics, audit
 
