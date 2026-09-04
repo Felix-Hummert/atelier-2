@@ -29,6 +29,7 @@ from atelier2.contracts.agents import (
     ProviderId,
     ResolvedAgentBinding,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
     ModelRegistryEntry,
     ModelRegistryEntrySource,
@@ -1012,7 +1013,9 @@ def _armed_but_unproven_registry(
     return _registry(
         FakeExecutorFactory("exact"),
         receipt_gate=ProviderProbeReceiptGate(
-            _NoReceipts(), "a" * 40, lambda: RecordedAt("2026-01-01T00:00:00Z")
+            _NoReceipts(),
+            Sha256Hash("a" * 64),
+            lambda: RecordedAt("2026-01-01T00:00:00Z"),
         ),
         reprobe_exempt_workflow_revisions=reprobe_exempt_workflow_revisions,
     )

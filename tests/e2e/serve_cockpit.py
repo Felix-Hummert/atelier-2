@@ -122,6 +122,7 @@ from atelier2.host.conductor_workflow import (
 )
 from atelier2.host.provider_canary import (
     PROVIDER_CANARY_RECEIPT_VALIDITY,
+    provider_layer_digest,
     write_provider_canary_receipt_atomic,
 )
 from atelier2.host.serving import HostSettings
@@ -1290,6 +1291,7 @@ def _write_e2e_provider_probe_receipt(
         ProviderProbeVectorId(f"e2e-harness-{configuration_hash.value}"),
         configuration_hash,
         WorkflowRevisionHash.of(b"e2e-harness-proof-of-vector"),
+        provider_layer_digest(),
         source_commit,
         recorded_instant(observed),
         recorded_instant(observed + PROVIDER_CANARY_RECEIPT_VALIDITY),

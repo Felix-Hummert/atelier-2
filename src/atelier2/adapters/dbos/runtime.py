@@ -113,6 +113,7 @@ from atelier2.contracts.effects import (
     EffectDestination,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
     PROJECT_UNKNOWN,
     ProjectId,
@@ -235,11 +236,13 @@ class DbosRuntimeSettings:
     # `DbosRuntimeSettings` outside `HostSettings.runtime_settings()` already
     # passes; `is_startable` then keeps its unarmed, factory-and-capability
     # answer exactly, since none of those registries model live provider
-    # evidence at all. `provider_probe_receipt_source_commit` is a third
-    # carrier of `HostSettings.source_commit`, beside `runner_lease_source_commit`
-    # above, for the same reason that one is its own field rather than reused.
+    # evidence at all. `provider_probe_receipt_provider_layer_digest` is this
+    # deployment's own `host.provider_canary.provider_layer_digest()` (#1124):
+    # what the gate actually compares a receipt against, not the whole
+    # `source_commit` -- a redeploy that leaves the provider layer's own bytes
+    # unchanged leaves every receipt proven.
     provider_probe_receipt_directory: Path | None = None
-    provider_probe_receipt_source_commit: str | None = None
+    provider_probe_receipt_provider_layer_digest: Sha256Hash | None = None
 
     def __post_init__(self) -> None:
         if not self.application_version.strip():
@@ -303,7 +306,7 @@ class DbosRuntimeSettings:
             )
         receipt_gate_fields = (
             self.provider_probe_receipt_directory,
-            self.provider_probe_receipt_source_commit,
+            self.provider_probe_receipt_provider_layer_digest,
         )
         declared_receipt_gate = tuple(
             field for field in receipt_gate_fields if field is not None
@@ -313,12 +316,15 @@ class DbosRuntimeSettings:
         ):
             raise ValueError(
                 "a receipt gate needs its receipt directory and this "
-                "deployment's source commit declared together, not in part"
+                "deployment's provider layer digest declared together, not in part"
             )
-        if self.provider_probe_receipt_source_commit is not None and not (
-            self.provider_probe_receipt_source_commit.strip()
+        if self.provider_probe_receipt_provider_layer_digest is not None and not (
+            isinstance(self.provider_probe_receipt_provider_layer_digest, Sha256Hash)
         ):
-            raise ValueError("provider_probe_receipt_source_commit must be nonempty")
+            raise TypeError(
+                "provider_probe_receipt_provider_layer_digest must use its "
+                "typed contract"
+            )
 
     @property
     def runner_lease_declared(self) -> bool:
@@ -1489,12 +1495,12 @@ def _resolve_admitted_canary_revisions(
 def _receipt_gate(settings: DbosRuntimeSettings) -> ProviderProbeReceiptGate | None:
     if (
         settings.provider_probe_receipt_directory is None
-        or settings.provider_probe_receipt_source_commit is None
+        or settings.provider_probe_receipt_provider_layer_digest is None
     ):
         return None
     return ProviderProbeReceiptGate(
         _FilesystemProviderProbeReceiptReads(settings.provider_probe_receipt_directory),
-        settings.provider_probe_receipt_source_commit,
+        settings.provider_probe_receipt_provider_layer_digest,
         recorded_instant,
     )
 

@@ -84,6 +84,8 @@ from atelier2.host.provider_canary import (
     ProviderCanaryProcessTimedOut,
     ProviderCanaryServerUnavailable,
     ProviderCanarySettings,
+    ProviderLayerReceiptOutcome,
+    ProviderLayerReceiptStatus,
     default_provider_canary_state_directory,
     execute_provider_canaries,
 )
@@ -423,6 +425,27 @@ def _migrate(parsed: argparse.Namespace) -> int:
     return 0
 
 
+def _describe_provider_layer_receipt_status(status: ProviderLayerReceiptStatus) -> str:
+    """The one journal line naming whether existing receipts still apply (#1124)."""
+
+    match status.outcome:
+        case ProviderLayerReceiptOutcome.NO_READABLE_PRIOR_RECEIPT:
+            return (
+                "no readable prior receipt (this run's provider layer: "
+                f"{status.current_digest.value[:8]})"
+            )
+        case ProviderLayerReceiptOutcome.RECEIPTS_KEPT:
+            return "receipts kept (provider layer unchanged)"
+        case ProviderLayerReceiptOutcome.RECEIPTS_INVALIDATED:
+            assert status.previous_digest is not None
+            return (
+                "receipts invalidated (provider layer changed: "
+                f"{status.previous_digest.value[:8]} → {status.current_digest.value[:8]})"
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _provider_canary(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
 ) -> int:
@@ -436,7 +459,12 @@ def _provider_canary(
     except ValueError as refusal:
         parser.error(str(refusal))
     try:
-        report = execute_provider_canaries(settings)
+        report = execute_provider_canaries(
+            settings,
+            on_provider_layer_status=lambda status: print(
+                _describe_provider_layer_receipt_status(status)
+            ),
+        )
     except (
         OSError,
         ProviderCanaryAnswerUnreadable,

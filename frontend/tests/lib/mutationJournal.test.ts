@@ -277,6 +277,44 @@ describe("MutationJournal exact transport truth", () => {
       new MutationJournal(removeStorage).discard(start().mutation_id)
     ).rejects.toThrow(removeFailure);
   });
+
+  describe("discardPoisoned: the one way out of a journal entries() refuses to read (#914)", () => {
+    it("removes a poisoned journal that entries() itself rejects, never reading it first", async () => {
+      sessionStorage.setItem("atelier2.mutation-journal.v1", "{");
+      const journal = new MutationJournal(sessionStorage);
+      await expect(journal.entries()).rejects.toThrow(/valid JSON/);
+
+      journal.discardPoisoned();
+      expect(sessionStorage.getItem("atelier2.mutation-journal.v1")).toBeNull();
+      await expect(journal.entries()).resolves.toEqual([]);
+    });
+
+    it("removes every remembered mutation, valid ones included -- there is no partial rescue", async () => {
+      const journal = new MutationJournal(sessionStorage);
+      await journal.prepare(start());
+      await journal.prepare(wait());
+
+      journal.discardPoisoned();
+      expect(await journal.entries()).toEqual([]);
+    });
+
+    it("is a harmless no-op when there was nothing to forget", () => {
+      const journal = new MutationJournal(sessionStorage);
+      expect(() => journal.discardPoisoned()).not.toThrow();
+      expect(sessionStorage.getItem("atelier2.mutation-journal.v1")).toBeNull();
+    });
+  });
+
+  describe("rawStored: the exact bytes behind an entry, read without ever parsing it (#914)", () => {
+    it("returns the raw stored text untouched, poisoned or not", () => {
+      sessionStorage.setItem("atelier2.mutation-journal.v1", "{");
+      expect(new MutationJournal(sessionStorage).rawStored()).toBe("{");
+    });
+
+    it("returns null when nothing is stored", () => {
+      expect(new MutationJournal(sessionStorage).rawStored()).toBeNull();
+    });
+  });
 });
 
 function publish(): MutationEnvelope {

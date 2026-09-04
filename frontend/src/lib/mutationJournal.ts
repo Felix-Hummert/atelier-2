@@ -341,6 +341,31 @@ export class MutationJournal {
     return true;
   }
 
+  /**
+   * The raw, unparsed bytes this browser has stored -- or null when nothing
+   * is (#914). Never parses and never throws: the one read that stays honest
+   * about a poisoned journal, so a caller can show and measure exactly what
+   * is about to be forgotten before it asks to forget it.
+   */
+  rawStored(): string | null {
+    return this.storage.getItem(MUTATION_JOURNAL_STORAGE_KEY);
+  }
+
+  /**
+   * Forgets everything this browser remembered, without reading any of it
+   * first (#914).
+   *
+   * `entries()` rejects a poisoned journal by design -- corrupt JSON, an
+   * unknown field, a duplicate identity, a bad hash are all the truth, never
+   * something to tolerate -- so every other method on this class, which reads
+   * before it writes, stays blocked by the same poisoned entry it would need
+   * to discard. This is the one path out: it never parses, so it can never
+   * throw on what it is asked to remove.
+   */
+  discardPoisoned(): void {
+    this.storage.removeItem(MUTATION_JOURNAL_STORAGE_KEY);
+  }
+
   private write(entries: JournalEntry[]): void {
     if (entries.length === 0) {
       this.storage.removeItem(MUTATION_JOURNAL_STORAGE_KEY);

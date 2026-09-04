@@ -4,8 +4,10 @@ import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { decodePublicRunReference, type RunListRow, type RunV3 } from "../../src/api/client";
 import { humanProblemDetail } from "../../src/lib/humanRefusal";
+import { journalPoisonedCopy } from "../../src/lib/journalPoisonedCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
+import { MUTATION_JOURNAL_STORAGE_KEY } from "../../src/lib/storageKeys";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { healthyRunListItems } from "../support/runListRows";
 
@@ -927,4 +929,54 @@ test("a second tab reconstructs the same open conversation and starts nothing si
   } finally {
     await secondContext.close();
   }
+});
+
+test("a poisoned mutation journal shows one sentence and one door, and forgetting it heals the room without a reload", async ({
+  page
+}) => {
+  test.setTimeout(120_000);
+
+  const seededConductor = await resetAndSeedConductor(page);
+  const conversationLink = await startConversationOverUi(page, "Round 1.", seededConductor.workflow_revision_hash);
+  const publicRunReference = await conversationRunReference(conversationLink);
+  const firstRoundExecutionId = await currentWaitExecutionId(page, publicRunReference);
+
+  // Poison this browser's own memory of pending sendings -- the same corrupt
+  // JSON `mutationJournal.test.ts` proves `entries()` itself refuses to read.
+  await page.evaluate(
+    (key) => window.sessionStorage.setItem(key, "{"),
+    MUTATION_JOURNAL_STORAGE_KEY
+  );
+  await page.reload();
+
+  await expect(page.getByText(journalPoisonedCopy.sentence)).toBeVisible({ timeout: 20_000 });
+  // Every card that would have read this same journal stays unshown -- no
+  // stuck skeleton, no card that silently never appears.
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(0);
+  await expect(page.getByLabel(workbenchPageCopy.composerLabel)).toHaveCount(0);
+
+  await page.getByRole("button", { name: journalPoisonedCopy.door }).click();
+  const confirmDialog = page.getByRole("dialog", { name: journalPoisonedCopy.confirmLabel });
+  await expect(
+    confirmDialog.getByRole("heading", { name: journalPoisonedCopy.confirmQuestion })
+  ).toBeVisible();
+  await expect(confirmDialog.getByText(journalPoisonedCopy.disappearsFact)).toBeVisible();
+  await expect(confirmDialog.getByText(journalPoisonedCopy.staysFact)).toBeVisible();
+  await expect(confirmDialog.getByText(journalPoisonedCopy.permanentFact)).toBeVisible();
+  await confirmDialog.getByRole("button", { name: journalPoisonedCopy.confirm }).click();
+
+  // Healed in the same page, no reload: the notice retires and the
+  // conversation that was reading this journal comes straight back.
+  await expect(page.getByText(journalPoisonedCopy.sentence)).toHaveCount(0);
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 20_000 });
+  expect(
+    await page.evaluate((key) => window.sessionStorage.getItem(key), MUTATION_JOURNAL_STORAGE_KEY)
+  ).toBeNull();
+
+  // The next start goes through: the healed journal accepts a fresh wait
+  // answer over the composer's own audited path.
+  await page.getByLabel(workbenchPageCopy.composerLabel).fill("Round 2 after forgetting.");
+  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
+  await currentWaitExecutionId(page, publicRunReference, firstRoundExecutionId);
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toHaveCount(2, { timeout: 20_000 });
 });

@@ -16,6 +16,15 @@
   export let title: string = problemNoticeCopy.title;
   export let message: string = problemNoticeCopy.message;
   export let problem: Problem | null = null;
+  /** The notice's one door (REQ-UIQ-10: an error is a brick with exactly one
+   * next move). Both must be set for it to appear; either left at its default
+   * null keeps the notice door-less, as every caller before it did. */
+  export let actionLabel: string | null = null;
+  export let onAction: (() => void) | null = null;
+  /** Extra attributes the action button carries -- e.g. the Workbench's own
+   * `data-workbench-question` control inventory tag. Never used to smuggle
+   * behaviour past this component's own props. */
+  export let actionAttributes: Record<string, string> = {};
 </script>
 
 <div class="notice" role="alert">
@@ -31,6 +40,9 @@
       </details>
     {/if}
   </span>
+  {#if actionLabel !== null && onAction !== null}
+    <button type="button" class="notice-action" onclick={onAction} {...actionAttributes}>{actionLabel}</button>
+  {/if}
 </div>
 
 <style>
@@ -49,5 +61,12 @@
   .notice-technical code {
     display: block;
     overflow-wrap: anywhere;
+  }
+
+  .notice-action {
+    align-self: start;
+    border-color: currentColor;
+    color: inherit;
+    background: transparent;
   }
 </style>
