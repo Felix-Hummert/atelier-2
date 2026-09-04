@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { restartNoticeCopy } from "../../src/lib/connectionState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 
@@ -56,8 +57,16 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
   const composerHint = page.locator(".composer-hint");
   await expect(composerHint).toBeVisible();
-  await expect(composerHint).not.toHaveText(restartNoticeCopy);
-  const healthyComposerHint = await composerHint.textContent();
+  // The mount read is still in flight for a moment after the heading lands,
+  // and the "checking..." wording it shows meanwhile is a state the workbench
+  // passes through, not one it promises (#1159): reading whatever text stood
+  // here pinned that transient sentence as the healthy baseline on a slow
+  // mount, and the recovery assertion below then failed against the settled
+  // one. The conductor seeded above makes the settled promise a named
+  // sentence -- the same one `workbench-conductor.spec.ts` reads after these
+  // very two calls -- so the outage's before and after are the same statement.
+  const healthyComposerHint = conductorConversationCopy.composerHint;
+  await expect(composerHint).toHaveText(healthyComposerHint);
   await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
 
   const restarted = await page.request.post("/__e2e/recompose");
@@ -156,7 +165,7 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   // it (#700's own declared minimum: the conductor-link read) was asked
   // again on its own, not left stuck on a stale failure.
   await expect(notice).toBeHidden({ timeout: 20_000 });
-  await expect(composerHint).toHaveText(healthyComposerHint ?? "");
+  await expect(composerHint).toHaveText(healthyComposerHint);
   await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
 });
 
