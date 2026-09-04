@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -43,6 +43,7 @@ from atelier2.adapters.grok_subscription import (
     GrokContainmentUnattested,
     GrokExecutableUnsupported,
     GrokProviderEndedWithoutFinalMessage,
+    GrokProviderEndedWithoutToolUse,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionProcessCommand,
@@ -58,9 +59,14 @@ from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
+    ProviderTerminalRefusal,
+    ToolCalled,
+    ToolReturned,
     UnrecognisedProviderOutput,
+    Usage,
 )
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -157,7 +163,7 @@ subworkflow kind; V3 has no node that completes without a real attempt, so a
 second node here would need its own executor pass and, worse, would race this
 file's cleanup assertion against a workspace that node had not yet vacated.
 """
-INTROSPECTING_GROK = """
+GROK_PROBE_HEAD = """
 import json, os, sys, tomllib
 from pathlib import Path
 if "--version" in sys.argv:
@@ -192,11 +198,66 @@ if "inspect" in sys.argv:
         sys.stdout,
     )
     raise SystemExit(0)
+
+
+def answer(payload, doors=()):
+    '''Write this payload back in whichever output format the call asked for.
+
+    The real CLI speaks two: one JSON envelope for the tool-free vector, and
+    the Anthropic Messages NDJSON stream for the workspace-tool one, where the
+    doors this fake really opened travel as their own messages.
+    '''
+
+    if "streaming-messages-json" in sys.argv:
+        lines = [{"type": "system", "subtype": "init", "session_id": "fake-session"}]
+        for index, (door, request, outcome) in enumerate(doors):
+            call_id = "call-" + str(index)
+            lines.append({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": call_id, "name": door, "input": request}
+            ]}})
+            lines.append({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": call_id, "content": outcome}
+            ]}})
+        lines.append({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": json.dumps(payload)}
+        ]}})
+        terminal = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": json.dumps(payload),
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        }
+        if "--json-schema" in sys.argv:
+            terminal["structured_output"] = payload
+        lines.append(terminal)
+        sys.stdout.write("\\n".join(json.dumps(line) for line in lines))
+        return
+    envelope = {"text": json.dumps(payload)}
+    if "--json-schema" in sys.argv:
+        envelope["structuredOutput"] = payload
+    json.dump(envelope, sys.stdout)
+"""
+"""The version answer, the containment attestation, and the two output formats.
+
+Both fakes below start here, because both stand in for the same CLI: what
+separates them is only what they do where they are started.
+"""
+
+INTROSPECTING_GROK = (
+    GROK_PROBE_HEAD
+    + """
 args = sys.argv[1:]
 job = args[args.index("-p") + 1].encode("utf-8") if "-p" in args else b""
 session = Path(os.environ["GROK_HOME"]) / "sessions" / "headless"
 session.mkdir(parents=True)
-(session / "updates.jsonl").write_bytes(job + b"\\nprovider response")
+written = session / "updates.jsonl"
+written.write_bytes(job + b"\\nprovider response")
 observed = {
     "arguments": sys.argv,
     "working_directory": os.getcwd(),
@@ -204,11 +265,9 @@ observed = {
     "job": job.decode("utf-8"),
     "stdin": sys.stdin.buffer.read().decode("utf-8"),
 }
-envelope = {"text": json.dumps(observed)}
-if "--json-schema" in args:
-    envelope["structuredOutput"] = observed
-json.dump(envelope, sys.stdout)
+answer(observed, [("search_replace", {"file_path": str(written)}, "written")])
 """
+)
 
 INLINE_PROMPT_GROK = INTROSPECTING_GROK.replace(
     '"arguments": sys.argv,',
@@ -452,9 +511,11 @@ def test_a_measured_size_job_reaches_grok_inline(
     invocation = leased(command, leased_workspace(tmp_path))
 
     completion = launched(command, invocation.lease.working_directory)
+    result = executor.decode_process_completion(invocation, completion)
 
     assert completion.return_code == 0
-    observed = json.loads(completion.standard_output)["structuredOutput"]
+    assert isinstance(result, AgentExecutionResult)
+    observed = json.loads(result.output_bytes)
     assert observed["single_prompt_bytes"] == len(job)
     assert observed["stdin"] == ""
     executor.release_credential_channel(command)
@@ -1561,48 +1622,24 @@ def test_the_credential_channel_dies_while_the_leased_workspace_stands(
 WORKSPACE_ARTEFACT_NAME = "artefact"
 WORKSPACE_ARTEFACT_LINE = "from the lease"
 
-TOOL_USING_GROK = f"""
-import json, os, sys, tomllib
-from pathlib import Path
-if "--version" in sys.argv:
-    print("grok 1.0.5 (5115b46bc9) [stable]")
-    raise SystemExit(0)
-if "inspect" in sys.argv:
-    home = Path(os.environ["GROK_HOME"])
-    compatibility = tomllib.loads((home / "config.toml").read_text())["compat"]
-    cells = [
-        {{
-            "vendor": vendor,
-            "surface": surface,
-            "enabled": compatibility[vendor].get(surface) is not False,
-            "source": "config",
-        }}
-        for vendor, surfaces in (
-            ("cursor", ("skills", "rules", "agents", "mcps", "hooks", "sessions")),
-            ("claude", ("skills", "rules", "agents", "mcps", "hooks", "sessions")),
-            ("codex", ("sessions",)),
-        )
-        for surface in surfaces
-    ]
-    json.dump(
-        {{
-            "plugins": [], "hooks": [], "mcpServers": [], "skills": [],
-            "marketplaces": [], "lspServers": [], "projectInstructions": [],
-            "configSources": {{"layers": [{{"role": "user", "path": str(home / "config.toml")}}]}},
-            "permissions": {{"sources": []}},
-            "agents": [{{"name": "general-purpose", "source": {{"type": "builtin"}}}}],
-            "externalCompat": {{"remoteSettingsLoaded": False, "cells": cells}},
-        }},
-        sys.stdout,
-    )
-    raise SystemExit(0)
+TOOL_USING_GROK = (
+    GROK_PROBE_HEAD
+    + f"""
 written = os.path.join(os.getcwd(), {WORKSPACE_ARTEFACT_NAME!r})
 with open(written, "w", encoding="utf-8") as artefact:
     artefact.write({WORKSPACE_ARTEFACT_LINE!r})
 with open(written, encoding="utf-8") as artefact:
     read_back = artefact.read()
-json.dump({{"text": json.dumps({{"wrote": written, "read_back": read_back}})}}, sys.stdout)
+answer(
+    {{"wrote": written, "read_back": read_back}},
+    [
+        ("search_replace", {{"file_path": written}}, "written"),
+        ("read_file", {{"target_file": written}}, read_back),
+    ],
+)
 """
+)
+"""A fake that really writes and reads back where it was started."""
 
 
 def grok_subscription_runtime(
@@ -2221,6 +2258,405 @@ def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wro
     assert answered["wrote"] == str(leased_directory / WORKSPACE_ARTEFACT_NAME)
     assert answered["read_back"] == WORKSPACE_ARTEFACT_LINE
     assert not leased_directory.exists()
+
+
+def recorded_grok_stream(*lines: Mapping[str, object]) -> bytes:
+    """These lines exactly as grok writes a stream: NDJSON, no trailing feed."""
+
+    return "\n".join(json.dumps(line) for line in lines).encode("utf-8")
+
+
+def recorded_session_start() -> dict[str, object]:
+    """The `system` line every measured workspace-tool stream opens with."""
+
+    return {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "01a06cbe-4d41-7112-b8c7-0eb91ef1b6c5",
+        "model": "grok-4.6",
+        "permissionMode": "bypassPermissions",
+    }
+
+
+def recorded_assistant_message(*blocks: Mapping[str, object]) -> dict[str, object]:
+    """One whole assistant message, in the shape the measured stream carries."""
+
+    return {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": list(blocks)},
+    }
+
+
+def recorded_tool_results(*blocks: Mapping[str, object]) -> dict[str, object]:
+    """What the doors answered, as the stream's own `user` message."""
+
+    return {"type": "user", "message": {"role": "user", "content": list(blocks)}}
+
+
+def recorded_terminal_line(
+    answer: str | None = None,
+    structured_output: object | None = None,
+    is_error: object = False,
+    subtype: str = "success",
+) -> dict[str, object]:
+    """The `result` line grok names its own session's end with.
+
+    `is_error` is deliberately untyped: a release that spells its own flag as
+    something other than the JSON boolean is one of the endings this file has
+    to be able to write down. An absent `answer` leaves the `result` field off
+    the line entirely, which is how a terminal line carrying no last words
+    arrives.
+    """
+
+    terminal: dict[str, object] = {
+        "type": "result",
+        "subtype": subtype,
+        "is_error": is_error,
+        "num_turns": 1,
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 16374,
+            "output_tokens": 641,
+            "cache_read_input_tokens": 2688,
+            "cache_creation_input_tokens": 0,
+        },
+    }
+    if answer is not None:
+        terminal["result"] = answer
+    if structured_output is not None:
+        terminal["structured_output"] = structured_output
+    return terminal
+
+
+RECORDED_ANSWER = '{"summary":"Appended the probe line.","changed_paths":["README.md"]}'
+"""The answer the measured tool-using session ended on, as its own text."""
+
+RECORDED_PREAMBLE = '{"summary":"Reading AGENTS.md and README.md.","changed_paths":[]}'
+"""The narration the measured collapsed session ended on instead."""
+
+
+def decoded_workspace_tool_stream(
+    tmp_path: Path,
+    stream: bytes,
+    declared_output_schema: bytes | None = None,
+) -> AgentExecutionResult | AgentExecutionFailure:
+    """One workspace-tool call decoded from exactly these recorded stream bytes."""
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    try:
+        command = executor.prepare_process(
+            subscription_request(declared_output_schema=declared_output_schema)
+        )
+        try:
+            return executor.decode_process_completion(
+                leased(command, leased_workspace(tmp_path)),
+                AgentProcessCompletion(0, stream, b""),
+            )
+        finally:
+            executor.release_credential_channel(command)
+    finally:
+        executor.close()
+
+
+def test_the_tool_vector_asks_for_the_stream_the_tool_free_one_does_not(
+    tmp_path: Path,
+) -> None:
+    """The wire is what separates the two operations' identities (#1165)."""
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    tool_free = GrokSubscriptionExecutorFactory(settings).open()
+    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    request = subscription_request()
+
+    command = executor.prepare_process(request)
+    tool_free_command = tool_free.prepare_process(request)
+
+    assert argument_after(command.arguments, "--output-format") == (
+        "streaming-messages-json"
+    )
+    assert argument_after(tool_free_command.arguments, "--output-format") == "json"
+    assert GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY == (
+        AgentExecutorOperationalIdentity(
+            "headless-workspace-tools-streaming-messages-json-output-schema/v3"
+        )
+    )
+    executor.release_credential_channel(command)
+    tool_free.release_credential_channel(tool_free_command)
+    executor.close()
+    tool_free.close()
+
+
+def test_a_tool_using_session_keeps_its_doors_and_answers_with_its_last_output(
+    tmp_path: Path,
+) -> None:
+    """The steps that reached the answer, in the order grok wrote them.
+
+    Replayed from the shape measured on grok 1.0.5 / grok-4.6 (#1165): a whole
+    `assistant` message may carry narration, a thinking block and its tool call
+    together, the doors answer in a `user` message, and the terminal `result`
+    line names the structured answer this executor hands on.
+    """
+
+    read_call = {
+        "type": "tool_use",
+        "id": "call-71a284dc-0",
+        "name": "read_file",
+        "input": {"target_file": "README.md"},
+    }
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        recorded_assistant_message(
+            {"type": "thinking", "thinking": "Read the file first.", "signature": "s"},
+            {"type": "text", "text": RECORDED_PREAMBLE},
+            read_call,
+        ),
+        recorded_tool_results(
+            {
+                "type": "tool_result",
+                "tool_use_id": "call-71a284dc-0",
+                "content": "# Probe repo",
+                "is_error": False,
+            }
+        ),
+        recorded_assistant_message({"type": "text", "text": RECORDED_ANSWER}),
+        recorded_terminal_line(RECORDED_ANSWER, json.loads(RECORDED_ANSWER)),
+    )
+
+    result = decoded_workspace_tool_stream(
+        tmp_path, stream, declared_output_schema=b'{"type":"object"}'
+    )
+
+    assert result == AgentExecutionResult(
+        RECORDED_ANSWER.encode(),
+        AttemptTranscript.of(
+            [
+                UnrecognisedProviderOutput(json.dumps(recorded_session_start())),
+                UnrecognisedProviderOutput(
+                    '{"type":"thinking","thinking":"Read the file first.",'
+                    '"signature":"s"}'
+                ),
+                AssistantTurn(RECORDED_PREAMBLE),
+                ToolCalled("read_file", '{"target_file":"README.md"}'),
+                ToolReturned("read_file", "# Probe repo"),
+                AssistantTurn(RECORDED_ANSWER),
+                Usage(16374, 641, 2688, 0),
+            ]
+        ),
+    )
+
+
+def test_a_session_that_ended_before_its_first_tool_call_is_no_answer_at_all(
+    tmp_path: Path,
+) -> None:
+    """The collapse #1165 was cut for, replayed from the capture that found it.
+
+    `--json-schema` presses the narration before the first tool call into the
+    report form, and the CLI ends the session at the first message carrying no
+    tool call. A binding that asked for tools therefore gets a typed provider
+    refusal, never that preamble as a candidate report -- and the preamble
+    stays in the transcript, where a reader can see what ended the attempt.
+    """
+
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        recorded_assistant_message(
+            {"type": "thinking", "thinking": "Read AGENTS.md first.", "signature": "s"},
+            {"type": "text", "text": RECORDED_PREAMBLE},
+        ),
+        recorded_terminal_line(RECORDED_PREAMBLE, json.loads(RECORDED_PREAMBLE)),
+    )
+
+    result = decoded_workspace_tool_stream(
+        tmp_path, stream, declared_output_schema=b'{"type":"object"}'
+    )
+
+    assert isinstance(result, GrokProviderEndedWithoutToolUse)
+    assert result.code is AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+    assert result.transcript is not None
+    assert AssistantTurn(RECORDED_PREAMBLE) in result.transcript.events
+
+
+def test_a_root_string_schema_answer_survives_the_stream(tmp_path: Path) -> None:
+    """The provider-canary vector: a schema whose root is a string, not an object.
+
+    Replayed from a billed run of that vector's own instruction and schema
+    (04.09.2026, grok 1.0.5 / grok-4.6, `#1165`). Its terminal line settles the
+    two things an object-schema capture could not: the field is spelled
+    `structured_output` here too, and it carries the bare string rather than
+    wrapping it, while `result` beside it carries that string's JSON text. So
+    the bytes the output seam judges are one JSON string document, quotes
+    included. The same run showed the schema pressing even the narration before
+    the first tool call into that string form, which is the collapse the
+    sibling test above pins.
+    """
+
+    command = "sleep 20 && echo canary-alive"
+    call_id = "call-78cc785d-e7bf-4f49-9de0-5e4d219c1d4e-0"
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        recorded_assistant_message(
+            {"type": "text", "text": '"I\'ll run that exact command."'},
+            {
+                "type": "tool_use",
+                "id": call_id,
+                "name": "run_terminal_command",
+                "input": {
+                    "command": command,
+                    "description": "Sleep 20 seconds then echo canary-alive",
+                    "timeout": 30000,
+                },
+            },
+        ),
+        recorded_tool_results(
+            {
+                "type": "tool_result",
+                "tool_use_id": call_id,
+                "content": json.dumps(
+                    {
+                        "type": "Bash",
+                        "output_for_prompt": "exit: 0\ncanary-alive\n",
+                        "exit_code": 0,
+                        "command": command,
+                    }
+                ),
+            }
+        ),
+        recorded_terminal_line('"canary-alive"', "canary-alive"),
+    )
+
+    result = decoded_workspace_tool_stream(
+        tmp_path, stream, declared_output_schema=b'{"type":"string","minLength":1}'
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result.output_bytes == b'"canary-alive"'
+
+
+@pytest.mark.parametrize(
+    ("last_line", "why"),
+    (
+        pytest.param(None, "the call died before naming its own end", id="no-terminal"),
+        pytest.param(
+            recorded_terminal_line("", is_error=True),
+            "the provider ended the call itself",
+            id="provider-error",
+        ),
+        pytest.param(
+            recorded_terminal_line("canary-alive", is_error=0),
+            "an ending that is not the JSON boolean is no successful ending",
+            id="error-flag-is-no-boolean",
+        ),
+        pytest.param(
+            recorded_terminal_line(),
+            "a terminal line without last words leaves the schema-free path none",
+            id="no-result-text",
+        ),
+        pytest.param(
+            recorded_terminal_line(""),
+            "empty last words are no answer either",
+            id="empty-result-text",
+        ),
+    ),
+)
+def test_a_stream_without_a_usable_terminal_line_has_no_final_message(
+    tmp_path: Path, last_line: Mapping[str, object] | None, why: str
+) -> None:
+    """The end is read from the stream's own terminal line, never guessed."""
+
+    lines: tuple[Mapping[str, object], ...] = (
+        recorded_session_start(),
+        recorded_assistant_message(
+            {
+                "type": "tool_use",
+                "id": "call-0",
+                "name": "read_file",
+                "input": {"target_file": "README.md"},
+            }
+        ),
+    )
+    if last_line is not None:
+        lines = (*lines, last_line)
+
+    result = decoded_workspace_tool_stream(tmp_path, recorded_grok_stream(*lines))
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage), why
+    assert result.transcript is not None
+    assert ToolCalled("read_file", '{"target_file":"README.md"}') in (
+        result.transcript.events
+    )
+
+
+def test_a_session_the_provider_ended_says_so_in_its_own_words(
+    tmp_path: Path,
+) -> None:
+    """A refused ending keeps the why, not only what the call spent.
+
+    The terminal line is the one place an in-band refusal is stated, and its
+    usage record parses on that same line -- so reading only the spend would
+    leave a transcript that says what an attempt cost and never that the
+    provider, rather than this process, ended it.
+    """
+
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        recorded_terminal_line(
+            "Maximum turns reached", is_error=True, subtype="error_max_turns"
+        ),
+    )
+
+    result = decoded_workspace_tool_stream(tmp_path, stream)
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript is not None
+    assert (
+        ProviderTerminalRefusal("error_max_turns", "", "Maximum turns reached")
+        in result.transcript.events
+    )
+    assert Usage(16374, 641, 2688, 0) in result.transcript.events
+
+
+def test_a_call_that_wrote_no_stream_keeps_what_it_did_write(
+    tmp_path: Path,
+) -> None:
+    """A crash writes a traceback where a stream belonged, and it is evidence."""
+
+    crash = "Traceback (most recent call last):\n  RuntimeError: no session\n"
+
+    result = decoded_workspace_tool_stream(tmp_path, crash.encode("utf-8"))
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript == AttemptTranscript.of(
+        [
+            UnrecognisedProviderOutput("Traceback (most recent call last):"),
+            UnrecognisedProviderOutput("  RuntimeError: no session"),
+        ]
+    )
+
+
+def test_an_answer_past_the_durable_output_bound_fails_the_attempt(
+    tmp_path: Path,
+) -> None:
+    """The stream may end well and still carry more than durable state admits."""
+
+    oversized = "a" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1)
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        recorded_assistant_message(
+            {
+                "type": "tool_use",
+                "id": "call-0",
+                "name": "read_file",
+                "input": {"target_file": "README.md"},
+            }
+        ),
+        recorded_terminal_line(oversized),
+    )
+
+    result = decoded_workspace_tool_stream(tmp_path, stream)
+
+    assert not isinstance(result, AgentExecutionResult)
+    assert result.code is AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
 
 
 def test_an_executable_that_starts_this_exact_grok_invocation_is_attested(
