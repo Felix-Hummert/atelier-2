@@ -1,6 +1,6 @@
 import type { ConnectionState, ProtocolProblem } from "./runProjection";
 
-export const connectionLabels = {
+const connectionLabels = {
   connecting: "Connecting",
   live: "Live",
   reconnecting: "Reconnecting",

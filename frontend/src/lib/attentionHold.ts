@@ -11,7 +11,7 @@ import type { ConnectionState, ProtocolProblem } from "./runProjection";
  * The workbench's hold of `GET /events`. Connection states are the same words
  * as a per-run stream; sequence and identity stay on the server's resume.
  */
-export type AttentionConnection = Exclude<ConnectionState, "complete">;
+type AttentionConnection = Exclude<ConnectionState, "complete">;
 
 export interface AttentionHold {
   connection: AttentionConnection;
@@ -36,7 +36,7 @@ export function markAttentionConnecting(
   return { ...hold, connection: reconnecting ? "reconnecting" : "connecting" };
 }
 
-export function markAttentionFailed(
+function markAttentionFailed(
   hold: AttentionHold,
   problem: Problem | null
 ): AttentionHold {
@@ -55,7 +55,7 @@ export function attentionStopped(hold: AttentionHold): boolean {
  * workshop raises. `RUN_PROJECTION_CORRUPT` is a feed frame, not a durable
  * kind; `applyAttentionFrame` names it without treating it as this list.
  */
-export function isAttentionEvent(event: RunEvent): boolean {
+function isAttentionEvent(event: RunEvent): boolean {
   return (
     event.event === "WAITING_INPUT" ||
     event.event === "AGENT_FAILED" ||

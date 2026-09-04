@@ -43,7 +43,7 @@ export function whenFacts(
 }
 
 /** One field of a declared object result, in the order the answer wrote it. */
-export interface ReadableResultField {
+interface ReadableResultField {
   readonly label: string;
   readonly value: string;
 }
@@ -144,7 +144,7 @@ export type ProtocolProblem =
   | { type: "conflicting_duplicate"; cursor: string }
   | { type: "output_integrity"; cursor: string; expected: string; received: string };
 
-export type AgentOutputProjection =
+type AgentOutputProjection =
   | { kind: "utf8"; value: string; byte_count: number }
   | { kind: "binary"; value: string; byte_count: number }
   | { kind: "empty"; value: ""; byte_count: 0 };
