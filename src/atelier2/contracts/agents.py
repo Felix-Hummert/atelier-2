@@ -317,10 +317,13 @@ class AgentConfigurationRevisionListItem:
     and model, or has a newer revision superseded it. `has_valid_receipt` is
     the live evidence one provider probe leaves behind. `startable` and
     `not_startable_reason` are computed from these three, never stored
-    independently, so the two can never disagree. `probe_failure` is the one
-    exception carrying its own payload: when a receipt exists and failed, the
-    reason it names (`provider-probe-failed`) needs the failure's own problem
-    code and recorded instant, which no boolean carries.
+    independently, so the two can never disagree. `probe_failure` is the raw
+    receipt evidence, kept even when an earlier judgment in the precedence
+    (a superseded model, say) already names the reason before the receipt is
+    ever asked about. `probe_failure_evidence` is what the wire is allowed to
+    carry: the failure only when `not_startable_reason` itself names
+    `provider-probe-failed`, `None` otherwise, so the projection never has to
+    re-decide what the reason already decided.
     """
 
     revision: AgentConfigurationRevision
@@ -367,6 +370,15 @@ class AgentConfigurationRevisionListItem:
     @property
     def startable(self) -> bool:
         return self.not_startable_reason is None
+
+    @property
+    def probe_failure_evidence(self) -> ProviderProbeFailure | None:
+        if (
+            self.not_startable_reason
+            is not AgentConfigurationNotStartableReason.PROVIDER_PROBE_FAILED
+        ):
+            return None
+        return self.probe_failure
 
 
 @dataclass(frozen=True)
