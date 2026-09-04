@@ -13,7 +13,7 @@ function itself.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Never, cast
 
 import pytest
@@ -21,7 +21,6 @@ import pytest
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.advance_queue import (
     QueueItemBlocked,
-    QueueRunAlreadyActive,
     QueueRunStarted,
     advance_queue,
 )
@@ -50,7 +49,7 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
-from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.runs import Run, RunState
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_REVISION,
@@ -62,7 +61,6 @@ from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurablePublishedRunResult,
     DurableRunCreated,
-    DurableRunExisting,
     DurableWorkItemOrderUnread,
     StartPublishedRunRequest,
     StartPublishedRunRequestV3,
@@ -451,52 +449,3 @@ def test_a_foreign_project_item_is_skipped_while_a_served_item_still_starts() ->
     assert [binding.item_id for binding in queue.reserved] == [
         served_item.item_reference.item_id
     ]
-
-
-def test_a_binding_that_predates_the_sweep_asks_the_starter_before_blocking_on_an_unfillable_order() -> (
-    None
-):
-    """A run started under an earlier, fillable read of a document must still
-    answer as already active if a later sweep's schema constant would now
-    call that same, unchanged document unfillable (review finding 3 on
-    `#1145`): the durable answer, asked before the sweep gives up on the
-    order, decides -- not a second guess at a document that never changed.
-
-    A binding this sweep reserves itself carries no such risk (pinned by
-    `test_a_document_declaring_more_than_the_sweep_can_fill_is_blocked_not_guessed_at`,
-    whose `starter.asks == []` proves a fresh reservation is never probed).
-    """
-
-    item = _admitted("gh:901", rank=1)
-    admission = cast(QueueAdmission, item.admission)
-    proposal_revision = admission.proposal_revision
-    assert proposal_revision is not None
-    workflow_revision_hash = WorkflowRevisionHash(REVISION_HASH.value)
-    run_id = RunId("preexisting-run")
-    preexisting_binding = QueueLaunchBinding(
-        item.item_reference.item_id,
-        proposal_revision,
-        run_id,
-        workflow_revision_hash,
-    )
-    bound_item = replace(item, launch_binding=preexisting_binding)
-    queue = _QueueRecording(QueueItemsPage((bound_item,), None))
-    catalog = _CatalogResolverStub(
-        {LINEAGE: REVISION_HASH}, {REVISION_HASH: UNFILLABLE_WORKFLOW_DOCUMENT}
-    )
-    existing_run = Run(run_id, workflow_revision_hash, RunState.STARTED, "final", 0, 0)
-    starter = _ScriptedStarter([DurableRunExisting(existing_run)])
-
-    (outcome,) = advance_queue(
-        queue,
-        catalog,
-        starter,
-        workflow_document_parser=parse_workflow_document,
-        served_project=PROJECT,
-    )
-
-    assert isinstance(outcome, QueueRunAlreadyActive)
-    assert outcome.run == existing_run
-    assert outcome.binding == preexisting_binding
-    (asked,) = starter.asks
-    assert asked.run_id == run_id

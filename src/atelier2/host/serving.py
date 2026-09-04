@@ -1281,7 +1281,7 @@ def compose_application(
         settings.runtime_settings(),
         _effect_adapters(settings, source_connection),
         subscription_executors,
-        tracker_item_source,
+        tracker_item_source=tracker_item_source,
     )
     try:
         if source_connection is not None:

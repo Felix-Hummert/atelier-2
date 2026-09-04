@@ -889,6 +889,7 @@ def _open_binding(
     agent_registry: AgentExecutorRegistry,
     effect_registry: EffectAdapterRegistry,
     effect_bindings: tuple[EffectAdapterBinding, ...],
+    *,
     tracker_item_source: TrackerItemSource | None,
 ) -> _BoundRuntime:
     canonical_database = settings.database_path.resolve()
@@ -1179,6 +1180,7 @@ class _DbosProcessOwner:
         settings: DbosRuntimeSettings,
         agent_registry: AgentExecutorRegistry,
         effect_registry: EffectAdapterRegistry,
+        *,
         tracker_item_source: TrackerItemSource | None = None,
     ) -> _BoundRuntime:
         with self._lock:
@@ -1191,7 +1193,7 @@ class _DbosProcessOwner:
                     agent_registry,
                     effect_registry,
                     effect_bindings,
-                    tracker_item_source,
+                    tracker_item_source=tracker_item_source,
                 )
             elif (
                 self._bound.settings.binding(
@@ -1529,6 +1531,7 @@ class DbosRuntime:
         agent_executor_factories_v2: tuple[
             AgentExecutorFactoryV2 | AgentExecutorRegistration, ...
         ] = (),
+        *,
         tracker_item_source: TrackerItemSource | None = None,
     ) -> None:
         self._close_lock = threading.Lock()
@@ -1550,7 +1553,7 @@ class DbosRuntime:
             )
         )
         self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(
-            settings, registry, effect_registry, tracker_item_source
+            settings, registry, effect_registry, tracker_item_source=tracker_item_source
         )
 
     @property

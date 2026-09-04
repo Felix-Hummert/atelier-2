@@ -178,7 +178,6 @@ def _advance_one(
     if served_project is not None and item.item_reference.project != served_project:
         return None
     binding = item.launch_binding
-    binding_preexisted = binding is not None
     if binding is None:
         proposal = item.proposal
         admission = item.admission
@@ -225,7 +224,6 @@ def _advance_one(
                 binding = reserved
             case QueueLaunchAlreadyBound(binding=reserved):
                 binding = reserved
-                binding_preexisted = True
             case QueueLaunchBlocked(item=blocked):
                 blocked = _validated_snapshot(blocked)
                 return QueueItemBlocked(
@@ -241,25 +239,12 @@ def _advance_one(
                 )
     order = _bound_work_item_order(item, binding, catalog, workflow_document_parser)
     if isinstance(order, _RequiredOrderUnavailable):
-        # A binding this sweep just reserved can own no run yet, so a fresh
-        # item is blocked without ever asking the starter (pinned by
+        # The document declares graph inputs this sweep cannot fill, so the
+        # item is blocked without asking the starter (pinned by
         # `test_a_document_declaring_more_than_the_sweep_can_fill_is_blocked_not_guessed_at`).
-        # A binding that already existed before this call may already have
-        # started a run under an earlier, fillable read of the same document
-        # -- the durable answer, not a second guess at the order, decides
-        # whether that item is blocked or already active.
-        if binding_preexisted:
-            probe = start_published_run(
-                binding.run_id,
-                binding.workflow_revision_hash,
-                None,
-                starter,
-                project=served_project,
-            )
-            if isinstance(probe, RunExisting):
-                return QueueRunAlreadyActive(
-                    item.item_reference.item_id, binding, probe.run
-                )
+        # A run that a fillable earlier read already started for this same
+        # binding needs a durable read by run identity to recover -- residual,
+        # not solved by re-asking the starter with an empty order (#1145).
         return QueueItemBlocked(
             item.item_reference.item_id,
             (QueueBlockerKind.REQUIRED_ORDER_UNAVAILABLE,),
