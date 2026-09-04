@@ -79,6 +79,7 @@ from atelier2.host.serving import api_limits
 from atelier2.ports.definition_sources import (
     DefinitionSourceRegistered,
     DefinitionSourceUnchanged,
+    PathAdopted,
     PathAlreadyInCatalog,
     PathIntaken,
     SourceIntakeConflict,
@@ -326,6 +327,12 @@ def _intake_report(result: IntakeDefinitionSourceResult) -> int:
                         print(
                             f"  {IntakeWord.PUBLISHED.value} "
                             f"{intake.revision_kind.value} {intake.path.value}"
+                        )
+                    case PathAdopted(intake, lineage):
+                        print(
+                            f"  {IntakeWord.PUBLISHED.value} "
+                            f"{intake.revision_kind.value} {intake.path.value} "
+                            f"(adopted lineage {lineage.value})"
                         )
                     case PathAlreadyInCatalog(path, kind, _):
                         print(f"  {IntakeWord.PRESENT.value} {kind.value} {path.value}")

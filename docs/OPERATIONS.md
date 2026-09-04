@@ -643,8 +643,15 @@ deploy checkout itself as a definition source (`workflows/*.yaml`, ref
 source, so this step is idempotent across runs) and takes its workflows in.
 Each path gets its own word in the log: `published` for bytes the catalog
 gained, `present` for bytes it already held, or `refused` for the one path
-that stopped that intake. A refusal does not hold the Serve back -- it starts
-with whatever workflow catalog state it already had -- but the command exits
+that stopped that intake. A name already held by a manually imported lineage
+is adopted rather than refused -- the source revision becomes that lineage's
+new head and the manual revisions stay its history -- while a name any source
+has already delivered still refuses. Bytes an unsourced lineage already
+serves as its current revision under the same name are recognised as present
+and gain the same provenance; the lineage id and its history are untouched. A
+refusal does not hold the Serve
+back -- it starts with whatever workflow catalog state it already had -- but
+the command exits
 `3` rather than `0`, distinct from the generic failure exit `1`, so
 auto-redeploy's watcher can tell the two apart. It logs a warning naming the
 served commit and the refusal, does not count a failure tick, and keeps the
