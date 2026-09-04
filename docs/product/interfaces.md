@@ -42,8 +42,17 @@ which carries only the operator's opaque idempotency key and the node execution
 its confirmation fenced on and answers the closed cancellation vocabulary
 (accepted, terminal retry, overtaken by success, not cancellable, command
 conflict); submit an accountable reconciliation; and follow the
-closed durable event history as a resumable server-sent event stream. A
-subscriber who does not already know a run holds `GET /events`; opening that
+closed durable event history as a resumable server-sent event stream.
+
+Every run door takes the public run reference, not the durable `run_id`.
+`GET /runs/{ref}` and `/runs/{ref}/events` name that `{ref}`. The reference is
+the prefix `run1.` followed by the unpadded base64url of the `run_id`'s UTF-8
+bytes. The start response already answers it as `public_run_reference`; a
+caller who did not keep that body derives the same string, so
+`live-1123-pass3-20260904T105844Z` is
+`run1.bGl2ZS0xMTIzLXBhc3MzLTIwMjYwOTA0VDEwNTg0NFo`.
+
+A subscriber who does not already know a run holds `GET /events`; opening that
 stream is the subscription. The Workbench holds that stream, so a wait that opens while the operator
 watches appears without a reload and without `POST /subscriptions`. The feed is closed to
 `WAITING_INPUT`, `AGENT_FAILED`, and `ACTION_RECONCILIATION_REQUIRED` — the
