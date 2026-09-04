@@ -12,11 +12,9 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationStale,
     AgentAttemptStore,
 )
-from atelier2.ports.agent_executions import (
-    AgentAttemptWorkspaceOwner,
-    AgentProcessRunner,
-)
+from atelier2.ports.agent_executions import AgentAttemptWorkspaceOwner
 from tests.scenarios.agents import (
+    FakeAgentSession,
     agent_attempt_execution,
     agent_execution_request_v2,
     prepared_agent_attempt,
@@ -56,7 +54,7 @@ def test_driverless_convergence_consumes_and_discards_each_attempt_in_turn() -> 
 
     result = converge_driverless_attempts(
         cast(AgentAttemptStore, store),
-        cast(AgentProcessRunner, object()),
+        FakeAgentSession(),
         cast(AgentAttemptWorkspaceOwner, object()),
     )
 

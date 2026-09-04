@@ -175,7 +175,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorCarrier,
     AgentExecutorKey,
     AgentExecutorV2,
-    AgentProcessRunner,
+    AgentSession,
 )
 from atelier2.ports.artifacts import ArtifactPublisher
 from atelier2.ports.effects import EffectAdapter, OpenEffectAdapterRegistry
@@ -218,14 +218,14 @@ def _declared_workspace_owner(
     return owner
 
 
-def _declared_process_runner(
-    runner: AgentProcessRunner | None,
-) -> AgentProcessRunner:
-    if runner is None:
+def _declared_agent_session(
+    session: AgentSession | None,
+) -> AgentSession:
+    if session is None:
         raise RunBindingConflict(
-            "an agent node requires the declared local agent process runner"
+            "an agent node requires the declared local agent session"
         )
-    return runner
+    return session
 
 
 def _declared_runner_lease_driver(
@@ -620,7 +620,7 @@ def register_durable_run_workflow(
         ],
     ],
     agent_attempt_store: AgentAttemptStore,
-    agent_process_runner: AgentProcessRunner | None,
+    agent_session: AgentSession | None,
     agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
     project: DeclaredProject | None,
     artifact_publisher: ArtifactPublisher,
@@ -663,12 +663,11 @@ def register_durable_run_workflow(
                 )
             driver = _declared_runner_lease_driver(runner_lease_driver)
             return driver.drive(attempt_execution)
-        runner = _declared_process_runner(agent_process_runner)
         return execute_agent_attempt(
             attempt_execution,
             executor,
             agent_attempt_store,
-            runner,
+            _declared_agent_session(agent_session),
             _declared_workspace_owner(agent_workspace_owner),
             pinned_project(binding, project),
             artifact_publisher,
@@ -923,7 +922,7 @@ def register_durable_run_workflow(
                     terminal = continue_agent_attempt_cancellation(
                         cleanup_request,
                         agent_attempt_store,
-                        _declared_process_runner(agent_process_runner),
+                        _declared_agent_session(agent_session),
                         _declared_workspace_owner(agent_workspace_owner),
                     )
                     if terminal is None:
@@ -987,7 +986,7 @@ def register_durable_run_workflow(
             continue_agent_attempt_cancellation(
                 request,
                 agent_attempt_store,
-                _declared_process_runner(agent_process_runner),
+                _declared_agent_session(agent_session),
                 _declared_workspace_owner(agent_workspace_owner),
             )
             is None

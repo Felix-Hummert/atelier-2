@@ -35,9 +35,9 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
-    AgentProcessRunner,
 )
 from tests.scenarios.agents import (
+    FakeAgentSession,
     agent_attempt_execution,
     agent_execution_request_v2,
     leased_directory_identity,
@@ -98,22 +98,6 @@ class _TranscriptExecutor:
         return None
 
 
-class _Supervisor:
-    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
-        return prepared_agent_attempt(execution)
-
-    def launch_and_wait(
-        self,
-        execution: AgentAttemptExecution,
-        invocation: AgentProcessInvocation,
-    ) -> AgentProcessCompletion:
-        del execution, invocation
-        return AgentProcessCompletion(0, b'"done"', b"")
-
-    def finalize(self, execution: AgentAttemptExecution) -> None:
-        del execution
-
-
 @dataclass
 class _Workspaces:
     directory: Path
@@ -140,7 +124,7 @@ def test_proves_every_transcript_event_carries_its_moment_when_recorded(
         agent_attempt_execution(agent_execution_request_v2()),
         _TranscriptExecutor(),
         cast(AgentAttemptStore, store),
-        cast(AgentProcessRunner, _Supervisor()),
+        FakeAgentSession(AgentProcessCompletion(0, b'"done"', b"")),
         _Workspaces(tmp_path / "workspace"),
         clock=lambda: recording_moment,
     )
