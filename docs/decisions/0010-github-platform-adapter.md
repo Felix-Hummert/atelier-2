@@ -10,7 +10,11 @@
   in the change that adds this record's second reading operation (issue #712);
   decision 5's commit-identity rationale amended 2026-08-30 (operator ruling on
   issue #883, superseding the ruling on issue #32) — what the declared identity
-  says, the rule that it is declared unchanged
+  says, the rule that it is declared unchanged; decision 5's authoritative-negative
+  rule amended 2026-09-05 (head ruling, usage evidence pass 9, issue #1210) — an
+  `ls-remote` and a `pulls?head=…` search with nothing to read for the exact
+  expected ref/head are authoritative absence before send; the post-send
+  readback rule is unchanged
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -512,6 +516,21 @@ or force-updated", so readback never returns `AUTHORITATIVE_NOT_FOUND` for it an
 "Create a content-bearing object" row of the table below rather than opening a
 second one.
 
+**2026-09-05 amendment (head ruling, usage evidence pass 9, issue #1210):
+overturned for the pre-send check that decides whether to send at all.** Live
+pass 9 produced two `WAITING_RECONCILIATION` results in one run where the
+remote held nothing at all — not the divergence this decision's `UNKNOWN`
+rule protects against, but an ordinary first attempt reading its own read as
+unresolved. A `git ls-remote` that exits 0 with no line for exactly the
+expected ref, taken *before* any send, is now authoritative absence: the
+operation proceeds to send rather than routing to reconciliation. This does
+not touch the paragraph above, which still governs the *readback taken after a
+send* — a rejected push's ref is still read as `UNKNOWN`, never as this
+pre-send absence, because only the pre-send read has nothing else it could
+mean. The zero-OID lease on the push itself, unchanged, remains the protection
+against a double send: an authoritative pre-send absence only clears the
+operation to attempt its one create-only, compare-and-swapped send.
+
 **The credential handoff is normative, not left to whatever a subprocess call
 happens to do.** The credential — the token in the PAT method — never reaches
 the git subprocess as a literal value in its argument vector, per decision 3's
@@ -567,6 +586,21 @@ bytes — tree OID, base commit, branch, identity — do not exist without it.
   (`platform-absence-unprovable`), and an empty search never becomes an absence.
   This is where the third outcome earns its keep: `UNKNOWN` routes to the operator
   reconciliation command `contracts.effects` already owns.
+
+  **2026-09-05 amendment (head ruling, usage evidence pass 9, issue #1210):
+  overturned for the pre-send check that decides whether to send at all, for
+  `open-pr`.** The same live pass 9 that overturned decision 5's push paragraph
+  above hit its twin on this operation: a first attempt whose PR search found
+  nothing read that as `UNKNOWN` and routed to reconciliation before ever
+  sending. A `GET /repos/{owner}/{repo}/pulls?head=owner:branch&state=all`
+  answering 200 with an empty list, taken *before* any send, is now
+  authoritative absence for that exact head — the operation proceeds to open
+  the pull request rather than routing to reconciliation. The row above is
+  unchanged for readback taken *after* a send: an unmatched scan there is still
+  `UNKNOWN`, because only the pre-send search has nothing else it could mean.
+  GitHub's own head+base uniqueness constraint (422 on a second `POST`) remains
+  the protection against a double send; an authoritative pre-send absence only
+  clears the operation to attempt its one create.
 - **The ambiguous retry needs no new state, because a durable one already precedes
   the send.** `EffectIntentState.PREPARED` is written durably before any request
   leaves the adapter, so a crash between send and receipt always leaves a prepared

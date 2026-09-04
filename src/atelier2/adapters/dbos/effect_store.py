@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from enum import Enum, auto
 from typing import Any, assert_never
@@ -67,6 +68,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
     ReconcileCommandSnapshot,
     ReconcileCommandState,
+    UnknownOutcomeReason,
 )
 from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for_node
 from atelier2.contracts.hashing import Sha256Hash
@@ -77,6 +79,8 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.ports.effects import EffectAdapter
+
+_LOG = logging.getLogger("atelier2")
 
 type EncodedEffectResolution = dict[str, str | None]
 
@@ -243,7 +247,29 @@ def encode_readback(
             readback.reconcile_command_id,
             readback.source_receipt,
         )
+    if isinstance(readback, EffectUnknownOutcome) and readback.reason is not None:
+        _log_unknown_outcome_entering_reconciliation(readback.reason)
     return {"outcome": readback.outcome.value}
+
+
+def _log_unknown_outcome_entering_reconciliation(reason: UnknownOutcomeReason) -> None:
+    """The one record of why, since durable state carries only that it did not.
+
+    The reason itself is not persisted (issue #1210 names the durable event
+    field as its own follow-up); this line is the only place an operator
+    diagnosing a second reconciliation can read what the destination said.
+    """
+
+    _LOG.warning(
+        "An adapter readback stayed unknown before reconciliation: %s",
+        reason.detail,
+        extra={
+            "event": "effect_unknown_outcome_entered_reconciliation",
+            "failure_code": reason.failure_code,
+            "duration_milliseconds": reason.duration_milliseconds,
+            "detail": reason.detail,
+        },
+    )
 
 
 def decode_found(intent: EffectIntent, encoded: Mapping[str, Any]) -> EffectReceipt:

@@ -209,9 +209,11 @@ confirm what nobody sent. What still enters or remains in durable
 reconciliation instead of permitting another push is a read that failed, and an
 inconclusive post-send readback, which proves nothing either way. The adapter
 now reports why -- the code the destination answered, how long it took, and the
-last of its own words with every credential shape taken out -- while carrying
-that account into the durable record an operator reads is still owed. An
-operator-authorized send is still fenced by a create-only lease.
+last of its own words with every credential shape taken out. The effect store
+logs that account, structured, the moment the outcome enters reconciliation;
+carrying it into the durable record an operator reads without the log is a
+named follow-up (#1210). An operator-authorized send is still fenced by a
+create-only lease.
 
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --

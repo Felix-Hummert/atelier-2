@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -12,6 +13,7 @@ from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
     decode_found,
     encode_found,
+    encode_readback,
 )
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import (
@@ -51,6 +53,7 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandId,
     ReconcileCommandState,
+    UnknownOutcomeReason,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import (
@@ -300,6 +303,33 @@ def test_unknown_commits_waiting_state_and_required_event_together(
             ("AGENT_COMPLETED", PROVIDER_OUTPUT),
             ("ACTION_RECONCILIATION_REQUIRED", ACTION_REQUEST),
         ]
+
+
+def test_unknown_outcome_reason_is_logged_when_it_enters_reconciliation(
+    prepared: tuple[DbosRuntime, EffectIntent, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The durable state carries only that the outcome was unknown (#1210); the
+    reason a destination gave is not persisted, so this log line is its only
+    record for an operator diagnosing a second reconciliation."""
+
+    _runtime, intent, _external = prepared
+    reason = UnknownOutcomeReason(128, 40, "fatal: could not read from remote")
+
+    with caplog.at_level(logging.WARNING, logger="atelier2"):
+        encoded = encode_readback(EffectUnknownOutcome(intent.reference, reason))
+
+    assert encoded == {"outcome": "UNKNOWN"}
+    logged = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "effect_unknown_outcome_entered_reconciliation"
+    ]
+    assert len(logged) == 1
+    assert getattr(logged[0], "failure_code", None) == 128
+    assert getattr(logged[0], "duration_milliseconds", None) == 40
+    assert getattr(logged[0], "detail", None) == "fatal: could not read from remote"
 
 
 @pytest.mark.parametrize(
