@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-26; disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-26, 2026-09-04 (see [ADR 0020](0020-provider-boundary.md): the watchdog is the first session implementation and the Runner is frozen until a caller pulls it); disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [#21](https://github.com/FlexOr2/atelier-2/issues/21) owns
@@ -71,6 +71,17 @@ deployment is rejected rather than selectable. Their landed history remains in
 the owning issues; this record retains only the deletion fact needed to prevent
 any of them from returning as a fallback.
 
+**2026-09-04 amendment ([ADR 0020](0020-provider-boundary.md), operator
+ruling):** the watchdog half of that sentence no longer holds. A live-usage
+audit found that the Agent Runner executed none of the 485 live attempts of the
+preceding thirty days, so the watchdog is not a predecessor waiting for deletion
+but the first implementation of ADR 0020's `AgentSession` port, and this
+record's Runner is frozen inventory until a caller — isolation for foreign
+repositories, or more than one user — pulls it into life. The direct-systemd
+manager and the one-container deployment remain rejected as written. Everything
+else this record decides, including the trust boundary the port later moves
+behind, stands.
+
 **2026-08-26 amendment: why this record stopped pinning #21's body by
 digest.** An earlier revision bound `#21 body @ 3c1f663c…` — 7,961 UTF-8
 bytes, ending in one LF byte — and it drifted stale a third time as the item
@@ -98,7 +109,11 @@ Executor Adapters for Claude, Claude-tools, Codex, Grok and Grok-tools, and owns
 provider CLI and local credential resolution, ephemeral workspace
 materialization and containment, bounded collection and terminal evidence. A
 provider process is its child, not a Runner; the existing `AgentProcessRunner`
-port is a lower, Serve-local predecessor, not this boundary.
+port is a lower, Serve-local predecessor, not this boundary. (2026-09-04 amendment,
+[ADR 0020](0020-provider-boundary.md): that Serve-local path is where every live
+attempt actually runs, and it owns the session port until this boundary has a
+caller; the containment rules of this section are what the port must satisfy
+when it moves.)
 
 An **Effect Worker** is a separate worker role for one prepared `EffectIntent`.
 It hosts the existing Effect Adapter contract under an operation-scoped grant

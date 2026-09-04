@@ -1,4 +1,4 @@
-# ADR 0020: One Runner-owned session port carries every provider; a permission is authorisation, and the transcript is its projection
+# ADR 0020: One session port carries every provider on the path that runs the live attempts; a permission is authorisation, the transcript its projection
 
 - Status: ACCEPTED 2026-09-04 — decision only, no slice implemented
 - Date: 2026-09-04
@@ -10,6 +10,10 @@
 - Depends on: [ADR 0008](0008-budget-units.md) (turn limiter, meter, money
   absent), [ADR 0009](0009-runner-trust.md) (the trust boundary, provider
   containment, credential reference)
+- Amends: [ADR 0009](0009-runner-trust.md) — the process watchdog is no longer a
+  predecessor retained only for deletion but the first implementation of this
+  record's session port, and the Agent Runner is frozen inventory rather than
+  the owner of live provider execution until a caller pulls it
 - Feeds: [#1178](https://github.com/FlexOr2/atelier-2/issues/1178) (step 0),
   [#1174](https://github.com/FlexOr2/atelier-2/issues/1174) (output-seam schema
   discipline), [#943](https://github.com/FlexOr2/atelier-2/issues/943) and
@@ -36,21 +40,38 @@ thousand-fold maintenance because a CLI changed; a different mechanism per
 provider is acceptable because an abstraction layer exists; the architecture
 must be coherent. Billing runs through subscriptions.
 
+A live-usage audit on 2026-09-04 answered where that boundary actually is. Of
+485 live attempts in the preceding thirty days the Agent Runner executed none:
+every attempt carries empty runner identity, no launch binding was ever
+recorded, and no runner journal event exists. The Runner is a large body of code
+with a larger body of tests that has never run in production, and the operator
+ruled the same day that code built ahead of its caller is frozen — kept, not
+hardened, and not treated as the foundation.
+
 ## Decision
 
-### 1. One session port in the Runner owns a provider's lifetime
+### 1. One session port, owned by the path that carries the live attempts
 
-The Runner owns an `AgentSession` port: `open`, `send(prompt)`, correlated
-events (tool called, tool returned, permission requested), `decide(permission)`,
-`cancel`, and one terminal result with its meter. Its lifecycle owner is
-`runner/session.py`, which already owns candidate lifetime, launch, cancel,
-journal and terminal evidence; driver selection is `runner/executors.py`.
-`application/execute_agent_attempt.py` stays the Serve-local predecessor path.
+The session port is `AgentSession`: `open`, `send(prompt)`, correlated events
+(tool called, tool returned, permission requested), `decide(permission)`,
+`cancel`, and one terminal result with its meter. It replaces the one-way
+`AgentProcessRunner` port in `ports/agent_executions.py`, whose shape is the
+reason a provider cannot ask a question mid-turn.
 
-Every provider implementation stays a contained child process or an
-Atelier-owned bridge process, exactly as ADR 0009 §1 requires: the provider
-process is a child of the Runner. An in-process vendor SDK inside the Runner
-would be a different trust boundary and is not decided here.
+Its owner is the path that runs the live attempts:
+`application/execute_agent_attempt.py` with `adapters/agent_process_watchdog.py`
+as the first `AgentSession` implementation. The Agent Runner
+(`runner/session.py`, `runner/executors.py`) is frozen inventory under the
+2026-09-04 ruling, not the owner. When a caller for it exists — isolation for
+foreign repositories, or more than one user — the same port moves behind the
+Runner boundary of ADR 0009 unchanged. That is the designed seam, and it is why
+the freeze costs nothing: the port, not its host, is the contract.
+
+In either placement a provider implementation is a contained child process or an
+Atelier-owned bridge process, never code loaded into the driving process, and
+ADR 0009 §1's containment requirements are what the port must satisfy when it
+moves. An in-process vendor SDK is a different trust boundary and is not decided
+here.
 
 ### 2. Three separated artefacts, never one
 
@@ -73,16 +94,16 @@ would be a different trust boundary and is not decided here.
    revision have owners in configuration and in the receipt, and a display
    derives them.
 
-### 3. A permission is authorisation, decided in the Runner, fail-closed
+### 3. A permission is authorisation, decided by the session owner, fail-closed
 
 A transcript step is evidence, not a control. The authorisation is an immutable
 typed permission policy, bound into the execution binding before the session
 opens — neither `AgentConfigurationRevision` nor `AgentExecutionRequestV2`
 carries a policy revision today, and that field is part of this decision. A pure
-Runner-local decider answers each request from that policy and refuses anything
-it does not recognise. It holds no deadline of its own; the attempt deadline
-bounds the session. The driver transports the request and the decision and
-decides nothing.
+decider beside the session owner answers each request from that policy and
+refuses anything it does not recognise. It holds no deadline of its own; the
+attempt deadline bounds the session. The driver transports the request and the
+decision and decides nothing.
 
 ### 4. Transport per provider is the vendor's own maintained structured channel
 
@@ -100,11 +121,11 @@ decides nothing.
 - **Open and self-hosted models**: an agent-client-protocol agent (Goose or
   OpenCode) in front of an OpenAI-compatible endpoint, behind the same port.
 
-A new provider is not configuration alone. The Runner keeps an exact
-`(provider, executor revision)` registry in `runner/executors.py`; every new
-vector needs selection code, a pin and attestation, a policy, a meter and a
-conformance proof — but no new protocol and no new parser once it speaks the
-protocol.
+A new provider is not configuration alone. Executors are selected by an exact
+`(provider, executor revision)` key through the registry in
+`ports/agent_executions.py`; every new vector needs a registered executor
+revision, a pin and attestation, a policy, a meter and a conformance proof — but
+no new protocol and no new parser once it speaks the protocol.
 
 ### 5. The output schema is judged at Atelier's own seam
 
@@ -116,10 +137,11 @@ becomes the authority, because its behaviour differs per vendor and release.
 
 Budgets follow ADR 0008 unchanged: every multi-turn executor revision attests a
 native turn limiter and an exact turn and token meter, and no money value enters
-a receipt, a gate or a display. Credentials follow ADR 0009 §6 unchanged: Core
-passes a logical reference, the Runner resolves it locally, and the provider's
-credential source is offered read-only, so a writing token refresh fails
-visibly.
+a receipt, a gate or a display. Credentials follow ADR 0009 §6 unchanged where
+it applies: a logical reference is resolved by the side that executes, never
+transported by value, and the provider's credential source is offered read-only,
+so a writing token refresh fails visibly. That rule travels with the port when
+it moves behind the Runner boundary.
 
 Proof is per adapter and per pin, before a vector is armed: state-machine tests
 for split and coalesced frames, unknown messages, permission and cancel races,
@@ -127,26 +149,32 @@ end of file without a terminal result, limit refusals, token refresh and
 containment drift; a replay from a real capture; and a canary. One successful
 transcript is not proof.
 
-### 7. Each predecessor is deleted with its own proof
+### 7. Each print-mode predecessor is deleted with its own proof
 
 When a provider's new vector is proven, that provider's print-mode path is
-deleted in the same slice — not collected for a cleanup at the end. The
-process watchdog, which ADR 0009 already marks a predecessor retained only for
-deletion, serves as the migration carrier until the last vector has moved, and
-is then deleted. That is the deletion condition ADR 0009 left open; it does not
-change what ADR 0009 decided.
+deleted in the same slice — not collected for a cleanup at the end.
+
+The process watchdog is not among those predecessors. ADR 0009 retained it only
+for deletion because the Runner was expected to take its work; the audit above
+shows the Runner never did, so this record amends that: the watchdog is the
+first implementation of the session port and stays until the port moves behind a
+Runner that a caller has pulled into life. Nothing else in ADR 0009's trust
+boundary changes — it remains the target for isolation and multi-user
+execution.
 
 ## Consequences
 
 - What falls: the per-CLI stream parsers and schema-flag branches in the Claude
-  and Grok subscription adapters, the Codex last-message file path, the scrub
-  sweep once measured, and finally the watchdog.
+  and Grok subscription adapters, the Codex last-message file path, and the
+  scrub sweep once measured.
 - What stays: the durable core and its truth ownership, receipts, the candidate
   and its verification, and `CANDIDATE_UNCHANGED` as the honest failure of an
   attempt that changed nothing.
-- Duplex is new surface inside the Runner and each vendor channel is a pin that
-  must be raised deliberately: permission and cancel can race, so that race is
-  part of every adapter's proof.
+- Duplex is new surface in the session owner and each vendor channel is a pin
+  that must be raised deliberately: permission and cancel can race, so that race
+  is part of every adapter's proof.
+- The Runner keeps existing, frozen: it is not extended, hardened or migrated
+  while this record's port is built on the live path.
 
 ## Named edges, not decided here
 
@@ -158,30 +186,29 @@ change what ADR 0009 decided.
   per hosted model — is accepted, not abstracted away.
 - The human terminal seat (#1099) and a real PTY for a child process (#943) stay
   separate from this boundary.
-- Whether the Runner is really the live owner is being measured: a live-usage
-  audit checks whether the Runner path executed any real attempt on the live
-  instance in the last thirty days. If every live attempt still runs through
-  the Serve-local path (`application/execute_agent_attempt.py` and watchdog),
-  the placement is re-questioned before step 1, and this record either confirms
-  the Runner as the owner — which then goes live first — or is amended to make
-  the Serve-local path the owner.
+- Unfreezing the Runner has one trigger and no other: a named caller needing
+  isolation for foreign repositories or more than one user. Until then its code
+  is kept as it is, and moving the session port behind it is a slice of its own.
 
 ## Order
 
-Step 0 is #1178: the existing provider child lifetime moves behind the
-`AgentSession` port for the fake executor only, preserving bytes, cancel,
-reconnect and terminal evidence. Then: duplex events with correlation,
-permission receipts and policy binding proven against the fake; Grok; Claude;
-Codex; an open model; transcript v3; deletion of the watchdog. A provider's live
+Step 0 is #1178, re-cut to the live path: the existing provider child lifetime
+moves behind the `AgentSession` port with the watchdog as its implementation,
+preserving bytes, cancel, reconnect and terminal evidence. Then: duplex events
+with correlation, permission receipts and policy binding, proven against a fake
+provider; Grok; Claude; Codex; an open model; transcript v3. A provider's live
 proof is one real `issue-to-pr` run reaching its review node with that builder.
 
 ## Supersedes and amends
 
-No ADR is superseded. This record touches, without changing, ADR 0009 §1
-(provider containment, kept), ADR 0009 §6 and its credential amendment (kept,
-including the condition on a writable copy), ADR 0009's watchdog predecessor
-fact (this record supplies its deletion condition), and ADR 0008's turn limiter
-and money-absent rules (kept).
+No ADR is superseded. This record **amends ADR 0009** in one place, dated
+2026-09-04 and noted there: the process watchdog is no longer a predecessor
+retained only for deletion but the first implementation of the session port, and
+the Agent Runner is frozen inventory rather than the owner of live provider
+execution until a caller pulls it. ADR 0009's trust boundary, its containment
+rules (§1) and its credential rules (§6, including the condition on a writable
+copy) stand unchanged as the target of that move, and ADR 0008's turn-limiter
+and money-absent rules stand unchanged.
 
 The print-mode invocation design being replaced was never a decision record: it
 lives in the subscription adapters' own docstrings and in their executor
@@ -190,11 +217,12 @@ amendment anywhere.
 
 ## Out of scope and stop conditions
 
-This record does not decide an in-process SDK inside the Runner, a mid-turn
-human approval port, a writable credential path, terminal-seat design, or
-provider pricing. Stop implementation if a driver starts deciding permissions,
+This record does not decide an in-process SDK, a mid-turn human approval port, a
+writable credential path, terminal-seat design, or provider pricing. Stop
+implementation if a driver starts deciding permissions,
 if a transcript step is used as an authorisation, if a provider identifier
 reaches a durable record instead of an Atelier correlation id, if provider-side
 schema enforcement is treated as the authority, if a vector is armed without its
-conformance proof and pin, or if a replaced print-mode path is left alive after
-its successor is proven.
+conformance proof and pin, if a replaced print-mode path is left alive after its
+successor is proven, or if the frozen Runner is extended instead of the live
+path.
