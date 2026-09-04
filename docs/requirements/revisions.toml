@@ -1,14 +1,10 @@
 schema_version = 1
 
-# PENDING (#1200): approval_comment_id is a placeholder until the head posts
-# `APPROVE REQUIREMENT REVISION 0001 sha256:b46f99fd6e0f8ac9a96b66859ddc091745c403ccb5e3d968bfd385949b28208f`
-# and records that comment's real id here; approval_sha256 already matches
-# that exact line and needs no further change.
 [[revision]]
 document = "0001"
 path = "docs/requirements/0001-queue-und-autonomie.md"
 content_sha256 = "b46f99fd6e0f8ac9a96b66859ddc091745c403ccb5e3d968bfd385949b28208f"
-approval_comment_id = 0
+approval_comment_id = 5546168971
 approval_sha256 = "adb25a55d27e231f0cc28a0c56e467c6492dc62953d15d12a09da45c2cee9d41"
 predecessor = "GENESIS"
 
