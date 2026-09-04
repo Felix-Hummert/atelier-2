@@ -676,6 +676,19 @@ export const agentDefinitionRevisionSchema = z
   .strict();
 
 /**
+ * `contracts/artifacts.py::MAXIMUM_ARTIFACT_BYTES`, mirrored here as a plain
+ * number the way every other server-owned wire bound already is on this side
+ * (`MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS` above). The start sheet reads
+ * it to show a string order's byte count as it is typed; the server still
+ * owns enforcing it -- an oversized publish still refuses named
+ * (`artifact-too-large`) rather than being blocked silently here first.
+ */
+export const MAXIMUM_ARTIFACT_BYTES = 1_048_576;
+
+export const artifactResourceSchema = z.object({ artifact_hash: sha256 }).strict();
+export type ArtifactResource = z.infer<typeof artifactResourceSchema>;
+
+/**
  * The listing of published auth profiles, in the item form publication already
  * answers with. Held to the frozen document by servedVocabulary.
  */
@@ -2572,6 +2585,13 @@ export interface CockpitApi {
   publishAgentDefinition(
     document: string,
   ): Promise<HttpResult<AgentDefinitionRevision>>;
+  /**
+   * Publish material by its exact bytes and answer with the address it
+   * hashes to (`POST /artifacts`, #1089). A caller may hand text, which
+   * publishes as its exact UTF-8 encoding -- the same content-addressed door
+   * either way, so publishing the same bytes twice answers the same hash.
+   */
+  publishArtifact(content: Uint8Array | string): Promise<HttpResult<ArtifactResource>>;
   listObservedQueueItems(after?: string): Promise<ObservedQueueItemPage>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
   foundCatalogLineage(
@@ -2991,6 +3011,20 @@ export function createCockpitApi(
         },
         [200, 201],
         agentDefinitionRevisionSchema,
+      ),
+    publishArtifact: (content) =>
+      requestJsonResult(
+        fetcher,
+        "/atelier/api/v1/artifacts",
+        {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: opaqueDocumentBody(
+            typeof content === "string" ? new TextEncoder().encode(content) : content,
+          ),
+        },
+        [200, 201],
+        artifactResourceSchema,
       ),
     getRevisionByName: async (name: string) => {
       const resolution = await requestJson(

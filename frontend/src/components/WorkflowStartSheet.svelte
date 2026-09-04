@@ -2,14 +2,15 @@
   import { onMount, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
-  import type {
-    AgentConfigurationRevisionListItem,
-    AuthProfileRevision,
-    CockpitApi,
-    ModelRegistryRevision,
-    ObservedQueueItem,
-    ProjectModelResolution,
-    WorkflowRevisionDetail
+  import {
+    MAXIMUM_ARTIFACT_BYTES,
+    type AgentConfigurationRevisionListItem,
+    type AuthProfileRevision,
+    type CockpitApi,
+    type ModelRegistryRevision,
+    type ObservedQueueItem,
+    type ProjectModelResolution,
+    type WorkflowRevisionDetail
   } from "../api/client";
   import {
     observedSourceHeading,
@@ -18,6 +19,7 @@
     projectDefaultLine,
     startAccountSuffix,
     startConfigurationLabel,
+    startOrderByteCount,
     startOrderGroup,
     startUnavailableSuffix,
     workItemFor,
@@ -28,7 +30,8 @@
   import {
     createRunId as makeRunId,
     startMutation,
-    type MutationJournal
+    type MutationJournal,
+    type StartOrder
   } from "../lib/mutationJournal";
   import {
     classifyStartOrderSchema,
@@ -38,6 +41,7 @@
     type OrderSchemaResource,
     type StartOrderSchemaShape
   } from "../lib/orderSchema";
+  import { readRawOrderJson } from "../lib/rawOrderJson";
   import { readEveryAgentConfiguration, readEveryAuthProfile } from "../lib/runPages";
   import { agentRolesOf } from "../lib/savedWorkflows";
   import { matchesSearchTerm } from "../lib/searchTerm";
@@ -56,6 +60,13 @@
     resource: OrderSchemaResource | null;
     shape: StartOrderSchemaShape | null;
     values: Record<string, string>;
+    /** A string-schema order's exact text, typed or read from a file (#438 Scheibe 1b). */
+    stringValue: string;
+    /**
+     * An object-schema order's optional whole-instance override: when filled and
+     * valid JSON, it is published instead of the fields composed above.
+     */
+    rawJson: string;
   }
 
   type RoleResolution = ProjectModelResolution["resolutions"][number];
@@ -328,7 +339,9 @@
       schemaRevision: order.schema.revision,
       resource: null,
       shape: null,
-      values: {}
+      values: {},
+      stringValue: "",
+      rawJson: ""
     }));
   }
 
@@ -346,6 +359,8 @@
       return false;
     }
     if (order.shape.kind === "work_item") return (order.values.work_item?.length ?? 0) > 0;
+    if (order.shape.kind === "string") return order.stringValue.length > 0;
+    if (order.rawJson.trim().length > 0) return readRawOrderJson(order.rawJson).ok;
     return requiredFieldsFilled(order);
   }
 
@@ -395,10 +410,24 @@
     );
   }
 
-  function wireOrder(order: OrderDraft): { name: string; value: string } | { name: string; work_item: string } {
-    if (order.shape?.kind === "work_item") {
-      return { name: order.name, work_item: order.values.work_item ?? "" };
-    }
+  function setOrderStringValue(orderName: string, value: string): void {
+    orders = orders.map((order) => (order.name === orderName ? { ...order, stringValue: value } : order));
+  }
+
+  function setOrderRawJson(orderName: string, value: string): void {
+    orders = orders.map((order) => (order.name === orderName ? { ...order, rawJson: value } : order));
+  }
+
+  async function setOrderStringFromFile(orderName: string, file: File): Promise<void> {
+    setOrderStringValue(orderName, await file.text());
+  }
+
+  function orderByteLength(value: string): number {
+    return new TextEncoder().encode(value).length;
+  }
+
+  /** The exact bytes an object order's structured form composes, absent a Raw JSON override. */
+  function structuredObjectOrderJson(order: OrderDraft): string {
     const fields = order.resource?.summary.fields ?? [];
     const value = Object.fromEntries(
       fields.flatMap((field) => {
@@ -406,7 +435,27 @@
         return typed.length === 0 ? [] : [[field.name, typedValue(field, typed)]];
       })
     );
-    return { name: order.name, value: JSON.stringify(value) };
+    return JSON.stringify(value);
+  }
+
+  /**
+   * The exact bytes one order publishes as its artifact (#438 Scheibe 1b): a
+   * string order's typed or file text as-is, an object order's Raw JSON text
+   * as the operator wrote it when present, or its structured form otherwise.
+   * A work item stays its own third door -- the start reads it, so it never
+   * publishes anything here.
+   */
+  function orderPublicationText(order: OrderDraft): string {
+    if (order.shape?.kind === "string") return order.stringValue;
+    return order.rawJson.trim().length > 0 ? order.rawJson : structuredObjectOrderJson(order);
+  }
+
+  async function publishedOrder(order: OrderDraft): Promise<StartOrder> {
+    if (order.shape?.kind === "work_item") {
+      return { name: order.name, work_item: order.values.work_item ?? "" };
+    }
+    const published = await cockpitApi.publishArtifact(orderPublicationText(order));
+    return { name: order.name, artifact_hash: published.value.artifact_hash };
   }
 
   function inputType(field: OrderSchemaField): "checkbox" | "number" | "text" {
@@ -701,7 +750,7 @@
         createRunId(),
         revision.workflow_revision_hash,
         modelOverrides(),
-        orders.map(wireOrder)
+        await Promise.all(orders.map(publishedOrder))
       );
       await mutationJournal.prepare(mutation);
       const result = await cockpitApi.start(mutation);
@@ -847,6 +896,29 @@
                 {/if}
               {/if}
             </div>
+          {:else if order.shape?.kind === "string"}
+            <label>
+              {workflowStartCopy.orderText}
+              <textarea
+                value={order.stringValue}
+                disabled={starting}
+                oninput={(event) => setOrderStringValue(order.name, event.currentTarget.value)}
+              ></textarea>
+            </label>
+            <label>
+              {workflowStartCopy.publishFromFile(order.name)}
+              <input
+                type="file"
+                disabled={starting}
+                onchange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  if (file !== undefined) void setOrderStringFromFile(order.name, file);
+                }}
+              />
+            </label>
+            <p class="byte-count">
+              {startOrderByteCount(orderByteLength(order.stringValue), MAXIMUM_ARTIFACT_BYTES)}
+            </p>
           {:else if order.shape?.kind === "inline_object"}
             {#each order.resource?.summary.fields ?? [] as field (field.name)}
               <label>
@@ -872,6 +944,23 @@
                 {/if}
               </label>
             {/each}
+            <details>
+              <summary>{workflowStartCopy.rawJson}</summary>
+              <label>
+                {workflowStartCopy.rawJsonFor(order.name)}
+                <textarea
+                  value={order.rawJson}
+                  disabled={starting}
+                  oninput={(event) => setOrderRawJson(order.name, event.currentTarget.value)}
+                ></textarea>
+              </label>
+              {#if order.rawJson.trim().length > 0}
+                {@const rawJsonVerdict = readRawOrderJson(order.rawJson)}
+                {#if !rawJsonVerdict.ok}
+                  <p class="failure" role="alert">{rawJsonVerdict.reason}</p>
+                {/if}
+              {/if}
+            </details>
           {:else}
             <p class="failure" role="alert">{order.shape?.reason ?? workflowStartCopy.orderUnavailable}</p>
           {/if}
@@ -953,7 +1042,9 @@
   header, footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
   h2 { font-family: var(--serif); }
   fieldset, label { display: grid; gap: var(--space-1); margin: var(--space-4) 0; }
-  input, select { min-height: var(--tap); font: inherit; }
+  input, select, textarea { min-height: var(--tap); font: inherit; }
+  textarea { resize: vertical; min-height: calc(var(--tap) * 2); font-family: inherit; }
+  .byte-count { color: var(--ink-dim); font-size: var(--text-2xs); margin: 0; }
   .failure { color: var(--signal-failure); }
   .degraded { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border: 1px dashed var(--signal-attention); padding: var(--space-2); color: var(--signal-attention); }
   .link { min-height: var(--tap); border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: var(--weight-strong); text-decoration: underline; }

@@ -177,7 +177,11 @@ export const workflowStartCopy = {
   rolesUnresolved: "Model resolution did not name exactly these roles.",
   observedQueueIncomplete: "Observed queue items are incomplete.",
   startResponseChangedRoles: "The start response changed the selected roles.",
-  startResponseUnproven: "The start response did not prove the exact request."
+  startResponseUnproven: "The start response did not prove the exact request.",
+  orderText: "Text",
+  publishFromFile: (orderName: string) => `Publish ${orderName} from a file`,
+  rawJson: "Raw JSON",
+  rawJsonFor: (orderName: string) => `Raw JSON for ${orderName}`
 } as const;
 
 export function startConfigurationLabel(
@@ -213,6 +217,11 @@ export function projectDefaultLine(
 
 export function startOrderGroup(name: string): string {
   return `Order ${name}`;
+}
+
+/** A string order's exact bytes, against the artifact store's own published bound. */
+export function startOrderByteCount(bytes: number, maximumBytes: number): string {
+  return `${bytes.toLocaleString("en-US")} / ${maximumBytes.toLocaleString("en-US")} bytes`;
 }
 
 export function workItemFor(orderName: string): string {

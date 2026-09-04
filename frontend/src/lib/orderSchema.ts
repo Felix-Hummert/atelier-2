@@ -29,8 +29,17 @@ export interface OrderSchemaResource {
 /** The start sheet's one honest rendering for a published V3 order schema. */
 export type StartOrderSchemaShape =
   | { readonly kind: "work_item" }
+  | { readonly kind: "string" }
   | { readonly kind: "inline_object" }
   | { readonly kind: "unsupported"; readonly reason: string };
+
+/**
+ * Every refusal names a way out (#438 Zeile 11): the CLI and the HTTP API
+ * accept any order this door cannot render, through the same publish-as-
+ * artifact start every door now shares.
+ */
+const UNSUPPORTED_ORDER_WAY_OUT =
+  "Start this workflow through the CLI or the HTTP API instead.";
 
 /**
  * The backend only accepts an observed work item beneath this published
@@ -102,17 +111,30 @@ export function classifyStartOrderSchema(
   schemaRevision: string
 ): StartOrderSchemaShape {
   if (!isRecord(document)) {
-    return { kind: "unsupported", reason: "This order shape is not supported by the start sheet." };
+    return {
+      kind: "unsupported",
+      reason: `This order's schema is not one the start sheet can read. ${UNSUPPORTED_ORDER_WAY_OUT}`
+    };
   }
   if (isWorkItemOrderSchema(document)) {
     if (schemaRevision === WORK_ITEM_ORDER_SCHEMA_REVISION) return { kind: "work_item" };
     return {
       kind: "unsupported",
-      reason: "This work-item-shaped order does not use the canonical work-item schema."
+      reason:
+        "This work-item-shaped order does not use the canonical work-item schema. " +
+        UNSUPPORTED_ORDER_WAY_OUT
     };
   }
+  if (fieldTypesAreExactly(declaredTypes(document), "string")) {
+    return { kind: "string" };
+  }
   if (!fieldTypesAreExactly(declaredTypes(document), "object")) {
-    return { kind: "unsupported", reason: "This order must be an object to start here." };
+    return {
+      kind: "unsupported",
+      reason:
+        "This order's schema is not a string, an object, or a work item. " +
+        UNSUPPORTED_ORDER_WAY_OUT
+    };
   }
   const properties = declaredProperties(document);
   const required = declaredRequired(document);
@@ -124,7 +146,11 @@ export function classifyStartOrderSchema(
       return types === null || types.length !== 1 || !supported.has(types[0] ?? "");
     })
   ) {
-    return { kind: "unsupported", reason: "This order has a field the start sheet cannot encode." };
+    return {
+      kind: "unsupported",
+      reason:
+        "This order has a field the start sheet's form cannot encode. " + UNSUPPORTED_ORDER_WAY_OUT
+    };
   }
   return { kind: "inline_object" };
 }

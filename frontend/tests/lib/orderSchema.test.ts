@@ -133,4 +133,18 @@ describe("classifying a schema for the start sheet", () => {
       expect(classifyStartOrderSchema(document, "schema-other").kind).toBe("unsupported");
     }
   );
+
+  it.each([{ type: "string" }, { type: "string", minLength: 1 }])(
+    "recognizes a string schema, minLength or not, as a string order (#438 A5)",
+    (document) => {
+      expect(classifyStartOrderSchema(document, "schema-string")).toEqual({ kind: "string" });
+    }
+  );
+
+  it("names a way out on every refusal (#438 Zeile 11)", () => {
+    expect(classifyStartOrderSchema({ type: "array" }, "schema-other")).toMatchObject({
+      kind: "unsupported",
+      reason: expect.stringContaining("CLI or the HTTP API")
+    });
+  });
 });
