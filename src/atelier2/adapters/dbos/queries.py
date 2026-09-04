@@ -72,10 +72,7 @@ from atelier2.adapters.dbos.workflow import (
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.bounded_process_cache import BoundedProcessCache
-from atelier2.application.compose_node_job import (
-    NodeJobCompositionVersion,
-    node_job,
-)
+from atelier2.application.compose_node_job import node_job
 from atelier2.application.project_node_rail import (
     never_launched_cleanup_on_failed_run,
     project_node_rail,
@@ -682,24 +679,11 @@ def _current_attempt_projection(
             node,
             orders,
             results,
-            base_composition_version=NodeJobCompositionVersion.CURRENT,
             target_node_execution_id=execution_id,
             target_attempt_ordinal=ordinal,
             prior_refusal_receipt=repair_receipt,
         )
     )
-    if repair_receipt is None and request_hash != exact_request.request_hash:
-        exact_request = request_for(
-            compose_agent_node_job_for_attempt(
-                node,
-                orders,
-                results,
-                base_composition_version=NodeJobCompositionVersion.LEGACY,
-                target_node_execution_id=execution_id,
-                target_attempt_ordinal=ordinal,
-                prior_refusal_receipt=None,
-            )
-        )
     expected_attempt_id = AgentAttemptId.for_execution(
         execution_id, exact_request.request_hash, ordinal
     )

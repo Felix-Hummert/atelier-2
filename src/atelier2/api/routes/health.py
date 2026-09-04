@@ -15,4 +15,5 @@ async def health(context: ApiContext = api_context_dependency) -> HealthResource
         status="serving",
         source_commit=context.source_commit,
         source_tree=context.source_tree,
+        serve_started_at=context.serve_started_at.value,
     )

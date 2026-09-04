@@ -15,14 +15,9 @@ product's, and the adapter's job is only to carry it.
 
 from __future__ import annotations
 
-import json
 from enum import StrEnum
 
-from atelier2.contracts.node_records_v3 import (
-    DeliveredOutput,
-    RunInput,
-    RunInputSchemaKind,
-)
+from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
 
 ORDER_HEADING = "--- order: {name} ---"
 """How one order announces itself, so the reader can tell them apart."""
@@ -34,9 +29,19 @@ OUTPUT_SCHEMA_REPAIR_HEADING = "--- repair: declared output schema ---"
 
 
 class NodeJobCompositionVersion(StrEnum):
-    """The three rendering rules whose bytes have identified agent attempts."""
+    """The two rendering identities whose bytes have identified agent attempts.
 
-    LEGACY = "json-orders/v1"
+    `CURRENT` and `OUTPUT_SCHEMA_REPAIR` render every order identically
+    (`_render_order`); `OUTPUT_SCHEMA_REPAIR` differs only by the repair
+    section it appends. A third value, `LEGACY` (`json-orders/v1`), once
+    rendered a declared-root-string order as its still-JSON-quoted stored
+    bytes; #1091 made every order's stored bytes the exact text a reader
+    should see, so the rule it distinguished no longer exists. Atelier is a
+    prototype and owes no compatibility with an attempt composed under it: an
+    in-flight pre-#1091 attempt now reads as durable corruption rather than
+    reconstructing under a second rule (`docs/PRODUCT.md`).
+    """
+
     CURRENT = "declared-root-strings/v2"
     OUTPUT_SCHEMA_REPAIR = "declared-root-strings-with-repair/v3"
 
@@ -87,7 +92,7 @@ def node_job(
     sections = [instruction]
     for order in sorted(orders, key=lambda supplied: supplied.name):
         sections.append(ORDER_HEADING.format(name=order.name))
-        sections.append(_render_order(order, composition_version))
+        sections.append(_render_order(order))
     for result in sorted(results, key=lambda done: (done.node_id, done.output_name)):
         sections.append(
             RESULT_HEADING.format(node=result.node_id, name=result.output_name)
@@ -100,22 +105,15 @@ def node_job(
     return "\n\n".join(sections)
 
 
-def _render_order(
-    order: RunInput, composition_version: NodeJobCompositionVersion
-) -> str:
-    """Render an order under the version that authored the request hash.
+def _render_order(order: RunInput) -> str:
+    """Render an order exactly as its start admitted it.
 
-    The legacy composition wrote every order's stored JSON bytes. The current
-    composition decodes only declared root strings. Both preserve the stored
-    bytes and their hash; only the text the node's reader sees differs.
+    Every stored order's bytes ARE the text a reader should see: a JSON-typed
+    order's bytes are its JSON text, and -- since a `"string"`-typed schema
+    reads an order as the artifact's own raw UTF-8 text
+    (`schemas_v3.read_authored_instance_document`) -- a declared-root-string
+    order carries no JSON-quoting layer left to strip here. Both compositions
+    therefore render every order identically; `composition_version` stays
+    `node_job`'s own parameter, for the repair heading it still gates.
     """
-    value = order.value.decode("utf-8")
-    if (
-        composition_version is NodeJobCompositionVersion.LEGACY
-        or order.schema_kind is not RunInputSchemaKind.PLAIN_STRING
-    ):
-        return value
-    decoded = json.loads(value)
-    if not isinstance(decoded, str):
-        raise TypeError("a plain-string schema admitted a non-string order")
-    return decoded
+    return order.value.decode("utf-8")

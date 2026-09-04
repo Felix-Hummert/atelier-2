@@ -79,7 +79,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
+from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import InlineOrderValue
 from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeReceipt,
@@ -2137,7 +2137,6 @@ nodes:
                     order_name,
                     ANY_JSON_SCHEMA.revision_hash,
                     order_value,
-                    schema_kind=RunInputSchemaKind.JSON,
                 ),
             ),
             composition_version=NodeJobCompositionVersion.CURRENT,

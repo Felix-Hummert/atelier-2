@@ -56,10 +56,12 @@ def agent_configuration_revision_list_item_resource(
         ),
         provider_probe_problem_code=(
             None
-            if item.probe_failure is None
-            else item.probe_failure.problem_code.value
+            if item.probe_failure_evidence is None
+            else item.probe_failure_evidence.problem_code.value
         ),
         provider_probe_observed_at=(
-            None if item.probe_failure is None else item.probe_failure.observed_at.value
+            None
+            if item.probe_failure_evidence is None
+            else item.probe_failure_evidence.observed_at.value
         ),
     )

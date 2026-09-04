@@ -48,6 +48,7 @@ def _wait_answer_schema(
             ref="decision", revision="schema-decision"
         ),
         kind=kind,
+        string_typed=False,
         values=("true", "false") if kind == "enum" else None,
     )
 
@@ -320,6 +321,7 @@ nodes:
                 ref="decision", revision="schema-decision"
             ),
             kind="free",
+            string_typed=False,
             values=None,
         ),
     )
@@ -350,7 +352,7 @@ nodes:
     resource = graph_resource(
         graph,
         None,
-        (WaitAnswerClassification(node_id="ship", kind="boolean"),),
+        (WaitAnswerClassification(node_id="ship", kind="boolean", string_typed=False),),
     )
 
     assert isinstance(resource, WorkflowGraphResourceV3)
@@ -380,7 +382,10 @@ nodes:
         None,
         (
             WaitAnswerClassification(
-                node_id="verdict", kind="enum", values=('"approve"', '"revise"')
+                node_id="verdict",
+                kind="enum",
+                string_typed=False,
+                values=('"approve"', '"revise"'),
             ),
         ),
     )
@@ -388,7 +393,45 @@ nodes:
     assert isinstance(resource, WorkflowGraphResourceV3)
     entry = resource.wait_answer_schemas[0]
     assert entry.kind == "enum"
+    assert entry.string_typed is False
     assert entry.values == ('"approve"', '"revise"')
+
+
+def test_v3_graph_projection_carries_a_string_typed_enums_raw_values_and_flag() -> None:
+    """#1091 PR #1108 finding 1: a `type: string` schema's `enum` classifies
+    with `string_typed=True` and raw (never JSON-quoted) `values` -- the
+    projection passes both straight through from the application's own
+    classification, exactly as it does for every other classified field."""
+    document = b"""format_version: 3
+name: Decide among named words
+nodes:
+  - id: verdict
+    type: wait
+    prompt: ja, nein, or zeig-mir?
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+"""
+    graph = parse_workflow_document(document)
+
+    resource = graph_resource(
+        graph,
+        None,
+        (
+            WaitAnswerClassification(
+                node_id="verdict",
+                kind="enum",
+                string_typed=True,
+                values=("ja", "nein", "zeig-mir"),
+            ),
+        ),
+    )
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    entry = resource.wait_answer_schemas[0]
+    assert entry.kind == "enum"
+    assert entry.string_typed is True
+    assert entry.values == ("ja", "nein", "zeig-mir")
 
 
 def test_wait_answer_schema_requires_values_exactly_for_an_enum_kind() -> None:
@@ -397,6 +440,7 @@ def test_wait_answer_schema_requires_values_exactly_for_an_enum_kind() -> None:
             node_id="approve",
             schema=WorkflowDeclaredSchemaResourceV3(ref="decision", revision="hash"),
             kind="enum",
+            string_typed=False,
             values=None,
         )
     with pytest.raises(ValidationError):
@@ -404,6 +448,7 @@ def test_wait_answer_schema_requires_values_exactly_for_an_enum_kind() -> None:
             node_id="approve",
             schema=WorkflowDeclaredSchemaResourceV3(ref="decision", revision="hash"),
             kind="boolean",
+            string_typed=False,
             values=("true",),
         )
 

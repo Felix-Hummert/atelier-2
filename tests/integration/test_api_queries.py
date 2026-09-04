@@ -56,7 +56,6 @@ from atelier2.api.stream import (
     PreparedEventStream,
     stream_server_events,
 )
-from atelier2.application.compose_node_job import NodeJobCompositionVersion
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -1731,7 +1730,6 @@ def _seed_attempt_receipt_refusal(
         node,
         (),
         (),
-        base_composition_version=NodeJobCompositionVersion.CURRENT,
         target_node_execution_id=execution_id,
         target_attempt_ordinal=1,
         prior_refusal_receipt=None,

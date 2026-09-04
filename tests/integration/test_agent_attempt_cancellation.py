@@ -28,7 +28,6 @@ from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import AgentExecutorMap, reconstruct_agent_attempt
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
-from atelier2.application.compose_node_job import NodeJobCompositionVersion
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -59,7 +58,7 @@ from tests.integration.test_agent_attempts import (
     inspecting_executor,
 )
 from tests.integration.test_v3_attempt_arm import runtime as _ordered_v3_runtime
-from tests.integration.test_v3_attempt_arm import started_string_ordered_v3_attempts
+from tests.integration.test_v3_attempt_arm import started_string_ordered_v3_attempt
 from tests.scenarios.agents import agent_attempt_execution, runtime_workspace_owner
 from tests.scenarios.api import durable_api_client, durable_queries
 
@@ -252,29 +251,21 @@ def test_cancel_replacement_creates_exactly_ordinal_two_and_never_three(
         runtime.close()
 
 
-@pytest.mark.parametrize(
-    "base_version",
-    (NodeJobCompositionVersion.LEGACY, NodeJobCompositionVersion.CURRENT),
-)
 def test_cancellation_replacement_keeps_its_base_job_and_request_hash(
     ordered_v3_runtime: DbosRuntime,
-    base_version: NodeJobCompositionVersion,
 ) -> None:
-    run_id = RunId(f"v3/cancellation-keeps-{base_version.name.lower()}")
-    legacy, current = started_string_ordered_v3_attempts(ordered_v3_runtime, run_id)
-    selected = legacy if base_version is NodeJobCompositionVersion.LEGACY else current
-    assert legacy.request.job_bytes != current.request.job_bytes
-    assert legacy.request.request_hash != current.request.request_hash
+    run_id = RunId("v3/cancellation-keeps-its-base-job")
+    execution = started_string_ordered_v3_attempt(ordered_v3_runtime, run_id)
     store = DbosAgentAttemptStore(
         ordered_v3_runtime.engine,
         ordered_v3_runtime.settings.application_version,
     )
-    prepared = store.prepare(selected)
-    assert prepared.request_hash == selected.request.request_hash
+    prepared = store.prepare(execution)
+    assert prepared.request_hash == execution.request.request_hash
     command = CancelAgentAttemptRequest(
         run_id,
-        selected.attempt_id,
-        f"replace-{base_version.name.lower()}",
+        execution.attempt_id,
+        "replace-current",
         prepared.state_version,
         AgentAttemptReplacement.ONE,
     )
@@ -304,12 +295,12 @@ def test_cancellation_replacement_keeps_its_base_job_and_request_hash(
         replacement,
     ).execution
 
-    assert reconstructed.request.job_bytes == selected.request.job_bytes
-    assert reconstructed.request.request_hash == selected.request.request_hash
-    assert replacement.request_hash == selected.request.request_hash
+    assert reconstructed.request.job_bytes == execution.request.job_bytes
+    assert reconstructed.request.request_hash == execution.request.request_hash
+    assert replacement.request_hash == execution.request.request_hash
     assert replacement.attempt_id == AgentAttemptId.for_execution(
-        selected.request.node_execution_id,
-        selected.request.request_hash,
+        execution.request.node_execution_id,
+        execution.request.request_hash,
         2,
     )
     found = durable_queries(ordered_v3_runtime.engine).get_run(run_id)

@@ -155,9 +155,13 @@ FRAGMENTS_TEXT = (
 )
 OWNER_DOCUMENTS_TEXT = "Requirements are traceable to an acknowledged operator answer."
 CONTEXT_TEXT = "The owners win when they contradict a fragment."
-FRAGMENTS = json.dumps(FRAGMENTS_TEXT, ensure_ascii=False).encode()
-OWNER_DOCUMENTS = json.dumps(OWNER_DOCUMENTS_TEXT, ensure_ascii=False).encode()
-CONTEXT = json.dumps(CONTEXT_TEXT, ensure_ascii=False).encode()
+# `nonempty_string.json` is a `"string"`-typed schema: since #1091 an order's
+# raw UTF-8 text is itself the value it admits
+# (`schemas_v3.read_authored_instance_document`), so these three graph inputs
+# are supplied as their plain text rather than a second JSON encoding of it.
+FRAGMENTS = FRAGMENTS_TEXT.encode()
+OWNER_DOCUMENTS = OWNER_DOCUMENTS_TEXT.encode()
+CONTEXT = CONTEXT_TEXT.encode()
 
 COMPLIANT_RESULT = {
     "variants": [
@@ -747,7 +751,10 @@ def test_an_oversized_durable_wait_question_keeps_event_pages_readable(
     context_text = "x" * (
         projection_limit.maximum_payload_bytes + 1 - len(question_prefix)
     )
-    context_value = json.dumps(context_text).encode()
+    # A `"string"`-typed order's raw text is itself the admitted value since
+    # #1091 (`schemas_v3.read_authored_instance_document`), so this order is
+    # supplied as that plain text rather than a second JSON encoding of it.
+    context_value = context_text.encode()
     expected_question = question_prefix + context_text.encode()
     assert len(expected_question) == projection_limit.maximum_payload_bytes + 1
     created = start(
