@@ -1266,7 +1266,7 @@ over the cockpit's `src`, where an unused file, export, or dependency is red --
 but knip's vitest and playwright plugins register the test files as entry
 points, so an export only a cockpit test imports counts as reached. Making the
 cockpit gate ask what vulture asks turns roughly a dozen test-only exports red
-and is its own slice (#1181).
+and is its own slice, owned by #1168 (finding 12).
 
 A vulture finding survives only by standing in one of three files, and which
 file it stands in is the whole justification:
