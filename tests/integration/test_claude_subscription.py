@@ -38,7 +38,6 @@ from atelier2.adapters.claude_subscription import (
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
     ClaudeWorkspaceToolExecutorFactory,
-    _output_format_arguments,
     attest_no_managed_policy,
     attest_workspace_tool_invocation,
     verify_claude_capability,
@@ -82,6 +81,14 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import (
+    InstanceAccepted,
+    InstanceRefusal,
+    InstanceRefused,
+    SchemaAccepted,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.ports.agent_attempts import (
     AgentAttemptExecutionOutcome,
     AgentAttemptFailed,
@@ -228,7 +235,7 @@ def emitting_claude(standard_output: str, return_code: int = 0) -> str:
     )
 
 
-def success_envelope(result: str, structured_output: object | None = None) -> str:
+def success_envelope(result: str) -> str:
     """The last line of a stream: the answer, and what the whole call spent."""
 
     envelope: dict[str, object] = {
@@ -242,8 +249,6 @@ def success_envelope(result: str, structured_output: object | None = None) -> st
             "cache_creation_input_tokens": ENVELOPE_USAGE.cache_creation_input_tokens,
         },
     }
-    if structured_output is not None:
-        envelope["structured_output"] = structured_output
     return json.dumps(envelope)
 
 
@@ -517,167 +522,215 @@ def test_the_private_config_directory_dies_while_the_leased_workspace_stands(
     executor.close()
 
 
-@pytest.mark.parametrize(
-    "declared_schema",
-    [
-        pytest.param(
-            b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
-            b'"type":"object","additionalProperties":false}',
-            id="house-schema-carries-the-dialect-line",
-        ),
-        pytest.param(
-            b'{"type":"object","additionalProperties":false}',
-            id="a-schema-naming-no-dialect-passes-through-unchanged",
-        ),
-    ],
-)
-def test_every_claude_output_vector_carries_the_constraint_never_the_house_dialect(
-    declared_schema: bytes,
-) -> None:
-    """The tool-free, workspace-tool and atelier-doors executors all build their
-    `--json-schema` flag through this one function, so every one of them is
-    proved here at once. Claude's external validator resolves no meta-schema
-    URI offline and refuses the whole call before a model starts if the house
-    dialect line travels with the constraint (#941, live evidence
-    run-fe7eb558)."""
-
-    arguments = _output_format_arguments(declared_schema)
-
-    assert arguments[:3] == ("--output-format", "json", "--json-schema")
-    constraint = json.loads(arguments[3])
-    assert "$schema" not in constraint
-    assert constraint == {"type": "object", "additionalProperties": False}
+# The two answers the pinned 2.1.221 really gave when the declared schema
+# closed its job instead of reaching the API (measured 04.09.2026 on
+# claude-sonnet-5, #1188; captures under the lane's own probe directory). Both
+# terminal lines carried the document bare in `result`, with no
+# `structured_output` field beside it and no fence or prose around it.
+MEASURED_OBJECT_SCHEMA_ANSWER = '{"findings": [], "verdict": "approve"}'
+MEASURED_ROOT_STRING_ANSWER = '"canary-alive"'
 
 
-def test_a_declared_schema_uses_claudes_native_structured_output(
-    tmp_path: Path,
-) -> None:
-    declared_schema = (
-        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
-        b'"type":"object","additionalProperties":false}'
+def published_schema(name: str) -> bytes:
+    """One schema this repository really publishes, as its own document bytes."""
+
+    return (Path(__file__).parents[2] / "workflows" / "schemas" / name).read_bytes()
+
+
+def accepted_schema(document: bytes) -> SchemaAccepted:
+    """That document read by the seam that judges every produced value."""
+
+    schema = read_schema_document(document)
+    assert isinstance(schema, SchemaAccepted), schema
+    return schema
+
+
+def answered_stream(answer: str) -> str:
+    """The stream a call ending on one answer writes: the turn, then the envelope."""
+
+    return "\n".join(
+        (assistant_line({"type": "text", "text": answer}), success_envelope(answer))
     )
-    structured_output = {"findings": [], "verdict": "accepted"}
+
+
+def answered_transcript(answer: str) -> AttemptTranscript:
+    """The steps that stream leaves behind: the turn it spoke, and what it spent."""
+
+    return AttemptTranscript.of([AssistantTurn(answer), ENVELOPE_USAGE])
+
+
+def claude_answer(
+    tmp_path: Path, answer: str, declared_schema: bytes | None
+) -> AgentExecutionResult | AgentExecutionFailure:
+    """What the tool-free executor makes of a call that ended on this answer."""
+
     settings = claude_subscription_deployment(
-        tmp_path,
-        emitting_claude(success_envelope("structured review", structured_output)),
+        tmp_path, emitting_claude(answered_stream(answer))
     )
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
     request = subscription_request(declared_output_schema=declared_schema)
     command = executor.prepare_process(request)
     workspace = provider_workspace(tmp_path)
+    try:
+        return executor.decode_process_completion(
+            leased(request, command, workspace), launched(command, workspace)
+        )
+    finally:
+        executor.release_credential_channel(command)
+        executor.close()
+
+
+def test_a_declared_schema_reaches_the_model_in_the_job_and_never_the_api(
+    tmp_path: Path,
+) -> None:
+    """The move #1188 was cut for: no schema is handed to Anthropic at all.
+
+    The schema used to travel as the synthesized `StructuredOutput` tool's
+    `input_schema`, and `code_review_result` -- the published contract every
+    Claude reviewer of `issue-to-pr` declares -- carries a top-level `allOf`
+    the API refuses there outright, so the whole call died on an HTTP 400
+    before a model started. It now closes the job as its exact published
+    document bytes, which are also the bytes the output seam judges the answer
+    against, and the argument vector says nothing about it.
+    """
+
+    declared_schema = published_schema("code_review_result.json")
+    settings = claude_subscription_deployment(tmp_path, INTROSPECTING_CLAUDE)
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+
+    command = executor.prepare_process(
+        subscription_request(
+            job=b"Review the diff", declared_output_schema=declared_schema
+        )
+    )
 
     assert isinstance(command, ClaudeProcessCommand)
-    assert command.arguments[2:5] == ("--output-format", "json", "--json-schema")
-    assert json.loads(command.arguments[5]) == {
-        "type": "object",
-        "additionalProperties": False,
-    }
-    assert command.declared_output_schema_bytes == declared_schema
-    assert "--tools=StructuredOutput" in command.arguments
-    assert "--verbose" not in command.arguments
-
-    result = executor.decode_process_completion(
-        leased(request, command, workspace), launched(command, workspace)
+    assert not any(
+        argument.startswith("--json-schema") for argument in command.arguments
     )
+    assert not any("StructuredOutput" in argument for argument in command.arguments)
+    assert "--tools=" in command.arguments
+    assert command.arguments[2:5] == ("--output-format", "stream-json", "--verbose")
+    assert command.standard_input is not None
+    assert command.standard_input.startswith(b"Review the diff")
+    assert command.standard_input.endswith(declared_schema)
+    assert command.declared_output_schema_bytes == declared_schema
+    executor.release_credential_channel(command)
+    executor.close()
+
+
+def test_a_job_whose_node_declared_no_schema_carries_the_job_alone(
+    tmp_path: Path,
+) -> None:
+    """Nothing is asked for where the node declared no shape to ask for."""
+
+    settings = claude_subscription_deployment(tmp_path, INTROSPECTING_CLAUDE)
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+
+    command = executor.prepare_process(subscription_request(job=b"Reply with pong"))
+
+    assert command.standard_input == b"Reply with pong"
+    executor.release_credential_channel(command)
+    executor.close()
+
+
+@pytest.mark.parametrize(
+    ("schema_name", "answer"),
+    [
+        pytest.param(
+            "code_review_result.json",
+            MEASURED_OBJECT_SCHEMA_ANSWER,
+            id="an-object-schema-whose-top-level-allOf-the-api-refused",
+        ),
+        pytest.param(
+            "nonempty_string.json",
+            MEASURED_ROOT_STRING_ANSWER,
+            id="a-root-string-schema-the-object-only-tool-had-to-wrap",
+        ),
+    ],
+)
+def test_a_measured_answer_reaches_the_output_seam_as_the_value_it_declared(
+    tmp_path: Path, schema_name: str, answer: str
+) -> None:
+    """Both captures, replayed: the terminal `result` text is the whole answer.
+
+    The wrapper #1061 needed for a root-string schema is gone with the tool it
+    was built for -- the string arrives as its own JSON document, quotes and
+    all -- and an object schema the API would not accept as an `input_schema`
+    is judged here exactly as any other.
+    """
+
+    declared_schema = published_schema(schema_name)
+
+    result = claude_answer(tmp_path, answer, declared_schema)
 
     assert result == AgentExecutionResult(
-        json.dumps(structured_output, separators=(",", ":")).encode(), spent_only()
+        answer.encode("utf-8"), answered_transcript(answer)
+    )
+    assert isinstance(result, AgentExecutionResult)
+    assert isinstance(
+        read_instance_document(result.output_bytes, accepted_schema(declared_schema)),
+        InstanceAccepted,
     )
 
 
-def test_a_non_object_declared_schema_is_wrapped_for_claudes_object_only_tool() -> None:
-    """Anthropic requires the synthesized `StructuredOutput` custom tool's
-    `input_schema.type` to be `"object"`. `nonempty_string.json` -- a real,
-    committed node output schema -- is a bare `{"type":"string",...}` document
-    that made the whole call refuse with `tools.0.custom.input_schema.type`
-    before this wrapping existed (#1061)."""
-
-    declared_schema_bytes = (
-        Path(__file__).parents[2] / "workflows" / "schemas" / "nonempty_string.json"
-    ).read_bytes()
-    declared_schema = json.loads(declared_schema_bytes)
-    del declared_schema["$schema"]
-
-    constraint = json.loads(_output_format_arguments(declared_schema_bytes)[3])
-
-    assert constraint == {
-        "type": "object",
-        "properties": {"value": declared_schema},
-        "required": ["value"],
-        "additionalProperties": False,
-    }
-
-
-def test_a_wrapped_structured_output_answer_unwraps_to_exactly_the_declared_value(
+def test_an_answer_that_is_no_declared_document_reaches_the_seam_unchanged(
     tmp_path: Path,
 ) -> None:
-    """The end-to-end round trip for a string-typed node output (#1061): the
-    fake CLI answers the wrapped shape Claude's object-only tool requires, and
-    decode hands back exactly what the declared schema judges, never the
-    wrapper it travelled in."""
+    """Fail loud, in words a reader can act on: the seam refuses, nothing repairs.
 
-    declared_schema = (
-        Path(__file__).parents[2] / "workflows" / "schemas" / "nonempty_string.json"
-    ).read_bytes()
-    answer = "a nonempty answer"
-    settings = claude_subscription_deployment(
-        tmp_path,
-        emitting_claude(success_envelope(answer, {"value": answer})),
+    Neither measured call wrote prose around its answer, and nothing here
+    strips any: an answer carrying no value the declared schema admits travels
+    on byte for byte, so the output seam refuses it by name rather than an
+    adapter deciding what counts as an answer.
+    """
+
+    declared_schema = published_schema("code_review_result.json")
+    narration = "I could not review that diff without the file it touches."
+
+    result = claude_answer(tmp_path, narration, declared_schema)
+
+    assert result == AgentExecutionResult(
+        narration.encode("utf-8"), answered_transcript(narration)
     )
-    executor = ClaudeSubscriptionExecutorFactory(settings).open()
-    request = subscription_request(declared_output_schema=declared_schema)
-    command = executor.prepare_process(request)
-    workspace = provider_workspace(tmp_path)
-
-    assert isinstance(command, ClaudeProcessCommand)
-    constraint = json.loads(command.arguments[5])
-    assert constraint["type"] == "object"
-    assert constraint["properties"]["value"] == {"type": "string", "minLength": 1}
-
-    result = executor.decode_process_completion(
-        leased(request, command, workspace), launched(command, workspace)
+    assert isinstance(result, AgentExecutionResult)
+    refusal = read_instance_document(
+        result.output_bytes, accepted_schema(declared_schema)
     )
-
-    assert result == AgentExecutionResult(json.dumps(answer).encode(), spent_only())
+    assert isinstance(refusal, InstanceRefused)
+    assert refusal.refusal is InstanceRefusal.INSTANCE_NOT_JSON
 
 
 @pytest.mark.parametrize(
-    "wrapped_structured_output",
+    "wrapper",
     [
-        pytest.param({}, id="the-value-key-is-missing"),
-        pytest.param(
-            {"value": "a nonempty answer", "extra": "unasked-for"},
-            id="an-extra-key-rides-beside-value",
-        ),
+        pytest.param("{answer}\n", id="a-trailing-newline"),
+        pytest.param("Here is the review:\n\n{answer}", id="an-introducing-sentence"),
+        pytest.param("```json\n{answer}\n```", id="a-markdown-fence"),
     ],
 )
-def test_a_wrapped_answer_whose_keys_are_not_exactly_value_fails_the_attempt(
-    tmp_path: Path, wrapped_structured_output: dict[str, object]
+def test_a_wrapped_answer_is_narrowed_by_the_schema_house_not_by_this_adapter(
+    tmp_path: Path, wrapper: str
 ) -> None:
-    """A schema this executor wrapped is unwrapped only from the one key it
-    wrapped: a missing `value` or an extra key riding beside it is never
-    silently accepted as, or silently dropped from, the declared answer -- it
-    fails the attempt the same way any other malformed envelope does."""
+    """The ask says bare; a provider that wraps it anyway still answers its node.
 
-    declared_schema = (
-        Path(__file__).parents[2] / "workflows" / "schemas" / "nonempty_string.json"
-    ).read_bytes()
-    settings = claude_subscription_deployment(
-        tmp_path,
-        emitting_claude(
-            success_envelope("a nonempty answer", wrapped_structured_output)
-        ),
-    )
-    executor = ClaudeSubscriptionExecutorFactory(settings).open()
-    request = subscription_request(declared_output_schema=declared_schema)
-    command = executor.prepare_process(request)
-    workspace = provider_workspace(tmp_path)
+    One brief really came back bare, fenced and introduced by a sentence
+    (#663), so which bytes of a free-text answer are the declared value has one
+    owner beside the rule that judges them
+    (`schemas_v3.declared_instance_in_answer`) rather than a guess in each
+    adapter. Extraction only proposes a span; the profile alone decides, and it
+    never repairs.
+    """
 
-    result = executor.decode_process_completion(
-        leased(request, command, workspace), launched(command, workspace)
-    )
+    declared_schema = published_schema("code_review_result.json")
+    answer = wrapper.replace("{answer}", MEASURED_OBJECT_SCHEMA_ANSWER)
 
-    assert result == unusable(spent_only())
+    result = claude_answer(tmp_path, answer, declared_schema)
+
+    assert isinstance(result, AgentExecutionResult)
+    assert read_instance_document(
+        result.output_bytes, accepted_schema(declared_schema)
+    ) == InstanceAccepted(json.loads(MEASURED_OBJECT_SCHEMA_ANSWER))
 
 
 def test_a_successful_envelope_becomes_the_exact_output_bytes_of_one_receipt(
@@ -2058,10 +2111,9 @@ def argument_after(arguments: Sequence[str], flag: str) -> str:
 def workspace_tool_flags(settings: ClaudeSubscriptionSettings) -> tuple[str, ...]:
     """Every flag the real workspace-tool invocation carries, read off that invocation.
 
-    Declares a schema so the set also covers `--json-schema`: the startability
-    probe (`attest_workspace_tool_invocation`) always carries one to prove the
-    schema translation at serve start (#941), and a reference built without one
-    would refuse the probe's own vector as an unknown option.
+    Declares a schema, because a node that declares one is what the startability
+    probe stands in for -- and a vector whose flags changed with the declaration
+    would make this reference a different one than the probe's own.
     """
 
     command = (
@@ -2205,18 +2257,31 @@ def test_a_workspace_tool_executors_private_config_directory_falls_on_close(
     assert not state_directory.exists()
 
 
-def test_a_schema_bearing_workspace_tool_call_adds_only_structured_output(
+def test_a_schema_bearing_workspace_tool_call_grants_no_tool_for_the_schema(
     tmp_path: Path,
 ) -> None:
+    """A declared schema changes this vector's job, never its tool grant (#1188)."""
+
+    declared_schema = published_schema("code_review_result.json")
     settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
     executor = ClaudeWorkspaceToolExecutorFactory(settings).open()
     command = executor.prepare_process(
-        subscription_request(declared_output_schema=b'{"type":"object"}')
+        subscription_request(
+            job=b"Fix the test", declared_output_schema=declared_schema
+        )
     )
-    expected_tools = ",".join((*WORKSPACE_TOOLS, "StructuredOutput"))
+    granted = ",".join(WORKSPACE_TOOLS)
 
-    assert argument_after(command.arguments, "--tools") == expected_tools
-    assert argument_after(command.arguments, "--allowedTools") == expected_tools
+    assert argument_after(command.arguments, "--tools") == granted
+    assert argument_after(command.arguments, "--allowedTools") == granted
+    assert not any(
+        argument.startswith("--json-schema") for argument in command.arguments
+    )
+    assert command.standard_input is not None
+    assert command.standard_input.startswith(b"Fix the test")
+    assert command.standard_input.endswith(declared_schema)
+    executor.release_credential_channel(command)
+    executor.close()
 
 
 @pytest.mark.proves("a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling")
