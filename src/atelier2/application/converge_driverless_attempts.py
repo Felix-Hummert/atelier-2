@@ -30,7 +30,7 @@ from atelier2.ports.agent_attempts import (
 )
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceOwner,
-    AgentProcessRunner,
+    AgentSession,
 )
 
 
@@ -40,7 +40,7 @@ class DriverlessAttemptUnstoppable(RuntimeError):
 
 def converge_driverless_attempts(
     attempts: AgentAttemptStore,
-    supervisor: AgentProcessRunner,
+    session: AgentSession,
     workspaces: AgentAttemptWorkspaceOwner,
 ) -> None:
     """Stop every driverless attempt without retaining the completed inventory.
@@ -67,4 +67,4 @@ def converge_driverless_attempts(
                 f"the store refused to stop driverless attempt "
                 f"{attempt.attempt_id.value}: {type(accepted).__name__}"
             )
-        continue_agent_attempt_cancellation(command, attempts, supervisor, workspaces)
+        continue_agent_attempt_cancellation(command, attempts, session, workspaces)

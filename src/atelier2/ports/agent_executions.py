@@ -299,12 +299,50 @@ class AgentExecutorV2(Protocol):
     def close(self) -> None: ...
 
 
-class AgentProcessRunner(Protocol):
-    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt: ...
+class AgentSession(Protocol):
+    """One attempt's provider process, from armed to given up, behind one seam.
+
+    Everything the application layer asks of a running provider: arm a session
+    for an attempt before its launch boundary is decided, run exactly one
+    `AgentProcessInvocation` in that attempt's own lease and wait for the
+    process to end, and give up what supervision holds once the attempt is
+    durably terminal. Stopping a live attempt belongs to the same seam rather
+    than to a second authority, because only whoever holds the process can
+    signal it, reap it, and say how it went out -- and an attempt whose
+    supervision died with its host is attested here too.
+
+    The first implementation is `AgentProcessSupervisor`, which runs the
+    provider as a child of its own watchdog process; it is what every live
+    attempt this product has run went through.
+    """
+
+    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
+        """Arm a session for this attempt and durably bind who supervises it.
+
+        Invoked before the launch boundary is decided, so a call that goes on
+        to lose the claim has an armed session to give up rather than a
+        process to kill. The attempt comes back as the store now holds it, and
+        one that is no longer `PREPARED` comes back untouched: a session is
+        armed exactly once.
+        """
+        ...
 
     def launch_and_wait(
         self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
-    ) -> AgentProcessCompletion: ...
+    ) -> AgentProcessCompletion:
+        """Start exactly this invocation in its lease and wait for its ending.
+
+        The completion is the terminal evidence of that process: the code it
+        exited with, and the bounded output and error frames supervision
+        collected -- what the caller composes a durable `ProcessExitSignature`
+        from. One armed session launches one invocation: a second call
+        carrying the same one waits for that same ending, and one carrying a
+        different command is refused. An ending that is not the process's own
+        -- an output frame outgrown, a cancellation, supervision this process
+        no longer holds -- is raised rather than answered, because there is no
+        exit code that would be true of it.
+        """
+        ...
 
     def cancel(
         self, attempt: AgentAttempt
@@ -312,7 +350,15 @@ class AgentProcessRunner(Protocol):
         AgentAttemptCancellationDisposition,
         AgentProcessOwnerId,
         WatchdogGenerationId,
-    ]: ...
+    ]:
+        """Stop this attempt's process now, and say how it went out.
+
+        The disposition travels with the supervision identity that carried it
+        out, because that triple is what the store attests the cleanup from.
+        A session this process does not hold refuses with
+        `AgentProcessOwnerNotLocal`; `recover` is that attempt's question.
+        """
+        ...
 
     def recover(
         self, attempt: AgentAttempt
@@ -320,11 +366,23 @@ class AgentProcessRunner(Protocol):
         AgentAttemptCancellationDisposition,
         AgentProcessOwnerId,
         WatchdogGenerationId,
-    ]: ...
+    ]:
+        """Attest what is left of an attempt whose session this process never held.
 
-    def release(self, attempt: AgentAttempt) -> None: ...
+        What a restart needs: the supervision that drove the attempt died with
+        the host that ran it, so nothing here can signal it. Whatever it left
+        is killed, and the attestation names the owner and generation the
+        durable attempt already carries.
+        """
+        ...
 
-    def finalize(self, execution: AgentAttemptExecution) -> None: ...
+    def release(self, attempt: AgentAttempt) -> None:
+        """Give up what supervision holds for a durably attested cleanup."""
+        ...
+
+    def finalize(self, execution: AgentAttemptExecution) -> None:
+        """Give up this attempt's session once the attempt is durably terminal."""
+        ...
 
 
 class AgentProcessOwnerNotLocal(Exception):
