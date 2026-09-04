@@ -25,6 +25,11 @@ MAXIMUM_QUEUE_ACTIVE_RUNS = 1_000
 # GitHub's own issue and pull-request title bound; every tracker source this
 # codebase reads titles from is GitHub today (ADR 0010).
 MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS = 256
+# A policy names exactly one label. "Admit everything" is a decision the
+# operator has deliberately not made (#79 ruling 1, 04.09.2026), so the
+# wildcard spelling is refused instead of being read as a literal label named
+# `*` that no tracker item will ever carry.
+QUEUE_AUTOMATION_LABEL_WILDCARD: Final = "*"
 
 
 @dataclass(frozen=True)
@@ -210,6 +215,11 @@ class QueueProjectPolicyRevision:
             raise ValueError(
                 "a queue automation label must be absent or contain 1 to "
                 f"{MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS} characters"
+            )
+        if self.automation_label == QUEUE_AUTOMATION_LABEL_WILDCARD:
+            raise ValueError(
+                "a queue automation label names one label; admitting every "
+                "observed item is not a ruled policy value"
             )
 
 

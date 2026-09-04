@@ -155,19 +155,56 @@ def test_open_issues_become_gh_prefixed_tracker_references_dated_by_the_read(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
     github.issues = [
-        {"number": 79, "title": "The first title"},
-        {"number": 652, "title": "The second title"},
+        {"number": 79, "title": "The first title", "labels": [{"name": "bereit"}]},
+        {"number": 652, "title": "The second title", "labels": []},
     ]
 
     observed = source.open_items()
 
     assert observed == OpenTrackerItemsObserved(
         (
-            ObservedOpenTrackerItem(TrackerItemReference("gh:79"), "The first title"),
-            ObservedOpenTrackerItem(TrackerItemReference("gh:652"), "The second title"),
+            ObservedOpenTrackerItem(
+                TrackerItemReference("gh:79"), "The first title", ("bereit",)
+            ),
+            ObservedOpenTrackerItem(
+                TrackerItemReference("gh:652"), "The second title", ()
+            ),
         ),
         READ_AT,
     )
+
+
+@pytest.mark.parametrize(
+    ("served", "expected"),
+    [
+        ([{"name": "bereit"}, {"name": "queue"}], ("bereit", "queue")),
+        (["bereit"], ("bereit",)),
+        ([], ()),
+    ],
+    ids=["named-objects", "bare-names", "no-labels"],
+)
+def test_the_labels_an_issue_carries_reach_the_observation_by_name(
+    source: LiveGitHubIssueSource,
+    github: _FakeGitHubIssues,
+    served: list[Any],
+    expected: tuple[str, ...],
+) -> None:
+    github.issues = [{"number": 79, "title": "Labelled", "labels": served}]
+
+    observed = source.open_items()
+
+    assert isinstance(observed, OpenTrackerItemsObserved)
+    assert observed.items[0].labels == expected
+
+
+def test_an_issue_whose_labels_have_no_readable_name_is_refused(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.issues = [{"number": 79, "title": "Labelled", "labels": [{"id": 7}]}]
+
+    observed = source.open_items()
+
+    assert isinstance(observed, TrackerPayloadMalformed)
 
 
 def test_the_observation_time_is_the_sources_own_clock_not_a_fixed_default(
@@ -197,8 +234,8 @@ def test_pull_requests_in_the_issue_listing_are_not_work_items(
 
     assert observed == OpenTrackerItemsObserved(
         (
-            ObservedOpenTrackerItem(TrackerItemReference("gh:1"), "First issue"),
-            ObservedOpenTrackerItem(TrackerItemReference("gh:3"), "Third issue"),
+            ObservedOpenTrackerItem(TrackerItemReference("gh:1"), "First issue", ()),
+            ObservedOpenTrackerItem(TrackerItemReference("gh:3"), "Third issue", ()),
         ),
         READ_AT,
     )

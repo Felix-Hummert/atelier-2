@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, assert_never, cast
 
 import sqlalchemy as sa
 from cryptography import x509
@@ -74,7 +74,14 @@ from atelier2.adapters.runner_tls import (
     pin_tls_13,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.advance_queue import advance_queue
+from atelier2.application.advance_queue import (
+    QueueAutomationLabelUnset,
+    QueueAutomationSourceUnreadable,
+    QueueLabelAdmissionOutcome,
+    QueueLabelAdmissionsDecided,
+    admit_queue_items_by_label,
+    advance_queue,
+)
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,
 )
@@ -792,6 +799,56 @@ def _log_runner_lease_convergence(report: RunnerLeaseConvergenceReport) -> None:
         )
 
 
+def _log_queue_label_admission(outcome: QueueLabelAdmissionOutcome) -> None:
+    """Say what the automation label admitted this sweep, and what it did not.
+
+    Both halves of this rule are soft by contract: an unreadable tracker admits
+    nothing and a declined item stays exactly as durable as it was, so neither
+    leaves a trace anywhere else. The sweep is therefore the only place that
+    can make them visible to the operator. A project whose policy names no
+    label says nothing here -- that is a steady state, not an event.
+    """
+
+    match outcome:
+        case QueueAutomationLabelUnset():
+            return
+        case QueueAutomationSourceUnreadable(detail):
+            _LOG.warning(
+                "The automation label admitted nothing: the tracker could not "
+                "be read (%s).",
+                detail,
+                extra={
+                    "event": "queue_label_admission_source_unreadable",
+                    "detail": detail,
+                },
+            )
+        case QueueLabelAdmissionsDecided(admitted, declined):
+            for decision in declined:
+                _LOG.info(
+                    "The automation label did not admit queue item %s (%s).",
+                    decision.item_id.value,
+                    type(decision.outcome).__name__,
+                    extra={
+                        "event": "queue_label_admission_declined",
+                        "item_id": decision.item_id.value,
+                        "outcome": type(decision.outcome).__name__,
+                    },
+                )
+            if admitted or declined:
+                _LOG.info(
+                    "Automation-label admission sweep: %d admitted, %d declined.",
+                    len(admitted),
+                    len(declined),
+                    extra={
+                        "event": "queue_label_admission_swept",
+                        "admitted": len(admitted),
+                        "declined": len(declined),
+                    },
+                )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _open_runner_lease_publisher(
     settings: DbosRuntimeSettings,
 ) -> FileRunnerLeasePublisher:
@@ -1386,14 +1443,28 @@ class _DbosProcessOwner:
 
     @staticmethod
     def _advance_queue(bound: _BoundRuntime) -> None:
-        """Recover reservations and start each exact queue launch once."""
+        """Admit what the automation label names, then start each launch once.
+
+        Admission first: an item the label admits in this sweep is one the
+        same sweep can start, rather than one waiting for the next process
+        start. Without a served project or a connected tracker there is no
+        policy to read and no label to read it against, so only the start half
+        runs.
+        """
 
         # Local import: `starter` imports `DbosRuntimeSettings` from this module,
         # so importing it at module scope would close a cycle.
         from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 
+        queue = DbosQueueProjectionStore(bound.engine)
+        project = bound.settings.project_id
+        tracker = bound.tracker_item_source
+        if project is not None and tracker is not None:
+            _log_queue_label_admission(
+                admit_queue_items_by_label(queue, project=project, tracker=tracker)
+            )
         advance_queue(
-            DbosQueueProjectionStore(bound.engine),
+            queue,
             DbosCatalogStore(bound.engine),
             DbosDurableRunStarter(
                 bound.engine,
@@ -1401,8 +1472,8 @@ class _DbosProcessOwner:
                 bound.agent_executor_registry,
             ),
             workflow_document_parser=parse_workflow_document,
-            served_project=bound.settings.project_id,
-            tracker=bound.tracker_item_source,
+            served_project=project,
+            tracker=tracker,
         )
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:

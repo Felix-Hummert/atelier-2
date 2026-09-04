@@ -151,6 +151,9 @@ class _QueueRecording:
     def put_policy(self, policy: object, expected_revision: object) -> Never:
         raise AssertionError("advance_queue never publishes a policy")
 
+    def current_policy(self, project: object) -> Never:
+        raise AssertionError("advance_queue never reads the policy")
+
     def reconcile_open_items(
         self, project: object, items: object, observed_at: object
     ) -> Never:

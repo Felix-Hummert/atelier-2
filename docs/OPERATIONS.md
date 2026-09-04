@@ -956,6 +956,44 @@ its own returned hash, so it cannot be published first. The live hashes are
 the landing's own evidence; this runbook does not copy them, for the same
 reason the canary's four hashes above are not copied either.
 
+### Publish a queue policy with its cap and its automation label
+
+One CAS-guarded call names both of a project's queue rules at once:
+
+```bash
+curl -fsS -X PUT \
+  http://127.0.0.1:8422/atelier/api/v1/projects/<public-project-reference>/queue-policy \
+  -H 'Content-Type: application/json' \
+  -d '{"revision_number": <previous + 1>, "expected_revision": <previous>,
+       "maximum_active_runs": 2, "automation_label": "bereit"}'
+```
+
+`expected_revision` is the revision number currently in force (`0` for a
+project that has never published one) and `revision_number` is that plus one;
+a mismatch is refused as `queue-policy-revision-conflict` rather than
+overwriting a revision someone else published. Revisions are append-only, so
+changing either rule means publishing the next revision, never editing this
+one.
+
+`maximum_active_runs` caps how many runs of this project may be active at
+once; the rest wait in priority order. `automation_label` names the one label
+that admits an item automatically: at the next sweep, every inspected proposal
+whose tracker item carries that label is admitted under the `AUTOMATION_RULE`
+authority and starts within the cap. The label is read from the tracker at
+that moment, so removing it in the tracker before the sweep withholds the
+admission; a human sets it there, and the atelier never writes it. Spell it
+exactly as the tracker spells it, capitalisation included: `Bereit` and
+`bereit` are two different labels here, and a policy naming one admits nothing
+carrying the other. Omitting the field (or sending `null`) turns automatic
+admission off, and `"*"` is refused: the policy names one label, and "admit
+everything" is not a ruled value.
+
+Two things this does not do. It admits nothing that has no inspected proposal
+yet -- the label says "go", never which workflow or priority to go with, so
+plan the item through `PUT /queue-proposals` first -- and it never overrides a
+proposal marked `HUMAN_REQUIRED`. The sweep runs at Serve start, so a policy
+published against a running Serve takes effect at its next start.
+
 ### A red project verification's own output (#1137)
 
 When the redeemed `run-project-verification` grant exits nonzero, the

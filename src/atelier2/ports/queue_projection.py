@@ -116,12 +116,40 @@ class QueueItemsPage:
 type ListQueueItemsResult = QueueItemsPage | QueueReadUnavailable | DurableStateCorrupt
 
 
+@dataclass(frozen=True)
+class QueueProjectPolicyFound:
+    """The revision that is currently in force for this project."""
+
+    policy: QueueProjectPolicyRevision
+
+
+@dataclass(frozen=True)
+class QueueProjectPolicyAbsent:
+    """The project has published no policy revision, which is a legitimate state.
+
+    It carries no cap and no automation rule (ADR 0016, operator ruling
+    28.08.2026), rather than an invented default of either.
+    """
+
+
+type ReadQueueProjectPolicyResult = (
+    QueueProjectPolicyFound
+    | QueueProjectPolicyAbsent
+    | QueueReadUnavailable
+    | DurableStateCorrupt
+)
+
+
 class QueuePlanner(Protocol):
     def plan(self, command: PlanQueueItem) -> PlanQueueItemResult: ...
 
 
 class QueueAdmissionConfirmer(Protocol):
     def confirm(self, command: ConfirmQueueProposal) -> ConfirmQueueProposalResult: ...
+
+
+class QueuePolicyReader(Protocol):
+    def current_policy(self, project: ProjectId) -> ReadQueueProjectPolicyResult: ...
 
 
 class QueuePolicyWriter(Protocol):
@@ -145,6 +173,7 @@ class QueueItemsReader(Protocol):
 class QueueProjection(
     QueuePlanner,
     QueueAdmissionConfirmer,
+    QueuePolicyReader,
     QueuePolicyWriter,
     QueueLaunchReserver,
     QueueItemsReader,

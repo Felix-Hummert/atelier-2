@@ -77,6 +77,9 @@ class _QueueRecording:
     def put_policy(self, policy: object, expected_revision: object) -> Never:
         raise AssertionError("an import never publishes a policy")
 
+    def current_policy(self, project: object) -> Never:
+        raise AssertionError("an import never reads the policy")
+
     def reserve_launch(self, binding: object) -> Never:
         raise AssertionError("an import never reserves a launch")
 
@@ -88,7 +91,7 @@ def _listing(*items: tuple[str, str]) -> FakeTrackerItemSource:
     return FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
             tuple(
-                ObservedOpenTrackerItem(TrackerItemReference(reference), title)
+                ObservedOpenTrackerItem(TrackerItemReference(reference), title, ())
                 for reference, title in items
             ),
             OBSERVED_AT,

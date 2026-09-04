@@ -62,10 +62,13 @@ from atelier2.ports.queue_projection import (
     QueueLaunchAlreadyBound,
     QueueLaunchBlocked,
     QueueLaunchReserved,
+    QueueProjectPolicyAbsent,
+    QueueProjectPolicyFound,
     QueueProjectPolicyPublished,
     QueueProjectPolicyRevisionConflict,
     QueueProjectPolicyUnchanged,
     QueueReadUnavailable,
+    ReadQueueProjectPolicyResult,
     ReconcileQueueItemsResult,
     ReserveQueueLaunchResult,
 )
@@ -505,6 +508,20 @@ class DbosQueueProjectionStore:
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
+
+    def current_policy(self, project: ProjectId) -> ReadQueueProjectPolicyResult:
+        """The project's newest policy revision, or its absence, for a reader."""
+
+        try:
+            with self._engine.connect() as connection:
+                policy = self._current_policy(connection, project)
+        except (OperationalError, PoolTimeoutError):
+            return QueueReadUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+        if policy is None:
+            return QueueProjectPolicyAbsent()
+        return QueueProjectPolicyFound(policy)
 
     def put_policy(
         self, policy: QueueProjectPolicyRevision, expected_revision: int

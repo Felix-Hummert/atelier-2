@@ -37,9 +37,34 @@ canonicalized by item id.
 
 `POST /queue-admissions` is the confirmation door. It confirms the exact
 proposal revision the operator inspected, records `QueueDecisionAuthority`,
-and never accepts a replacement workflow. D1 admits manually with `OPERATOR`;
-`AUTOMATION_RULE` is a typed authority for the later automation slice, not an
-implicit permission.
+and never accepts a replacement workflow. The operator's door admits with
+`OPERATOR`; `AUTOMATION_RULE` is not an implicit permission but the authority
+of exactly one rule, below.
+
+### One automation rule, and it decides only whether an authority exists
+
+(2026-09-04 amendment, #79 ruling 1.) A project's policy revision may name one
+`automation_label`. The sweep then admits every inspected proposal whose
+tracker item carries that label, through the same `confirm` CAS the operator's
+door uses, under `AUTOMATION_RULE`. A policy naming no label admits nothing
+automatically, and the wildcard spelling `*` is refused by the policy contract
+rather than read as "every item": admitting everything is a decision the
+operator has not made.
+
+The rule decides whether an admission has an authority; it decides nothing
+else. It never writes a proposal, so the workflow lineage and the priority an
+automatic admission binds are the ones an inspected proposal already carries,
+and an item with no proposal stays `OBSERVED`. A proposal whose disposition is
+`HUMAN_REQUIRED` is refused for `AUTOMATION_RULE` by the contract, an item
+already admitted keeps the admission it has, and a retired row is left alone.
+Admission is not a start: the cap and the priority still govern what the sweep
+starts afterwards.
+
+The label itself is read from the tracker at the instant the rule decides, not
+from durable atelier state. A human sets it in the tracker and the atelier
+never writes it (REQ-QUEUE-08), so an item whose label was removed before the
+sweep is not admitted, and an unreachable tracker admits nothing rather than
+falling back on a copy that may already be wrong.
 
 ### Priority, dependencies, and capacity have one owner
 
