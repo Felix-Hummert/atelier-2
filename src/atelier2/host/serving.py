@@ -149,6 +149,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorRegistry,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    WorkspaceFileTools,
 )
 from atelier2.ports.effects import EffectAdapterFactory, EffectAdapterRegistry
 from atelier2.ports.host_configuration import (
@@ -527,6 +528,7 @@ def _subscription_executor_registrations(
                 _subscription_registration(
                     ClaudeSubscriptionExecutorFactory(claude_subscription),
                     settings.claude_start_refusal is not None,
+                    WorkspaceFileTools.WITHHELD,
                 ),
             )
             if claude_subscription is not None
@@ -538,6 +540,7 @@ def _subscription_executor_registrations(
                     ClaudeWorkspaceToolExecutorFactory(claude_subscription),
                     settings.claude_start_refusal is not None
                     or settings.claude_workspace_tools_start_refusal is not None,
+                    WorkspaceFileTools.GRANTED,
                 ),
             )
             if (claude_subscription is not None and settings.claude_workspace_tools)
@@ -551,6 +554,7 @@ def _subscription_executor_registrations(
                     ),
                     settings.claude_start_refusal is not None
                     or settings.claude_atelier_doors_start_refusal is not None,
+                    WorkspaceFileTools.WITHHELD,
                 ),
             )
             if (claude_subscription is not None and settings.claude_atelier_doors)
@@ -561,6 +565,7 @@ def _subscription_executor_registrations(
                 _subscription_registration(
                     GrokSubscriptionExecutorFactory(grok_subscription),
                     settings.grok_start_refusal is not None,
+                    WorkspaceFileTools.WITHHELD,
                 ),
             )
             if grok_subscription is not None
@@ -572,6 +577,7 @@ def _subscription_executor_registrations(
                     GrokWorkspaceToolExecutorFactory(grok_subscription),
                     settings.grok_start_refusal is not None
                     or settings.grok_workspace_tools_start_refusal is not None,
+                    WorkspaceFileTools.GRANTED,
                 ),
             )
             if (grok_subscription is not None and settings.grok_workspace_tools)
@@ -582,6 +588,7 @@ def _subscription_executor_registrations(
                 _subscription_registration(
                     CodexSubscriptionExecutorFactory(codex_subscription),
                     settings.codex_start_refusal is not None,
+                    WorkspaceFileTools.WITHHELD,
                 ),
             )
             if codex_subscription is not None
@@ -591,11 +598,26 @@ def _subscription_executor_registrations(
 
 
 def _subscription_registration(
-    factory: AgentExecutorFactoryV2, unavailable: bool
+    factory: AgentExecutorFactoryV2,
+    unavailable: bool,
+    workspace_file_tools: WorkspaceFileTools,
 ) -> AgentExecutorRegistration:
+    """Register one subscription executor, saying what its invocation may touch.
+
+    `workspace_file_tools` is the executor's own sentence, restated where the
+    deployment composes it: a call that removes every built-in tool
+    (`--tools=`) reaches no file of the attempt, whatever else it is granted,
+    and a run whose node pins a tool grant is refused against that rather than
+    cast onto it (`resolve_start_bindings`).
+    """
+
     if unavailable:
-        return AgentExecutorRegistration.unavailable(factory)
-    return AgentExecutorRegistration.startable(factory)
+        return AgentExecutorRegistration.unavailable(
+            factory, workspace_file_tools=workspace_file_tools
+        )
+    return AgentExecutorRegistration.startable(
+        factory, workspace_file_tools=workspace_file_tools
+    )
 
 
 def _atelier_doors_settings(
@@ -649,13 +671,20 @@ def _runner_lease_executor_registrations(
     (`DbosRuntimeSettings.__post_init__`, reached through
     `runtime_settings()`, refuses a partial declaration by name). Real
     providers over a Runner lease wait on `#15` and B-3.
+
+    Its two jobs are printing a line and holding until it is reaped, so the
+    call reaches no file of the attempt and the registration says `WITHHELD`
+    rather than keeping the permissive default: a node that pins a tool grant
+    is refused against this candidate instead of being cast onto it (#1166).
     """
 
     if settings.runner_lease_root is None:
         return ()
     return (
         AgentExecutorRegistration.startable(
-            FreeRunnerExecutorFactory(), AgentExecutorCarrier.RUNNER_LEASE
+            FreeRunnerExecutorFactory(),
+            AgentExecutorCarrier.RUNNER_LEASE,
+            WorkspaceFileTools.WITHHELD,
         ),
     )
 

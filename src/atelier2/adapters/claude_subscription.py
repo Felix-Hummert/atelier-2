@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import os
 import shutil
 import stat
@@ -15,6 +17,7 @@ from atelier2.adapters.bounded_processes import (
     bounded_process_answer,
     bounded_process_streams,
 )
+from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
     MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
@@ -39,12 +42,15 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.schemas_v3 import SUPPORTED_DIALECT
 from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
     AgentExecutorKey,
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
+
+_LOG = logging.getLogger("atelier2")
 
 CLAUDE_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
     ProviderId("anthropic"), AgentExecutorRevision("claude-subscription/v1")
@@ -720,6 +726,158 @@ def _credential_environment(
     )
 
 
+# Everything `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` creates in the working
+# directory of an invocation that does not already find it there: seventeen
+# empty files and five empty directories -- three bind-mount targets and the
+# two parents they need -- prepared before the CLI can start any subprocess
+# under bubblewrap. Measured unbilled on the pinned 2.1.221 by starting this
+# module's own vector in an empty directory (#661 named the residue; #1166
+# measured it exactly). A second
+# probe established the other half this sweep rests on: an entry that already
+# stands is left exactly as it was, content and all, so nothing here is ever a
+# write the model or the pinned project made.
+#
+# Deepest first, because a parent is residue only once the children the scrub
+# put inside it are gone.
+_SUBPROCESS_ENVIRONMENT_SCRUB_RESIDUE = (
+    ".claude/agents",
+    ".claude/commands",
+    ".claude",
+    "node_modules/.bin",
+    "node_modules",
+    ".env",
+    ".env.development",
+    ".env.development.local",
+    ".env.local",
+    ".env.production",
+    ".env.production.local",
+    ".env.test",
+    ".env.test.local",
+    ".gitmodules",
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    "bunfig.toml",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+)
+
+
+def _sweep_scrub_residue(lease: AgentAttemptWorkspaceLease) -> None:
+    """Take back what this CLI's scrub preparation left standing in the workspace.
+
+    The working directory of every invocation this module starts is the
+    attempt's lease, and where a project is pinned that lease is the candidate:
+    the tree is read out of it and can be pushed as an Atelier commit. So the
+    residue above is not a leftover that falls with the lease -- it is
+    twenty-two entries the model never wrote, read as the attempt's work
+    (#1166, live pass 5: an unchanged tree was pushed as a commit of empty
+    `.env` and lockfile placeholders). It is taken back here, once the process
+    has ended and before anything reads the tree.
+
+    Only an entry of the measured list that stands empty is removed -- a
+    zero-byte regular file or a directory holding nothing -- so a non-empty
+    file the model wrote under one of those names, and a non-empty pinned file
+    the scrub found already there and left alone, both survive untouched. What
+    this cannot tell apart is either zero-byte case: the executor first sees
+    the working directory when the process has ended, because that is the only
+    seam an executor is handed the lease at, so a name the pin itself ships
+    empty, or that the model created and left empty, is indistinguishable from
+    one the scrub prepared. Named rather than guarded (#1166): closing it
+    exactly needs an observation between the pin's materialization and the
+    launch, which no executor seam offers today.
+
+    Symbolic links are followed nowhere: every component is opened with
+    `O_NOFOLLOW` relative to the leased descriptor, so a link the pin carries
+    is neither removed nor walked through.
+
+    A workspace this cannot take an entry back out of -- a directory the pin
+    or the CLI left unwritable is the reachable case -- leaves that entry
+    standing and says so, rather than travelling out of the decode. What is at
+    stake per entry is one empty placeholder in a candidate tree; what a raised
+    `OSError` costs is the whole attempt, stranded before any ending was
+    recorded. The residue is contained one entry at a time so a single
+    unremovable name cannot decide the others either.
+    """
+
+    with entered_leased_directory(
+        lease.working_directory, lease.device, lease.inode
+    ) as (_entered, descriptor):
+        for name in _SUBPROCESS_ENVIRONMENT_SCRUB_RESIDUE:
+            try:
+                _remove_an_empty_entry(descriptor, name)
+            except OSError as error:
+                _LOG.warning(
+                    "Left the scrub residue entry %s standing in the workspace: %s",
+                    name,
+                    error,
+                    exc_info=error,
+                    extra={
+                        "event": "claude_scrub_residue_entry_left",
+                        "entry": name,
+                    },
+                )
+
+
+def _remove_an_empty_entry(descriptor: int, name: str) -> None:
+    """Remove this relative entry if it stands empty, following no link on the way."""
+
+    *parents, entry = name.split("/")
+    opened: list[int] = []
+    try:
+        for parent in parents:
+            found = _opened_directory(descriptor, parent)
+            if found is None:
+                return
+            opened.append(found)
+            descriptor = found
+        try:
+            standing = os.lstat(entry, dir_fd=descriptor)
+        except FileNotFoundError:
+            return
+        if stat.S_ISREG(standing.st_mode) and standing.st_size == 0:
+            os.unlink(entry, dir_fd=descriptor)
+            return
+        if not stat.S_ISDIR(standing.st_mode):
+            return
+        child = _opened_directory(descriptor, entry)
+        if child is None:
+            return
+        try:
+            empty = not os.listdir(child)
+        finally:
+            os.close(child)
+        if empty:
+            os.rmdir(entry, dir_fd=descriptor)
+    finally:
+        for found in opened:
+            os.close(found)
+
+
+def _opened_directory(descriptor: int, name: str) -> int | None:
+    """This entry as a directory of its own, or nothing where it is not one.
+
+    Nothing covers the three shapes that are simply not a directory the scrub
+    made: absent, a file, and a symbolic link -- `O_NOFOLLOW` refuses the last
+    one rather than walking through a link the pinned project carries. Every
+    other refusal is this workspace saying it cannot be walked and travels on
+    to the sweep, which leaves that entry standing.
+    """
+
+    try:
+        return os.open(
+            name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
+        )
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            return None
+        raise
+
+
 @dataclass(frozen=True)
 class ClaudeProcessCommand(AgentProcessCommand):
     """One Claude headless command plus the output schema its node declared.
@@ -1242,8 +1400,15 @@ class ClaudeSubscriptionExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         """The answer travels inside the process result; the invocation carries
-        the schema-bearing output mode it must decode."""
+        the schema-bearing output mode it must decode.
 
+        What the CLI's own scrub preparation left in the workspace is taken
+        back first: this is the one seam where the process has ended and the
+        lease is at hand, and everything that reads the workspace as the
+        attempt's candidate reads it after this call (`_sweep_scrub_residue`).
+        """
+
+        _sweep_scrub_residue(invocation.lease)
         return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
@@ -1656,8 +1821,14 @@ class ClaudeWorkspaceToolExecutor:
         What the process wrote beside the answer stays in the workspace the
         attempt leased. This executor reads none of it: making a file durable is
         the artifact store's decision and its own slice (#352).
+
+        What the CLI's own scrub preparation left in the workspace is taken
+        back first: this is the one seam where the process has ended and the
+        lease is at hand, and everything that reads the workspace as the
+        attempt's candidate reads it after this call (`_sweep_scrub_residue`).
         """
 
+        _sweep_scrub_residue(invocation.lease)
         return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
@@ -1909,23 +2080,21 @@ class ClaudeAtelierDoorsExecutor:
     travels beside that as defense in depth: it was measured on the tool-free
     sibling, not on an MCP stdio child.
 
-    WHAT THE SCRUB ITSELF LEAVES BEHIND, measured unbilled and named here
-    rather than left silent (#656, #661). Before it can launch the door child
-    under bubblewrap, this CLI's own `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
-    preparation creates roughly nineteen empty bind-mount targets in the
-    invocation's own working directory wherever it does not already find one
-    there -- dotfiles such as `.env`, package-manager markers such as
-    `package.json`, `yarn.lock` and `.npmrc`, and the directories
-    `.claude/commands`, `.claude/agents` and `node_modules/.bin`. None of them
-    are read by anything this module decodes, and none are a write the model
-    or a pinned project made. They are not tracked or swept by name: the
-    working directory this executor is started in is one leased unit
-    (`AgentAttemptWorkspaceLease`), and `LocalAgentAttemptWorkspaceOwner.release`
-    retires that whole directory at the attempt's terminal cleanup regardless
-    of what the CLI, the model or a pinned project left inside it -- so this
-    residue falls with everything else in the lease rather than needing a name
-    list this module would have to keep in step with a CLI release that stays
-    free to widen it.
+    WHAT THE SCRUB ITSELF LEAVES BEHIND, and who takes it back (#656, #661,
+    #1166). Before it can launch the door child under bubblewrap, this CLI's
+    own `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` preparation creates its
+    bind-mount targets in the invocation's own working directory wherever it
+    does not already find one there -- the exact twenty-two entries are
+    measured and named in `_SUBPROCESS_ENVIRONMENT_SCRUB_RESIDUE`. None of
+    them are read by anything this module decodes, and none are a write the
+    model or a pinned project made. An earlier revision left them standing on the
+    argument that the working directory is one leased unit that falls whole at
+    the attempt's terminal cleanup. That argument was wrong wherever a project
+    is pinned: the lease is the candidate, read out of that same directory
+    before it is released, so the residue came home as the attempt's work and
+    was pushed as an Atelier commit of empty placeholders (#1166, live pass 5).
+    They are swept by name now, after the process ends and before anything
+    reads the tree (`_sweep_scrub_residue`).
 
     WHAT IS NOT MEASURED, said here rather than discovered later. No billed
     call has been made under this vector on any release. What is measured is
@@ -1990,8 +2159,15 @@ class ClaudeAtelierDoorsExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         """The answer travels inside the process result; the invocation carries
-        the schema-bearing output mode it must decode."""
+        the schema-bearing output mode it must decode.
 
+        What the CLI's own scrub preparation left in the workspace is taken
+        back first: this is the one seam where the process has ended and the
+        lease is at hand, and everything that reads the workspace as the
+        attempt's candidate reads it after this call (`_sweep_scrub_residue`).
+        """
+
+        _sweep_scrub_residue(invocation.lease)
         return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:

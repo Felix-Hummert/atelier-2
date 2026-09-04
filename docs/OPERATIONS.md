@@ -1079,6 +1079,34 @@ it appears as a failed attempt whose transcript ends on one assistant turn and
 no tool call. Seeing it repeatedly for one node is a signal about that node's
 instruction, not about the deployment.
 
+### Arm the Claude executor a builder needs
+
+Pinning the executable serves one executor: `claude-subscription/v1`, a
+tool-free call that can read no file. Two more are armed by name beside it,
+and only one of them is a builder.
+
+* `--claude-workspace-tools` arms `claude-subscription-tools/v1`. This is the
+  only Claude executor whose invocation reaches the attempt's own workspace,
+  so it is the only one a node that pins `run-project-verification` or
+  `push-atelier-commit` can be cast onto.
+* `--claude-atelier-doors` arms `claude-atelier-doors/v1`. Its tools are the
+  atelier's own API doors and it removes every built-in with `--tools=`; it is
+  the conductor's executor and touches no file of the project.
+
+Without `--claude-workspace-tools`, this deployment has no Claude builder for
+`workflows/issue-to-pr.yaml`: its build node pins both grants above, and a
+start that casts a Claude role onto either of the other two executors is
+refused before the run exists
+(`DurableAgentExecutorWithoutWorkspaceFileTools`, answered over the API as
+`agent-executor-binding-unavailable`). Arming is an operations step of its own
+-- add the flag to `serve-live.sh` and restart
+`atelier2-serve.service` -- and, like every executor arming, it widens what a
+billed run may do on this host. The flag is only half of it: the builder
+model's registry row must also resolve to an agent configuration published on
+`claude-subscription-tools/v1`, because a row still naming a tool-free Claude
+is cast onto an executor that reaches no file, and the start then answers
+`agent-executor-binding-unavailable` with the flag already in place.
+
 ## Connect a git definition source, see where it stands, and take it in
 
 Three offline commands against a store that already exists. Only `intake`

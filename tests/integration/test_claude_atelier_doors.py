@@ -387,11 +387,10 @@ def test_an_executable_that_never_names_an_unknown_flag_cannot_be_attested(
 # The shape #656/#661 measured `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` leaving in the
 # invocation's own working directory before it can launch the door child under
 # bubblewrap: empty bind-mount targets neither this executor nor the model asked
-# for. Not the CLI's own exact set -- that stays the unbilled probe's own -- but
-# the same shape (dotfiles, package-manager markers, `.claude/{commands,agents}`,
-# `node_modules/.bin`), so the regression below exercises the lease teardown
-# against what was actually observed rather than one artefact of this test's
-# own choosing.
+# for. A subset of the exact list #1166 then measured
+# (`_SUBPROCESS_ENVIRONMENT_SCRUB_RESIDUE`), spelled here rather than imported
+# so this stays a fake CLI's own behaviour and not the sweep agreeing with
+# itself.
 DOORS_SCRUB_RESIDUE_FILES = (
     Path(".env"),
     Path(".env.local"),
@@ -424,20 +423,19 @@ answers, the same way the real CLI leaves it before it manages to spawn the
 door child."""
 
 
-def test_a_doors_attempts_scrub_residue_falls_with_the_rest_of_its_lease(
+def test_a_doors_attempt_leaves_none_of_the_scrub_residue_in_its_workspace(
     tmp_path: Path,
 ) -> None:
-    """The lease owns this residue by owning the whole directory, not by name.
+    """The residue is gone when the call ends, not when the lease is retired.
 
     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is genuine containment for the door
     child this executor expects (see its class docstring), and the CLI's own
     bind-mount preparation is not this module's to change. What this module
-    does own is the working directory the CLI was started in, and the claim
-    under test is exactly the one #661 asked for evidence of: a real
-    `LocalAgentAttemptWorkspaceOwner` lease -- acquired and released the way
-    `execute_agent_attempt` always does -- removes this residue along with
-    everything else, because it retires the whole directory as one unit
-    rather than sweeping named entries.
+    does own is the working directory the CLI was started in -- and where a
+    project is pinned, that directory is the candidate the atelier keeps and
+    pushes, read long before the lease is released (#1166). So decoding the
+    answer takes the residue back, and the lease still retires whatever is
+    left the way it always did.
     """
 
     settings = doors_deployment(tmp_path, "deployment", RESIDUE_LEAVING_CLAUDE)
@@ -457,7 +455,8 @@ def test_a_doors_attempts_scrub_residue_falls_with_the_rest_of_its_lease(
 
         assert isinstance(result, AgentExecutionResult)
         for relative in DOORS_SCRUB_RESIDUE_FILES + DOORS_SCRUB_RESIDUE_DIRECTORIES:
-            assert (lease.working_directory / relative).exists()
+            assert not (lease.working_directory / relative).exists()
+        assert not any(lease.working_directory.iterdir())
 
         workspaces.release(attempt_id)
     finally:
