@@ -504,10 +504,17 @@ describe("the Workbench pins open decisions (#580)", () => {
       void mutation;
       return { status: 202 as const, value: waitingRun() };
     });
-    const getRun = vi.fn(async () => nextWait);
-    openWorkbench([waitingRun()], {
+    // The nudge names which run changed; what it now looks like comes off a
+    // fresh read of the run list every open already reads (#1148), not a
+    // read of that one run alone -- so the double this room re-asks after
+    // the event is the same one it always asks, pointed at the newer set.
+    let runs: RunV3[] = [waitingRun()];
+    openWorkbench([], {
       answer,
-      getRun,
+      listRuns: vi.fn(async (_after?: string, state?: string) => ({
+        items: state === "WAITING_INPUT" ? runs.map(runRow) : [],
+        next_after: null
+      })),
       openAttentionEvents: feed.openAttention,
       getNodeDetail: vi.fn(async (_publicReference: string, nodeId: string) =>
         nodeId === "next-gate"
@@ -525,6 +532,7 @@ describe("the Workbench pins open decisions (#580)", () => {
     expect(landed.isConnected).toBe(true);
 
     feed.handlers?.opened();
+    runs = [nextWait];
     feed.handlers?.event(
       JSON.stringify(
         waitingInput(1, {
@@ -534,12 +542,6 @@ describe("the Workbench pins open decisions (#580)", () => {
         })
       )
     );
-
-    await waitFor(() => expect(getRun).toHaveBeenCalledWith(publicReference));
-    expect(screen.getByRole("status", { name: workbenchPageCopy.answerLanded }).isConnected).toBe(
-      true
-    );
-    expect(screen.queryByRole("heading", { name: question })).toBeNull();
 
     await waitFor(
       () => {

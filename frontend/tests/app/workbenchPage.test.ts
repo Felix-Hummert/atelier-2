@@ -500,6 +500,46 @@ describe("the workbench conductor conversation", () => {
     expect(screen.getAllByRole("link", { name: conductorChatCopy.openEpisode })).toHaveLength(1);
   });
 
+  it("answers a conductor round without re-mounting an unrelated shelf row (#1148)", async () => {
+    const feed = new FakeRunEventFeed();
+    const run = conductorRunFixture();
+    const unrelated = startedRun({
+      run_id: "unrelated-run",
+      public_run_reference: encodePublicRunReference("unrelated-run")
+    });
+    openChat({
+      ...conductorConnectionOverrides(),
+      listRuns: vi.fn(async (_after?: string, state?: string) => ({
+        items: [run, unrelated]
+          .filter((candidate) => state === undefined || candidate.state === state)
+          .map(runRow),
+        next_after: null
+      })),
+      getRun: vi.fn(async () => run),
+      openRunEvents: feed.open
+    });
+    const { screen, waitFor } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    await screen.findByText(conductorConversationCopy.composerHint);
+    await waitFor(() => expect(feed.handlers).not.toBeNull());
+    feed.handlers?.opened();
+
+    // Its identity, not just its text, is the claim: a whole-page re-render
+    // would destroy and recreate this node even if the replacement read the
+    // same words.
+    const shelfRow = await screen.findByRole("link", { name: /unrelated-run/ });
+
+    feed.handlers?.event(
+      JSON.stringify(
+        await completedAnswerEvent(run.public_run_reference, run.workflow_revision_hash, "Guten Tag!", 1)
+      )
+    );
+    await screen.findByText("Guten Tag!");
+
+    expect(screen.getByRole("link", { name: /unrelated-run/ })).toBe(shelfRow);
+    expect(shelfRow.isConnected).toBe(true);
+  });
+
   it("keeps the first round's reply and adds the second, answering the wait each round has open", async () => {
     const feed = new FakeRunEventFeed();
     const waitingFirstRound = conductorRunFixture();
@@ -1214,13 +1254,23 @@ describe("the workbench conductor conversation", () => {
  * and the one number the rail carries.
  */
 describe("the workbench is the room the workshop opens on", () => {
-  function listRunsByState(runs: readonly RunV3[]) {
-    return vi.fn(async (_after?: string, state?: string) => ({
-      items: (state === undefined ? runs : runs.filter((run) => run.state === state)).map(
-        runRow
-      ),
-      next_after: null
-    }));
+  /**
+   * A source is either the fixed set an ordinary open reads, or a getter a
+   * test can point at a variable it reassigns after an attention event
+   * (#1148): the room's own reload always asks this same double again, so
+   * a test names what the *next* ask answers rather than mocking a read of
+   * one run apart from the list.
+   */
+  function listRunsByState(source: readonly RunV3[] | (() => readonly RunV3[])) {
+    return vi.fn(async (_after?: string, state?: string) => {
+      const runs = typeof source === "function" ? source() : source;
+      return {
+        items: (state === undefined ? runs : runs.filter((run) => run.state === state)).map(
+          runRow
+        ),
+        next_after: null
+      };
+    });
   }
 
   function openRoom(runs: readonly RunV3[] = [], overrides: Partial<CockpitApi> = {}): void {
@@ -1460,18 +1510,22 @@ describe("the workbench is the room the workshop opens on", () => {
   it("shows a decision that opens while the operator is looking, without a reload", async () => {
     const feed = new FakeRunEventFeed();
     const opened = waitingInputRun({ public_run_reference: "run1.YQ", run_id: "opened while here" });
-    const getRun = vi.fn(async () => opened);
-    openRoom([], { openAttentionEvents: feed.openAttention, getRun });
+    // The event names which run changed; what the room shows for it comes
+    // off a fresh read of the same run list every open reads (#1148), not a
+    // read of that one run alone.
+    let runs: RunV3[] = [];
+    const listRuns = listRunsByState(() => runs);
+    openRoom([], { listRuns, openAttentionEvents: feed.openAttention });
     const { screen } = testingLibrary;
     await screen.findByRole("heading", { name: "Workbench" });
     feed.handlers?.opened();
 
+    runs = [opened];
     feed.handlers?.event(
       JSON.stringify(waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" }))
     );
 
     expect((await screen.findByText(/opened while here/)).isConnected).toBe(true);
-    expect(getRun).toHaveBeenCalledWith("run1.YQ");
     // The rail's number counts the same truth, from the same read.
     expect((await screen.findByLabelText(`1 ${railCopy.needsYouCountSuffix}`)).isConnected).toBe(
       true
@@ -1489,10 +1543,9 @@ describe("the workbench is the room the workshop opens on", () => {
       public_run_reference: "run1.Yg",
       run_id: "after recover"
     });
-    const getRun = vi.fn(async (reference: string) =>
-      reference === recovered.public_run_reference ? recovered : first
-    );
-    openWaitingCard([first], { openAttentionEvents: feed.openAttention, getRun });
+    let runs: RunV3[] = [first];
+    const listRuns = listRunsByState(() => runs);
+    openWaitingCard([], { listRuns, openAttentionEvents: feed.openAttention });
     const { screen, waitFor } = testingLibrary;
 
     expect(
@@ -1515,6 +1568,7 @@ describe("the workbench is the room the workshop opens on", () => {
     expect(screen.getByLabelText(workbenchPageCopy.composerLabel).isConnected).toBe(true);
 
     feed.handlers?.opened();
+    runs = [first, recovered];
     feed.handlers?.event(
       JSON.stringify(
         waitingInput(1, {
@@ -1529,31 +1583,39 @@ describe("the workbench is the room the workshop opens on", () => {
       expect(screen.getByText(/after recover/).isConnected).toBe(true);
       expect(screen.getAllByRole("region", { name: waitingDecisionQuestion })).toHaveLength(2);
     });
-    expect(getRun).toHaveBeenCalledWith(recovered.public_run_reference);
     expect(window.location.pathname).toBe(pathname);
   });
 
-  it("says plainly when the run behind an event could not be read, and offers one move", async () => {
+  it("says plainly when a nudge's own reload could not be read, and offers one move", async () => {
     const feed = new FakeRunEventFeed();
-    const getRun = vi.fn().mockRejectedValueOnce(new Error("run missing"));
-    openRoom([], { openAttentionEvents: feed.openAttention, getRun });
+    const opened = waitingInputRun({ public_run_reference: "run1.YQ", run_id: "read on the second ask" });
+    let failNextReload = false;
+    let runs: RunV3[] = [];
+    const listRuns = vi.fn(async (_after?: string, state?: RunV3["state"]) => {
+      if (failNextReload) throw new Error("runs missing");
+      return {
+        items: (state === undefined ? runs : runs.filter((run) => run.state === state)).map(runRow),
+        next_after: null
+      };
+    });
+    openRoom([], { listRuns, openAttentionEvents: feed.openAttention });
     const { fireEvent, screen } = testingLibrary;
     await screen.findByRole("heading", { name: "Workbench" });
     feed.handlers?.opened();
 
+    failNextReload = true;
     feed.handlers?.event(
       JSON.stringify(waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" }))
     );
-    expect((await screen.findByText("run missing")).isConnected).toBe(true);
+    expect((await screen.findByText(workbenchPageCopy.runsUnavailable)).isConnected).toBe(true);
 
     // The one move repeats exactly the read that failed, and nothing else.
-    getRun.mockResolvedValueOnce(
-      waitingInputRun({ public_run_reference: "run1.YQ", run_id: "read on the second ask" })
-    );
-    await fireEvent.click(screen.getByRole("button", { name: workbenchPageCopy.retryEvent }));
+    failNextReload = false;
+    runs = [opened];
+    await fireEvent.click(screen.getByRole("button", { name: retryLabel(workbenchPageCopy.runsLabel) }));
 
     expect((await screen.findByText(/read on the second ask/)).isConnected).toBe(true);
-    expect(screen.queryByText("run missing")).toBeNull();
+    expect(screen.queryByText(workbenchPageCopy.runsUnavailable)).toBeNull();
   });
 
   it("names a row by the catalog's workflow name, and falls back to the run id when the catalog names nothing", async () => {
