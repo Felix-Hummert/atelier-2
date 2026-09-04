@@ -98,6 +98,7 @@ from atelier2.adapters.dbos.schema import (
     V43_SCHEMA_HANDOFF,
     V44_SCHEMA_HANDOFF,
     V45_SCHEMA_HANDOFF,
+    V49_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     _rebuild_product_table,
@@ -495,15 +496,38 @@ def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
     )
 
 
+def _restore_v49_attempt_failure_vocabulary(connection: sqlite3.Connection) -> None:
+    """Take back the failure code V50 added, keeping every stored attempt.
+
+    A store at V49 or earlier admits seven attempt failure codes where today's
+    declaration admits eight, in the table's own CHECK and in its transition
+    trigger alike. Rebuilding it in the shape V49 published is what makes such
+    a store's fingerprint the one its declared version claims -- and it is the
+    same rebuild the hop performs, run the other way.
+    """
+
+    schema_module._rebuild_product_table(
+        connection,
+        agent_attempts,
+        "agent_attempts_after_candidate_unchanged",
+        schema_module._AGENT_ATTEMPTS_TRIGGERS,
+        SCHEMA_VERSION,
+        49,
+        trigger_source=schema_module._V49_AGENT_ATTEMPT_TRIGGERS,
+    )
+
+
 def _restore_v48_definition_source_predecessor(
     connection: sqlite3.Connection,
 ) -> None:
     """Take back the three tables V49 added, leaving every other table alone.
 
     V49 is additive, so a predecessor of it differs from today only by not
-    carrying these; dropping them is the whole restoration.
+    carrying these; dropping them is the whole restoration -- past the
+    vocabulary V50 widened, which a V48 store predates just as a V49 one does.
     """
 
+    _restore_v49_attempt_failure_vocabulary(connection)
     for trigger in schema_module._DEFINITION_SOURCE_TRIGGERS:
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for table in reversed(schema_module._DEFINITION_SOURCE_TABLES):
@@ -6265,6 +6289,83 @@ def test_every_failed_transition_admits_the_lost_candidate_only_after_the_v39_ho
         ).fetchone() == (
             "FAILED",
             AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED.value,
+        )
+
+
+def _populated_v49_store_with(
+    database_path: Path, binding: Mapping[str, object]
+) -> None:
+    """A published V49 store holding one armed attempt of the named carrier."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v49_attempt_failure_vocabulary(connection)
+        _write_armed_attempt(connection, binding)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V49_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V49_SCHEMA_HANDOFF.version)
+
+
+@pytest.mark.parametrize(
+    ("binding", "statement", "arguments"),
+    [
+        pytest.param(
+            {},
+            _FAIL_THE_LOCAL_ATTEMPT,
+            (AgentAttemptFailureCode.CANDIDATE_UNCHANGED.value,),
+            id="the-attempt-this-host-ran-itself",
+        ),
+        pytest.param(
+            _RUNNER_BINDING,
+            _FAIL_THE_RUNNER_ATTEMPT,
+            (
+                AgentAttemptFailureCode.CANDIDATE_UNCHANGED.value,
+                _RUNNER_EVIDENCE_HASH,
+            ),
+            id="the-attempt-a-runner-returned-evidence-for",
+        ),
+    ],
+)
+def test_every_failed_transition_admits_the_unchanged_tree_only_after_the_v50_hop(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    binding: Mapping[str, object],
+    statement: str,
+    arguments: tuple[str, ...],
+) -> None:
+    """The vocabulary is one set, so both FAILED transitions gain the word at once.
+
+    Asked from both carriers for the reason the candidate-capture hop was: a
+    schema admitting a code in the table's CHECK but not in the transition
+    trigger of one carrier would hold two answers to "which failure codes
+    exist", and the newer of the two would be the quieter one.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _populated_v49_store_with(database_path, binding)
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        connection.execute(statement, arguments)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(statement, arguments)
+        connection.commit()
+        assert connection.execute(
+            "SELECT state, failure_code FROM agent_attempts"
+        ).fetchone() == (
+            "FAILED",
+            AgentAttemptFailureCode.CANDIDATE_UNCHANGED.value,
         )
 
 

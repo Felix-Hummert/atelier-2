@@ -12,11 +12,13 @@ pin that no longer resolves each cost no run.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
 
+from atelier2.adapters.candidate_store import GitCandidateTreeStore
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import (
     MAXIMUM_VERIFICATION_OUTPUT_BYTES,
@@ -66,6 +68,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 from atelier2.ports.artifacts import ArtifactCreated, PublishArtifactResult
+from atelier2.ports.candidate_store import CandidateTreeStore
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import (
@@ -583,6 +586,9 @@ class _TimeoutVerifications:
         )
 
 
+THE_ANSWER_THE_PROVIDER_GAVE = b'"I changed the file the check was about."'
+"""What this provider answers, in the shape a receipt has to be able to show."""
+
 DECODED_TRANSCRIPT = AttemptTranscript.of(
     [AssistantTurn("I changed the file the check was about.")]
 )
@@ -725,7 +731,7 @@ class _SucceedingExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult:
         del invocation, completion
-        return AgentExecutionResult(b'"ok"', DECODED_TRANSCRIPT)
+        return AgentExecutionResult(THE_ANSWER_THE_PROVIDER_GAVE, DECODED_TRANSCRIPT)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         del command
@@ -736,9 +742,16 @@ class _SucceedingExecutor:
 
 @dataclass
 class _RecordingSupervisor:
-    """A supervisor that records whether finalize ran after the claim."""
+    """A supervisor that records whether finalize ran after the claim.
+
+    `leaves` is what the provider process wrote into its lease before it ended.
+    A scenario that says nothing there is a provider that changed nothing, which
+    is now an ending of its own -- so every scenario whose subject lies past the
+    provider names the work it did.
+    """
 
     finalized: int = 0
+    leaves: Mapping[str, str] = field(default_factory=dict)
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         return prepared_agent_attempt(execution)
@@ -746,7 +759,8 @@ class _RecordingSupervisor:
     def launch_and_wait(
         self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
     ) -> AgentProcessCompletion:
-        del execution, invocation
+        del execution
+        write_into_checkout(invocation.lease.working_directory, self.leaves)
         return AgentProcessCompletion(0, b'"ok"', b"")
 
     def finalize(self, execution: AgentAttemptExecution) -> None:
@@ -844,28 +858,40 @@ FAILING_VERIFICATION_COMMAND = [
 ]
 
 
+WHAT_THE_BUILDER_CHANGED = "src/tool.py"
+THE_BUILDERS_CHANGE = "print('the builder rewrote this')\n"
+A_PROJECT_THE_BUILDER_CHANGES = {WHAT_THE_BUILDER_CHANGED: "print('as pinned')\n"}
+
+
 def _drive_through_a_real_failing_verification(
     tmp_path: Path,
     artifacts: _RecordingArtifactPublisher | _UnavailableArtifactPublisher | None,
     store: _RecordingSuccessStore,
     command: list[str] | None = None,
+    candidates: CandidateTreeStore | None = None,
 ) -> None:
     """A red check run by the real adapter, driven into the given store."""
 
     root = tmp_path / "project"
     pin = git_project(
-        root, declaring_verification(command or FAILING_VERIFICATION_COMMAND)
+        root,
+        {
+            **declaring_verification(command or FAILING_VERIFICATION_COMMAND),
+            **A_PROJECT_THE_BUILDER_CHANGES,
+        },
     )
     execute_agent_attempt(
         agent_attempt_execution(agent_execution_request_v2()),
         _SucceedingExecutor(),  # type: ignore[arg-type]
         store,  # type: ignore[arg-type]
-        _RecordingSupervisor(),  # type: ignore[arg-type]
+        _RecordingSupervisor(  # type: ignore[arg-type]
+            leaves={WHAT_THE_BUILDER_CHANGED: THE_BUILDERS_CHANGE}
+        ),
         _LeasingWorkspaces(tmp_path / "lease"),
         PinnedProjectSource(
             LocalGitProjectSource(root),
             runner_for(root),
-            CandidatesKeptInMemory(),
+            candidates or CandidatesKeptInMemory(),
             pin,
             THE_GRANT,
         ),
@@ -909,12 +935,12 @@ def test_a_nonzero_verification_publishes_its_tail_and_names_it_in_the_evidence(
     assert isinstance(evidence, ProjectVerificationFailureEvidence)
     assert evidence.summary_line == "2 failed, 3 passed in 0.01s"
     assert evidence.duration_seconds >= 0
-    assert evidence.redacted is False
-    assert evidence.retention_failure is None
+    assert evidence.output.redacted is False
+    assert evidence.output.retention_failure is None
     assert len(publisher.published) == 1
     published = publisher.published[0]
     assert published.content == FAILING_VERIFICATION_TAIL
-    assert evidence.output_artifact_hash == published.artifact_hash
+    assert evidence.output.artifact_hash == published.artifact_hash
 
 
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
@@ -939,8 +965,8 @@ def test_a_check_that_cannot_be_kept_degrades_the_words_instead_of_abandoning_th
     evidence = store.verification_failure_evidence
     assert isinstance(evidence, ProjectVerificationFailureEvidence)
     assert evidence.summary_line == "2 failed, 3 passed in 0.01s"
-    assert evidence.output_artifact_hash is None
-    assert evidence.retention_failure is not None
+    assert evidence.output.artifact_hash is None
+    assert evidence.output.retention_failure is not None
 
 
 FAILING_VERIFICATION_WITH_A_CREDENTIAL_COMMAND = [
@@ -971,7 +997,7 @@ def test_a_credential_shape_in_a_red_checks_output_is_redacted_before_it_is_kept
 
     evidence = store.verification_failure_evidence
     assert isinstance(evidence, ProjectVerificationFailureEvidence)
-    assert evidence.redacted is True
+    assert evidence.output.redacted is True
     published = publisher.published[0]
     assert b"sk-ant-" not in published.content
     assert REDACTION_MARKER.encode() in published.content
@@ -1008,6 +1034,186 @@ def test_a_zero_exit_verification_never_publishes_an_artifact(
 
     assert publisher.published == []
     assert store.verification_failure_evidence is None
+
+
+def _a_real_candidate_store(tmp_path: Path, root: Path) -> GitCandidateTreeStore:
+    """The project's own store, where this runtime would really keep its work.
+
+    Built from the two paths the product derives it from -- the checkout it is
+    about and the database whose root it lives beside -- so what these tests ask
+    it is what a run asks it.
+    """
+
+    database_path = tmp_path / "runtime" / "atelier.sqlite"
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    return GitCandidateTreeStore(root, database_path)
+
+
+@dataclass
+class _RefusedVerifications:
+    """A runner that fails the test if anything ever starts it."""
+
+    def preflight(self, pin: ProjectSourcePin) -> None:
+        del pin
+
+    def run(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> ProjectVerificationOutcome:
+        raise AssertionError(
+            "an attempt that changed nothing must not pay for a verification",
+            pin,
+            lease,
+        )
+
+
+@dataclass
+class _UnchangedRecordingStore(_RecordingSuccessStore):
+    """The claiming store, plus the one ending an untouched tree reaches."""
+
+    verdict: str | None = None
+
+    def complete_candidate_unchanged(
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
+    ) -> AgentAttemptFailed:
+        del execution, transcript
+        self.calls.append("complete_candidate_unchanged")
+        self.verdict = verdict
+        assert self.attempt is not None
+        self.attempt = replace(
+            self.attempt,
+            state=AgentAttemptState.FAILED,
+            state_version=self.attempt.state_version + 1,
+            failure_code=AgentAttemptFailureCode.CANDIDATE_UNCHANGED,
+        )
+        return AgentAttemptFailed(self.attempt)
+
+
+@pytest.mark.proves("an-attempt-that-changed-nothing-ends-before-it-pays-for-a-check")
+def test_a_provider_that_left_the_pinned_tree_alone_ends_before_any_check_runs(
+    tmp_path: Path,
+) -> None:
+    """The tree is read against the pin before a single second is spent on it.
+
+    The real candidate store answers the question, so what is proved is the
+    comparison a run really makes and not a fake's opinion of it. The verdict
+    carries what the provider claimed beside the tree that contradicts it --
+    the whole evidence #1156 exists to leave behind.
+    """
+
+    root = tmp_path / "project"
+    pin = git_project(root, declaring_verification(["/bin/true"]))
+    store = _UnchangedRecordingStore()
+
+    outcome = execute_agent_attempt(
+        agent_attempt_execution(agent_execution_request_v2()),
+        _SucceedingExecutor(),  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _RecordingSupervisor(),  # type: ignore[arg-type]
+        _LeasingWorkspaces(tmp_path / "lease"),
+        PinnedProjectSource(
+            LocalGitProjectSource(root),
+            _RefusedVerifications(),  # type: ignore[arg-type]
+            _a_real_candidate_store(tmp_path, root),
+            pin,
+            THE_GRANT,
+        ),
+        _RecordingArtifactPublisher(),  # type: ignore[arg-type]
+    )
+
+    assert isinstance(outcome, AgentAttemptFailed)
+    assert outcome.attempt.failure_code is AgentAttemptFailureCode.CANDIDATE_UNCHANGED
+    assert store.calls == ["prepare", "claim", "complete_candidate_unchanged"]
+    assert store.verdict is not None
+    assert pin.tree in store.verdict
+    assert THE_ANSWER_THE_PROVIDER_GAVE.decode("ascii") in store.verdict
+
+
+@pytest.mark.proves("a-rejected-attempts-own-diff-is-kept-as-a-readable-artifact")
+def test_a_red_check_keeps_the_patch_it_rejected_and_names_it_in_the_evidence(
+    tmp_path: Path,
+) -> None:
+    """A check that said no is half an answer until a reader sees what it said no to.
+
+    The patch is evidence, never a candidate: the work stays unkept, and what
+    the attempt did stays readable. Its content is asked of the artifact the
+    evidence names, so what is proved is the address a receipt would print.
+    """
+
+    root = tmp_path / "project"
+    publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(
+        tmp_path,
+        publisher,
+        store,
+        candidates=_a_real_candidate_store(tmp_path, root),
+    )
+
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.candidate_diff.retention_failure is None
+    kept = {
+        artifact.artifact_hash: artifact.content for artifact in publisher.published
+    }
+    assert evidence.candidate_diff.artifact_hash is not None
+    patch = kept[evidence.candidate_diff.artifact_hash].decode("utf-8")
+    assert WHAT_THE_BUILDER_CHANGED in patch
+    assert THE_BUILDERS_CHANGE.strip() in patch
+
+
+@pytest.mark.proves("a-rejected-attempts-own-diff-is-kept-as-a-readable-artifact")
+def test_a_credential_shape_in_the_rejected_patch_is_redacted_before_it_is_kept(
+    tmp_path: Path,
+) -> None:
+    """A token a builder wrote into a file does not become HTTP-readable material."""
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root,
+        {
+            **declaring_verification(FAILING_VERIFICATION_COMMAND),
+            **A_PROJECT_THE_BUILDER_CHANGES,
+        },
+    )
+    publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
+
+    execute_agent_attempt(
+        agent_attempt_execution(agent_execution_request_v2()),
+        _SucceedingExecutor(),  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _RecordingSupervisor(  # type: ignore[arg-type]
+            leaves={
+                WHAT_THE_BUILDER_CHANGED: (
+                    "TOKEN = 'sk-ant-abcdefghijklmnopqrstuvwx'\n"
+                )
+            }
+        ),
+        _LeasingWorkspaces(tmp_path / "lease"),
+        PinnedProjectSource(
+            LocalGitProjectSource(root),
+            runner_for(root),
+            _a_real_candidate_store(tmp_path, root),
+            pin,
+            THE_GRANT,
+        ),
+        publisher,  # type: ignore[arg-type]
+    )
+
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.candidate_diff.redacted is True
+    kept = {
+        artifact.artifact_hash: artifact.content for artifact in publisher.published
+    }
+    assert evidence.candidate_diff.artifact_hash is not None
+    patch = kept[evidence.candidate_diff.artifact_hash]
+    assert b"sk-ant-" not in patch
+    assert REDACTION_MARKER.encode() in patch
 
 
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")

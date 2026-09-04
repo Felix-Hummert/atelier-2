@@ -616,6 +616,39 @@ def emitting(
     )
 
 
+_PROVIDER_WRITES_A_FILE_THEN_ANSWERS = (
+    "import os, pathlib, sys; "
+    "pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); "
+    "os.write(1, bytes.fromhex(sys.argv[3]))"
+)
+
+
+def working_and_emitting(
+    output: bytes,
+    name: str,
+    text: str,
+    *,
+    frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES,
+) -> AgentCommandFactory:
+    """A command that leaves one file in the leased directory, then answers.
+
+    An attempt that leaves the pinned tree untouched now ends under its own
+    name before any check runs, so every scenario whose subject is what happens
+    *after* the work -- the grant, the verification, the keeping -- needs a
+    provider that actually did some.
+    """
+
+    return launching(
+        sys.executable,
+        "-c",
+        _PROVIDER_WRITES_A_FILE_THEN_ANSWERS,
+        name,
+        text,
+        output.hex(),
+        frame_bytes=frame_bytes,
+    )
+
+
 def answering_each_execution(
     answers: Mapping[tuple[str, int], bytes],
 ) -> AgentCommandFactory:

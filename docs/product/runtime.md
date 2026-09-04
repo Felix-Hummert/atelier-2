@@ -185,6 +185,16 @@ A crash between the two leaves the work readable beside an attempt that reports
 it possibly ran. Nothing deletes a candidate yet: the store grows until the
 project root is destroyed.
 
+The same store answers one question earlier, before any granted check runs:
+which tree does this lease hold now. It is asked only of an attempt that is
+about to redeem a grant, because that is the only attempt for which changing
+nothing is a failure rather than an honest answer. A tree equal to the pin means
+the attempt changed nothing, and it ends `FAILED` under `CANDIDATE_UNCHANGED` in seconds
+rather than paying a project's whole verification to learn that the pinned tree
+still passes -- with the pinned tree and the agent's own bounded, redacted answer
+in the receipt, because an answer describing work that is not there is the fact
+worth keeping. That reading anchors nothing: naming a tree is not keeping one.
+
 An Agent whose exact grant pins `push-atelier-commit` now publishes that kept
 candidate before the following open-PR Action. From the run's single issue order,
 pinned project source and operation identities, the runtime derives one

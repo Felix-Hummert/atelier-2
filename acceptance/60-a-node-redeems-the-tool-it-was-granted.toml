@@ -87,3 +87,11 @@ text = "A granted verification that exceeds its declared `timeout_seconds` after
 [[sentence]]
 id = "a-red-verifications-output-is-kept-as-a-readable-artifact"
 text = "A granted verification that exits nonzero has the last 64 KiB of what it printed, with any credential shape redacted, kept as a content-addressed artifact and named by address in the `PROJECT_VERIFICATION_FAILED` receipt's own words, beside how long the command ran and, where the retained tail carries one, pytest's own short summary line; a runtime pinned with a redeemable grant but wired with no artifact publisher refuses before any provider work rather than discovering the gap only once a check has already exited nonzero."
+
+[[sentence]]
+id = "an-attempt-that-changed-nothing-ends-before-it-pays-for-a-check"
+text = "An attempt of a node that pinned a verification grant, whose leased directory still holds exactly the tree its pin named, ends `FAILED` under `CANDIDATE_UNCHANGED` without starting the project's verification and without redeeming the grant; `AGENT_FAILED` carries that code, and the `failed` `node-receipt/v3` opens with `candidate-unchanged` and names both the pinned tree and, in bounded redacted words, what the agent answered -- so an answer describing work that is not there is stated rather than absorbed."
+
+[[sentence]]
+id = "a-rejected-attempts-own-diff-is-kept-as-a-readable-artifact"
+text = "A granted verification that exits nonzero has the attempt's own patch against the pinned tree -- bounded, with any credential shape redacted -- kept as a content-addressed artifact and named by address in the `PROJECT_VERIFICATION_FAILED` receipt's words beside the check's own output, and that receipt carries the schema revision and value hash of the answer the provider gave; the rejected work itself is still not kept as a candidate."

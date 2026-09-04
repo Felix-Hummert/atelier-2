@@ -19,11 +19,52 @@ owner in this slice prunes a candidate -- a named gap, not an oversight.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
+
+MAXIMUM_CANDIDATE_DIFF_BYTES = 65_536
+"""How much of an attempt's own patch a reader of a rejected attempt is given.
+
+Sibling to `MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES`, and the same width for the
+same reason: a check that said no and a diff that says what was done are the two
+halves of one question an operator answers without rerunning anything. Kept from
+the *start* of the patch, unlike a console tail: a patch read from its beginning
+is a patch, while a patch read from its end begins inside a hunk of whichever
+path happened to sort last.
+
+What it costs is one resident copy of the patch git printed, read whole and then
+cut -- the same way this port's owner already reads a whole index listing to
+refuse a nested repository. A tree large enough for that to matter is the same
+named gap the store already carries.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class LeasedWorkingTree:
+    """What one lease holds right now, named the way a candidate would be.
+
+    Written into the store, because a tree has to be written before it has a
+    name at all -- and anchored under nothing, because "did this attempt change
+    anything" must be answerable without thereby keeping work no ending has
+    decided to keep. The objects it names stay unreferenced until a capture
+    anchors them.
+
+    It carries the pin it was measured against, so no caller has to remember
+    which pin an answer belongs to in order to read it.
+    """
+
+    pin: ProjectSourcePin
+    tree: str
+
+    @property
+    def changed_the_pinned_tree(self) -> bool:
+        """Whether this attempt left anything the pin did not already carry."""
+
+        return self.tree != self.pin.tree
 
 
 class CandidateNotKept(Exception):
@@ -70,4 +111,28 @@ class CandidateTreeStore(Protocol):
 
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         """The candidate this attempt captured, or nothing if it captured none."""
+        ...
+
+    def written(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> LeasedWorkingTree:
+        """Name what stands in this lease now, without keeping it as a candidate.
+
+        The same reading a capture does, stopped one step earlier: an attempt
+        asks this before it pays for anything the work is worth paying for, and
+        an answer equal to the pin means the attempt changed nothing. Failing
+        here is failing to name the work at all, so it leaves through
+        `CandidateNotKept` like a capture does -- work that cannot be named now
+        cannot be kept later either.
+        """
+        ...
+
+    def changes(self, written: LeasedWorkingTree) -> bytes:
+        """The patch from the pinned tree to this one, bounded by this port.
+
+        Evidence, never a candidate: a rejected attempt's work must not survive
+        as something a later run could take, but what it did has to be readable
+        by whoever judges the rejection. An unchanged tree answers with nothing,
+        because there is no patch to read.
+        """
         ...

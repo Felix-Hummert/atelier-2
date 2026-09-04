@@ -972,6 +972,31 @@ second store and no new wire concept carry it, and any credential shape
 verification that exits zero keeps no artifact -- the outcome's own hash and
 summary are proof enough for a check that passed.
 
+### An attempt that changed nothing, and the patch a red check rejected (#1156)
+
+Before a grant is redeemed, the tree standing in the attempt's leased directory
+is written into the project's candidate store and compared with the pinned tree.
+Only an attempt about to redeem a grant is asked: a node that pinned none may
+honestly answer without touching a file, and a reviewer judging a candidate is
+exactly that. Equal means the attempt changed nothing: it ends in seconds, `FAILED` under
+`CANDIDATE_UNCHANGED`, with no verification started and no grant redeemed, and
+the node receipt reads `candidate-unchanged: the workspace still holds the
+pinned tree <tree>, so this attempt changed nothing; the agent answered: ...`.
+That answer is bounded and credential-redacted, and it is the point of the line:
+three live `issue-to-pr` runs each paid ten minutes of project tests and ended
+`PROJECT_VERIFICATION_FAILED` on what was almost certainly the pinned tree, so
+an answer claiming work that is not there is now stated instead of absorbed. No
+candidate ref is written for this ending -- naming a tree is not keeping one.
+
+Where the tree did change and the check then exited nonzero, the receipt names a
+second artifact beside the output tail: the attempt's own patch against the
+pinned tree, bounded to 64 KiB from its start and redacted the same way, as
+`candidate diff artifact sha256:<hash>`. That receipt also carries the schema
+revision and the value hash of the answer the provider gave, so what the builder
+said is readable through `GET /artifacts/{hash}` as well. The rejected work is
+still not kept as a candidate: what survives is evidence, not something a later
+run could take.
+
 ## Pin an executor toolchain
 
 The atelier owns the executor copies it serves. The operator's daily CLI

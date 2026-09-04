@@ -44,6 +44,7 @@ from atelier2.api.wire.resources import (
     WorkflowNodePreviewResourceV3,
     WorkflowRevisionDetailResource,
 )
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
@@ -384,7 +385,7 @@ def agent_failed() -> str:
         node_execution_id=NODE_EXECUTION_ID,
         event_hash=EVENT_HASH,
         event="AGENT_FAILED",
-        failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+        failure_code=AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
         reason=None,
         attempt_id=ATTEMPT_ID,
         attempt_ordinal=1,
@@ -713,7 +714,7 @@ def agent_failed_v3() -> str:
         node_execution_id=NODE_EXECUTION_ID,
         event_hash=EVENT_HASH,
         event="AGENT_FAILED",
-        failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+        failure_code=AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
         reason=None,
         attempt_id=ATTEMPT_ID,
         attempt_ordinal=1,

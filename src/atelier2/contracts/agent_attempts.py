@@ -22,6 +22,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.secret_redaction import redact_credentials
 
 AGENT_ATTEMPT_ORDINAL = 1
 REPLACEMENT_AGENT_ATTEMPT_ORDINAL = 2
@@ -146,6 +147,13 @@ class AgentAttemptFailureCode(StrEnum):
     # verification failed. What is lost is the work, not the answer, and only a
     # word of its own can say so to whoever reads this attempt later.
     CANDIDATE_CAPTURE_FAILED = "CANDIDATE_CAPTURE_FAILED"
+    # The process answered and left the leased directory holding exactly the
+    # tree its pin named: this attempt changed nothing at all. Every other code
+    # here would be a lie about that -- nothing died, no form refused anything,
+    # no check ever ran, and there was no work to keep in the first place.
+    # Naming it is what lets such an attempt end in seconds instead of paying a
+    # whole project verification to discover that it verified the pin (#1156).
+    CANDIDATE_UNCHANGED = "CANDIDATE_UNCHANGED"
 
 
 MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES = 2_048
@@ -155,6 +163,17 @@ Supervision already bounds how much a child may say at all; this is the far
 smaller bound of how much of it becomes a *receipt*, because a receipt is a
 sentence an operator reads at a glance, not a log. One owner for the number, so
 no writer of a receipt picks its own.
+"""
+
+
+MAXIMUM_RECEIPTED_AGENT_ANSWER_BYTES = 2_048
+"""How much of what a provider answered one durable receipt keeps as words.
+
+Sibling to `MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES`, and the same width for the
+same reason: a receipt is a sentence an operator reads at a glance. Kept from
+the *start* of the answer rather than its end, because an answer is a document
+whose opening fields are the ones a reader came for -- a tail would cut off the
+beginning of the very summary it exists to show.
 """
 
 
@@ -220,6 +239,28 @@ class ProcessExitSignature:
             f"last {MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES} of "
             f"{len(self.standard_error)} standard error bytes: {tail}"
         )
+
+
+def receipted_agent_answer(answer: bytes) -> str:
+    """What the provider answered, in the bounded words a receipt may keep.
+
+    Redacted before it is kept, unlike the transcript this answer travels
+    beside: a receipt reason is durable material an operator reads and the run
+    page shows, so a credential a provider echoed out of its own tooling must
+    not survive into it.
+    """
+
+    if not answer:
+        return "nothing"
+    head = redact_credentials(
+        _readable(answer[:MAXIMUM_RECEIPTED_AGENT_ANSWER_BYTES])
+    ).text
+    if len(answer) <= MAXIMUM_RECEIPTED_AGENT_ANSWER_BYTES:
+        return head
+    return (
+        f"first {MAXIMUM_RECEIPTED_AGENT_ANSWER_BYTES} of {len(answer)} "
+        f"answer bytes: {head}"
+    )
 
 
 def process_exit_verdict(
