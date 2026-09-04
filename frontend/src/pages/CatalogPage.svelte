@@ -135,7 +135,7 @@
     const states = await Promise.all(
       names.map(async (name) => [
         name,
-        await catalogNameStateOf(name, (asked) => cockpitApi.getRevisionByName(asked))
+        await catalogNameStateOf(name, (asked) => cockpitApi.getRevisionByName("workflow", asked))
       ])
     );
     return Object.fromEntries(states) as Record<string, CatalogNameState>;
