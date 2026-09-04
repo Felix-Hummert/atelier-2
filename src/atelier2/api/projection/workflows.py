@@ -100,12 +100,13 @@ def _wait_answer_schema(
     )
     if classification is None:
         return WaitAnswerSchemaResourceV3(
-            node_id=node.id, schema=hull, kind="free", values=None
+            node_id=node.id, schema=hull, kind="free", string_typed=False, values=None
         )
     return WaitAnswerSchemaResourceV3(
         node_id=node.id,
         schema=hull,
         kind=classification.kind,
+        string_typed=classification.string_typed,
         values=classification.values,
     )
 

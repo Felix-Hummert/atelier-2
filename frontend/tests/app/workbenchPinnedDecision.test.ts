@@ -13,7 +13,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
-import { cancellableBlock } from "../support/runV3";
+import { cancellableBlock, runRow } from "../support/runV3";
 import { waitingInput } from "../support/runV3";
 
 /**
@@ -67,7 +67,8 @@ function answeredRun(): RunV3 {
 function revision(
   kind: "boolean" | "enum" | "free",
   values: string[] | null = null,
-  nodeIds: readonly string[] = ["approve"]
+  nodeIds: readonly string[] = ["approve"],
+  stringTyped = false
 ): WorkflowRevisionDetail {
   return {
     workflow_revision_hash: revisionHash,
@@ -83,6 +84,7 @@ function revision(
         node_id: nodeId,
         schema: { ref: "decision", revision: "e".repeat(64) },
         kind,
+        string_typed: stringTyped,
         values
       })),
       node_previews: nodeIds.map((id) => ({
@@ -120,7 +122,7 @@ function openWorkbench(runs: readonly RunV3[], overrides: Partial<CockpitApi> = 
     props: {
       cockpitApi: cockpitApiStub({
         listRuns: vi.fn(async (_after?: string, state?: string) => ({
-          items: state === "WAITING_INPUT" ? [...runs] : [],
+          items: state === "WAITING_INPUT" ? runs.map(runRow) : [],
           next_after: null
         })),
         getNodeDetail: vi.fn(async () => questionDetail() as never),
@@ -211,6 +213,25 @@ describe("the Workbench pins open decisions (#580)", () => {
       },
       { timeout: 3_000 }
     );
+  });
+
+  it("proves(the-workbench-pins-an-open-decision-until-it-is-answered): renders a string-typed enum's own raw text and sends it verbatim, never JSON-quoted (#1091 PR #1108 finding 1)", async () => {
+    const waiting = waitingRun();
+    const answer = vi.fn(async (mutation: { body_base64: string }) => {
+      void mutation;
+      return { status: 202 as const, value: answeredRun() };
+    });
+    openWorkbench([waiting], {
+      answer,
+      getWorkflowRevision: vi.fn(async () => revision("enum", ["ja", "nein"], ["approve"], true))
+    });
+
+    const needsYou = await screen.findByRole("region", { name: question });
+    await fireEvent.click(within(needsYou).getByRole("button", { name: "nein" }));
+
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(globalThis.atob((answer.mock.calls[0]?.[0] as { body_base64: string }).body_base64));
+    expect(body.answer_base64).toBe(btoa("nein"));
   });
 
   it("greets an empty workshop instead of pinning a decision that is not there", async () => {

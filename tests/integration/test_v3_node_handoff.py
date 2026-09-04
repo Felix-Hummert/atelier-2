@@ -113,12 +113,17 @@ from tests.scenarios.durable_state import (
     canonical_runtime_settings,
 )
 
-TEXT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
+TEXT_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA, b'{"type": "string", "minLength": 1}'
+)
 PROVIDER_OUTPUT = b'"the exact sentence this node produced"'
 RUN = RunId("v3/chain")
 WAIT_NODE = "approve"
 ANSWER = b'"ship it, but shorten the second paragraph"'
-ANSWER_THE_SCHEMA_REFUSES = b"41"
+# An answer is authored, not produced (`schemas_v3.read_authored_instance_document`):
+# the bytes typed ARE the string, so a bare `41` is now an admitted answer.
+# Bytes that are not text at all are what `TEXT_SCHEMA` still refuses.
+ANSWER_THE_SCHEMA_REFUSES = b"\xff"
 
 
 def chained_document(schema_hash: PublishedRevisionHash) -> bytes:

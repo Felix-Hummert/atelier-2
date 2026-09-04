@@ -54,19 +54,6 @@ class NodeKindV3(StrEnum):
     ACTION = "action"
 
 
-class RunInputSchemaKind(StrEnum):
-    """The rendering-relevant kind of a run input's declared schema.
-
-    A stored order is always its exact JSON bytes and the schema revision that
-    admitted them. Composition additionally needs to know whether that revision
-    declared a plain string: only then may it show the decoded text to an agent.
-    Every other schema keeps its JSON representation verbatim.
-    """
-
-    JSON = "json"
-    PLAIN_STRING = "plain-string"
-
-
 class PersistedReceiptDisposition(StrEnum):
     """The four stored terminal dispositions. `stale` is never one of them."""
 
@@ -304,7 +291,6 @@ class RunInput:
     name: str
     schema_revision: PublishedRevisionHash
     value: bytes
-    schema_kind: RunInputSchemaKind = RunInputSchemaKind.JSON
     value_hash: Sha256Hash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -314,8 +300,6 @@ class RunInput:
             raise TypeError("a run input names a typed schema revision")
         if not isinstance(self.value, bytes):
             raise TypeError("a run input carries exact bytes")
-        if not isinstance(self.schema_kind, RunInputSchemaKind):
-            raise TypeError("a run input carries its declared schema kind")
         object.__setattr__(self, "value_hash", Sha256Hash.of(self.value))
 
 

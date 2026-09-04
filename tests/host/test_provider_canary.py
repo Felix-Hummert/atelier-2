@@ -128,6 +128,7 @@ class FakeHttp:
                     status="serving",
                     source_commit=self.health_source_commit,
                     source_tree="d" * 40,
+                    serve_started_at="2026-08-31T08:00:00Z",
                 )
                 .model_dump_json()
                 .encode()
@@ -286,21 +287,30 @@ def configuration(
     structurally_startable: bool = True,
     model_registered: bool = True,
     has_valid_receipt: bool = True,
+    probe_failed: bool = False,
 ) -> dict[str, object]:
     """A listed item shaped exactly as the server's own precedence computes it.
 
     Mirrors `AgentConfigurationRevisionListItem`'s fixed order: an
     unavailable executor refuses first, then a registry the cast would
-    refuse (a superseded revision), then only a missing live receipt --
-    `startable` never needs its own knob, it is `not_startable_reason is None`.
+    refuse (a superseded revision), then only a missing or failed live
+    receipt -- `probe_failed` distinguishes the two reasons a missing
+    receipt can name (#1103); `startable` never needs its own knob, it is
+    `not_startable_reason is None`.
     """
 
+    if probe_failed and has_valid_receipt:
+        raise ValueError("a proven configuration cannot also carry a failed probe")
     not_startable_reason = (
         "agent-executor-binding-unavailable"
         if not structurally_startable
         else "model-not-registered"
         if not model_registered
-        else "provider-probe-receipt-missing"
+        else (
+            "provider-probe-failed"
+            if probe_failed
+            else "provider-probe-receipt-missing"
+        )
         if not has_valid_receipt
         else None
     )
@@ -315,6 +325,8 @@ def configuration(
         "startable": not_startable_reason is None,
         "structurally_startable": structurally_startable,
         "not_startable_reason": not_startable_reason,
+        "provider_probe_problem_code": "provider-overloaded" if probe_failed else None,
+        "provider_probe_observed_at": "2026-01-01T00:00:00Z" if probe_failed else None,
     }
 
 
@@ -569,6 +581,34 @@ def test_discovery_reprobes_every_registered_vector_whose_receipt_is_foreign(
     receipts = read_receipts(state_directory)
     assert len(receipts) == 2
     assert {receipt.result for receipt in receipts} == {ProviderProbeResult.SUCCEEDED}
+
+
+def test_discovery_reprobes_a_vector_whose_last_probe_failed(
+    tmp_path: Path, workflow_directory: Path
+) -> None:
+    """#1103: a real failed probe is offered exactly like a missing one.
+
+    Splitting `not_startable_reason` into `provider-probe-receipt-missing`
+    and `provider-probe-failed` on the wire must not narrow what a live
+    canary retries -- both name the same live evidence this run itself
+    would replace, so a configuration whose last probe genuinely failed
+    still gets a fresh attempt.
+    """
+
+    http = FakeHttp(
+        (configuration(has_valid_receipt=False, probe_failed=True),),
+        workflow_directory,
+    )
+    state_directory = tmp_path / "state"
+
+    report = execute_provider_canaries(
+        settings(workflow_directory, state_directory), http=http, clock=FakeClock()
+    )
+
+    assert report.attempted == 1
+    assert report.failed == 0
+    (receipt,) = read_receipts(state_directory)
+    assert receipt.result is ProviderProbeResult.SUCCEEDED
 
 
 def test_discovery_excludes_a_superseded_configuration_by_its_own_reason(
@@ -1013,7 +1053,10 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
         method = request.method
         if full_url.endswith("/health"):
             answer = HealthResource(
-                status="serving", source_commit=SOURCE_COMMIT, source_tree="d" * 40
+                status="serving",
+                source_commit=SOURCE_COMMIT,
+                source_tree="d" * 40,
+                serve_started_at="2026-08-31T08:00:00Z",
             ).model_dump_json()
         elif "/agent-configuration-revisions?" in full_url:
             answer = encoded(
@@ -1096,7 +1139,10 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
         if full_url.endswith("/health"):
             answer = (
                 HealthResource(
-                    status="serving", source_commit=SOURCE_COMMIT, source_tree="d" * 40
+                    status="serving",
+                    source_commit=SOURCE_COMMIT,
+                    source_tree="d" * 40,
+                    serve_started_at="2026-08-31T08:00:00Z",
                 )
                 .model_dump_json()
                 .encode()

@@ -1,6 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import type { RunListRow, RunV3 } from "../../src/api/client";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { nodeAriaName } from "../../src/lib/stateMarkCopy";
@@ -8,6 +10,7 @@ import { standingWords } from "../../src/lib/runState";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
+import { healthyRunListItems } from "../support/runListRows";
 
 /**
  * Click and glance budgets from mockup v8 §07. Each number is a door count on
@@ -111,12 +114,6 @@ async function resetToKnownStore(page: Page): Promise<void> {
   }).toPass({ timeout: 20_000 });
 }
 
-type ReconciliationFixtureRun = {
-  public_run_reference: string;
-  workflow_revision_hash: string;
-  state: string;
-};
-
 type InputFixtureRun = {
   public_run_reference: string;
   workflow_revision_hash: string;
@@ -126,7 +123,8 @@ type InputFixtureRun = {
 async function retireReconciliationFixtures(page: Page): Promise<void> {
   const listed = await page.request.get(`${API}/runs?state=WAITING_RECONCILIATION&limit=50`);
   expect(listed.status()).toBe(200);
-  const { items } = (await listed.json()) as { items: ReconciliationFixtureRun[] };
+  const { items: rows } = (await listed.json()) as { items: RunListRow[] };
+  const items: RunV3[] = healthyRunListItems(rows);
   expect(items).toHaveLength(2);
 
   for (const run of items) {
@@ -452,11 +450,36 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
   await startHeldRun(page, runningName, `uiq/running-${suffix}`);
   const waitRevision = await publishWaitWorkflow(page, waitingName, DECISION_QUESTION);
   const catalogSchemaHash = await publishSchema(page, "true");
+  // The send-a-message task below needs a real conductor to send into
+  // (#1103): without one the composer stays honestly locked and Enter does
+  // nothing, so this budget seeds the production conductor catalog the same
+  // way `workbench-conductor.spec.ts` does. A server-side publish, not a
+  // browser action, so it costs neither a click nor a glance.
+  const seeded = await page.request.post("/__e2e/seed-conductor");
+  expect(seeded.ok()).toBeTruthy();
 
-  for (const viewport of VIEWPORTS) {
+  for (const [index, viewport] of VIEWPORTS.entries()) {
     await page.setViewportSize(viewport);
     await startWaitRun(page, `uiq/waiting-${suffix}-${viewport.width}`, waitRevision);
     await openWorkbench(page);
+    // A fresh page load resolves the conductor's own connection, and
+    // restores its already-started run, asynchronously; typing before that
+    // settles would either find Send disabled (locked while "reading",
+    // #1103, #1114) or race a second run into existence instead of
+    // continuing the one from the last viewport. The connected composer hint
+    // is the actual signal that resolution finished -- the first viewport's
+    // message is the conversation's own first round, so it still "begins"
+    // it, but the reload before every later viewport replays that round's
+    // events, so the composer already carries `composerHintOngoing` by then
+    // (`connectedComposerHint`, WorkbenchPage.svelte).
+    const resolvedComposerHint =
+      index === 0 ? conductorConversationCopy.composerHint : conductorConversationCopy.composerHintOngoing;
+    await expect(page.getByText(resolvedComposerHint)).toBeVisible({
+      timeout: 20_000
+    });
+    await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled({
+      timeout: 20_000
+    });
 
     const composer = page.getByLabel(workbenchPageCopy.composerLabel);
     const sendGlances = [composer];

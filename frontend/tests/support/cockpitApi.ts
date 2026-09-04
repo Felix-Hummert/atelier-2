@@ -1,18 +1,38 @@
 import { vi, type Mock } from "vitest";
 
-import type { CockpitApi, RunEventHandlers, RunPage, RunV3 } from "../../src/api/client";
+import type {
+  CockpitApi,
+  HealthResource,
+  RunEventHandlers,
+  RunPage,
+  RunV3
+} from "../../src/api/client";
+import { runRow } from "./runV3";
+
+/** A `GET /health` answer, its own owner so every test names only what it varies. */
+export function healthResource(overrides: Partial<HealthResource> = {}): HealthResource {
+  return {
+    status: "serving",
+    source_commit: "a".repeat(40),
+    source_tree: "b".repeat(40),
+    serve_started_at: "2026-08-31T08:00:00Z",
+    ...overrides
+  };
+}
 
 /**
  * One owner for the CockpitApi test double: when the port grows a method, the
  * suite learns about it here instead of in every app test.
  *
- * Only list reads carry a default — the neutral "nothing there" page.
- * Everything a test depends on must be handed in, so no test passes because a
- * shared default happened to answer for it.
+ * Only reads every mount makes unconditionally carry a default -- the neutral
+ * "nothing there" page for a list, a neutral `healthResource()` for `health`
+ * (App's own mount reads it for the footer's baseline, #1100). Everything a
+ * test depends on must be handed in, so no test passes because a shared
+ * default happened to answer for it.
  */
 export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return {
-    health: vi.fn(),
+    health: vi.fn(async () => healthResource()),
     listRuns: vi.fn(async () => ({ items: [], next_after: null })),
     listProjects: vi.fn(async () => ({ items: [] })),
     getProjectSourceConnection: vi.fn(),
@@ -100,7 +120,7 @@ export function pagedListRuns(
     const page = pages[index] ?? [];
     const next = PAGE_CURSORS[index];
     return {
-      items: [...page],
+      items: page.map(runRow),
       next_after: index + 1 < pages.length && next !== undefined ? next : null
     };
   });
@@ -109,5 +129,5 @@ export function pagedListRuns(
 /** A listRuns double whose cursor never advances -- the durable defect a client must not spin on. */
 export function repeatingCursorListRuns(page: readonly RunV3[]): ListRunsDouble {
   const repeated = PAGE_CURSORS[0] ?? null;
-  return vi.fn(async () => ({ items: [...page], next_after: repeated }));
+  return vi.fn(async () => ({ items: page.map(runRow), next_after: repeated }));
 }

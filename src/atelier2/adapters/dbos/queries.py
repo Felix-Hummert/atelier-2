@@ -72,10 +72,7 @@ from atelier2.adapters.dbos.workflow import (
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.bounded_process_cache import BoundedProcessCache
-from atelier2.application.compose_node_job import (
-    NodeJobCompositionVersion,
-    node_job,
-)
+from atelier2.application.compose_node_job import node_job
 from atelier2.application.project_node_rail import (
     never_launched_cleanup_on_failed_run,
     project_node_rail,
@@ -138,6 +135,7 @@ from atelier2.contracts.run_forks import (
 from atelier2.contracts.run_projections import (
     AgentAttemptCancellationProjection,
     AgentAttemptProjection,
+    DefectiveRunProjection,
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
@@ -147,7 +145,9 @@ from atelier2.contracts.run_projections import (
     RunForkSuccessorProjection,
     RunPage,
     RunProjection,
+    RunProjectionProblemCode,
     WaitingReconciliationProjection,
+    bounded_run_row_defect_detail,
     execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
 )
@@ -682,24 +682,11 @@ def _current_attempt_projection(
             node,
             orders,
             results,
-            base_composition_version=NodeJobCompositionVersion.CURRENT,
             target_node_execution_id=execution_id,
             target_attempt_ordinal=ordinal,
             prior_refusal_receipt=repair_receipt,
         )
     )
-    if repair_receipt is None and request_hash != exact_request.request_hash:
-        exact_request = request_for(
-            compose_agent_node_job_for_attempt(
-                node,
-                orders,
-                results,
-                base_composition_version=NodeJobCompositionVersion.LEGACY,
-                target_node_execution_id=execution_id,
-                target_attempt_ordinal=ordinal,
-                prior_refusal_receipt=None,
-            )
-        )
     expected_attempt_id = AgentAttemptId.for_execution(
         execution_id, exact_request.request_hash, ordinal
     )
@@ -1536,6 +1523,11 @@ def _node_provenance(
     )
 
 
+def _run_row_id(row: RunProjection | DefectiveRunProjection) -> RunId:
+    """The run a listed row names, healthy or defective alike."""
+    return row.run_id if isinstance(row, DefectiveRunProjection) else row.run.run_id
+
+
 class DbosQueries:
     """Bounded SQLite projections; each call owns and closes its read connection."""
 
@@ -1912,10 +1904,8 @@ class DbosQueries:
                         self._projection_limit,
                         field_columns=_RUN_FIELD_COLUMNS,
                     )
-                projections = self._run_projections(connection, item_records)
                 ordered_bytes = tuple(
-                    projection.run.run_id.value.encode("utf-8")
-                    for projection in projections
+                    str(record["run_id"]).encode("utf-8") for record in item_records
                 )
                 if ordered_bytes != tuple(sorted(ordered_bytes)) or (
                     after is not None
@@ -1925,9 +1915,10 @@ class DbosQueries:
                     raise RunTransitionConflict(
                         "SQLite run order disagrees with exact UTF-8 byte order"
                     )
+                rows = self._run_rows(connection, item_records)
                 return RunPage(
-                    projections,
-                    (projections[-1].run.run_id if has_more and projections else None),
+                    rows,
+                    (_run_row_id(rows[-1]) if has_more and rows else None),
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()
@@ -2007,6 +1998,66 @@ class DbosQueries:
         except (ValueError, RuntimeError, DatabaseError):
             return QueryDurableStateCorrupt()
 
+    def _run_rows(
+        self,
+        connection: Connection,
+        records: Sequence[Mapping[Any, Any]],
+    ) -> tuple[RunProjection | DefectiveRunProjection, ...]:
+        """Every listed run's own projection, told apart from its neighbours.
+
+        `_run_projections` joins the whole page in shared queries, so one run
+        whose own projection cannot be told must not cost every healthy run
+        beside it (#1042): a batch failure retries the page row by row, and
+        only the row that still fails on its own becomes a defective row
+        instead of taking the whole page down with it. `ProjectionLimitExceeded`
+        is not a row's own defect but the read edge's admitted-size bound, so it
+        is left to propagate to the page-level refusal `list_runs` already owns.
+        """
+        if not records:
+            return ()
+        try:
+            return self._run_projections(connection, records)
+        except (ProjectionLimitExceeded, OperationalError, PoolTimeoutError):
+            raise
+        except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError) as error:
+            _LOG.error(
+                "run list projection failed for the page; retrying its rows"
+                " individually",
+                exc_info=error,
+                extra={"event": "run_list_projection_corrupt"},
+            )
+        rows: list[RunProjection | DefectiveRunProjection] = []
+        for record in records:
+            run_id = RunId(str(record["run_id"]))
+            try:
+                rows.append(self._run_projections(connection, (record,))[0])
+            except (ProjectionLimitExceeded, OperationalError, PoolTimeoutError):
+                raise
+            except (
+                UnicodeEncodeError,
+                ValueError,
+                RuntimeError,
+                DatabaseError,
+            ) as error:
+                _LOG.error(
+                    "run list projection failed for run_id=%s: %s",
+                    run_id.value,
+                    error,
+                    exc_info=error,
+                    extra={
+                        "event": "run_list_projection_corrupt",
+                        "run_id": run_id.value,
+                    },
+                )
+                rows.append(
+                    DefectiveRunProjection(
+                        run_id,
+                        RunProjectionProblemCode.DURABLE_STATE_CORRUPT,
+                        bounded_run_row_defect_detail(error),
+                    )
+                )
+        return tuple(rows)
+
     def _run_projections(
         self,
         connection: Connection,
@@ -2064,6 +2115,16 @@ class DbosQueries:
             )
         stored_forks = []
         for record in fork_records:
+            # A same-snapshot invariant check, not a live race: `record` was
+            # read from `run_forks` under this call's one SQLite snapshot
+            # (`_connection` opens one `BEGIN DEFERRED` transaction for the
+            # whole read), and `_stored_fork_for_command` re-reads the exact
+            # same table under that unchanged snapshot -- so this branch
+            # should be unreachable today. It stays as a guard rather than an
+            # assumption, and if that snapshot guarantee is ever weakened, the
+            # honest response is retrying the read, not treating the row as
+            # permanently corrupt: nothing here proves the fork is gone, only
+            # that this one read could not see it.
             fork = _stored_fork_for_command(
                 connection, RunForkCommandId(str(record["command_id"]))
             )

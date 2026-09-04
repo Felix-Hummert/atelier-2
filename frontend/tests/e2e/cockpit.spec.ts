@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import type { RunListRow } from "../../src/api/client";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import {
   catalogPageCopy,
@@ -19,6 +20,7 @@ import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
+import { healthyRunListItems } from "../support/runListRows";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
@@ -270,7 +272,9 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
           requested_capability: "headless",
           startable: true,
           structurally_startable: true,
-          not_startable_reason: null
+          not_startable_reason: null,
+          provider_probe_problem_code: null,
+          provider_probe_observed_at: null
         }],
         next_after_revision_hash: null
       })
@@ -539,7 +543,9 @@ test("Start sheet presents a current role configuration without retaining a draf
           requested_capability: "headless",
           startable: true,
           structurally_startable: true,
-          not_startable_reason: null
+          not_startable_reason: null,
+          provider_probe_problem_code: null,
+          provider_probe_observed_at: null
         }],
         next_after_revision_hash: null
       })
@@ -872,7 +878,9 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
           requested_capability: "headless",
           startable: true,
           structurally_startable: true,
-          not_startable_reason: null
+          not_startable_reason: null,
+          provider_probe_problem_code: null,
+          provider_probe_observed_at: null
         }],
         next_after_revision_hash: null
       })
@@ -964,8 +972,8 @@ test("Catalog start sheet names current startability for checked configurations"
   const unavailableHash = "1".repeat(64);
   const availableHash = "2".repeat(64);
   await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [
-    { agent_configuration_revision_hash: unavailableHash, auth_profile_revision_hash: "3".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "unavailable", executor_revision: "immediate/v1", requested_capability: "headless", startable: false, structurally_startable: false, not_startable_reason: "agent-executor-binding-unavailable" },
-    { agent_configuration_revision_hash: availableHash, auth_profile_revision_hash: "4".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "available", executor_revision: "immediate/v1", requested_capability: "headless", startable: true, structurally_startable: true, not_startable_reason: null }
+    { agent_configuration_revision_hash: unavailableHash, auth_profile_revision_hash: "3".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "unavailable", executor_revision: "immediate/v1", requested_capability: "headless", startable: false, structurally_startable: false, not_startable_reason: "agent-executor-binding-unavailable", provider_probe_problem_code: null, provider_probe_observed_at: null },
+    { agent_configuration_revision_hash: availableHash, auth_profile_revision_hash: "4".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "available", executor_revision: "immediate/v1", requested_capability: "headless", startable: true, structurally_startable: true, not_startable_reason: null, provider_probe_problem_code: null, provider_probe_observed_at: null }
   ], next_after_revision_hash: null }) }));
   await routeStartSheetModelContract(page, [
     {
@@ -2020,8 +2028,8 @@ test("the Workbench pins a run that is waiting for a person, by its catalog name
   await expect(async () => {
     const listed = await page.request.get(`${api}/runs?state=WAITING_INPUT&limit=50`);
     expect(listed.status()).toBe(200);
-    const body = await listed.json();
-    expect(body.items.some((item: { run_id: string }) => item.run_id === runId)).toBe(true);
+    const body = (await listed.json()) as { items: RunListRow[] };
+    expect(healthyRunListItems(body.items).some((run) => run.run_id === runId)).toBe(true);
   }).toPass({ timeout: 15_000 });
 
   await page.goto("/atelier");
@@ -2319,6 +2327,7 @@ test("a waiting V3 run with a boolean answer schema offers decision buttons", as
         node_id: "ship",
         schema: { ref: "decision-schema", revision: booleanSchemaHash },
         kind: "boolean",
+        string_typed: false,
         values: null
       }
     ];

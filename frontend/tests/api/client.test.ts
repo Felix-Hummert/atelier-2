@@ -850,7 +850,9 @@ describe("the published agent-configuration listing", () => {
       agent_configuration_revision_hash: digest,
       startable: true,
       structurally_startable: true,
-      not_startable_reason: null
+      not_startable_reason: null,
+      provider_probe_problem_code: null,
+      provider_probe_observed_at: null
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ items: [item], next_after_revision_hash: null }), {
@@ -1184,18 +1186,55 @@ describe("the run listing the studio opens on", () => {
     // had been taught V3; the listing had not, so a single V3 run took down the
     // page the workshop opens on.
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ items: [v3Run], next_after: null }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      })
+      new Response(
+        JSON.stringify({ items: [{ kind: "run", run: v3Run }], next_after: null }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
     );
 
     const page = await createCockpitApi(fetcher).listRuns();
 
     expect(fetcher.mock.calls[0]?.[0]).toBe("/atelier/api/v1/runs?limit=50");
     expect(page.items).toHaveLength(1);
-    expect(page.items[0]?.public_run_reference).toBe(publicReference);
-    expect(page.items[0]?.state).toBe("STARTED");
+    const row = page.items[0];
+    if (row?.kind !== "run") {
+      throw new Error("expected a decoded run row");
+    }
+    expect(row.run.public_run_reference).toBe(publicReference);
+    expect(row.run.state).toBe("STARTED");
+  });
+
+  it("decodes a run whose own projection failed as a defective row, not a run (#1042)", async () => {
+    // A run list answers for every entry it can: the row a corrupt run
+    // becomes carries its reference and reason, never bent into a run shape
+    // it does not have.
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              kind: "defective",
+              public_run_reference: publicReference,
+              problem_code: "durable-state-corrupt",
+              detail: "run current node is absent from its workflow graph"
+            }
+          ],
+          next_after: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    const page = await createCockpitApi(fetcher).listRuns();
+
+    expect(page.items).toEqual([
+      {
+        kind: "defective",
+        public_run_reference: publicReference,
+        problem_code: "durable-state-corrupt",
+        detail: "run current node is absent from its workflow graph"
+      }
+    ]);
   });
 
   it("decodes a run started with an order, its size and pinned schema, never its bytes", async () => {
@@ -1211,20 +1250,23 @@ describe("the run listing the studio opens on", () => {
       ]
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ items: [orderedRun], next_after: null }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      })
+      new Response(
+        JSON.stringify({
+          items: [{ kind: "run", run: orderedRun }],
+          next_after: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
     );
 
     const page = await createCockpitApi(fetcher).listRuns();
 
     expect(page.items).toHaveLength(1);
-    const run = page.items[0];
-    if (!run) {
-      throw new Error("expected a decoded run");
+    const row = page.items[0];
+    if (row?.kind !== "run") {
+      throw new Error("expected a decoded run row");
     }
-    expect(run.orders).toEqual([
+    expect(row.run.orders).toEqual([
       { name: "headline", bytes: 19, schema_revision_hash: "d".repeat(64) }
     ]);
   });

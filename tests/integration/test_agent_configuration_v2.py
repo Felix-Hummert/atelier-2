@@ -59,6 +59,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     AgentBinding,
     AgentBindingSet,
+    AgentConfigurationNotStartableReason,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentConfigurationRevisionHash,
@@ -1992,7 +1993,13 @@ def test_catalog_workflow_start_get_and_list_roundtrip_through_the_real_api(
         assert retry.status_code == 200
         assert found.status_code == 200
         assert page.status_code == 200
-        assert created.json() == retry.json() == found.json() == page.json()["items"][0]
+        assert (
+            created.json()
+            == retry.json()
+            == found.json()
+            == page.json()["items"][0]["run"]
+        )
+        assert page.json()["items"][0]["kind"] == "run"
         assert created.json()["workflow_format_version"] == 3
         assert created.json()["agent_bindings"] == [
             {
@@ -2125,6 +2132,90 @@ def test_published_configurations_are_listed_over_the_api(tmp_path: Path) -> Non
             assert item["startable"] is True
             assert item["not_startable_reason"] is None
             assert "secret" not in str(item).lower()
+    finally:
+        runtime.close()
+
+
+def test_listing_names_a_filesystem_receipts_own_recorded_failure(
+    tmp_path: Path,
+) -> None:
+    """#1103: the production receipt gate's own store proves this end to end.
+
+    A configuration whose live evidence is a filed `.json` receipt recording
+    a failure lists as `provider-probe-failed`, carrying that receipt's own
+    problem code and instant -- never the same `provider-probe-receipt-
+    missing` a configuration with no receipt at all would get.
+    """
+
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "receipt-failed-test", b"build"
+    )
+    receipt_directory = tmp_path / "provider-probes"
+    receipt_directory.mkdir()
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "v2-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+            provider_probe_receipt_directory=receipt_directory,
+            provider_probe_receipt_source_commit=_PROBE_DEPLOYMENT_SOURCE_COMMIT,
+        ),
+        _effect_factory(tmp_path),
+        (factory,),
+    )
+    runtime.initialize_storage()
+    catalog = DbosAgentConfigurationCatalog(
+        runtime.engine, runtime.agent_executor_registry
+    )
+    try:
+        auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        )
+        configuration = AgentConfigurationRevision(
+            "opus",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(configuration),
+            AgentConfigurationRevisionCreated,
+        )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (configuration,)
+        )
+        receipt = ProviderProbeReceipt(
+            ProviderProbeVectorId("headless-fixture"),
+            configuration.revision_hash,
+            WorkflowRevisionHash("f" * 64),
+            _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+            RecordedAt("2026-09-03T16:17:00Z"),
+            RecordedAt("2026-09-04T16:17:00Z"),
+            ProviderProbeResult.FAILED,
+            RunId("provider-canary/fixture"),
+            problem_code=ProviderProbeProblemCode("provider-overloaded"),
+        )
+        (receipt_directory / "headless-fixture.json").write_bytes(
+            receipt.canonical_bytes()
+        )
+
+        page = catalog.list_agent_configuration_revisions(None, 50)
+        assert isinstance(page, AgentConfigurationRevisionPage)
+        assert len(page.items) == 1
+        item = page.items[0]
+        assert item.startable is False
+        assert item.has_valid_receipt is False
+        assert (
+            item.not_startable_reason
+            == AgentConfigurationNotStartableReason.PROVIDER_PROBE_FAILED
+        )
+        assert item.probe_failure is not None
+        assert item.probe_failure.problem_code.value == "provider-overloaded"
+        assert item.probe_failure.observed_at.value == "2026-09-03T16:17:00Z"
     finally:
         runtime.close()
 

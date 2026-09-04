@@ -3,13 +3,14 @@
 The served agent-configuration list is the deployment's answer about which
 exact provider/executor/configuration vectors are worth a live attempt: one
 the deployment's own snapshot already calls `startable`, or one whose only
-named problem is the receipt this very run would write
-(`not_startable_reason: provider-probe-receipt-missing`). Both answers come
-from the same server-side judgment a start itself makes -- the model
-registry pointer, the executor, and live evidence, all computed once through
-`agent_catalog.py` -- so a superseded revision carries its own distinct
-reason (`model-not-registered`) and is never offered as a vector. This
-client reads those two fields and derives nothing of its own: no local
+named problem is the receipt this very run would write -- no receipt on file
+yet (`not_startable_reason: provider-probe-receipt-missing`) or a receipt
+whose own last result was a failure (`provider-probe-failed`, #1103). Both
+answers come from the same server-side judgment a start itself makes -- the
+model registry pointer, the executor, and live evidence, all computed once
+through `agent_catalog.py` -- so a superseded revision carries its own
+distinct reason (`model-not-registered`) and is never offered as a vector.
+This client reads those fields and derives nothing of its own: no local
 registry fetch, no local cast, no parse of the repository's workflow bytes.
 It then resolves the matching admitted workflow, starts one fresh run with
 the listed configuration hash, and polls the public run resource to a
@@ -103,6 +104,14 @@ from atelier2.host.run_command import (
 )
 
 PROVIDER_CANARY_ROLE = "provider-canary"
+_RECEIPT_ALONE_NOT_STARTABLE_REASONS = frozenset(
+    (
+        AgentConfigurationNotStartableReason.PROVIDER_PROBE_RECEIPT_MISSING,
+        AgentConfigurationNotStartableReason.PROVIDER_PROBE_FAILED,
+    )
+)
+"""The two reasons discovery still offers as a vector (#1103): either one names
+live evidence a fresh probe replaces, never a structural or registry problem."""
 PROVIDER_CANARY_RECEIPT_VALIDITY = timedelta(hours=26)
 PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS = 300.0
 PROVIDER_CANARY_POLL_INTERVAL_SECONDS = 2.0
@@ -573,9 +582,11 @@ def _configured_vectors(
         )
         # A vector is a configuration the deployment's own snapshot already
         # calls `startable`, or one whose only problem is the receipt this
-        # very run would write (`not_startable_reason ==
-        # provider-probe-receipt-missing`, the exact token
-        # `AgentConfigurationNotStartableReason` owns). A superseded
+        # very run would write -- either no receipt on file yet
+        # (`provider-probe-receipt-missing`) or one whose last recorded
+        # result was itself a failure (`provider-probe-failed`, #1103): both
+        # name exactly the evidence a fresh probe replaces, the same two
+        # tokens `AgentConfigurationNotStartableReason` owns. A superseded
         # configuration now carries its own distinct reason
         # (`model-not-registered`) computed by the same cast lookup a start
         # makes (`agent_catalog.py` -> `resolve_start_bindings.
@@ -590,8 +601,7 @@ def _configured_vectors(
             for item in page.items
             if (
                 item.startable
-                or item.not_startable_reason
-                == AgentConfigurationNotStartableReason.PROVIDER_PROBE_RECEIPT_MISSING
+                or item.not_startable_reason in _RECEIPT_ALONE_NOT_STARTABLE_REASONS
             )
             and (vector := _canary_vector(item)) is not None
         )

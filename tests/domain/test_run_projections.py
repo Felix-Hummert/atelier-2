@@ -16,9 +16,11 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.run_projections import (
+    MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS,
     NodeState,
     PublicAgentAttemptState,
     WaitingReconciliationProjection,
+    bounded_run_row_defect_detail,
     execution_awaits_effect_reconciliation,
     public_agent_attempt_state,
 )
@@ -181,3 +183,35 @@ def test_an_execution_with_no_intent_of_its_own_awaits_no_effect() -> None:
         )
         is False
     )
+
+
+def test_a_defective_run_row_detail_names_the_failure_class_not_its_message() -> None:
+    """A store exception's own message never reaches a defective row (#1042).
+
+    `DatabaseError` embeds the failing SQL and its bound parameters; only the
+    exception's class -- what family of failure this was -- is curated onto
+    the row.
+    """
+    error = RuntimeError("SELECT * FROM runs WHERE run_id = 'super-secret-id'")
+
+    assert bounded_run_row_defect_detail(error) == "RuntimeError"
+
+
+def test_a_defective_run_row_detail_is_bounded_even_for_an_overlong_class_name() -> (
+    None
+):
+    overlong = type(
+        "X" * (MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS + 100), (Exception,), {}
+    )
+
+    detail = bounded_run_row_defect_detail(overlong())
+
+    assert len(detail) == MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS
+
+
+def test_a_defective_run_row_detail_falls_back_when_the_class_name_is_empty() -> None:
+    unnamed = type("", (Exception,), {})
+
+    detail = bounded_run_row_defect_detail(unnamed())
+
+    assert detail != ""

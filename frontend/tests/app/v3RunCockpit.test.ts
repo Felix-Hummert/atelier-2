@@ -770,7 +770,11 @@ describe("a version 3 run that stops for a person", () => {
   });
 
   /** The published answer schema of #553's decision-button graphs, everything but its classification. */
-  function decisionSchema(kind: "boolean" | "enum" | "free", values: string[] | null = null) {
+  function decisionSchema(
+    kind: "boolean" | "enum" | "string" | "free",
+    values: string[] | null = null,
+    stringTyped = false
+  ) {
     const revision = waitRevision();
     return {
       ...revision,
@@ -781,6 +785,7 @@ describe("a version 3 run that stops for a person", () => {
             node_id: "approve",
             schema: { ref: "decision", revision: "e".repeat(64) },
             kind,
+            string_typed: stringTyped,
             values
           }
         ]
@@ -850,6 +855,56 @@ describe("a version 3 run that stops for a person", () => {
     expect(body.answer_base64).toBe(btoa('"revise"'));
     await screen.findByText(`${runPageCopy.answeredPrefix} revise`);
     resolveAnswer({ status: 202, value: answeredRun() });
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): a string-typed enum sends its raw text, never JSON-quoted (#1091 PR #1108 finding 1)", async () => {
+    let resolveAnswer: (result: { status: 202; value: RunV3 }) => void = () => {};
+    const answerCall = vi.fn(
+      (mutation: { body_base64: string }) =>
+        new Promise<{ status: 202; value: RunV3 }>((resolve) => {
+          void mutation;
+          resolveAnswer = resolve;
+        })
+    );
+    render(App, {
+      props: {
+        cockpitApi: waitingApi({
+          answer: answerCall,
+          getWorkflowRevision: vi.fn(async () =>
+            decisionSchema("enum", ["ja", "nein"], true)
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByRole("heading", { name: question });
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    await fireEvent.click(await screen.findByRole("button", { name: "nein" }));
+
+    await waitFor(() => expect(answerCall).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(globalThis.atob(answerCall.mock.calls[0]?.[0]?.body_base64 ?? ""));
+    expect(body.answer_base64).toBe(btoa("nein"));
+    await screen.findByText(`${runPageCopy.answeredPrefix} nein`);
+    resolveAnswer({ status: 202, value: answeredRun() });
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): a string schema keeps the text field, never the decision buttons (#1091 PR #1108 regression)", async () => {
+    render(App, {
+      props: {
+        cockpitApi: waitingApi({
+          getWorkflowRevision: vi.fn(async () => decisionSchema("string", null, true))
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByRole("heading", { name: question });
+
+    expect(screen.getByLabelText(runPageCopy.answerLabel).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.answerNo })).toBeNull();
   });
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): keeps the free-form textarea for a schema this build has not classified", async () => {

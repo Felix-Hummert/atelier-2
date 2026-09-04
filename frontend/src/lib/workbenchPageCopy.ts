@@ -1,3 +1,4 @@
+import type { ConductorNotStartableReason } from "./conductorEpisode";
 import { PRODUCT_NAME } from "./productName";
 
 /**
@@ -39,36 +40,140 @@ export const workbenchPageCopy = {
   runsUnavailable: "Workbench runs unavailable",
   runsLabel: "workbench runs",
   workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",
+  /**
+   * A run whose own projection failed (#1042) reads as this quiet row, not
+   * as an empty shelf and not as the whole room failing: the other runs
+   * beside it read fine, and this is the one honest thing left to say about
+   * the run that does not. `DefectiveRunRow.svelte` renders this row and
+   * owns these three strings for every surface that lists runs, History
+   * included -- one copy owner, not a second set of words for the same row
+   * (operator ruling, #1042 review).
+   */
+  defectiveRunsLabel: "Runs that could not be read",
+  defectiveRunTitle: "Could not be read",
+  defectiveRunDetail: "Technical detail",
 
   transcriptLabel: "Conversation",
   emptyTitle: "Nothing said yet",
   /**
    * The empty room teaches the one next move (REQ-UI-24) instead of staying
    * blank: today that move is the Catalog, the one room a run is started from
-   * by hand.
+   * by hand. Shown while no conductor exists at all (`absent`) or its own
+   * read failed (`unreadable`) -- `emptyDescriptionUnbound` and
+   * `emptyDescriptionNotStartable` below carry the two states that instead
+   * name a real, existing conductor's own reason (#1103).
    */
-  emptyDescription:
-    "The conductor that turns what you say into runs is not built yet. Until then, start work from the Catalog.",
+  emptyDescription: "No conductor is connected yet. Until then, start work from the Catalog.",
   emptyStart: "Open the Catalog",
+  openSettings: "Open Settings",
   youLabel: "You",
   houseLabel: PRODUCT_NAME,
   composerRegionLabel: "Composer",
   composerLabel: "Message",
   send: "Send",
   /**
-   * The one honest sentence the ear carries while no conductor is connected
-   * (HEART, "The ear"): it says plainly that words are not yet turned into
-   * runs, without a second button that duplicates a door.
+   * The composer's own reminder while whether a conductor is even there is
+   * still being read (#1103, #1114): Send is locked for the same reason a
+   * lost connection locks it, so the hint says this is a passing moment, not
+   * a standing refusal -- distinct from `composerHint` below, which is the
+   * settled "no conductor" answer.
    */
-  composerHint: "No conductor is connected yet, so your words are kept here but start nothing.",
+  composerHintReading: "Checking whether a conductor is connected…",
   /**
-   * The reply every sent message gets while no conductor is connected. The
-   * standing hint already carries "no conductor is connected yet", so the reply
-   * drops that duplicated lead and keeps only its two unique truths: nothing
-   * was started, and the message was not thrown away. "Until you reload" is the
-   * conversation's real boundary: it survives in-app rail navigation (the
-   * module that owns it outlives the page component) but not a reload.
+   * The one honest sentence the ear carries while no conductor exists at all
+   * (HEART, "The ear"): Send is visibly locked for this state (#1103), so the
+   * sentence names that instead of promising a kept-but-unsent word.
    */
-  conductorAbsent:
-    "Nothing was started. Your message is kept in this conversation until you reload the page."
+  composerHint: "No conductor is connected yet, so Send stays locked. Start work from the Catalog instead.",
+  /**
+   * The reply a sent message gets when the conductor's own connection read
+   * itself failed ("unreadable"): the only state left where a message can
+   * still reach the local-chat fallback and be answered as if no conductor
+   * existed -- "reading" locks the composer instead (#1114), and "absent",
+   * "unbound" and "not-startable" (#1103) each carry a real reason and lock
+   * it too. "Until you reload" is the conversation's real boundary: it
+   * survives in-app rail navigation (the module that owns it outlives the
+   * page component) but not a reload.
+   */
+  conductorConnectionUnknown:
+    "Nothing was started. Your message is kept in this conversation until you reload the page.",
+
+  /**
+   * A published conductor exists but its role carries no agent-configuration
+   * binding (#1103): the empty room's own explanation, naming the role and
+   * the one door that fixes it.
+   */
+  emptyDescriptionUnbound: (role: string): string =>
+    `The conductor's "${role}" role has no agent configuration bound yet. Bind one in Settings, then start work from the Catalog until it is.`,
+  /** The composer's own short reminder for the same state, beside the disabled Send. */
+  composerHintUnbound: (role: string): string =>
+    `The "${role}" role has no agent configuration bound yet. Settings can bind one.`,
+
+  /**
+   * A published, bound conductor configuration cannot start right now
+   * (#1103): the empty room's own explanation, naming the model, the real
+   * reason the server gave, and the one door that helps -- Settings for a
+   * binding or model problem; for a probe problem, no retry is reachable
+   * from here, so the next canary run or a Settings change is named instead.
+   * `probeFailedAgo` is the caller's own relative rendering of
+   * `providerProbeObservedAt` (`when.ts` owns that formatting), carried only
+   * for `provider-probe-failed`.
+   */
+  emptyDescriptionNotStartable: (
+    modelId: string,
+    reason: ConductorNotStartableReason,
+    probeFailedAgo: string | null
+  ): string => notStartableSentence(modelId, reason, probeFailedAgo),
+  /**
+   * The composer's own reminder for the same state, beside the disabled
+   * Send -- built the same way as `emptyDescriptionNotStartable` so it names
+   * the reason on its own wherever it is the only place carrying it (a
+   * conversation already holds turns once "not-startable" is reached after
+   * "reading"/"unreadable" resolved it). The Workbench only renders this
+   * hint in that situation: while the empty room's own card is also on
+   * screen it already names the same reason, and HEART's "a state is shown,
+   * never restated" gives that sentence exactly one place rather than two.
+   */
+  composerHintNotStartable: (
+    modelId: string,
+    reason: ConductorNotStartableReason,
+    probeFailedAgo: string | null
+  ): string => notStartableSentence(modelId, reason, probeFailedAgo)
 } as const;
+
+function notStartableSentence(
+  modelId: string,
+  reason: ConductorNotStartableReason,
+  probeFailedAgo: string | null
+): string {
+  return `Your conductor (${modelId}) cannot start right now: ${notStartableReasonClause(reason, probeFailedAgo)}. ${notStartableDoorClause(reason)}`;
+}
+
+function notStartableReasonClause(
+  reason: ConductorNotStartableReason,
+  probeFailedAgo: string | null
+): string {
+  switch (reason) {
+    case "agent-executor-binding-unavailable":
+      return "its executor is not registered on this host";
+    case "model-not-registered":
+      return "its model is not registered for this provider";
+    case "provider-probe-failed":
+      return probeFailedAgo === null
+        ? "its last provider probe failed"
+        : `its last provider probe failed ${probeFailedAgo}`;
+    case "provider-probe-receipt-missing":
+      return "no provider probe has proven it yet";
+  }
+}
+
+function notStartableDoorClause(reason: ConductorNotStartableReason): string {
+  switch (reason) {
+    case "agent-executor-binding-unavailable":
+    case "model-not-registered":
+      return "Settings can fix this.";
+    case "provider-probe-failed":
+    case "provider-probe-receipt-missing":
+      return "The next canary run or a Settings change re-arms it.";
+  }
+}

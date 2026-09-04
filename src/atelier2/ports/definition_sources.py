@@ -33,6 +33,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogAdmissionRetired,
     CatalogAdmissionRevisionOwned,
     CatalogLineageDisplayName,
+    CatalogLineageId,
 )
 from atelier2.contracts.definition_sources import (
     DefinitionSourceConfiguration,
@@ -167,7 +168,21 @@ class PathAlreadyInCatalog:
     revision_hash: PublishedRevisionHash
 
 
-type RecordedPath = PathIntaken | PathAlreadyInCatalog
+@dataclass(frozen=True)
+class PathAdopted:
+    """One path whose bytes became the new head of a lineage no source had fed.
+
+    `#660` A3: the authored name matched a lineage a manual import founded.
+    The manual revisions it already held are untouched and remain its history;
+    only its head moves to this delivery, and the lineage id -- derived from
+    its founding revision since decision 1 of ADR 0007 -- never changes.
+    """
+
+    intake: SourceIntake
+    lineage: CatalogLineageId
+
+
+type RecordedPath = PathIntaken | PathAlreadyInCatalog | PathAdopted
 
 
 @dataclass(frozen=True)

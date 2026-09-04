@@ -105,16 +105,26 @@ export type JsonSchemaDocument = z.infer<typeof jsonSchemaDocumentSchema>;
  * One waiting node's answer schema, classified as far as the server's excerpt
  * may without evaluating it. `kind` is `boolean` only where the schema's own
  * top level names `type: boolean`, `enum` only where it names `enum` (with
- * `values` the author's own members, each already the exact JSON text a
- * decision sends), and `free` for every other shape -- including a schema the
- * server's own excerpt has not yet resolved, which is this build's answer for
- * every node today (#553 names the resolving use case as a follow-up).
+ * `values` the author's own members), `string` only where it names
+ * `type: string` and no `enum` -- and `free` for every other shape, including
+ * a schema the server's own excerpt has not yet resolved.
+ *
+ * `string_typed` is the one fact a composer needs to send `values` back the
+ * way the door reads them: true names a schema whose own top level is
+ * `type: string` (every `string` kind, and an `enum` that also names
+ * `type: string`), the one shape whose door
+ * (`schemas_v3.instance_for_schema`) reads an answer's raw UTF-8 text as the
+ * value directly -- so `values` there already carries each member's raw
+ * text, sent back verbatim (`waitAnswer.ts`, #1091 PR #1108 finding 1).
+ * Every other `enum`, and `boolean`/`free`, carry `string_typed: false` and
+ * `values` (where present) stay the JSON-encoded text they always were.
  */
 const waitAnswerSchemaV3Schema = z
   .object({
     node_id: z.string().min(1),
     schema: workflowDeclaredSchemaSchema,
-    kind: z.enum(["boolean", "enum", "free"]),
+    kind: z.enum(["boolean", "enum", "string", "free"]),
+    string_typed: z.boolean(),
     values: z.array(z.string()).nullable(),
   })
   .strict()
@@ -271,6 +281,7 @@ export const healthResourceSchema = z
     status: z.literal("serving"),
     source_commit: z.string(),
     source_tree: z.string(),
+    serve_started_at: recordedAtStamp,
   })
   .strict();
 export type HealthResource = z.infer<typeof healthResourceSchema>;
@@ -481,8 +492,11 @@ export const agentConfigurationRevisionListItemObjectSchema =
           "agent-executor-binding-unavailable",
           "model-not-registered",
           "provider-probe-receipt-missing",
+          "provider-probe-failed",
         ])
         .nullable(),
+      provider_probe_problem_code: z.string().min(1).nullable(),
+      provider_probe_observed_at: recordedAtStamp.nullable(),
     })
     .strict();
 
@@ -520,6 +534,25 @@ const agentConfigurationRevisionListItemSchema =
           code: "custom",
           message:
             "a structurally startable configuration cannot carry the executor-unavailable reason",
+        });
+      }
+      const carriesProbeFailureEvidence =
+        item.provider_probe_problem_code !== null ||
+        item.provider_probe_observed_at !== null;
+      if ((item.not_startable_reason === "provider-probe-failed") !== carriesProbeFailureEvidence) {
+        context.addIssue({
+          code: "custom",
+          message: "provider probe failure evidence and its reason must agree",
+        });
+      }
+      if (
+        carriesProbeFailureEvidence &&
+        (item.provider_probe_problem_code === null || item.provider_probe_observed_at === null)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "a provider probe failure names both its problem code and when it was observed",
         });
       }
     },
@@ -1115,9 +1148,46 @@ export const nodeDetailSchema = z
 
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 
+/**
+ * `MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS` (`contracts/run_projections.py`),
+ * mirrored here as a plain number the way every other server-owned wire bound
+ * already is on this side.
+ */
+export const MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512;
+
+const runListRowSchema = z
+  .object({
+    kind: z.literal("run"),
+    run: runV3Schema,
+  })
+  .strict();
+
+/**
+ * One listed run whose own projection failed, told apart from a run instead
+ * of hidden (#1042). The other rows on the same page prove nothing about
+ * this one, so a run list answers with this row rather than refusing the
+ * whole page for the sake of one entry.
+ */
+const defectiveRunRowSchema = z
+  .object({
+    kind: z.literal("defective"),
+    public_run_reference: publicRunReference,
+    problem_code: z.literal("durable-state-corrupt"),
+    detail: z.string().min(1).max(MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS),
+  })
+  .strict();
+
+export const runListRowUnionSchema = z.discriminatedUnion("kind", [
+  runListRowSchema,
+  defectiveRunRowSchema,
+]);
+
+export type RunListRow = z.infer<typeof runListRowUnionSchema>;
+export type DefectiveRunRow = z.infer<typeof defectiveRunRowSchema>;
+
 export const runPageSchema = z
   .object({
-    items: z.array(runV3Schema),
+    items: z.array(runListRowUnionSchema),
     next_after: publicRunReference.nullable(),
   })
   .strict();

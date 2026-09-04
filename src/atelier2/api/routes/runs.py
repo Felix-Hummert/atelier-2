@@ -28,7 +28,7 @@ from atelier2.api.problems import (
 )
 from atelier2.api.projection.runs import (
     node_detail_resource,
-    run_resource,
+    run_list_row_resource,
 )
 from atelier2.api.references import encode_public_run_reference, parse_revision_hash
 from atelier2.api.wire.requests import (
@@ -164,6 +164,7 @@ from atelier2.contracts.orders import (
 )
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
+from atelier2.contracts.run_projections import RunProjection
 from atelier2.contracts.runs import RunId, RunState
 
 router = APIRouter()
@@ -351,9 +352,12 @@ async def list_runs(
     )
     match result:
         case RunsListed(runs, next_after):
-            require_run_projections(runs, context.limits)
+            require_run_projections(
+                tuple(row for row in runs if isinstance(row, RunProjection)),
+                context.limits,
+            )
             return VersionedRunPageResource(
-                items=tuple(run_resource(run) for run in runs),
+                items=tuple(run_list_row_resource(row) for row in runs),
                 next_after=(
                     None
                     if next_after is None

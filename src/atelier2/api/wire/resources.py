@@ -27,6 +27,7 @@ from atelier2.api.references import (
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
     MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS,
+    PROVIDER_PROBE_PROBLEM_CODE_PATTERN,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     PUBLIC_SOURCE_REFERENCE_PATTERN,
@@ -82,7 +83,11 @@ from atelier2.contracts.queue_projection import (
     QueueItemState,
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
-from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
+from atelier2.contracts.run_projections import (
+    MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS,
+    NodeState,
+    PublicAgentAttemptState,
+)
 from atelier2.contracts.when import RECORDED_AT_PATTERN
 
 
@@ -96,6 +101,11 @@ class HealthResource(ApiModel):
     status: Literal["serving"]
     source_commit: str
     source_tree: str
+    serve_started_at: str = Field(
+        pattern=RECORDED_AT_PATTERN,
+        description="When this serve process started, so a client can tell a "
+        "redeploy from the commit it loaded with.",
+    )
 
 
 class ArtifactResource(ApiModel):
@@ -259,8 +269,11 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
     evidence a canary's own run could still produce. `not_startable_reason`
     names whichever of the three a start would meet first:
     `agent-executor-binding-unavailable` (no factory), `model-not-registered`
-    (a superseded or never-registered model), or `provider-probe-receipt-missing`
-    (everything else holds, only live evidence is missing or stale).
+    (a superseded or never-registered model), `provider-probe-failed` (the
+    latest receipt for this exact configuration exists and itself records a
+    failure -- `provider_probe_problem_code` and `provider_probe_observed_at`
+    then carry that failure's own evidence), or `provider-probe-receipt-missing`
+    (everything else holds, but no receipt proves this exact configuration).
     `startable` cannot hold without `structurally_startable`.
     """
 
@@ -271,9 +284,14 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
             "agent-executor-binding-unavailable",
             "model-not-registered",
             "provider-probe-receipt-missing",
+            "provider-probe-failed",
         ]
         | None
     )
+    provider_probe_problem_code: str | None = Field(
+        pattern=PROVIDER_PROBE_PROBLEM_CODE_PATTERN
+    )
+    provider_probe_observed_at: str | None = Field(pattern=RECORDED_AT_PATTERN)
 
     @model_validator(mode="after")
     def validates_startability_pair(self) -> AgentConfigurationRevisionListItemResource:
@@ -298,6 +316,24 @@ class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResou
             raise ValueError(
                 "a structurally startable configuration cannot carry the "
                 "executor-unavailable reason"
+            )
+        carries_probe_failure_evidence = (
+            self.provider_probe_problem_code is not None
+            or self.provider_probe_observed_at is not None
+        )
+        if (self.not_startable_reason == "provider-probe-failed") != (
+            carries_probe_failure_evidence
+        ):
+            raise ValueError(
+                "provider probe failure evidence and its reason must agree"
+            )
+        if carries_probe_failure_evidence and (
+            self.provider_probe_problem_code is None
+            or self.provider_probe_observed_at is None
+        ):
+            raise ValueError(
+                "a provider probe failure names both its problem code and "
+                "when it was observed"
             )
         return self
 
@@ -538,20 +574,32 @@ class WaitAnswerSchemaResourceV3(ApiModel):
     `schemas_v3`'s alone (`atelier2.api.projection.workflows` reads only enough
     of the top level to classify it). `kind` names only what that top level
     itself says -- `boolean` where it names `type: boolean`, `enum` where it
-    names `enum` (`values` then carries the author's own members, each the
-    exact JSON text that member already is) -- and `free` for every other
+    names `enum` (`values` then carries the author's own members), `string`
+    where it names `type: string` and no `enum` -- and `free` for every other
     shape this excerpt declines to guess at, including one it cannot resolve
     or read at all. A schema a document names but this build cannot yet see
     is not durable corruption: a document may name a schema published after
     itself, exactly as `WorkflowDeclaredOrderResourceV3` echoes its own hull
-    unresolved, so an unreadable schema classifies `free` rather than refusing
-    the whole graph over a reference nothing has bound yet.
+    unresolved, so an unreadable schema classifies `free` rather than
+    refusing the whole graph over a reference nothing has bound yet.
+
+    `string_typed` is the one fact that decides how a composer must send
+    `values` back: true names a schema whose own top level is `type: string`
+    (every `string` kind, and an `enum` that also names `type: string`), the
+    one shape whose door (`schemas_v3.instance_for_schema`) reads an answer's
+    raw UTF-8 text as the value directly, quotes and all, with no
+    JSON-decoding step -- so `values` there already carries each member's raw
+    text, not a JSON-encoded string, and a composer must send it back exactly
+    that way (#1091 PR #1108 finding 1). `string_typed` is false for `boolean`
+    and `free`, and for an `enum` naming no `type: string`, whose `values`
+    stay the JSON-encoded text they always were.
     """
 
     node_id: str = Field(min_length=1)
     # Python cannot call this field `schema`: BaseModel already owns that name.
     schema_reference: WorkflowDeclaredSchemaResourceV3 = Field(alias="schema")
-    kind: Literal["boolean", "enum", "free"]
+    kind: Literal["boolean", "enum", "string", "free"]
+    string_typed: bool
     values: tuple[str, ...] | None = None
     """The author's own `enum` members, present exactly when `kind` is `enum`."""
 
@@ -1492,8 +1540,41 @@ class RunResourceV3(ApiModel):
         return self
 
 
+class RunListRowResource(ApiModel):
+    """A listed row for one run whose own projection could be told."""
+
+    kind: Literal["run"]
+    run: RunResourceV3
+
+
+class DefectiveRunRowResource(ApiModel):
+    """A listed row for a run whose own projection failed (#1042).
+
+    The other rows on the same page prove nothing about this one: a list
+    dies for none of them just because this run's own projection could not
+    be told, so this is the row it becomes instead. `problem_code` is the
+    closed, typed reason; `detail` is `bounded_run_row_defect_detail`'s
+    curated, bounded reason -- never the run's own durable bytes, and never
+    the store exception's own message, which carries no bound of its own. The
+    exception's full text stays in the per-run process journal entry only.
+    """
+
+    kind: Literal["defective"]
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    problem_code: Literal["durable-state-corrupt"]
+    detail: str = Field(
+        min_length=1, max_length=MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS
+    )
+
+
+AnyRunListRowResource = Annotated[
+    RunListRowResource | DefectiveRunRowResource,
+    Field(discriminator="kind"),
+]
+
+
 class VersionedRunPageResource(ApiModel):
-    items: tuple[RunResourceV3, ...]
+    items: tuple[AnyRunListRowResource, ...]
     next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
 
 

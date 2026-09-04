@@ -26,6 +26,7 @@ import {
 } from "../support/axeBaseline";
 import {
   completedRun,
+  runRow,
   startedRun,
   waitingInputRun,
   waitingReconciliationRun
@@ -272,7 +273,10 @@ async function routeWorkbenchReads(page: Page, read: () => WorkbenchReadReply): 
     const state = new URL(route.request().url()).searchParams.get("state");
     const source = read() === "empty" ? [] : workbenchRuns();
     await route.fulfill({
-      json: { items: source.filter((run) => state === null || run.state === state), next_after: null }
+      json: {
+        items: source.filter((run) => state === null || run.state === state).map(runRow),
+        next_after: null
+      }
     });
   });
 }
@@ -390,7 +394,7 @@ async function stageWorkbenchWithWork(page: Page): Promise<void> {
   await stageQuietAttention(page);
   await page.route("**/atelier/api/v1/runs*", (route) => {
     const state = new URL(route.request().url()).searchParams.get("state");
-    const items = runsOfEveryStanding().filter((run) => run.state === state);
+    const items = runsOfEveryStanding().filter((run) => run.state === state).map(runRow);
     return route.fulfill({ json: { items, next_after: null } });
   });
 }

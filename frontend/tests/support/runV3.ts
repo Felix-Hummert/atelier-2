@@ -1,5 +1,7 @@
 import type {
+  DefectiveRunRow,
   RunCancellability,
+  RunListRow,
   RunNotCancellableReason,
   RunV3,
   WorkflowRevisionDetail
@@ -53,6 +55,7 @@ export function workflowRevision(): WorkflowRevisionDetail {
           node_id: "wait",
           schema: { ref: "answer.schema.json", revision: revisionHash },
           kind: "free",
+          string_typed: false,
           values: null
         }
       ],
@@ -149,6 +152,25 @@ export function completedRun(changes: Partial<RunV3> = {}): RunV3 {
     latest_event_cursor: eventCursor(5),
     ...changes
   });
+}
+
+/** A healthy row on a run list page, wrapping any of the run builders above. */
+export function runRow(run: RunV3): RunListRow {
+  return { kind: "run", run };
+}
+
+/** A listed run whose own projection failed (#1042), the other row shape. */
+export function defectiveRunRow(changes: Partial<DefectiveRunRow> = {}): DefectiveRunRow {
+  return {
+    kind: "defective",
+    public_run_reference: publicReference,
+    problem_code: "durable-state-corrupt",
+    // The production bound (`bounded_run_row_defect_detail`) can only ever
+    // narrow a defective row's detail to an exception class name, never a
+    // sentence -- the default here stays honest to that shape.
+    detail: "RunTransitionConflict",
+    ...changes
+  };
 }
 
 type EventIdentity = Partial<{

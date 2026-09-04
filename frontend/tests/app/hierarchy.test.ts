@@ -7,7 +7,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
-import { publicReference, startedRun, workflowRevision } from "../support/runV3";
+import { publicReference, runRow, startedRun, workflowRevision } from "../support/runV3";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -26,7 +26,7 @@ function open(pathname: string, overrides: Partial<CockpitApi> = {}) {
   return render(App, {
     props: {
       cockpitApi: cockpitApiStub({
-        listRuns: vi.fn(async () => ({ items: [startedRun()], next_after: null })),
+        listRuns: vi.fn(async () => ({ items: [runRow(startedRun())], next_after: null })),
         getRun: vi.fn(async () => startedRun()),
         getWorkflowRevision: vi.fn(async () => workflowRevision()),
         openRunEvents: feed.open,

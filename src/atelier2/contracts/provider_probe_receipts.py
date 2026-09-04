@@ -23,7 +23,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from atelier2.contracts.agents import AgentConfigurationRevisionHash
+from atelier2.contracts.agents import (
+    PROVIDER_PROBE_TOKEN,
+    AgentConfigurationRevisionHash,
+    ProviderProbeProblemCode,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
@@ -32,7 +36,6 @@ MAXIMUM_PROVIDER_PROBE_RECEIPT_BYTES = 4_096
 """The complete record is a handful of bounded identifiers and never evidence."""
 
 MAXIMUM_PROVIDER_PROBE_VECTOR_ID_BYTES = 128
-MAXIMUM_PROVIDER_PROBE_PROBLEM_CODE_BYTES = 128
 
 PROVIDER_CANARY_HEADLESS_WORKFLOW_NAME = "provider-canary-headless"
 PROVIDER_CANARY_WORKSPACE_TOOLS_WORKFLOW_NAME = "provider-canary-workspace-tools"
@@ -56,7 +59,6 @@ silently; one owner makes that impossible instead of merely tested.
 """
 
 _SOURCE_COMMIT = re.compile(r"[0-9a-f]{40}")
-_TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,30 +71,11 @@ class ProviderProbeVectorId:
         if not isinstance(self.value, str):
             raise TypeError("a provider probe vector id must be text")
         if (
-            _TOKEN.fullmatch(self.value) is None
+            PROVIDER_PROBE_TOKEN.fullmatch(self.value) is None
             or len(self.value.encode("ascii")) > MAXIMUM_PROVIDER_PROBE_VECTOR_ID_BYTES
         ):
             raise ValueError(
                 "a provider probe vector id must be a bounded lowercase ASCII token"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderProbeProblemCode:
-    """A bounded classification of failure, never provider output or diagnostics."""
-
-    value: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.value, str):
-            raise TypeError("a provider probe problem code must be text")
-        if (
-            _TOKEN.fullmatch(self.value) is None
-            or len(self.value.encode("ascii"))
-            > MAXIMUM_PROVIDER_PROBE_PROBLEM_CODE_BYTES
-        ):
-            raise ValueError(
-                "a provider probe problem code must be a bounded lowercase ASCII token"
             )
 
 

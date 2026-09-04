@@ -30,9 +30,19 @@ export type ConductorTranscript = {
 
 const CONDUCTOR_WAIT_NODE_ID = "next_message";
 const CONDUCTOR_AGENT_NODE_ID = "conduct";
+/**
+ * The conductor's own fixed document fact (`CONDUCTOR_MESSAGE_SCHEMA`,
+ * `host/conductor_workflow.py`): `{type: "string", minLength: 1}`, so every
+ * operator message is a string-schema wait answer, sent verbatim (#1091).
+ */
+const CONDUCTOR_MESSAGE_IS_STRING_SCHEMA = true;
 export const conductorConversationCopy = {
   emptyDescription: "The conductor is ready for the first message.",
   composerHint: "The conductor is listening. Your next message begins the conversation.",
+  /** Shown once at least one round has actually landed in the transcript: the
+   * "begins" wording above only holds for the conversation's own first
+   * message, before anything has been exchanged. */
+  composerHintOngoing: "The conductor is listening. Your next message continues this conversation.",
   /** Shown once a run ended without completing (failed or cancelled): the
    * composer stays open, but a new message starts a new conversation rather
    * than continuing the one that ended. */
@@ -106,15 +116,16 @@ function messageFromEvent(event: RunEvent): ConductorMessage | null {
   return null;
 }
 
+/**
+ * The conductor's message wait is always `CONDUCTOR_MESSAGE_SCHEMA`
+ * (`{type: "string", minLength: 1}`), so `answerConductorWait` sends it raw
+ * (`CONDUCTOR_MESSAGE_IS_STRING_SCHEMA`); reading it back is the same fact in
+ * reverse -- the decoded bytes already are the operator's text, verbatim,
+ * with no JSON layer to undo (#1091 PR #1108 finding 3).
+ */
 function readableWaitAnswer(answerBase64: string): string {
   const decoded = decodeUtf8Base64(answerBase64);
-  if (decoded === null) return conductorChatCopy.replyUnreadable;
-  try {
-    const answer: unknown = JSON.parse(decoded);
-    return typeof answer === "string" ? answer : JSON.stringify(answer);
-  } catch {
-    return decoded;
-  }
+  return decoded ?? conductorChatCopy.replyUnreadable;
 }
 
 function readableReport(outputBase64: string): string {
@@ -169,7 +180,8 @@ export async function answerConductorWait(
     run.workflow_revision_hash,
     run.current_node_id,
     run.current_node_execution_id,
-    typed
+    typed,
+    CONDUCTOR_MESSAGE_IS_STRING_SCHEMA
   );
   return deliverWaitAnswer(cockpitApi, mutationJournal, mutation);
 }

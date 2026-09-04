@@ -189,7 +189,9 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
         requested_capability: "headless" as const,
         startable: true,
         structurally_startable: true,
-        not_startable_reason: null
+        not_startable_reason: null,
+        provider_probe_problem_code: null,
+        provider_probe_observed_at: null
       }],
       next_after_revision_hash: null
     })),
@@ -577,7 +579,9 @@ function configuration(
     requested_capability: "headless",
     startable,
     structurally_startable: startable,
-    not_startable_reason: startable ? null : "agent-executor-binding-unavailable"
+    not_startable_reason: startable ? null : "agent-executor-binding-unavailable",
+    provider_probe_problem_code: null,
+    provider_probe_observed_at: null
   };
 }
 
