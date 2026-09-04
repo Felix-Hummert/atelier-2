@@ -512,20 +512,25 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
   await expect(compactControls).toHaveCount(5);
 
   // Each compact decision can be brought fully into the rail by its own
-  // scrolling surface; the already-visible expanded decision owns its run
-  // door. This keeps every decision reachable without choosing a row count.
+  // scrolling surface -- walking down to the last one and back up to the first,
+  // so the rail is reachable in both directions; the already-visible expanded
+  // decision owns its run door. Reachability is the contract here, which is why
+  // nothing asserts that the rail scrolled at all: whether six decisions outgrow
+  // its maximum height is a matter of font metrics and render timing under load,
+  // and demanding it made this test fail 8 of 10 runs (#1155).
   const everyCompactControlRevealsInRail = await compactControls.evaluateAll((controls) => {
     const rail = controls[0]?.closest<HTMLElement>(".needs-you");
     if (rail === null || rail === undefined) return false;
-    return controls.every((control) => {
+    const revealsInRail = (control: Element) => {
       control.scrollIntoView({ block: "nearest" });
       const railBox = rail.getBoundingClientRect();
       const controlBox = control.getBoundingClientRect();
       return controlBox.top >= railBox.top && controlBox.bottom <= railBox.bottom;
-    });
+    };
+    const downTheRailAndBack = [...controls, ...[...controls].reverse()];
+    return downTheRailAndBack.every(revealsInRail);
   });
   expect(everyCompactControlRevealsInRail).toBe(true);
-  await expect.poll(() => pinnedRegion.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 
   await pinnedRegion.evaluate((element) => {
     element.scrollTop = 0;
@@ -593,25 +598,54 @@ test("keeps many open decisions bounded, with one hairline and one promoted stag
   // until the round actually lands, not the instant Send is clicked.
   await waitForFreshConductorRound(page, seededConductor.workflow_revision_hash);
   await placeConversationAboveComposer(page);
+  const transcript = page.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
+  const newestLine = transcript.getByRole("listitem").last();
+  const phone = page.viewportSize();
   const pinnedBox = await pinnedRegion.boundingBox();
   const composerBox = await page.getByRole("form", { name: workbenchPageCopy.composerRegionLabel }).boundingBox();
-  const conversationBox = await page.getByRole("list", { name: workbenchPageCopy.transcriptLabel }).boundingBox();
+  const newestLineBox = await newestLine.boundingBox();
+  expect(phone).not.toBeNull();
   expect(pinnedBox).not.toBeNull();
   expect(composerBox).not.toBeNull();
-  expect(conversationBox).not.toBeNull();
-  if (pinnedBox === null || composerBox === null || conversationBox === null) {
+  expect(newestLineBox).not.toBeNull();
+  if (phone === null || pinnedBox === null || composerBox === null || newestLineBox === null) {
     throw new Error("The bounded Workbench did not lay out every fixture.");
   }
+  // The blessed picture holds the rail and the ear to the top and bottom of the
+  // scrolling stage while the transcript passes beneath both
+  // (docs/requirements/0003-ziel-ui-mockup-v8.html). So having scrolled to the
+  // end of the conversation, a person still sees both fixtures whole and reads
+  // the newest line in the room they leave open between them.
   expect(pinnedBox.y).toBeGreaterThanOrEqual(0);
-  expect(pinnedBox.y + pinnedBox.height).toBeLessThanOrEqual(844);
+  expect(pinnedBox.y + pinnedBox.height).toBeLessThanOrEqual(phone.height);
   expect(composerBox.y).toBeGreaterThanOrEqual(0);
-  expect(composerBox.y + composerBox.height).toBeLessThanOrEqual(844);
-  expect(conversationBox.y).toBeGreaterThanOrEqual(0);
-  expect(conversationBox.y + conversationBox.height).toBeLessThanOrEqual(844);
-  expect(conversationBox.y).toBeGreaterThanOrEqual(pinnedBox.y + pinnedBox.height);
-  // Browser layout may divide the one-pixel composer hairline fractionally;
-  // the conversation still clears its painted content.
-  expect(conversationBox.y + conversationBox.height).toBeLessThanOrEqual(composerBox.y + 1);
+  expect(composerBox.y + composerBox.height).toBeLessThanOrEqual(phone.height);
+  expect(pinnedBox.y + pinnedBox.height).toBeLessThanOrEqual(composerBox.y);
+  expect(newestLineBox.y).toBeGreaterThanOrEqual(pinnedBox.y + pinnedBox.height);
+  expect(newestLineBox.y + newestLineBox.height).toBeLessThanOrEqual(composerBox.y);
+  // Standing clear of both boxes is not yet being visible: either fixture wears
+  // the stage's ground and would occlude the line sliding under it. Ask the
+  // page what a finger would touch at the middle of that newest line.
+  const newestLineAnswersAtItsCentre = await newestLine.evaluate((line) => {
+    const box = line.getBoundingClientRect();
+    const touched = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+    return touched !== null && line.contains(touched);
+  });
+  expect(newestLineAnswersAtItsCentre).toBe(true);
+
+  await page.getByRole("main").evaluate((stage) => {
+    stage.scrollTo(0, 0);
+  });
+  const railBoxAtRest = await pinnedRegion.boundingBox();
+  const transcriptBoxAtRest = await transcript.boundingBox();
+  expect(railBoxAtRest).not.toBeNull();
+  expect(transcriptBoxAtRest).not.toBeNull();
+  if (railBoxAtRest === null || transcriptBoxAtRest === null) {
+    throw new Error("The bounded Workbench did not lay out every fixture.");
+  }
+  // Unscrolled, nothing has slid anywhere yet: the conversation begins below
+  // the rail rather than beneath it.
+  expect(transcriptBoxAtRest.y).toBeGreaterThanOrEqual(railBoxAtRest.y + railBoxAtRest.height);
 
   const borderTokens = await page.evaluate(() => {
     const style = getComputedStyle(document.documentElement);
