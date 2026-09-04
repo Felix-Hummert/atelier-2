@@ -86,6 +86,10 @@ from atelier2.adapters.project_source_credentials import (
     MANAGED_PROJECT_SOURCE_CREDENTIALS_DIRECTORY,
     FilesystemProjectSourceCredentialStore,
 )
+from atelier2.adapters.redeploy_status import (
+    filesystem_redeploy_status_reader,
+    redeploy_status_path,
+)
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
@@ -1397,6 +1401,9 @@ def compose_application(
                     settings.grok_subscription,
                     settings.model_inspection_timeout_seconds,
                     settings.agent_termination_grace_seconds,
+                ),
+                redeploy_status_reader=filesystem_redeploy_status_reader(
+                    redeploy_status_path(settings.database_path)
                 ),
             ),
             limits=limits,
