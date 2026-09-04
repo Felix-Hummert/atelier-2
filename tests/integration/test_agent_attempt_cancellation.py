@@ -38,6 +38,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import (
     RunEvent,
@@ -348,6 +349,7 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
                     store,
                     runtime.agent_process_supervisor,
                     runtime_workspace_owner(runtime),
+                    permissions=GRANTS_NOTHING,
                 )
             except RuntimeError as error:
                 failures.append(error)

@@ -7,16 +7,20 @@ every run without failing, and each group names the open item that owns the
 caller it waits for. When that item lands the caller, the entry is deleted;
 when it decides against the caller, the code is deleted with it.
 
+A name is written as `module/path.py:symbol`, relative to `src/atelier2`: the
+gate excuses that symbol where it was built and nowhere else, so freezing one
+vocabulary word never vouches for a dead namesake in another module.
+
 Read as data by the gate; never imported at runtime.
 """
 
 WAITING_FOR_A_CALLER = (
     {
         "names": (
-            "attest_runner_inspect",
-            "encode_free_runner_job",
-            "MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES",
-            "refused_exchange",
+            "adapters/docker_carrier.py:attest_runner_inspect",
+            "adapters/free_runner_executor.py:encode_free_runner_job",
+            "contracts/runner_session_codec.py:MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES",
+            "contracts/runner_terminal_evidence_codec.py:refused_exchange",
         ),
         "why": (
             "The Agent Runner cluster (runner/, adapters/free_runner_executor.py, "
@@ -28,7 +32,11 @@ WAITING_FOR_A_CALLER = (
         "item": "#1177 (Runner-Platzierung offen)",
     },
     {
-        "names": ("confirm_execution", "authorize_retry", "commit_action_completed"),
+        "names": (
+            "contracts/effects.py:confirm_execution",
+            "contracts/effects.py:authorize_retry",
+            "adapters/dbos/run_store.py:commit_action_completed",
+        ),
         "why": (
             "The effect-reconciliation half of an Action node: an authorization "
             "confirms an execution and a retry is authorized against the same "
@@ -38,7 +46,11 @@ WAITING_FOR_A_CALLER = (
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
-        "names": ("latest_model_registry_revisions", "publish_project_root_revision"),
+        "names": (
+            "adapters/dbos/host_configuration.py:latest_model_registry_revisions",
+            "ports/host_configuration.py:latest_model_registry_revisions",
+            "adapters/dbos/host_configuration.py:publish_project_root_revision",
+        ),
         "why": (
             "Host-configuration reads and writes declared on the port and "
             "implemented in the DBOS adapter, with no route asking for them yet."
@@ -46,7 +58,11 @@ WAITING_FOR_A_CALLER = (
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
-        "names": ("peak_active_queries", "abandoned_queries", "effect_adapter"),
+        "names": (
+            "api/stream.py:peak_active_queries",
+            "api/stream.py:abandoned_queries",
+            "adapters/dbos/runtime.py:effect_adapter",
+        ),
         "why": (
             "Instrumentation the SSE runner and the DBOS runtime expose for a "
             "reader that does not exist yet; today only their tests observe them."
@@ -54,7 +70,10 @@ WAITING_FOR_A_CALLER = (
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
-        "names": ("recorded_pull_requests", "recorded_documentation_pushes"),
+        "names": (
+            "adapters/github/effects.py:recorded_pull_requests",
+            "adapters/github/effects.py:recorded_documentation_pushes",
+        ),
         "why": (
             "Recorders on the GitHub effect fake that lives in the production "
             "adapter module; their callers are acceptance tests, and moving the "
@@ -64,12 +83,12 @@ WAITING_FOR_A_CALLER = (
     },
     {
         "names": (
-            "resolve_declared_reference",
-            "agent_configuration_revision_for",
-            "join_of",
-            "AnyBoundRun",
-            "MAXIMUM_KIND_TOKEN_CHARACTERS",
-            "derived",
+            "application/resolve_references.py:resolve_declared_reference",
+            "contracts/agent_definitions.py:agent_configuration_revision_for",
+            "contracts/workflows_v3.py:join_of",
+            "contracts/run_bindings.py:AnyBoundRun",
+            "contracts/node_records_v3.py:MAXIMUM_KIND_TOKEN_CHARACTERS",
+            "contracts/catalog_v3.py:derived",
         ),
         "why": (
             "Contract helpers a caller was planned for and has not arrived at: the "
@@ -80,7 +99,7 @@ WAITING_FOR_A_CALLER = (
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
-        "names": ("PLATFORM_CONNECTION_UNKNOWN",),
+        "names": ("contracts/host_configuration.py:PLATFORM_CONNECTION_UNKNOWN",),
         "why": (
             "ADR 0010 names `platform-connection-unknown` as the refusal for an "
             "operation naming a project with no connection record, but the served "
@@ -92,16 +111,16 @@ WAITING_FOR_A_CALLER = (
     },
     {
         "names": (
-            "WORKSPACE_READ",
-            "COMMAND",
-            "NETWORK",
-            "SECRET_READ",
-            "PATH_PREFIX",
-            "COMMAND_NAME",
-            "HOST",
-            "for_call",
-            "granted",
-            "policy_revision_hash",
+            "contracts/agent_permissions.py:WORKSPACE_READ",
+            "contracts/agent_permissions.py:COMMAND",
+            "contracts/agent_permissions.py:NETWORK",
+            "contracts/agent_permissions.py:SECRET_READ",
+            "contracts/agent_permissions.py:PATH_PREFIX",
+            "contracts/agent_permissions.py:COMMAND_NAME",
+            "contracts/agent_permissions.py:HOST",
+            "contracts/agent_permissions.py:for_call",
+            "contracts/agent_permissions.py:granted",
+            "contracts/agent_permissions.py:policy_revision_hash",
         ),
         "why": (
             "The asking half of the permission boundary "
@@ -116,7 +135,10 @@ WAITING_FOR_A_CALLER = (
         "item": "#1177 Schritt 2 (erster fragender Provider-Kanal)",
     },
     {
-        "names": ("METHOD_INITIALIZED", "MCP_TOOL_HTTP_DOORS"),
+        "names": (
+            "host/mcp_tools.py:METHOD_INITIALIZED",
+            "host/mcp_tools.py:MCP_TOOL_HTTP_DOORS",
+        ),
         "why": (
             "The MCP door table and the initialized notification: the server "
             "answers the methods it serves today, and the table that maps every "

@@ -40,6 +40,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -594,6 +595,7 @@ def main(root: Path, mode: str) -> None:
                 lease.agent_process_supervisor,
                 runtime_workspace_owner(lease),
                 replace(project, candidates=DiesOnceTheWorkIsKept(project.candidates)),
+                permissions=GRANTS_NOTHING,
             )
             raise AssertionError("the kept candidate was supposed to end this process")
         if mode == "read-candidate":
@@ -611,6 +613,7 @@ def main(root: Path, mode: str) -> None:
                 store,
                 lease.agent_process_supervisor,
                 runtime_workspace_owner(lease),
+                permissions=GRANTS_NOTHING,
             )
             found = durable_queries(lease.engine).get_run(exact_request.run_id)
             if isinstance(found, RunFound):

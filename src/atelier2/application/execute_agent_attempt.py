@@ -17,7 +17,6 @@ from atelier2.contracts.agent_attempts import (
     receipted_agent_answer,
 )
 from atelier2.contracts.agent_permissions import (
-    GRANTS_NOTHING,
     PermissionPolicyRevision,
     PolicyPermissionDecider,
 )
@@ -70,7 +69,7 @@ def execute_agent_attempt(
     artifacts: ArtifactPublisher | None = None,
     clock: Callable[[], RecordedAt] = recorded_instant,
     *,
-    permissions: PermissionPolicyRevision = GRANTS_NOTHING,
+    permissions: PermissionPolicyRevision,
 ) -> AgentAttemptExecutionOutcome:
     """Invoke only after this live call durably wins the launch boundary.
 
@@ -105,8 +104,9 @@ def execute_agent_attempt(
 
     `permissions` is the authorisation this execution runs under, bound by
     whoever dispatched it; the decider handed to the session answers every
-    question against exactly that revision. An execution dispatched without one
-    runs under the closed policy, which grants nothing.
+    question against exactly that revision. It has no default: an authority
+    nobody named is an authority nobody bound, and this call would then run
+    under one its dispatcher never chose.
 
     `artifacts` is where a verification that exits nonzero publishes the tail of
     what it printed and the patch it rejected, so the words the attempt ends

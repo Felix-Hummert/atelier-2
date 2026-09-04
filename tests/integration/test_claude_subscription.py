@@ -53,6 +53,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -1292,6 +1293,7 @@ def durably_attempted(
             DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
@@ -2434,6 +2436,7 @@ def test_a_tool_bearing_attempt_writes_in_its_lease_and_answers_what_it_wrote(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             workspaces,
+            permissions=GRANTS_NOTHING,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()

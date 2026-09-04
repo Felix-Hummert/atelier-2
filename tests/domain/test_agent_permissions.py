@@ -10,10 +10,12 @@ import pytest
 
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agent_permissions import (
+    GRANTS_NOTHING,
     PermissionAuthority,
     PermissionCorrelationId,
     PermissionEffect,
     PermissionPolicyRevision,
+    PermissionPolicyRevisionHash,
     PermissionRequest,
     PermissionScope,
     PermissionScopeKind,
@@ -28,6 +30,8 @@ THE_TEST_COMMAND = PermissionScope(PermissionScopeKind.COMMAND_NAME, "pytest")
 MAY_READ_THE_LEASE = PermissionPolicyRevision(
     frozenset({(PermissionEffect.WORKSPACE_READ, THE_LEASE)})
 )
+
+A_KNOWN_ATTEMPT = AgentAttemptId("00112233445566778899aabbccddeeff" * 2)
 
 
 def an_attempt_id() -> AgentAttemptId:
@@ -127,3 +131,26 @@ def test_a_call_ordinal_outside_the_counted_calls_is_refused(
 ) -> None:
     with pytest.raises(ValueError, match="counts from one"):
         PermissionCorrelationId.for_call(an_attempt_id(), call_ordinal)
+
+
+def test_the_closed_policy_keeps_the_identity_it_was_landed_with() -> None:
+    """A refusal names its authority by hash, so that hash is a pinned word.
+
+    A change to the framing domain or to how a grant is spelled inside it would
+    rewrite the authority every stored decision points at, silently, while every
+    relative comparison stayed green.
+    """
+
+    assert GRANTS_NOTHING.revision_hash == PermissionPolicyRevisionHash(
+        "981249295114b1d9d33963c58c7f802b8604d003608482d2befd259a1124a06b"
+    )
+
+
+def test_a_known_call_of_a_known_attempt_keeps_its_pinned_question_id() -> None:
+    """The id of a question is durable, so its ordinal encoding is pinned too."""
+
+    assert PermissionCorrelationId.for_call(
+        A_KNOWN_ATTEMPT, 1
+    ) == PermissionCorrelationId(
+        "9209b5360192f7135218df0f6af1a830e0645848111a55d2dffd19b6653884e6"
+    )

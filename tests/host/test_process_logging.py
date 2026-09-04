@@ -25,6 +25,7 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
@@ -94,6 +95,7 @@ def test_a_failed_attempt_emits_exactly_one_parseable_json_line(
         _FailingAttemptStore(execution),
         _SilentSupervisor(),
         workspaces,
+        permissions=GRANTS_NOTHING,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)

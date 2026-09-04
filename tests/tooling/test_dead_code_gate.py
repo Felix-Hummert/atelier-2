@@ -18,6 +18,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_dead_code.py"
 
+A_MODULE = "lonely.py"
+ANOTHER_MODULE = "elsewhere.py"
 A_LONELY_FUNCTION = "a_symbol_nothing_calls"
 A_SOURCE_MODULE = f"""
 def {A_LONELY_FUNCTION}() -> int:
@@ -78,8 +80,13 @@ def pending_until(day: str, name: str = A_LONELY_FUNCTION) -> str:
     return a_group(name, why="#1 decides it", expires_on=day)
 
 
-def frozen(name: str = A_LONELY_FUNCTION, why: str = "no caller is built yet") -> str:
-    return a_group(name, why=why, item="#1")
+def frozen(
+    name: str = A_LONELY_FUNCTION,
+    why: str = "no caller is built yet",
+    module: str = A_MODULE,
+) -> str:
+    """A frozen entry names the module its symbol was built in."""
+    return a_group(f"{module}:{name}", why=why, item="#1")
 
 
 @dataclass(frozen=True)
@@ -105,13 +112,19 @@ def _binding(name: str, groups: tuple[str, ...]) -> str:
 
 
 def scratch_project(
-    tmp_path: Path, lists: Lists, source: str = A_SOURCE_MODULE
+    tmp_path: Path,
+    lists: Lists,
+    source: str = A_SOURCE_MODULE,
+    elsewhere: str | None = None,
 ) -> Path:
     project = tmp_path / "project"
     (project / "scripts").mkdir(parents=True)
-    (project / "src" / "atelier2").mkdir(parents=True)
+    package = project / "src" / "atelier2"
+    package.mkdir(parents=True)
     shutil.copy2(PROJECT_ROOT / GATE, project / GATE)
-    (project / "src" / "atelier2" / "lonely.py").write_text(source, encoding="utf-8")
+    (package / A_MODULE).write_text(source, encoding="utf-8")
+    if elsewhere is not None:
+        (package / ANOTHER_MODULE).write_text(elsewhere, encoding="utf-8")
     for relative, text in lists.files().items():
         (project / relative).write_text(text, encoding="utf-8")
     return project
@@ -200,6 +213,19 @@ def test_a_frozen_name_stays_visible_without_failing(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert A_LONELY_FUNCTION in result.stdout
+
+
+def test_a_frozen_name_excuses_only_the_module_it_was_built_in(tmp_path: Path) -> None:
+    """A frozen word vouches for its own symbol, never for a namesake elsewhere."""
+
+    project = scratch_project(
+        tmp_path, Lists(frozen=(frozen(),)), elsewhere=A_SOURCE_MODULE
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 1
+    assert ANOTHER_MODULE in result.stderr
 
 
 def test_a_decision_past_its_expiry_turns_the_gate_red(tmp_path: Path) -> None:

@@ -43,6 +43,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
@@ -312,6 +313,7 @@ def test_a_workspace_is_created_only_once_this_call_holds_the_durable_claim(
             store,
             runtime.agent_process_supervisor,
             workspaces,
+            permissions=GRANTS_NOTHING,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -350,6 +352,7 @@ def test_thirty_two_racing_callers_create_exactly_one_workspace(
                     store,
                     runtime.agent_process_supervisor,
                     workspaces,
+                    permissions=GRANTS_NOTHING,
                 )
             )
 
@@ -655,6 +658,7 @@ def test_a_preexisting_attempt_path_refuses_the_attempt_and_starts_no_provider(
                 store,
                 runtime.agent_process_supervisor,
                 owner,
+                permissions=GRANTS_NOTHING,
             )
 
         assert snapshot(occupied) == before
@@ -693,6 +697,7 @@ def test_a_refused_attempt_path_survives_the_cancellation_of_its_attempt(
                 store,
                 runtime.agent_process_supervisor,
                 owner,
+                permissions=GRANTS_NOTHING,
             )
         armed = store.load(execution.attempt_id)
         request = CancelAgentAttemptRequest(
@@ -742,7 +747,12 @@ def test_a_terminal_attempt_leaves_its_workspace_and_nothing_else_removed(
         executor = MaterializingExecutor(sentinel, return_code)
 
         execute_agent_attempt(
-            execution, executor, store, runtime.agent_process_supervisor, owner
+            execution,
+            executor,
+            store,
+            runtime.agent_process_supervisor,
+            owner,
+            permissions=GRANTS_NOTHING,
         )
 
         assert store.load(execution.attempt_id).state is terminal
@@ -853,6 +863,7 @@ def test_a_cancelled_attempt_loses_its_workspace_only_behind_attested_cleanup(
                     store,
                     runtime.agent_process_supervisor,
                     workspaces,
+                    permissions=GRANTS_NOTHING,
                 )
             except RuntimeError as error:
                 failures.append(error)
@@ -1115,6 +1126,7 @@ def test_no_workspace_path_or_content_reaches_any_durable_row_or_event(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             owner,
+            permissions=GRANTS_NOTHING,
         )
 
         recorded = "\n".join(_product_rows(runtime.engine))
@@ -1240,6 +1252,7 @@ def test_every_provider_runs_in_the_workspace_its_own_attempt_leased(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             owner,
+            permissions=GRANTS_NOTHING,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -1286,6 +1299,7 @@ def test_binding_the_durable_database_again_reconciles_what_a_crash_left(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
+            permissions=GRANTS_NOTHING,
         )
     finally:
         runtime.close()
@@ -1341,6 +1355,7 @@ def test_a_lease_mark_this_owner_never_wrote_removes_nothing_on_cancellation(
                 store,
                 runtime.agent_process_supervisor,
                 owner,
+                permissions=GRANTS_NOTHING,
             )
         armed = store.load(execution.attempt_id)
         request = CancelAgentAttemptRequest(

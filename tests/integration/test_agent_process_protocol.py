@@ -37,6 +37,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     MAXIMUM_SIGNED_INT64,
@@ -639,6 +640,7 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
             store,
             runtime.agent_process_supervisor,
             workspaces,
+            permissions=GRANTS_NOTHING,
         )
         with pytest.raises(RuntimeError, match="did not return a process"):
             execute_agent_attempt(
@@ -647,6 +649,7 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
                 store,
                 runtime.agent_process_supervisor,
                 workspaces,
+                permissions=GRANTS_NOTHING,
             )
 
         assert isinstance(accepted, AgentAttemptSucceeded)

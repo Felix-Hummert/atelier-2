@@ -30,6 +30,7 @@ from atelier2.adapters.project_verification import declared_project
 from atelier2.application.bind_node import pinned_project
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.project_sources import ProjectSourcePin
@@ -283,6 +284,7 @@ def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
             declared_project(
                 tmp_path / "project", runtime.settings.database_path
             ).pinned(pin, None),
+            permissions=GRANTS_NOTHING,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
