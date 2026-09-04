@@ -280,13 +280,15 @@ class ProviderCanaryFailure:
 
 
 class ProviderLayerReceiptOutcome(StrEnum):
-    """What a readable prior receipt says about this run's provider layer.
+    """What the newest readable prior receipt says about this run's provider layer.
 
-    Every receipt this deployment ever wrote shares one `provider_layer_digest`
-    (#1124), so the first readable one answers for all of them: either no such
-    receipt exists yet (nothing to compare, most plausibly the first run after
-    this very deploy), or one does and its digest still matches, or one does
-    and it does not.
+    The state directory is never pruned, so a superseded configuration's
+    receipts can still sit beside current ones (#1124): the newest readable
+    receipt by `observed_at` is the last thing this deployment wrote, so it
+    alone answers whether this redeploy turned the evidence over. Either no
+    readable receipt exists yet (nothing to compare, most plausibly the first
+    run after this very deploy), or the newest one's digest still matches, or
+    it does not.
     """
 
     NO_READABLE_PRIOR_RECEIPT = "no-readable-prior-receipt"
@@ -601,11 +603,12 @@ def execute_provider_canaries(
         on_provider_layer_status(provider_layer_status)
     _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
 
-    # Every discovered vector starts together, bounded only by its own count:
-    # a run-timeout vector (#1124, grok tools) then bounds only its own
-    # receipt, never delaying or starving the vectors beside it. Each
-    # `_execute_vector` call writes its receipt itself, the moment its own
-    # outcome is known, so a receipt lands as soon as its vector finishes
+    # No more than `PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS` live billed
+    # runs are ever in flight together, but each vector still gets its own
+    # receipt the instant its own outcome is known: a run-timeout vector
+    # (#1124, grok tools) bounds only its own receipt, never delaying or
+    # starving the vectors beside it. Each `_execute_vector` call writes its
+    # receipt itself, so a receipt lands as soon as its vector finishes
     # regardless of how long a sibling vector keeps running.
     def run_one(vector: _CanaryVector) -> ProviderCanaryFailure | None:
         return _execute_vector(
@@ -632,21 +635,25 @@ def _provider_layer_status(
 ) -> ProviderLayerReceiptStatus:
     """The typed answer naming whether existing receipts still apply (#1124).
 
-    Read before this run overwrites anything: any one readable prior receipt
-    names what the deployment's evidence looked like a moment ago, and its own
-    `provider_layer_digest` either still matches this run's or does not --
-    every receipt this deployment ever wrote shares one digest, so the first
-    readable one answers for all of them. A directory holding no receipt at
-    all, or holding only receipts this runtime refuses to read (an old
-    pre-#1124 shape, for one), names no prior evidence instead of falsely
-    claiming it was kept -- the bug an earlier version of this function had on
-    the very deploy that lands the digest gate.
+    Read before this run overwrites anything: the newest readable prior
+    receipt names what the deployment's evidence looked like a moment ago,
+    and its own `provider_layer_digest` either still matches this run's or
+    does not. The state directory is never pruned, so an older, superseded
+    configuration's receipt can still sit beside newer ones written under the
+    current configuration -- only the newest one is the last thing this
+    deployment actually wrote, so only it can answer "did this redeploy turn
+    my evidence over". A directory holding no receipt at all, or holding only
+    receipts this runtime refuses to read (an old pre-#1124 shape, for one),
+    names no prior evidence instead of falsely claiming it was kept -- the bug
+    an earlier version of this function had on the very deploy that lands the
+    digest gate.
     """
 
     try:
-        entries = sorted(state_directory.glob("*.json"))
+        entries = state_directory.glob("*.json")
     except OSError:
         entries = []
+    readable_receipts: list[ProviderProbeReceipt] = []
     for entry in entries:
         try:
             document = entry.read_bytes()
@@ -655,17 +662,22 @@ def _provider_layer_status(
         receipt = read_provider_probe_receipt(document)
         if isinstance(receipt, ProviderProbeReceiptRefused):
             continue
-        if receipt.provider_layer_digest != digest:
-            return ProviderLayerReceiptStatus(
-                ProviderLayerReceiptOutcome.RECEIPTS_INVALIDATED,
-                current_digest=digest,
-                previous_digest=receipt.provider_layer_digest,
-            )
+        readable_receipts.append(receipt)
+    if not readable_receipts:
         return ProviderLayerReceiptStatus(
-            ProviderLayerReceiptOutcome.RECEIPTS_KEPT, current_digest=digest
+            ProviderLayerReceiptOutcome.NO_READABLE_PRIOR_RECEIPT, current_digest=digest
+        )
+    newest_receipt = max(
+        readable_receipts, key=lambda receipt: receipt.observed_at.value
+    )
+    if newest_receipt.provider_layer_digest != digest:
+        return ProviderLayerReceiptStatus(
+            ProviderLayerReceiptOutcome.RECEIPTS_INVALIDATED,
+            current_digest=digest,
+            previous_digest=newest_receipt.provider_layer_digest,
         )
     return ProviderLayerReceiptStatus(
-        ProviderLayerReceiptOutcome.NO_READABLE_PRIOR_RECEIPT, current_digest=digest
+        ProviderLayerReceiptOutcome.RECEIPTS_KEPT, current_digest=digest
     )
 
 

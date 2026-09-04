@@ -804,7 +804,7 @@ canary and the Serve process can read and hash identically today. The
 digest cannot see still turns every receipt over within one day. Each run's
 own journal line names which of three outcomes happened:
 `receipts kept (provider layer unchanged)`,
-`receipts invalidated (provider layer changed: <digest8> -> <digest8>)`, or
+`receipts invalidated (provider layer changed: <digest8> → <digest8>)`, or
 `no readable prior receipt (this run's provider layer: <digest8>)` when no
 earlier receipt this runtime can read exists yet -- printed the moment
 discovery finishes and the digest is known, before any vector starts, and
