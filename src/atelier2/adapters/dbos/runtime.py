@@ -23,6 +23,7 @@ from atelier2.adapters.agent_processes import (
 )
 from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import converge_driverless_effect_intents
 from atelier2.adapters.dbos.host_configuration import (
@@ -1030,6 +1031,7 @@ def _open_binding(
             sqlite_url(settings.database_path), engine=engine
         )
         attempt_store = DbosAgentAttemptStore(engine, settings.application_version)
+        artifact_store = DbosArtifactStore(engine)
         if local_process_keys:
             agent_process_supervisor = AgentProcessSupervisor(
                 attempt_store,
@@ -1057,6 +1059,7 @@ def _open_binding(
             agent_process_supervisor,
             agent_workspace_owner,
             declared_project_source,
+            artifact_store,
             adapters,
             effect_bindings,
             settings.project_id,

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
+from atelier2.application.publish_artifact import (
+    ArtifactPublicationCreated,
+    ArtifactPublicationExisting,
+    publish_artifact,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     ProcessExitSignature,
@@ -22,6 +27,7 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptFailed,
     AgentAttemptStore,
     AgentAttemptSucceeded,
+    ProjectVerificationFailureEvidence,
 )
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
@@ -32,6 +38,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     AgentProcessRunner,
 )
+from atelier2.ports.artifacts import ArtifactPublisher
 from atelier2.ports.candidate_store import CandidateNotKept
 from atelier2.ports.project_verification import (
     PinnedProjectSource,
@@ -49,6 +56,7 @@ def execute_agent_attempt(
     supervisor: AgentProcessRunner,
     workspaces: AgentAttemptWorkspaceOwner,
     project: PinnedProjectSource | None = None,
+    artifacts: ArtifactPublisher | None = None,
     clock: Callable[[], RecordedAt] = recorded_instant,
 ) -> AgentAttemptExecutionOutcome:
     """Invoke only after this live call durably wins the launch boundary.
@@ -75,6 +83,12 @@ def execute_agent_attempt(
     verification that does not answer within its declared deadline after the
     claim ends the attempt `FAILED` under `PROJECT_VERIFICATION_FAILED` rather
     than leaving it `LAUNCH_ARMED`.
+
+    `artifacts` is where a verification that exits nonzero publishes the tail of
+    what it printed, so the words the attempt ends with can name where that
+    proof lives rather than just the exit code (#1137). It is required exactly
+    where a project is pinned with a redeemable grant; every other attempt never
+    reads it.
 
     What the attempt made is kept last of all, after any granted check has run
     and before the attempt is completed. Last, because the candidate must be the
@@ -144,7 +158,7 @@ def execute_agent_attempt(
             )
         else:
             try:
-                redemption = _redeemed(execution, lease, project)
+                redeemed = _redeemed(execution, lease, project)
             except ProjectVerificationUnavailable as error:
                 # The claim already won; letting this escape leaves the attempt
                 # LAUNCH_ARMED, and a replay would report AgentAttemptPossiblyRan.
@@ -157,6 +171,7 @@ def execute_agent_attempt(
                     result.transcript,
                 )
             else:
+                redemption = redeemed.receipt if redeemed is not None else None
                 # A check that said no has already decided this attempt, so
                 # nothing is captured and nothing else may rename the ending.
                 # Capturing first would keep work the project rejected and, worse,
@@ -165,11 +180,19 @@ def execute_agent_attempt(
                 # saying the check failed. The store owns what a nonzero
                 # redemption means; this only refuses to reach past it.
                 #
-                # Past that, the redemption below is a value this branch is
-                # *known* to have and known to be a pass, so its evidence travels
-                # into whichever ending follows.
+                # Past that, `redemption` here is a value this branch is *known*
+                # to have and known to be a pass, so its evidence travels into
+                # whichever ending follows.
                 if redemption is not None and not redemption.satisfied_the_project:
-                    outcome = store.complete_success(execution, result, redemption)
+                    assert redeemed is not None
+                    outcome = store.complete_success(
+                        execution,
+                        result,
+                        redemption,
+                        _published_verification_failure_evidence(
+                            redeemed.outcome, artifacts
+                        ),
+                    )
                 else:
                     try:
                         _keep_what_the_attempt_made(lease, project)
@@ -272,11 +295,59 @@ def _verification_unavailable_verdict(error: ProjectVerificationUnavailable) -> 
     return f"timeout {error.timeout_seconds} seconds"
 
 
+def _published_verification_failure_evidence(
+    outcome: ProjectVerificationOutcome, artifacts: ArtifactPublisher | None
+) -> ProjectVerificationFailureEvidence:
+    """Keep a failed check's own output where its refusal can point to it.
+
+    Nothing is published where the command left nothing to keep -- the artifact
+    store refuses empty content by its own rule, and a refusal naming no
+    artifact is exactly as honest as one naming an empty one. Publication is
+    idempotent by content, so a replay of this same attempt lands on the same
+    address rather than growing a second copy.
+    """
+
+    if not outcome.output_tail:
+        return ProjectVerificationFailureEvidence(outcome.summary_line, None)
+    if artifacts is None:
+        raise RuntimeError(
+            "a project verification exited nonzero with output to keep, but "
+            "this attempt was given no artifact publisher to keep it with"
+        )
+    published = publish_artifact(outcome.output_tail, artifacts)
+    match published:
+        case ArtifactPublicationCreated(artifact) | ArtifactPublicationExisting(
+            artifact
+        ):
+            return ProjectVerificationFailureEvidence(
+                outcome.summary_line, artifact.artifact_hash
+            )
+        case _:
+            raise RuntimeError(
+                f"a failed project verification's output could not be kept: {published}"
+            )
+
+
+@dataclass(frozen=True)
+class _RedeemedGrant:
+    """A grant's receipt, beside the raw outcome it was built from.
+
+    The receipt alone answers the store's question -- did the check pass --
+    but composing a failed check's words needs what the receipt deliberately
+    does not keep: the output itself, not just its hash. Both travel together
+    so a caller with one always has the other, rather than reopening a process
+    or a released workspace to get back what it already read.
+    """
+
+    receipt: ToolRedemptionReceipt
+    outcome: ProjectVerificationOutcome
+
+
 def _redeemed(
     execution: AgentAttemptExecution,
     lease: AgentAttemptWorkspaceLease,
     project: PinnedProjectSource | None,
-) -> ToolRedemptionReceipt | None:
+) -> _RedeemedGrant | None:
     """What redeeming this node's grant ran, or nothing where no grant was pinned.
 
     Which redeemer answers is read from the capability the pinned grant
@@ -293,7 +364,7 @@ def _redeemed(
     grant = project.grant
     outcome = _redeemed_via_capability(grant.capability, project, lease)
     request = execution.request
-    return ToolRedemptionReceipt.of(
+    receipt = ToolRedemptionReceipt.of(
         request.node_execution_id,
         request.run_id,
         request.workflow_revision_hash,
@@ -304,6 +375,7 @@ def _redeemed(
         outcome.exit_code,
         outcome.standard_output_hash,
     )
+    return _RedeemedGrant(receipt, outcome)
 
 
 def _redeemed_via_capability(
