@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.claude_subscription import (
+    CLAUDE_ATELIER_DOORS_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
     ClaudeSubscriptionSettings,
@@ -115,6 +116,7 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionPage,
     AuthProfileRevisionCreated,
 )
+from atelier2.ports.agent_executions import WorkspaceFileTools
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorBindingUnavailable,
     DurableRunCreated,
@@ -351,6 +353,7 @@ def served_settings(
     tmp_path: Path,
     claude_subscription: ClaudeSubscriptionSettings | None = None,
     claude_workspace_tools: bool = False,
+    claude_atelier_doors: bool = False,
     claude_start_refusal: str | None = None,
     grok_subscription: GrokSubscriptionSettings | None = None,
     grok_workspace_tools: bool = False,
@@ -392,6 +395,7 @@ def served_settings(
         ),
         claude_subscription=claude_subscription,
         claude_workspace_tools=claude_workspace_tools,
+        claude_atelier_doors=claude_atelier_doors,
         claude_start_refusal=claude_start_refusal,
         grok_subscription=grok_subscription,
         grok_workspace_tools=grok_workspace_tools,
@@ -485,6 +489,40 @@ def test_the_workspace_tool_executor_is_served_only_where_it_was_armed(
         assert runtime.agent_executor_registry.declared_capabilities(
             CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY
         ) == frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS})
+    finally:
+        runtime.close()
+
+
+def test_the_composition_says_which_claude_executors_reach_the_attempt_s_files(
+    tmp_path: Path,
+) -> None:
+    """Only the workspace-tool call touches a file, and the registry says so.
+
+    The other two carry tools of their own -- none, and the atelier's own API
+    doors -- and both remove every built-in with `--tools=`. Casting a node
+    that pinned a tool grant onto one of those is what pushed a commit of empty
+    placeholders in live pass 5 (#1166), so the sentence the start refuses
+    against is composed here rather than guessed from a capability.
+    """
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=claude_subscription_deployment(deployment, INERT_CLAUDE),
+        claude_workspace_tools=True,
+        claude_atelier_doors=True,
+    )
+
+    _app, runtime = compose_application(settings)
+
+    try:
+        registry = runtime.agent_executor_registry
+        assert {key: registry.workspace_file_tools(key) for key in registry.keys} == {
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY: WorkspaceFileTools.WITHHELD,
+            CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY: WorkspaceFileTools.GRANTED,
+            CLAUDE_ATELIER_DOORS_EXECUTOR_KEY: WorkspaceFileTools.WITHHELD,
+        }
     finally:
         runtime.close()
 

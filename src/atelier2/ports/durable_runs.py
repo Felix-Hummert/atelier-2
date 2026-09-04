@@ -91,6 +91,22 @@ class DurableAgentExecutorCapabilityUnavailable:
 
 
 @dataclass(frozen=True)
+class DurableAgentExecutorWithoutWorkspaceFileTools:
+    """A node pinned a tool grant, and the executor cast for it touches no file.
+
+    Every capability the closed grant vocabulary carries -- the project's own
+    verification, the pushed Atelier commit, the pull request opened from it --
+    is about the tree the attempt works in. An executor whose invocation reaches
+    no file of that tree can produce no candidate for any of them, so the start
+    says so by name instead of paying for an attempt whose only possible answer
+    is a report about work nobody did (#1166).
+    """
+
+    role: str
+    executor_revision: str
+
+
+@dataclass(frozen=True)
 class DurableBindingConstraintRefused:
     """The two nodes named by a `distinct_from` resolved to the same occupation."""
 
@@ -123,6 +139,7 @@ type DurablePublishedRunResult = (
     | DurableAgentConfigurationRevisionMissing
     | DurableAgentExecutorBindingUnavailable
     | DurableAgentExecutorCapabilityUnavailable
+    | DurableAgentExecutorWithoutWorkspaceFileTools
     | DurableBindingConstraintRefused
     | DurableWriteUnavailable
     | DurableStateCorrupt

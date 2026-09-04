@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import assert_never
 
@@ -35,6 +36,7 @@ from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
+    DurableAgentExecutorWithoutWorkspaceFileTools,
     DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
     DurablePublishedRunStarter,
@@ -59,6 +61,8 @@ from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
 from atelier2.ports.issue_observation import TrackerItemSource
+
+_LOG = logging.getLogger("atelier2")
 
 
 @dataclass(frozen=True)
@@ -241,6 +245,27 @@ def start_published_run(
         case DurableAgentExecutorBindingUnavailable():
             return AgentExecutorBindingUnavailable()
         case DurableAgentExecutorCapabilityUnavailable():
+            return AgentExecutorBindingUnavailable()
+        case DurableAgentExecutorWithoutWorkspaceFileTools(role, executor_revision):
+            # The same answer the two refusals above give, for the same reason
+            # an asker can act on: the executor this role was cast to cannot
+            # serve what its node asks for. Which of the three it was is what
+            # the answer no longer carries, so the operator reading the host's
+            # log is told here what the durable refusal named -- the cast that
+            # has to change, not just that some cast did.
+            _LOG.warning(
+                "Run %s casts role %s onto executor %s, which reaches no file "
+                "of the attempt's workspace.",
+                run_id.value,
+                role,
+                executor_revision,
+                extra={
+                    "event": "agent_executor_without_workspace_file_tools",
+                    "run_id": run_id.value,
+                    "role": role,
+                    "executor_revision": executor_revision,
+                },
+            )
             return AgentExecutorBindingUnavailable()
         case DurableBindingConstraintRefused(node, distinct_from):
             return BindingConstraintRefused(node, distinct_from)

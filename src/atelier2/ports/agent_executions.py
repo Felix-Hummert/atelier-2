@@ -64,12 +64,34 @@ class AgentExecutorCarrier(StrEnum):
     RUNNER_LEASE = "runner_lease"
 
 
+class WorkspaceFileTools(StrEnum):
+    """Whether an executor's invocation may read and write the attempt's workspace.
+
+    The narrower question `AgentExecutionCapability` deliberately never asks. A
+    capability says a node asked for a tool-bearing call; this says whether the
+    tools that call carries reach the files the attempt stands in. Two executors
+    declaring `HEADLESS_WITH_TOOLS` can differ completely here -- one grants the
+    workspace, another grants the product's own API doors and removes every
+    built-in with `--tools=` -- and a run that pins a tool grant is asking for
+    the first (`resolve_start_bindings`).
+
+    The sentence belongs to the adapter that composes the invocation, and the
+    composition root states it at registration until every factory declares it
+    itself (#1166): a registration that says nothing keeps the answer every
+    registration gave implicitly before this field existed.
+    """
+
+    GRANTED = "granted"
+    WITHHELD = "withheld"
+
+
 @dataclass(frozen=True)
 class AgentExecutorManifestEntry:
     key: AgentExecutorKey
     operational_identity: AgentExecutorOperationalIdentity
     declared_capabilities: frozenset[AgentExecutionCapability]
     carrier: AgentExecutorCarrier = AgentExecutorCarrier.LOCAL_PROCESS
+    workspace_file_tools: WorkspaceFileTools = WorkspaceFileTools.GRANTED
 
 
 @dataclass(frozen=True)
@@ -247,6 +269,14 @@ class AgentExecutorV2(Protocol):
         correlate through its own mutable state -- and one executor object
         serves every attempt on its key, so overlapping attempts would decode
         each other's answers into durable results.
+
+        Decoding is therefore not purely a reading of bytes: the invocation
+        carries the lease, and an executor may here take back what its own CLI
+        left standing in that workspace beside the model's work -- the one
+        moment between the process ending and anything reading the tree, and
+        the only seam that offers it. What such a take-back must never touch is
+        the attempt's own work; an executor that cannot tell the two apart
+        leaves the entry standing rather than guessing.
         """
         ...
 
@@ -389,6 +419,7 @@ class AgentExecutorRegistration:
         cls,
         factory: AgentExecutorFactoryV2,
         carrier: AgentExecutorCarrier = AgentExecutorCarrier.LOCAL_PROCESS,
+        workspace_file_tools: WorkspaceFileTools = WorkspaceFileTools.GRANTED,
     ) -> AgentExecutorRegistration:
         return cls(
             AgentExecutorManifestEntry(
@@ -396,6 +427,7 @@ class AgentExecutorRegistration:
                 factory.operational_identity,
                 frozenset(factory.declared_capabilities),
                 carrier,
+                workspace_file_tools,
             ),
             factory,
         )
@@ -405,6 +437,7 @@ class AgentExecutorRegistration:
         cls,
         factory: AgentExecutorFactoryV2,
         carrier: AgentExecutorCarrier = AgentExecutorCarrier.LOCAL_PROCESS,
+        workspace_file_tools: WorkspaceFileTools = WorkspaceFileTools.GRANTED,
     ) -> AgentExecutorRegistration:
         return cls(
             AgentExecutorManifestEntry(
@@ -412,6 +445,7 @@ class AgentExecutorRegistration:
                 factory.operational_identity,
                 frozenset(factory.declared_capabilities),
                 carrier,
+                workspace_file_tools,
             ),
             None,
         )
@@ -528,6 +562,11 @@ class AgentExecutorRegistry:
 
     def carrier(self, key: AgentExecutorKey) -> AgentExecutorCarrier:
         return self._by_key[key].manifest_entry.carrier
+
+    def workspace_file_tools(self, key: AgentExecutorKey) -> WorkspaceFileTools:
+        """Whether this executor's invocation reaches the attempt's own files."""
+
+        return self._by_key[key].manifest_entry.workspace_file_tools
 
     def is_structurally_startable(
         self, key: AgentExecutorKey, capability: AgentExecutionCapability

@@ -46,6 +46,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     BindingConstraint,
     RoleDifficulty,
+    VersionedReference,
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_executions import (
@@ -54,11 +55,13 @@ from atelier2.ports.agent_executions import (
     AgentExecutorRegistry,
     AgentExecutorV2,
     ProviderProbeReceiptGate,
+    WorkspaceFileTools,
 )
 from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
+    DurableAgentExecutorWithoutWorkspaceFileTools,
     DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
 )
@@ -154,6 +157,7 @@ _UNCONSULTED_WORKFLOW_HASH = WorkflowRevisionHash("0" * 64)
 def _registry(
     *factories: FakeExecutorFactory,
     unavailable: bool = False,
+    workspace_file_tools: WorkspaceFileTools = WorkspaceFileTools.GRANTED,
     receipt_gate: ProviderProbeReceiptGate | None = None,
     reprobe_exempt_workflow_revisions: Callable[[], frozenset[WorkflowRevisionHash]]
     | None = None,
@@ -164,7 +168,10 @@ def _registry(
         else AgentExecutorRegistration.startable
     )
     return AgentExecutorRegistry(
-        tuple(build(factory) for factory in factories),
+        tuple(
+            build(factory, workspace_file_tools=workspace_file_tools)
+            for factory in factories
+        ),
         receipt_gate=receipt_gate,
         reprobe_exempt_workflow_revisions=(
             reprobe_exempt_workflow_revisions
@@ -174,8 +181,10 @@ def _registry(
     )
 
 
-def _single_role_graph(role: str = "builder") -> WorkflowGraphV3:
-    """One agent node, one role to bind."""
+def _single_role_graph(
+    role: str = "builder", *, pins_a_tool_grant: bool = False
+) -> WorkflowGraphV3:
+    """One agent node, one role to bind, optionally working on the project."""
     return WorkflowGraphV3(
         format_version=3,
         name="One role to bind",
@@ -186,6 +195,11 @@ def _single_role_graph(role: str = "builder") -> WorkflowGraphV3:
                 role=role,
                 mode="headless",
                 instruction="Build",
+                tools=(
+                    (VersionedReference(ref="verify", revision="d4" * 32),)
+                    if pins_a_tool_grant
+                    else ()
+                ),
             ),
         ),
     )
@@ -954,6 +968,67 @@ def test_unregistered_executor_refuses() -> None:
     )
 
     assert result == DurableAgentExecutorBindingUnavailable()
+
+
+@pytest.mark.parametrize(
+    ("pins_a_tool_grant", "workspace_file_tools", "refused"),
+    [
+        pytest.param(
+            True,
+            WorkspaceFileTools.WITHHELD,
+            True,
+            id="a granted node cast to a file-blind executor",
+        ),
+        pytest.param(
+            True,
+            WorkspaceFileTools.GRANTED,
+            False,
+            id="a granted node cast to a workspace executor",
+        ),
+        pytest.param(
+            False,
+            WorkspaceFileTools.WITHHELD,
+            False,
+            id="a node pinning nothing, cast to a file-blind executor",
+        ),
+    ],
+)
+def test_a_node_that_pins_a_tool_grant_needs_an_executor_that_reaches_its_files(
+    pins_a_tool_grant: bool, workspace_file_tools: WorkspaceFileTools, refused: bool
+) -> None:
+    """A grant is about the project's tree, so casting asks who can touch it.
+
+    The doors executor is the case this exists for: it declares
+    `HEADLESS_WITH_TOOLS` truthfully -- its tools are the atelier's own API
+    doors -- and removes every built-in with `--tools=`, so a build node
+    pinning verification and a push would be cast onto a call that cannot open
+    a file (#1166). A node pinning no grant is untouched: that is the same
+    executor doing the work it exists for.
+    """
+
+    auth = _auth()
+    configuration = _configuration(auth)
+    bindings = AgentBindingSet(
+        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+    )
+    reads = ScriptedBindingReads({configuration.revision_hash: (configuration, auth)})
+
+    result = resolve_start_bindings(
+        _single_role_graph(pins_a_tool_grant=pins_a_tool_grant),
+        _UNCONSULTED_WORKFLOW_HASH,
+        bindings,
+        reads,
+        _registry(
+            FakeExecutorFactory("exact"), workspace_file_tools=workspace_file_tools
+        ),
+    )
+
+    if refused:
+        assert result == DurableAgentExecutorWithoutWorkspaceFileTools("builder", "v1")
+    else:
+        assert result == (
+            ResolvedAgentBinding(AgentRole("builder"), configuration, auth),
+        )
 
 
 def test_undeclared_capability_refuses() -> None:
