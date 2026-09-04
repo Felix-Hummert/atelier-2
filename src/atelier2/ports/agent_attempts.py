@@ -22,6 +22,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
+from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_bindings import AnyRun
@@ -308,6 +309,31 @@ class RunnerTerminalEvidenceStore(AgentAttemptReader, Protocol):
     ) -> AgentAttempt: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectVerificationFailureEvidence:
+    """What a failed verification's refusal names beyond the command and its exit.
+
+    Composed once, by the caller that already ran the check and read what it
+    printed -- the store turns this into the receipt's words, but it never
+    reopens a process or a released workspace to learn what one already said.
+    `output_artifact_hash` is absent where the verification printed nothing to
+    keep, and `summary_line` is absent where the retained tail carried no
+    pytest summary to read. `redacted` is true where `redact_credentials` found
+    and replaced a credential shape in the tail before it was published, so a
+    reader knows the artifact is not the command's exact bytes.
+    `retention_failure` names why nothing could be kept where the tail was
+    nonempty and publication itself failed -- distinct from an absent
+    `output_artifact_hash` beside no `retention_failure`, which means there was
+    nothing to keep in the first place.
+    """
+
+    summary_line: str | None
+    output_artifact_hash: ArtifactHash | None
+    duration_seconds: float
+    redacted: bool
+    retention_failure: str | None = None
+
+
 class AgentAttemptStore(AgentAttemptReader, Protocol):
     def iter_driverless_attempts(self, page_limit: PageLimit) -> Iterator[AgentAttempt]:
         """Every nonterminal attempt no live workflow is driving any more.
@@ -336,6 +362,7 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         execution: AgentAttemptExecution,
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
+        verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         """Keep this attempt's terminal truth, and what its grant redeemed with it.
 
@@ -350,7 +377,10 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         outcome is returned rather than raised. A granted project verification
         that exits nonzero is the same kind of named failure, under
         `PROJECT_VERIFICATION_FAILED`, with how the command ended in the receipt
-        reason and without a `tool_redemptions` row.
+        reason and without a `tool_redemptions` row. `verification_failure_evidence`
+        is what that reason names beyond the exit code the redemption already
+        carries -- pytest's own summary and where the check's full output was kept
+        -- and it is read only on that one ending; every other ending ignores it.
         """
         ...
 
