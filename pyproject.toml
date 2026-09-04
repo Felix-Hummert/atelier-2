@@ -39,12 +39,31 @@ dev = [
 [tool.atelier2.verification]
 # What verifies this project, stated by this project. A node that redeems the
 # `run-project-verification` grant runs exactly this, so the statement lives with
-# the source it verifies rather than in the atelier's own configuration. The
-# pipeline's job list is its own and stays in .github/workflows/ci.yml; this is
-# the one command that says whether the tree is sound. Until H2 pins a
-# checkout into the attempt's directory (see the absence named in
-# acceptance/60-...), redeeming the grant runs this where no tree exists yet.
-command = ["uv", "run", "--locked", "pytest", "--dist", "loadgroup", "-n", "auto", "tests", "-q"]
+# the source it verifies rather than in the atelier's own configuration. #1101
+# pins the checkout into the attempt's own workspace before this runs, so the
+# tree it needs is already there.
+#
+# `tests/crash` is excluded on purpose (#1152): the pipeline's own quality job
+# (.github/workflows/ci.yml) never bundles it with the rest either -- it runs
+# alone, in the `crash-recovery` job, inside a systemd scope with cgroup
+# delegation (`Delegate=yes`, `KillMode=control-group`) that a grant's
+# workspace does not have and cannot give it. Declaring a command this runtime
+# can honestly run is what lets what the grant runs match what the pipeline
+# proves green; `tests/crash` keeps its own home in the pipeline's job list,
+# which is its own and stays in .github/workflows/ci.yml.
+command = [
+    "uv",
+    "run",
+    "--locked",
+    "pytest",
+    "--dist",
+    "loadgroup",
+    "-n",
+    "auto",
+    "--ignore=tests/crash",
+    "tests",
+    "-q",
+]
 timeout_seconds = 1800
 
 [tool.pytest.ini_options]
