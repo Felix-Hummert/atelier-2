@@ -66,7 +66,11 @@ from atelier2.contracts.agents import (
     MAXIMUM_PROVIDER_ID_CHARACTERS,
     PROVIDER_ID_PATTERN,
 )
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.host_configuration import (
+    MODEL_REGISTRY_REVISION_CONFLICT,
+    PROJECT_MODEL_DEFAULTS_REVISION_CONFLICT,
+    ProjectId,
+)
 from atelier2.contracts.runs import WorkflowRevisionHash
 
 router = APIRouter()
@@ -117,7 +121,7 @@ async def put_model_registry_route(
         case ModelRegistryInvalid():
             raise ApiProblem("invalid-request")
         case ModelRegistryConflict():
-            raise ApiProblem("model-registry-revision-conflict")
+            raise ApiProblem(MODEL_REGISTRY_REVISION_CONFLICT)
         case ModelRegistryCollision():
             raise ApiProblem("model-registry-revision-collision")
         case WriteUnavailable(detail):
@@ -162,7 +166,7 @@ async def validate_model_registry_entry_route(
         case ModelRegistryInvalid():
             raise ApiProblem("invalid-request")
         case ModelRegistryConflict():
-            raise ApiProblem("model-registry-revision-conflict")
+            raise ApiProblem(MODEL_REGISTRY_REVISION_CONFLICT)
         case ModelRegistryCollision():
             raise ApiProblem("model-registry-revision-collision")
         case WriteUnavailable(detail):
@@ -245,7 +249,7 @@ async def put_project_model_defaults_route(
         case ProjectModelDefaultsInvalid():
             raise ApiProblem("invalid-request")
         case ProjectModelDefaultsConflict():
-            raise ApiProblem("project-model-defaults-revision-conflict")
+            raise ApiProblem(PROJECT_MODEL_DEFAULTS_REVISION_CONFLICT)
         case ProjectModelDefaultsCollision():
             raise ApiProblem("project-model-defaults-revision-collision")
         case WriteUnavailable(detail):

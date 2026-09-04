@@ -256,15 +256,6 @@ class QueueProposal:
 
 
 @dataclass(frozen=True)
-class QueueDependencyEdge:
-    """One prerequisite bound to the exact proposal revision that declared it."""
-
-    item_id: QueueItemId
-    proposal_revision: QueueProjectionRevision
-    prerequisite_item_id: QueueItemId
-
-
-@dataclass(frozen=True)
 class QueueLaunchBinding:
     """The one immutable launch reservation an admitted item can ever receive."""
 
@@ -375,7 +366,6 @@ class QueueAdmissionAlreadyDecided:
     """The item is already admitted under a different workflow binding or reason."""
 
     item_reference: WorkItemReference
-    existing_admission: QueueAdmission
 
 
 @dataclass(frozen=True)
@@ -562,7 +552,7 @@ class QueueItemSnapshot:
                 return QueueAdmissionAlreadyCurrent(
                     self.item_reference, current, self.revision
                 )
-            return QueueAdmissionAlreadyDecided(self.item_reference, current)
+            return QueueAdmissionAlreadyDecided(self.item_reference)
         if self.state is not QueueItemState.PROPOSED or self.proposal is None:
             return QueueAdmissionProposalRequired(
                 self.item_reference,

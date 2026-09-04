@@ -398,7 +398,6 @@ class ProviderProbeReceiptGate:
 
 @dataclass(frozen=True)
 class AgentExecutorRegistryEntry:
-    object_identity: int | None
     manifest_entry: AgentExecutorManifestEntry
     factory: AgentExecutorFactoryV2 | None
 
@@ -501,7 +500,6 @@ class AgentExecutorRegistry:
         )
         captured = tuple(
             AgentExecutorRegistryEntry(
-                (None if registration.factory is None else id(registration.factory)),
                 registration.manifest_entry,
                 registration.factory,
             )
