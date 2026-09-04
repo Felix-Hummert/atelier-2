@@ -570,20 +570,32 @@ class WaitAnswerSchemaResourceV3(ApiModel):
     `schemas_v3`'s alone (`atelier2.api.projection.workflows` reads only enough
     of the top level to classify it). `kind` names only what that top level
     itself says -- `boolean` where it names `type: boolean`, `enum` where it
-    names `enum` (`values` then carries the author's own members, each the
-    exact JSON text that member already is) -- and `free` for every other
+    names `enum` (`values` then carries the author's own members), `string`
+    where it names `type: string` and no `enum` -- and `free` for every other
     shape this excerpt declines to guess at, including one it cannot resolve
     or read at all. A schema a document names but this build cannot yet see
     is not durable corruption: a document may name a schema published after
     itself, exactly as `WorkflowDeclaredOrderResourceV3` echoes its own hull
-    unresolved, so an unreadable schema classifies `free` rather than refusing
-    the whole graph over a reference nothing has bound yet.
+    unresolved, so an unreadable schema classifies `free` rather than
+    refusing the whole graph over a reference nothing has bound yet.
+
+    `string_typed` is the one fact that decides how a composer must send
+    `values` back: true names a schema whose own top level is `type: string`
+    (every `string` kind, and an `enum` that also names `type: string`), the
+    one shape whose door (`schemas_v3.instance_for_schema`) reads an answer's
+    raw UTF-8 text as the value directly, quotes and all, with no
+    JSON-decoding step -- so `values` there already carries each member's raw
+    text, not a JSON-encoded string, and a composer must send it back exactly
+    that way (#1091 PR #1108 finding 1). `string_typed` is false for `boolean`
+    and `free`, and for an `enum` naming no `type: string`, whose `values`
+    stay the JSON-encoded text they always were.
     """
 
     node_id: str = Field(min_length=1)
     # Python cannot call this field `schema`: BaseModel already owns that name.
     schema_reference: WorkflowDeclaredSchemaResourceV3 = Field(alias="schema")
-    kind: Literal["boolean", "enum", "free"]
+    kind: Literal["boolean", "enum", "string", "free"]
+    string_typed: bool
     values: tuple[str, ...] | None = None
     """The author's own `enum` members, present exactly when `kind` is `enum`."""
 

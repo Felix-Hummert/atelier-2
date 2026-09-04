@@ -84,9 +84,12 @@ RESULT_SCHEMA = PublishedRevision(
 DIFF_TEXT = "diff --git a/app.py b/app.py\n+print('reviewed')\n"
 QUESTIONS_TEXT = "Does this change preserve the review contract?"
 CONTEXT_TEXT = "The review contract is the only authority."
-DIFF = json.dumps(DIFF_TEXT).encode()
-QUESTIONS = json.dumps(QUESTIONS_TEXT).encode()
-CONTEXT = json.dumps(CONTEXT_TEXT).encode()
+# `TEXT_SCHEMA` (`nonempty_string.json`) is a `type: string` schema: since
+# #1091 an authored order's raw bytes ARE its text, with no JSON-quoting
+# layer (`schemas_v3.read_authored_instance_document`).
+DIFF = DIFF_TEXT.encode()
+QUESTIONS = QUESTIONS_TEXT.encode()
+CONTEXT = CONTEXT_TEXT.encode()
 REVIEW = {
     "findings": [
         {

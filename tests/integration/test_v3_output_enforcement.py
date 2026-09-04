@@ -407,7 +407,7 @@ def durable_answer(runtime: DbosRuntime) -> tuple[int, int, str, str]:
         ),
         pytest.param(
             b'{"steps": 3}\xff',
-            "output-schema-refused: instance-not-utf8: invalid start byte",
+            "output-schema-refused: instance-not-utf8: invalid start byte at byte 12",
             id="broken UTF-8",
         ),
         pytest.param(

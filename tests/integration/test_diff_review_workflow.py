@@ -106,9 +106,12 @@ DIFF_ORDER_TEXT = (
     "diff --git a/workflows/diff-review.yaml b/workflows/diff-review.yaml\n"
     "+one guard clause added"
 )
-DIFF_ORDER_VALUE = json.dumps(DIFF_ORDER_TEXT, ensure_ascii=False).encode()
+# `DIFF_SCHEMA` and `REVIEW_QUESTIONS_SCHEMA` are `type: string` schemas: since
+# #1091 an authored order's raw bytes ARE its text, with no JSON-quoting layer
+# (`schemas_v3.read_authored_instance_document`).
+DIFF_ORDER_VALUE = DIFF_ORDER_TEXT.encode()
 REVIEW_QUESTIONS_TEXT = "Does this diff leave an obsolete schema reference?"
-REVIEW_QUESTIONS_VALUE = json.dumps(REVIEW_QUESTIONS_TEXT, ensure_ascii=False).encode()
+REVIEW_QUESTIONS_VALUE = REVIEW_QUESTIONS_TEXT.encode()
 
 COMPLIANT_REVIEW = {
     "findings": [
@@ -314,10 +317,8 @@ def test_a_compliant_review_completes_the_run_with_the_diff_the_order_carried(
     handed = provider.opened.requests[0].job_bytes
     assert b"--- order: diff ---" in handed
     assert DIFF_ORDER_TEXT.encode() in handed
-    assert DIFF_ORDER_VALUE not in handed
     assert b"--- order: review_questions ---" in handed
     assert REVIEW_QUESTIONS_TEXT.encode() in handed
-    assert REVIEW_QUESTIONS_VALUE not in handed
     assert b"cannot read files, run anything, or use tools" in handed
     assert b"the diff text is your only evidence" in handed
     assert b"Answer every question" in handed

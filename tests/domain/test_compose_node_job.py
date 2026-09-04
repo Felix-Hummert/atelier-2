@@ -18,7 +18,7 @@ from atelier2.application.compose_node_job import (
     OutputSchemaRepair,
     node_job,
 )
-from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
+from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 
 SCHEMA = PublishedRevisionHash("a" * 64)
@@ -55,18 +55,21 @@ def test_the_same_orders_compose_the_same_job_whatever_order_they_arrive_in() ->
     ) < node_job("Plate it.", supplied).index(ORDER_HEADING.format(name="side"))
 
 
-def test_only_a_declared_root_string_order_is_rendered_raw() -> None:
+def test_an_orders_stored_bytes_render_verbatim_whatever_schema_admitted_them() -> None:
+    """Since #1091, every order's stored bytes ARE the text a reader should see.
+
+    A `"string"`-typed order's stored bytes are already its raw UTF-8 text
+    (`schemas_v3.read_authored_instance_document` is the one door that reads
+    it that way at the start); every other schema keeps its own JSON text.
+    Either way, `RunInput` carries no rendering-relevant schema kind any more
+    (#1091 finding 3): the composition has nothing left to strip.
+    """
     composed = node_job(
         "Review it.",
         (
-            RunInput(
-                "diff",
-                SCHEMA,
-                b'"diff --git a/file.py b/file.py\\n+line"',
-                RunInputSchemaKind.PLAIN_STRING,
-            ),
-            RunInput("metadata", SCHEMA, b'{ "files": 1 }'),
-            RunInput("summary", SCHEMA, b'"ship it"', RunInputSchemaKind.JSON),
+            order("diff", b"diff --git a/file.py b/file.py\n+line"),
+            order("metadata", b'{ "files": 1 }'),
+            order("summary", b'"ship it"'),
         ),
     )
 
@@ -79,29 +82,6 @@ def test_only_a_declared_root_string_order_is_rendered_raw() -> None:
             '{ "files": 1 }',
             ORDER_HEADING.format(name="summary"),
             '"ship it"',
-        ]
-    )
-
-
-def test_the_legacy_composition_keeps_declared_root_strings_json_encoded() -> None:
-    composed = node_job(
-        "Review it.",
-        (
-            RunInput(
-                "diff",
-                SCHEMA,
-                b'"diff --git a/file.py b/file.py\\n+line"',
-                RunInputSchemaKind.PLAIN_STRING,
-            ),
-        ),
-        composition_version=NodeJobCompositionVersion.LEGACY,
-    )
-
-    assert composed == "\n\n".join(
-        [
-            "Review it.",
-            ORDER_HEADING.format(name="diff"),
-            '"diff --git a/file.py b/file.py\\n+line"',
         ]
     )
 
@@ -135,11 +115,6 @@ def test_output_schema_repair_is_a_versioned_composition_input() -> None:
             OutputSchemaRepair("output-schema-refused: instance-not-json"),
             id="current-version-with-repair-payload",
         ),
-        pytest.param(
-            NodeJobCompositionVersion.LEGACY,
-            OutputSchemaRepair("output-schema-refused: instance-not-json"),
-            id="legacy-version-with-repair-payload",
-        ),
     ],
 )
 def test_node_job_refuses_every_version_and_repair_payload_mismatch(
@@ -152,29 +127,3 @@ def test_node_job_refuses_every_version_and_repair_payload_mismatch(
             composition_version=composition_version,
             output_schema_repair=repair,
         )
-
-
-def test_current_and_legacy_compositions_keep_their_exact_published_preimages() -> None:
-    supplied = (
-        RunInput(
-            "diff",
-            SCHEMA,
-            b'"diff --git a/file.py b/file.py\\n+line"',
-            RunInputSchemaKind.PLAIN_STRING,
-        ),
-    )
-
-    assert node_job(
-        "Review it.",
-        supplied,
-        composition_version=NodeJobCompositionVersion.LEGACY,
-    ).encode("utf-8") == (
-        b'Review it.\n\n--- order: diff ---\n\n"diff --git a/file.py b/file.py\\n+line"'
-    )
-    assert node_job(
-        "Review it.",
-        supplied,
-        composition_version=NodeJobCompositionVersion.CURRENT,
-    ).encode("utf-8") == (
-        b"Review it.\n\n--- order: diff ---\n\ndiff --git a/file.py b/file.py\n+line"
-    )
