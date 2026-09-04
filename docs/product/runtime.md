@@ -273,16 +273,16 @@ keeps as evidence of an ending rather than reads as progress. It names an
 ending with no final message, rather than recording progress as an answer.
 Every output schema the node declared travels as `--json-schema` on this
 tool-free vector, in the same published document bytes the seam later judges;
-the seam remains the last instance if the provider ignores the flag. A schema whose root is a bare
-`type: string` is no exception — the CLI accepts that form, and what it refuses
-is a schema that is no JSON object at all, such as `true` — and this seam
-rewrites neither. The job travels inline through `-p`; one larger than the
-measured 30,000-byte transport bound is refused before a process exists. The
-same vector pins a turn ceiling so a Diff-Review-sized order cannot run an
-unbounded loop, and the child inherits only the serving host's search path
-plus one disposable invocation-private `HOME`/`GROK_HOME`. That home
-receives a private copy of the source `auth.json`; provider sessions and
-responses stay there and the entire home is removed after success, known
+the seam remains the last instance if the provider ignores the flag. A schema
+whose root is a bare `type: string` is no exception — the CLI accepts that
+form, and what it refuses is a schema that is no JSON object at all, such as
+`true` — and this seam rewrites neither. The job travels inline through `-p`;
+one larger than the measured 30,000-byte transport bound is refused before a
+process exists. The same vector pins a turn ceiling so a Diff-Review-sized
+order cannot run an unbounded loop, and the child inherits only the serving
+host's search path plus one disposable invocation-private `HOME`/`GROK_HOME`.
+That home receives a private copy of the source `auth.json`; provider sessions
+and responses stay there and the entire home is removed after success, known
 failure, cancellation, retry refusal, or process error without touching
 another invocation. Before launch, `grok inspect`
 must report that exact home/configuration as its only configuration source,
@@ -302,24 +302,27 @@ the protected-edit floors that mode would otherwise approve and keeps MCP
 meta-tools from remaining visible. Every other containment switch and the
 private `HOME` of the tool-free call stay. Unlike that call, this one asks for
 `--output-format streaming-messages-json`, so it publishes whole assistant and
-tool messages as they happen: the attempt keeps the session header, the turns,
-the thinking, the doors it opened and what the call spent as its transcript,
-each as a named step, and the answer is read from the terminal line the CLI
-names itself. It carries no `--json-schema` — the pinned CLI applies a declared
-output schema to every assistant message and ends the session at the first
-message without a tool call, so a model that narrates before acting would end
-its attempt on that narration. The declared schema closes the job in words
-instead, as the exact published document bytes the output seam judges the
-answer against, and an answer that is no such document is refused there rather
-than accepted here. A session whose stream shows no tool call at all is still
-refused as a provider failure instead of published, so the node ends FAILED and
-only an explicit replacement runs it again. It attests exactly one
-capability, `headless_with_tools`, and no other; a node reaches it only where
-its own durable binding asked for that capability, and a binding that asks
-the tool-free executor for tools, or this one for a tool-free call, is
-refused before the run exists. Because a version answer is not startability,
-and because a Clap refusal without an isolated home can exit 0, the
-deployment starts this exact argument vector once at composition with no
+tool messages as they happen: the attempt keeps the turns, the thinking, the
+doors it opened and what the call spent as named steps of its transcript, and
+the answer is read from the terminal line the CLI names itself. The stream's
+opening session header has no step of its own: it stays the provider's own
+output, reduced to the session, the model, the doors granted and the regime
+they were granted under, because a named step for it is a transcript-vocabulary
+change the shared stream reader owns (`#892`). It carries no `--json-schema` —
+the pinned CLI applies a declared output schema to every assistant message and
+ends the session at the first message without a tool call, so a model that
+narrates before acting would end its attempt on that narration. The declared
+schema closes the job in words instead, as the exact published document bytes
+the output seam judges the answer against, and an answer that is no such
+document is refused there rather than accepted here. A session whose stream
+shows no tool call at all is still refused as a provider failure instead of
+published, so the node ends FAILED and only an explicit replacement runs it
+again. It attests exactly one capability, `headless_with_tools`, and no other;
+a node reaches it only where its own durable binding asked for that capability,
+and a binding that asks the tool-free executor for tools, or this one for a
+tool-free call, is refused before the run exists. Because a version answer is
+not startability, and because a Clap refusal without an isolated home can exit
+0, the deployment starts this exact argument vector once at composition with no
 credentials and an empty inline prompt in a private `HOME`, and reads that
 the CLI did not refuse an argument, with an unknown flag beside it as the
 control; the marker is `unexpected argument`. Neither call reaches a model.

@@ -233,8 +233,6 @@ def answer(payload, doors=()):
                 "cache_creation_input_tokens": 0,
             },
         }
-        if "--json-schema" in sys.argv:
-            terminal["structured_output"] = payload
         lines.append(terminal)
         sys.stdout.write("\\n".join(json.dumps(line) for line in lines))
         return
@@ -2267,8 +2265,14 @@ def recorded_grok_stream(*lines: Mapping[str, object]) -> bytes:
 RECORDED_SESSION_ID = "01a06d2b-2e69-7390-a807-06901b3a2191"
 RECORDED_MODEL = "grok-4.6"
 RECORDED_GRANTED_TOOLS = ["run_terminal_command", "read_file", "search_replace"]
+RECORDED_PERMISSION_MODE = "bypassPermissions"
 RECORDED_SESSION_HEADER_NOISE = ("uuid", "slash_commands", "cwd")
 """What the header says beside those facts, and what no transcript needs."""
+
+NONEMPTY_STRING_SCHEMA = (
+    Path(__file__).parents[2] / "workflows" / "schemas" / "nonempty_string.json"
+).read_bytes()
+"""The published schema the provider-canary vector declares for its answer."""
 
 
 def recorded_session_start() -> dict[str, object]:
@@ -2280,7 +2284,7 @@ def recorded_session_start() -> dict[str, object]:
         "session_id": RECORDED_SESSION_ID,
         "model": RECORDED_MODEL,
         "tools": RECORDED_GRANTED_TOOLS,
-        "permissionMode": "bypassPermissions",
+        "permissionMode": RECORDED_PERMISSION_MODE,
         "cwd": "/tmp/probe/repo",
         "slash_commands": ["compact", "context"],
         "mcp_servers": [],
@@ -2334,6 +2338,27 @@ def recorded_terminal_line(
     if answer is not None:
         terminal["result"] = answer
     return terminal
+
+
+def recorded_door_opening_stream(header: Mapping[str, object], answer: str) -> bytes:
+    """The shortest whole session: this header, one door opened, this answer."""
+
+    call_id = "call-4f1c2f10-7b2a-4a55-9a2f-1d0b2c3e4f50-0"
+    return recorded_grok_stream(
+        header,
+        recorded_assistant_message(
+            {
+                "type": "tool_use",
+                "id": call_id,
+                "name": "search_replace",
+                "input": {"file_path": "README.md"},
+            }
+        ),
+        recorded_tool_results(
+            {"type": "tool_result", "tool_use_id": call_id, "content": "written"}
+        ),
+        recorded_terminal_line(answer),
+    )
 
 
 RECORDED_ANSWER = '{"summary":"Appended the probe line.","changed_paths":["README.md"]}'
@@ -2489,9 +2514,10 @@ def test_a_tool_using_session_keeps_its_doors_and_answers_with_its_last_output(
     without `--json-schema` (#1174): the session narrates in free prose, opens
     its doors, and ends on one bare JSON document as the terminal `result` --
     with no `structured_output` field on that line at all. Every line of it has
-    a name here: the header keeps the session, model and granted doors alone,
-    a thinking block is one of the agent's turns without its signature blob,
-    and the terminal line keeps what the call spent.
+    a name here: the header keeps the session, the model, the granted doors and
+    the regime they were granted under, a thinking block is one of the agent's
+    turns without its signature blob, and the terminal line keeps what the call
+    spent.
     """
 
     read_call = {
@@ -2530,7 +2556,12 @@ def test_a_tool_using_session_keeps_its_doors_and_answers_with_its_last_output(
     assert isinstance(header, UnrecognisedProviderOutput)
     assert all(
         named in header.text
-        for named in (RECORDED_SESSION_ID, RECORDED_MODEL, *RECORDED_GRANTED_TOOLS)
+        for named in (
+            RECORDED_SESSION_ID,
+            RECORDED_MODEL,
+            RECORDED_PERMISSION_MODE,
+            *RECORDED_GRANTED_TOOLS,
+        )
     )
     assert not any(noise in header.text for noise in RECORDED_SESSION_HEADER_NOISE)
     assert tuple(steps) == (
@@ -2622,11 +2653,77 @@ def test_a_root_string_schema_answer_survives_the_stream(tmp_path: Path) -> None
     )
 
     result = decoded_workspace_tool_stream(
-        tmp_path, stream, declared_output_schema=b'{"type":"string","minLength":1}'
+        tmp_path, stream, declared_output_schema=NONEMPTY_STRING_SCHEMA
     )
 
     assert isinstance(result, AgentExecutionResult)
     assert result.output_bytes == b'"canary-alive"'
+    schema = read_schema_document(NONEMPTY_STRING_SCHEMA)
+    assert isinstance(schema, SchemaAccepted), schema
+    assert isinstance(
+        read_instance_document(result.output_bytes, schema), InstanceAccepted
+    )
+
+
+def test_a_fenced_answer_reaches_the_output_seam_exactly_as_written(
+    tmp_path: Path,
+) -> None:
+    """Nothing is stripped at this seam, so a fence is the schema's to refuse.
+
+    The ask spells out that the answer wears no code fence, and neither measured
+    session wrote one -- but an executor that quietly unwrapped a fence would be
+    deciding what counts as an answer, and that decision belongs to the declared
+    schema alone. So the fenced text reaches the output seam byte for byte, and
+    the seam refuses it as the JSON document it is not.
+    """
+
+    fenced = f"```json\n{RECORDED_ANSWER}\n```"
+    declared_schema = b'{"type":"object"}'
+
+    result = decoded_workspace_tool_stream(
+        tmp_path,
+        recorded_door_opening_stream(recorded_session_start(), fenced),
+        declared_output_schema=declared_schema,
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result.output_bytes == fenced.encode("utf-8")
+    schema = read_schema_document(declared_schema)
+    assert isinstance(schema, SchemaAccepted), schema
+    assert isinstance(
+        read_instance_document(result.output_bytes, schema), InstanceRefused
+    )
+
+
+def test_a_session_header_this_reader_cannot_reduce_survives_whole(
+    tmp_path: Path,
+) -> None:
+    """A release that renames the header's fields loses its noise, not its line.
+
+    The reduction keeps the named facts and drops the rest, so a header that
+    names none of them reduces to nothing -- and an empty step is exactly how a
+    line this reader does recognise goes missing. It keeps the whole line then.
+    """
+
+    renamed_header = {
+        "type": "system",
+        "subtype": "init",
+        "sessionId": RECORDED_SESSION_ID,
+        "modelName": RECORDED_MODEL,
+    }
+
+    result = decoded_workspace_tool_stream(
+        tmp_path,
+        recorded_door_opening_stream(renamed_header, RECORDED_ANSWER),
+        declared_output_schema=b'{"type":"object"}',
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result.transcript is not None
+    header = result.transcript.events[0]
+    assert isinstance(header, UnrecognisedProviderOutput)
+    assert RECORDED_SESSION_ID in header.text
+    assert RECORDED_MODEL in header.text
 
 
 @pytest.mark.parametrize(

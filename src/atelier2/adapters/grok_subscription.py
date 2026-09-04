@@ -268,10 +268,11 @@ _OUTPUT_TOKENS_FIELD = "output_tokens"
 _CACHE_READ_TOKENS_FIELD = "cache_read_input_tokens"
 _CACHE_CREATION_TOKENS_FIELD = "cache_creation_input_tokens"
 # What this executor keeps of the session header: the session the CLI opened,
-# the model that answered it, and the doors it granted. The rest of that line
-# -- slash commands, an empty MCP and skill inventory, the working directory,
-# a uuid -- is the noise that pushed real steps out of the document bound.
-_SESSION_HEADER_FIELDS = ("session_id", "model", "tools")
+# the model that answered it, the doors it granted, and the regime it granted
+# them under. The rest of that line -- slash commands, an empty MCP and skill
+# inventory, the working directory, a uuid -- is the noise that pushed real
+# steps out of the document bound.
+_SESSION_HEADER_FIELDS = ("session_id", "model", "tools", "permissionMode")
 _RECORD_SEPARATOR = "\n"
 _SINGLE_PROMPT_FLAG = "-p"
 _MEASURED_INLINE_PROMPT_BYTES = 30_000
@@ -970,18 +971,19 @@ def _session_header_step(entry: dict[str, object]) -> UnrecognisedProviderOutput
     """This stream's opening `system` line, reduced to the facts it names.
 
     The line is recognised, so nothing of it is guessed at; only what it says
-    about the session survives (`_SESSION_HEADER_FIELDS`). It stays the
-    provider's own output because the transcript vocabulary has no step for a
-    session header, and giving it one is a contract change across the wire, the
-    projection and the run-log surface rather than an adapter's decision --
-    named as deferred to the shared stream reader (`#892`).
+    about the session survives (`_SESSION_HEADER_FIELDS`). A release that
+    renames every one of those fields leaves the whole line standing instead of
+    an empty mapping -- the same discipline `_block_step` keeps, because a line
+    this reader DOES recognise is exactly where a lost line hides best.
+
+    It stays the provider's own output because the transcript vocabulary has no
+    step for a session header, and giving it one is a contract change across the
+    wire, the projection and the run-log surface rather than an adapter's
+    decision -- named as deferred to the shared stream reader (`#892`).
     """
 
-    return UnrecognisedProviderOutput(
-        _canonical_json(
-            {name: entry[name] for name in _SESSION_HEADER_FIELDS if name in entry}
-        )
-    )
+    named = {name: entry[name] for name in _SESSION_HEADER_FIELDS if name in entry}
+    return UnrecognisedProviderOutput(_canonical_json(named or entry))
 
 
 def _token_count(usage: dict[str, object], field_name: str) -> int | None:
@@ -1119,7 +1121,14 @@ def _streamed_session(standard_output: bytes) -> GrokStreamedSession:
 
 @dataclass(frozen=True)
 class GrokSubscriptionProcessCommand(AgentProcessCommand):
-    """One Grok headless command and the output schema it carried."""
+    """One Grok headless command and the output schema its node declared.
+
+    The tool-free vector is the one that carries those bytes in argv, as
+    `--json-schema`, and reads them back here to know which envelope field its
+    answer stands in. The workspace-tool vector carries the same bytes inside
+    its prompt instead, so on its command they state what was declared, never
+    what stands in its arguments.
+    """
 
     declared_output_schema_bytes: bytes | None = field(default=None, kw_only=True)
 
