@@ -13,6 +13,16 @@ hash, failure carries a problem code, and no receipt can carry both. JSON is
 canonical because these records live as `.json` files and are atomically replaced
 or checked into the repository; the reader refuses any other spelling rather than
 silently normalising bytes a writer did not produce.
+
+A receipt carries two distinct facts about the deployment that proved it (#1124):
+`source_commit` is provenance for a human reading the journal -- which exact
+checkout ran this probe. `provider_layer_digest` is what a later gate actually
+compares (`ports.agent_executions.ProviderProbeReceiptGate`): a content hash of
+the files that can change how this deployment talks to a provider
+(`host.provider_canary.provider_layer_digest`). A redeploy changes `source_commit`
+on every receipt; it changes `provider_layer_digest` only when it touches the
+provider layer itself, which is exactly the evidence a live vector's evidence
+should survive or not survive.
 """
 
 from __future__ import annotations
@@ -93,6 +103,7 @@ class ProviderProbeReceipt:
     vector: ProviderProbeVectorId
     configuration_hash: AgentConfigurationRevisionHash
     workflow_hash: WorkflowRevisionHash
+    provider_layer_digest: Sha256Hash
     source_commit: str
     observed_at: RecordedAt
     valid_until: RecordedAt
@@ -108,6 +119,8 @@ class ProviderProbeReceipt:
             raise TypeError("a provider probe receipt names a configuration hash")
         if not isinstance(self.workflow_hash, WorkflowRevisionHash):
             raise TypeError("a provider probe receipt names a workflow hash")
+        if not isinstance(self.provider_layer_digest, Sha256Hash):
+            raise TypeError("a provider probe receipt names a provider layer digest")
         if not isinstance(self.source_commit, str):
             raise TypeError("a provider probe receipt source commit must be text")
         if _SOURCE_COMMIT.fullmatch(self.source_commit) is None:
@@ -150,6 +163,7 @@ class ProviderProbeReceipt:
         document: dict[str, str] = {
             "configuration_hash": self.configuration_hash.value,
             "observed_at": self.observed_at.value,
+            "provider_layer_digest": self.provider_layer_digest.value,
             "result": self.result.value,
             "run_reference": self.run_reference.value,
             "source_commit": self.source_commit,
@@ -200,6 +214,7 @@ _COMMON_FIELDS = frozenset(
     (
         "configuration_hash",
         "observed_at",
+        "provider_layer_digest",
         "result",
         "run_reference",
         "source_commit",
@@ -287,6 +302,7 @@ def read_provider_probe_receipt(document: bytes) -> ProviderProbeReceiptVerdict:
             ProviderProbeVectorId(_text(decoded, "vector")),
             AgentConfigurationRevisionHash(_text(decoded, "configuration_hash")),
             WorkflowRevisionHash(_text(decoded, "workflow_hash")),
+            Sha256Hash(_text(decoded, "provider_layer_digest")),
             _text(decoded, "source_commit"),
             observed_at,
             valid_until,

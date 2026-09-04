@@ -775,17 +775,47 @@ same judgment a start reads, computed once by the deployment's atomic
 snapshot; discovery derives nothing of its own from either field. A
 superseded revision (the model registry no longer points to it) carries its
 own distinct reason and is excluded; a redeploy that invalidates every
-receipt by `source_commit` still leaves every registered configuration
-reprobable. Discovery is capped at four configuration pages, 50 known
-startable vectors, and 300 seconds. All distinct admitted workflow names
-resolve before any vector starts. Each run then has a 300-second terminal
-deadline, while the complete process has a 15,300-second deadline enforced by
-both the runner and its systemd unit. Every HTTP call has a 30-second cap reduced
-to the remaining discovery, vector, and process deadline. The durable run owns
-provider output. The canary atomically
+registered configuration's receipt still leaves it reprobable. Discovery is
+capped at four configuration pages, 50 known startable vectors, and 300
+seconds. All distinct admitted workflow names resolve before any vector
+starts. Every discovered vector then probes concurrently, up to 8 vectors'
+own live billed runs in flight at once
+(`PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS`), so one vector's own terminal
+deadline never delays or blocks a sibling's receipt beyond that shared
+worker cap -- each vector's outcome replaces its own receipt the instant it
+is known, not in the order discovery listed it. Each vector still
+has its own 300-second terminal deadline, while the complete process has a
+15,300-second deadline enforced by both the runner and its systemd unit. Every
+HTTP call has a 30-second cap reduced to the remaining discovery, vector, and
+process deadline. The durable run owns provider output. The canary atomically
 replaces only the secret-free
 `provider-probe-receipt/v1` at
 `${XDG_STATE_HOME:-$HOME/.local/state}/atelier2/provider-probes/live/<vector-id>.json`.
+
+A receipt's validity key is a content digest of the provider layer
+(`provider_layer_digest`: every provider adapter module, the Runner-side
+CLI-pin registry `adapters/runner_cli_pins.py`, `host/provider_canary.py`,
+and `contracts/provider_probe_receipts.py`), not the whole `source_commit`
+(`source_commit` still travels on the receipt, but only as journal provenance,
+#1124). A redeploy that leaves those files' bytes unchanged leaves every
+receipt proven and every configuration immediately startable; only a
+redeploy that actually touches the provider layer turns receipts over, and it
+turns over all of them at once, since they share one digest. Narrower than the
+full provider surface on purpose: the pinned CLI executable path
+(`serve-live.sh`'s `--claude-executable`), the executor start-binding wiring
+(`application/resolve_start_bindings.py` and the composition it feeds), and the
+probe workflow bytes themselves (`workflows/provider-canary-*.yaml`) stay out
+of the digest -- none of the three has a settings-independent path both the
+canary and the Serve process can read and hash identically today. The
+26-hour receipt validity is the backstop for that residual: a redeploy the
+digest cannot see still turns every receipt over within one day. Each run's
+own journal line names which of three outcomes happened:
+`receipts kept (provider layer unchanged)`,
+`receipts invalidated (provider layer changed: <digest8> → <digest8>)`, or
+`no readable prior receipt (this run's provider layer: <digest8>)` when no
+earlier receipt this runtime can read exists yet -- printed the moment
+discovery finishes and the digest is known, before any vector starts, and
+visible through `journalctl --user -u atelier2-provider-canary.service -e`.
 Receipts remain valid for 26 hours, so the nightly schedule has two hours of
 overlap. A receipt always says what the youngest probe attempt found: after a
 vector enters its own execution, a failed attempt replaces that vector's
@@ -886,6 +916,40 @@ The live composition still requires a loopback bind. An agent-authored
 `open-pr` grant now uses the same durable reconciliation path as an Action:
 an unknown GitHub readback pauses at the agent node for an operator decision,
 rather than refusing admission or reporting completion before a receipt exists.
+
+### Publish the issue-to-pr catalog
+
+`serve_live_update.sh`'s Git-source intake admits only `workflows/*.yaml`; a
+schema, budget, grant, or adapter operation a shipped workflow pins is never
+picked up by that intake and must be published by hand before the workflow
+that pins it can start. For `workflows/issue-to-pr.yaml`, this is a landing
+operation, in this order:
+
+1. Publish its three schemas --
+   `workflows/schemas/issue_to_pr_candidate_report.json`,
+   `workflows/schemas/code_review_result.json`, and
+   `workflows/schemas/issue_to_pr_release_decision.json` -- through
+   `POST /atelier/api/v1/schema-revisions`, one call per document.
+2. Publish `workflows/budgets/push-implement.json` through
+   `POST /atelier/api/v1/budget-revisions` if the live catalog does not
+   already carry it (`push-before-open-pr` publishes the same budget).
+3. Publish the two adapter operations through
+   `POST /atelier/api/v1/adapter-operation-revisions`: `open-pr` is exactly
+   the bytes `{"operation":"open-pr"}`; `push-atelier-commit` carries this
+   deployment's own author and committer identity, so it has no canonical
+   bytes here.
+4. Publish the two tool grants through
+   `POST /atelier/api/v1/tool-grant-revisions`, after step 3: the
+   `run-project-verification` grant is exactly the bytes
+   `{"capability":"run-project-verification"}`; the `push-atelier-commit`
+   grant names step 3's operation by its own returned hash, so it cannot be
+   published first.
+
+Only once every schema, budget, grant, and operation above has returned its
+hash does the Git-source intake admit `workflows/issue-to-pr.yaml` itself --
+an unresolved pin refuses the whole document. The live hashes are the
+landing's own evidence; this runbook does not copy them, for the same reason
+the canary's four hashes above are not copied either.
 
 ## Pin an executor toolchain
 

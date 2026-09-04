@@ -1383,11 +1383,13 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         assert isinstance(refused, DurableAgentExecutorCapabilityUnavailable)
         assert settings.provider_probe_receipt_directory is not None
         settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
+        assert runtime.settings.provider_probe_receipt_provider_layer_digest is not None
         now = datetime.now(UTC)
         headless_receipt = ProviderProbeReceipt(
             ProviderProbeVectorId("headless-grok-4"),
             headless.revision_hash,
             WorkflowRevisionHash("b" * 64),
+            runtime.settings.provider_probe_receipt_provider_layer_digest,
             settings.source_commit,
             recorded_instant(now - timedelta(minutes=1)),
             recorded_instant(now + timedelta(hours=1)),

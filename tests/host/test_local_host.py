@@ -1175,11 +1175,16 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
 
         assert settings.provider_probe_receipt_directory is not None
         settings.provider_probe_receipt_directory.mkdir(parents=True, exist_ok=True)
+        assert runtime.settings.provider_probe_receipt_provider_layer_digest is not None
+        provider_layer_digest = (
+            runtime.settings.provider_probe_receipt_provider_layer_digest
+        )
         now = datetime.now(UTC)
         claude_receipt = ProviderProbeReceipt(
             ProviderProbeVectorId("headless-claude-opus-4-1"),
             configuration.revision_hash,
             WorkflowRevisionHash("b" * 64),
+            provider_layer_digest,
             settings.source_commit,
             recorded_instant(now - timedelta(minutes=1)),
             recorded_instant(now + timedelta(hours=1)),
@@ -1194,6 +1199,7 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             ProviderProbeVectorId("headless-grok-4"),
             grok_configuration.revision_hash,
             WorkflowRevisionHash("b" * 64),
+            provider_layer_digest,
             settings.source_commit,
             recorded_instant(now - timedelta(minutes=1)),
             recorded_instant(now + timedelta(hours=1)),

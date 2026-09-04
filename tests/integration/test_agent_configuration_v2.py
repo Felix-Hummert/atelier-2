@@ -916,6 +916,8 @@ def test_registry_startability_is_one_declared_factory_and_capability_decision()
 _PROBE_CONFIGURATION_HASH = AgentConfigurationRevisionHash("e" * 64)
 _PROBE_DEPLOYMENT_SOURCE_COMMIT = "a" * 40
 _PROBE_FOREIGN_SOURCE_COMMIT = "b" * 40
+_PROBE_DEPLOYMENT_DIGEST = Sha256Hash("1" * 64)
+_PROBE_FOREIGN_DIGEST = Sha256Hash("2" * 64)
 
 
 @dataclass
@@ -937,14 +939,17 @@ class _FakeProviderProbeReceiptReads:
 
 def _probe_receipt(
     *,
+    configuration_hash: AgentConfigurationRevisionHash = _PROBE_CONFIGURATION_HASH,
     source_commit: str = _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+    provider_layer_digest: Sha256Hash = _PROBE_DEPLOYMENT_DIGEST,
     valid_until: str = "2026-01-02T00:00:00Z",
     result: ProviderProbeResult = ProviderProbeResult.SUCCEEDED,
 ) -> ProviderProbeReceipt:
     return ProviderProbeReceipt(
         ProviderProbeVectorId("headless-fixture"),
-        _PROBE_CONFIGURATION_HASH,
+        configuration_hash,
         WorkflowRevisionHash("f" * 64),
+        provider_layer_digest,
         source_commit,
         RecordedAt("2026-01-01T00:00:00Z"),
         RecordedAt(valid_until),
@@ -975,8 +980,13 @@ def _probe_receipt(
         ),
         pytest.param(
             _probe_receipt(source_commit=_PROBE_FOREIGN_SOURCE_COMMIT),
+            True,
+            id="foreign_source_commit_same_provider_layer",
+        ),
+        pytest.param(
+            _probe_receipt(provider_layer_digest=_PROBE_FOREIGN_DIGEST),
             False,
-            id="foreign_source_commit",
+            id="foreign_provider_layer_digest",
         ),
         pytest.param(_probe_receipt(), True, id="good_receipt"),
     ],
@@ -984,7 +994,13 @@ def _probe_receipt(
 def test_is_startable_reads_the_receipt_state(
     receipt: ProviderProbeReceipt | None, expected: bool
 ) -> None:
-    """Missing, red, expired, foreign-commit, and good receipts each answer as proven."""
+    """Missing, red, expired, and foreign-digest receipts each answer unproven.
+
+    A receipt whose `source_commit` differs from this deployment's own but
+    whose `provider_layer_digest` matches still proves the configuration
+    (#1124): a redeploy that never touches the provider layer must not
+    invalidate evidence that is still true.
+    """
 
     factory = RecordingAgentExecutorFactoryV2(
         "anthropic", "claude-cli/v1", "receipt-gated", b"ok"
@@ -993,7 +1009,7 @@ def test_is_startable_reads_the_receipt_state(
         (factory,),
         receipt_gate=ProviderProbeReceiptGate(
             _FakeProviderProbeReceiptReads(receipt),
-            _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+            _PROBE_DEPLOYMENT_DIGEST,
             lambda: RecordedAt("2026-01-01T12:00:00Z"),
         ),
     )
@@ -1025,7 +1041,7 @@ def test_is_structurally_startable_asks_nothing_about_receipt_state() -> None:
         (available, AgentExecutorRegistration.unavailable(unavailable)),
         receipt_gate=ProviderProbeReceiptGate(
             _FakeProviderProbeReceiptReads(None),
-            _PROBE_DEPLOYMENT_SOURCE_COMMIT,
+            _PROBE_DEPLOYMENT_DIGEST,
             lambda: RecordedAt("2026-01-01T12:00:00Z"),
         ),
     )
@@ -2158,7 +2174,7 @@ def test_listing_names_a_filesystem_receipts_own_recorded_failure(
             "v2-test",
             agent_scratch_root=agent_scratch_root(tmp_path),
             provider_probe_receipt_directory=receipt_directory,
-            provider_probe_receipt_source_commit=_PROBE_DEPLOYMENT_SOURCE_COMMIT,
+            provider_probe_receipt_provider_layer_digest=_PROBE_DEPLOYMENT_DIGEST,
         ),
         _effect_factory(tmp_path),
         (factory,),
@@ -2192,6 +2208,7 @@ def test_listing_names_a_filesystem_receipts_own_recorded_failure(
             ProviderProbeVectorId("headless-fixture"),
             configuration.revision_hash,
             WorkflowRevisionHash("f" * 64),
+            _PROBE_DEPLOYMENT_DIGEST,
             _PROBE_DEPLOYMENT_SOURCE_COMMIT,
             RecordedAt("2026-09-03T16:17:00Z"),
             RecordedAt("2026-09-04T16:17:00Z"),
@@ -2216,6 +2233,92 @@ def test_listing_names_a_filesystem_receipts_own_recorded_failure(
         assert item.probe_failure is not None
         assert item.probe_failure.problem_code.value == "provider-overloaded"
         assert item.probe_failure.observed_at.value == "2026-09-03T16:17:00Z"
+    finally:
+        runtime.close()
+
+
+def test_a_receipt_survives_a_redeploy_that_does_not_touch_the_provider_layer(
+    tmp_path: Path,
+) -> None:
+    """#1124: the production receipt gate reads the filesystem end to end.
+
+    A receipt proven under a `source_commit` this deployment does not share
+    still lists as startable, because the gate now compares
+    `provider_layer_digest`, not the commit -- exactly the redeploy that must
+    not invalidate every receipt at once. A second receipt proven under a
+    foreign digest still lists as unproven.
+    """
+
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "receipt-digest-test", b"build"
+    )
+    receipt_directory = tmp_path / "provider-probes"
+    receipt_directory.mkdir()
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "v2-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+            provider_probe_receipt_directory=receipt_directory,
+            provider_probe_receipt_provider_layer_digest=_PROBE_DEPLOYMENT_DIGEST,
+        ),
+        _effect_factory(tmp_path),
+        (factory,),
+    )
+    runtime.initialize_storage()
+    catalog = DbosAgentConfigurationCatalog(
+        runtime.engine, runtime.agent_executor_registry
+    )
+    try:
+        auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        )
+        proven = AgentConfigurationRevision(
+            "opus-survives-redeploy",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        unproven = AgentConfigurationRevision(
+            "opus-foreign-digest",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        for configuration in (proven, unproven):
+            assert isinstance(
+                catalog.publish_agent_configuration_revision(configuration),
+                AgentConfigurationRevisionCreated,
+            )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId("anthropic"), (proven, unproven)
+        )
+        (receipt_directory / "proven.json").write_bytes(
+            _probe_receipt(
+                configuration_hash=proven.revision_hash,
+                source_commit=_PROBE_FOREIGN_SOURCE_COMMIT,
+                provider_layer_digest=_PROBE_DEPLOYMENT_DIGEST,
+                valid_until="2030-01-01T00:00:00Z",
+            ).canonical_bytes()
+        )
+        (receipt_directory / "unproven.json").write_bytes(
+            _probe_receipt(
+                configuration_hash=unproven.revision_hash,
+                provider_layer_digest=_PROBE_FOREIGN_DIGEST,
+                valid_until="2030-01-01T00:00:00Z",
+            ).canonical_bytes()
+        )
+
+        page = catalog.list_agent_configuration_revisions(None, 50)
+        assert isinstance(page, AgentConfigurationRevisionPage)
+        startable = {item.revision.revision_hash: item.startable for item in page.items}
+        assert startable[proven.revision_hash] is True
+        assert startable[unproven.revision_hash] is False
     finally:
         runtime.close()
 
