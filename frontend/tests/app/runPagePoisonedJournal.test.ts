@@ -123,7 +123,7 @@ async function flushUnhandledRejectionQueue(): Promise<void> {
 
 describe("a poisoned mutation journal on the run page (#914, second half of #1131)", () => {
   it.each(POISONED_JOURNAL_FIXTURES)(
-    "proves(run-page-cancel-read-reacts-to-every-poisoned-reason): shows the one sentence and door instead of the cancel card, for $name",
+    "shows the one sentence and door instead of the cancel card, for $name",
     async ({ stored }) => {
       sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, stored());
       render(App, {
@@ -145,7 +145,7 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
     }
   );
 
-  it("proves(run-page-wait-read-reacts-to-a-poisoned-journal): a waiting run shows the same sentence and door instead of the wait card", async () => {
+  it("a waiting run shows the same sentence and door instead of the wait card", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
     render(App, {
       props: {
@@ -164,7 +164,7 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
     expect(unhandledRejections).toEqual([]);
   });
 
-  it("proves(run-page-poisoned-journal-heals-without-a-reload): forgetting the journal heals the whole page in the same render tree", async () => {
+  it("forgetting the journal heals the whole page in the same render tree", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
     render(App, {
       props: {
@@ -196,7 +196,7 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
     expect(unhandledRejections).toEqual([]);
   });
 
-  it("proves(pinned-decision-read-reports-a-poisoned-journal): reports it through onJournalPoisoned instead of writing the sentence into its own wait-failure slot", async () => {
+  it("reports it through onJournalPoisoned instead of writing the sentence into its own wait-failure slot", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
     let reported = 0;
     render(PinnedDecision, {
@@ -221,7 +221,7 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
     expect(unhandledRejections).toEqual([]);
   });
 
-  it("proves(run-cancel-card-reports-a-poisoned-journal): reports it through onJournalPoisoned and renders nothing of its own, mounted directly with a poisoned journal", async () => {
+  it("reports it through onJournalPoisoned and renders nothing of its own, mounted directly with a poisoned journal", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
     let reported = 0;
     const { container } = render(RunCancelCard, {
@@ -243,7 +243,7 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
     expect(unhandledRejections).toEqual([]);
   });
 
-  it("proves(v3-run-view-reports-a-poisoned-journal): reports it through onJournalPoisoned and shows no poisoned notice of its own, mounted directly with a poisoned journal", async () => {
+  it("reports it through onJournalPoisoned and shows no poisoned notice of its own, mounted directly with a poisoned journal", async () => {
     sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, "{");
     let reported = 0;
     render(V3RunView, {
