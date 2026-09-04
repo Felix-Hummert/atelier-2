@@ -645,8 +645,8 @@ Each path gets its own word in the log: `published` for bytes the catalog
 gained, `present` for bytes it already held, or `refused` for the one path
 that stopped that intake. A name already held by a manually imported lineage
 is adopted rather than refused -- the source revision becomes that lineage's
-new head and the manual revisions stay its history -- while a name another
-source already delivered still refuses. A refusal does not hold the Serve
+new head and the manual revisions stay its history -- while a name any source
+has already delivered still refuses. A refusal does not hold the Serve
 back -- it starts with whatever workflow catalog state it already had -- but
 the command exits
 `3` rather than `0`, distinct from the generic failure exit `1`, so

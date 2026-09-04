@@ -32,6 +32,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.catalog_store import (
     admit_member_in,
+    current_display_name,
     found_lineage_in,
     persist_workflow_publication,
     revision_owner,
@@ -195,10 +196,9 @@ class DbosDefinitionSources:
             admission = found_lineage_in(
                 connection, published, selected.display_name, actor, intaken_at
             )
-            if (
-                isinstance(admission, CatalogAdmissionNameHeld)
-                and _lineage_source(connection, admission.holder) is None
-            ):
+            if isinstance(
+                admission, CatalogAdmissionNameHeld
+            ) and not _a_source_has_fed(connection, admission.holder):
                 # #660 A3: nobody has ever fed this name's lineage from a
                 # source, so it is a manual import -- adopt it rather than
                 # refuse, becoming its new head and leaving its history alone.
@@ -251,8 +251,42 @@ class DbosDefinitionSources:
                             published.revision_hash, lineage.lineage_id
                         ),
                     )
+                if previous is None:
+                    # A first intake byte-identical to the lineage's own
+                    # founding revision changes nothing in the catalog, but
+                    # this source has still taken the path in for the first
+                    # time and earns the same provenance any other first
+                    # intake would.
+                    _insert_intake(
+                        connection,
+                        _founding_intake(
+                            source_id, selected, commit, published.revision_hash
+                        ),
+                        actor,
+                        intaken_at,
+                    )
                 return PathAlreadyInCatalog(
                     selected.path, RevisionKind.WORKFLOW, published.revision_hash
+                )
+            case CatalogAdmissionRevisionOwned(revision_hash, owner) if (
+                previous is None
+                and not _a_source_has_fed(connection, owner)
+                and current_display_name(connection, owner) == selected.display_name
+            ):
+                # #660 A3's sibling case: these exact bytes already sit as a
+                # later, unsourced member of the lineage this path's own name
+                # holds. Nobody has ever fed that lineage from a source, so it
+                # is the path's own lineage under another guise, not a foreign
+                # entry -- report it present and record provenance rather than
+                # refusing the whole batch.
+                _insert_intake(
+                    connection,
+                    _founding_intake(source_id, selected, commit, revision_hash),
+                    actor,
+                    intaken_at,
+                )
+                return PathAlreadyInCatalog(
+                    selected.path, RevisionKind.WORKFLOW, revision_hash
                 )
             case (
                 CatalogAdmissionNameHeld()
@@ -398,38 +432,37 @@ def _intake_from_record(record: Mapping[Any, Any]) -> SourceIntake:
     )
 
 
-def _lineage_source(
-    connection: Connection, lineage_id: CatalogLineageId
-) -> DefinitionSourceId | None:
-    """The source that fed this lineage, or nothing when no source ever has.
+def _a_source_has_fed(connection: Connection, lineage_id: CatalogLineageId) -> bool:
+    """Whether any source has ever taken a revision into this lineage.
 
     A lineage a source founded or joined carries a `catalog_source_intakes`
     row under every revision hash it holds as a member; a lineage a manual
     import founded carries none. `#660` A3 lets the intake adopt a name-held
-    lineage only while this answers `None` -- once any source, this one
-    included, has fed it, adopting it again would let a name silently move
-    which lineage a path's own continuity means.
+    or revision-owned lineage only while this answers `False` -- once any
+    source, this one included, has fed it, adopting it again would let a name
+    silently move which lineage a path's own continuity means. No caller
+    needs which source fed it, only whether one has.
     """
 
-    source_id = connection.scalar(
-        sa.select(catalog_source_intakes.c.source_id)
-        .select_from(
-            catalog_source_intakes.join(
-                catalog_lineage_members,
-                sa.and_(
-                    catalog_lineage_members.c.revision_hash
-                    == catalog_source_intakes.c.revision_hash,
-                    catalog_source_intakes.c.revision_kind
-                    == RevisionKind.WORKFLOW.value,
-                ),
+    return (
+        connection.scalar(
+            sa.select(catalog_source_intakes.c.source_id)
+            .select_from(
+                catalog_source_intakes.join(
+                    catalog_lineage_members,
+                    sa.and_(
+                        catalog_lineage_members.c.revision_hash
+                        == catalog_source_intakes.c.revision_hash,
+                        catalog_source_intakes.c.revision_kind
+                        == RevisionKind.WORKFLOW.value,
+                    ),
+                )
             )
+            .where(catalog_lineage_members.c.lineage_id == lineage_id.value)
+            .limit(1)
         )
-        .where(catalog_lineage_members.c.lineage_id == lineage_id.value)
-        .limit(1)
+        is not None
     )
-    if source_id is None:
-        return None
-    return DefinitionSourceId(str(source_id))
 
 
 def _lineage_holding(
@@ -449,6 +482,29 @@ def _lineage_holding(
             "a recorded source intake names a revision no catalog lineage holds"
         )
     return owner
+
+
+def _founding_intake(
+    source_id: DefinitionSourceId,
+    selected: SelectedIntake,
+    commit: SourceCommit,
+    revision_hash: PublishedRevisionHash,
+) -> SourceIntake:
+    """The first intake row a path earns the moment this source first sees it.
+
+    Shared by every arm of `_take_in` that admits or recognises a path for
+    the first time (`previous is None`): the intake number always starts at
+    `_FIRST_INTAKE_NUMBER` there, whatever the catalog already held.
+    """
+
+    return SourceIntake(
+        source_id,
+        selected.path,
+        _FIRST_INTAKE_NUMBER,
+        RevisionKind.WORKFLOW,
+        revision_hash,
+        commit,
+    )
 
 
 def _insert_intake(

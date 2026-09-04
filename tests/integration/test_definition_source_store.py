@@ -44,6 +44,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineage,
     CatalogLineageDisplayName,
     CatalogLineageFounded,
+    CatalogMemberAdmitted,
 )
 from atelier2.contracts.definition_sources import (
     DefinitionSourceAccess,
@@ -60,7 +61,11 @@ from atelier2.contracts.definition_sources import (
     SelectionPattern,
     SourceCommit,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
@@ -973,6 +978,143 @@ def test_a_manually_imported_name_is_adopted_as_the_sources_new_head(
         CatalogActivatedAt(recorded_instant(engine, "workflows/build.yaml")),
     )
     assert provenance[PublishedRevisionHash.of(manual).value] is None
+
+
+def test_a_first_intake_byte_identical_to_a_manual_founding_revision_gains_provenance(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The founding-revision half of `#660` A3's coverage: present still records.
+
+    Byte-identical to a manually imported lineage's own founding revision,
+    under its own name, changes nothing in the catalog -- but this source has
+    still taken the path in for the first time. Recording that provenance
+    matters beyond the described view: without it the lineage still looks
+    unsourced to the next name-held check, and a second source delivering a
+    genuinely different revision under this name would wrongly adopt it as an
+    unclaimed manual import instead of refusing.
+    """
+
+    manual = workflow_named("build")
+    assert isinstance(
+        DbosCatalogStore(engine).add_workflow(
+            WorkflowRevision(manual),
+            CatalogLineageDisplayName("build"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-01T00:00:00Z"),
+        ),
+        CatalogLineageFounded,
+    )
+    repository = tmp_path / "definitions.git"
+    commit = bare_repository_of(repository, {"workflows/build.yaml": manual})
+    source_id = connect(database, repository)
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    reported = capsys.readouterr().out
+    assert commit in reported
+    assert reported.splitlines()[1:] == ["  present workflow workflows/build.yaml"]
+    assert recorded_intakes(engine) == [
+        (
+            source_id,
+            "workflows/build.yaml",
+            1,
+            PublishedRevisionHash.of(manual).value,
+            commit,
+        )
+    ]
+    provenance = listed_provenance(engine)
+    assert provenance[PublishedRevisionHash.of(manual).value] == RevisionProvenance(
+        DefinitionSourceId(source_id),
+        SourceCommit(commit),
+        RepositoryPath("workflows/build.yaml"),
+        CatalogActivatedAt(recorded_instant(engine, "workflows/build.yaml")),
+    )
+
+    second_repository = tmp_path / "second.git"
+    bare_repository_of(second_repository, {"workflows/build.yaml": manual + b"\n"})
+    second_source_id = connect(database, second_repository)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, second_source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("refused workflows/build.yaml")
+    assert "already held by lineage" in refused
+    assert logical_dump(database) == settled
+
+
+def test_bytes_a_manual_import_holds_as_a_later_member_are_adopted_as_present(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`#660` A3's other sibling: a later, unsourced revision of the path's own name.
+
+    The name-held case adopts a manual import's *founding* revision as a
+    lineage's new head. This is the same belief reached from the other side:
+    the repository's bytes already sit inside that unsourced lineage one
+    member down from the top, so `found_lineage_in` answers
+    `CatalogAdmissionRevisionOwned` before a name is ever consulted. That
+    answer must still resolve to the path's own lineage, not a foreign one,
+    or every later manual revision would wrongly refuse the whole batch.
+    """
+
+    store = DbosCatalogStore(engine)
+    founding = workflow_named("build")
+    assert isinstance(
+        store.add_workflow(
+            WorkflowRevision(founding),
+            CatalogLineageDisplayName("build"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-01T00:00:00Z"),
+        ),
+        CatalogLineageFounded,
+    )
+    later = founding + b"\n"
+    DbosWorkflowRevisionPublisher(engine).publish(WorkflowRevision(later))
+    lineage = CatalogLineage(
+        RevisionKind.WORKFLOW, PublishedRevisionHash.of(founding)
+    ).lineage_id
+    assert isinstance(
+        store.admit_member(
+            lineage,
+            PublishedRevision(RevisionKind.WORKFLOW, later),
+            CatalogLineageDisplayName("build"),
+            CatalogActor("felix"),
+            CatalogActivatedAt("2026-09-01T00:05:00Z"),
+        ),
+        CatalogMemberAdmitted,
+    )
+    repository = tmp_path / "definitions.git"
+    commit = bare_repository_of(repository, {"workflows/build.yaml": later})
+    source_id = connect(database, repository)
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    reported = capsys.readouterr().out
+    assert commit in reported
+    assert reported.splitlines()[1:] == ["  present workflow workflows/build.yaml"]
+    assert lineage_members(engine, "build") == [
+        PublishedRevisionHash.of(founding).value,
+        PublishedRevisionHash.of(later).value,
+    ]
+    assert recorded_intakes(engine) == [
+        (
+            source_id,
+            "workflows/build.yaml",
+            1,
+            PublishedRevisionHash.of(later).value,
+            commit,
+        )
+    ]
+    provenance = listed_provenance(engine)
+    assert provenance[PublishedRevisionHash.of(later).value] == RevisionProvenance(
+        DefinitionSourceId(source_id),
+        SourceCommit(commit),
+        RepositoryPath("workflows/build.yaml"),
+        CatalogActivatedAt(recorded_instant(engine, "workflows/build.yaml")),
+    )
 
 
 def test_a_name_a_different_source_already_intook_still_refuses(

@@ -314,9 +314,16 @@ def _member(
     )
 
 
-def _current_display_name(
+def current_display_name(
     connection: sa.Connection, lineage_id: CatalogLineageId
 ) -> CatalogLineageDisplayName:
+    """The name a lineage carries now, read through one connection.
+
+    Public alongside `revision_owner`: a caller composing on its own
+    transaction (a source intake judging whether a name-held or
+    revision-owned lineage is really the path's own) asks the same question
+    `found_lineage_in` and `admit_member_in` already answer for themselves.
+    """
     name = connection.scalar(
         sa.select(catalog_lineage_aliases.c.name)
         .where(catalog_lineage_aliases.c.lineage_id == lineage_id.value)
@@ -391,12 +398,13 @@ def persist_workflow_publication(
     agrees with what was handed in is `_record_publication`'s check, and it runs
     on this connection right after.
 
-    Public with `found_lineage_in`, `admit_member_in` and `revision_owner`: they
-    are the catalog's writes as a caller that already owns a transaction sees
-    them, so a second door into the catalog -- a source intake admitting many
-    files at once -- composes them instead of writing publication rows of its
-    own. The store methods below are the same three writes for a caller that
-    owns no transaction and wants one per call.
+    Public with `found_lineage_in`, `admit_member_in`, `revision_owner` and
+    `current_display_name`: they are the catalog's writes and reads as a
+    caller that already owns a transaction sees them, so a second door into
+    the catalog -- a source intake admitting many files at once -- composes
+    them instead of writing publication rows or re-deriving a lineage's name
+    of its own. The store methods below are the same three writes for a
+    caller that owns no transaction and wants one per call.
     """
     connection.execute(
         workflow_revisions.insert()
@@ -437,7 +445,7 @@ def found_lineage_in(
             stored,
             revision,
             int(member["revision_number"]),
-            _current_display_name(connection, lineage.lineage_id),
+            current_display_name(connection, lineage.lineage_id),
         )
     owner = revision_owner(connection, revision.kind, revision.revision_hash)
     if owner is not None:
@@ -487,7 +495,7 @@ def admit_member_in(
             lineage,
             revision,
             int(existing_member["revision_number"]),
-            _current_display_name(connection, lineage.lineage_id),
+            current_display_name(connection, lineage.lineage_id),
         )
     owner = revision_owner(connection, revision.kind, revision.revision_hash)
     if owner is not None:
@@ -1046,7 +1054,7 @@ class DbosCatalogStore:
                     lineage.lineage_id,
                     revision_hash,
                     int(member["revision_number"]),
-                    _current_display_name(connection, lineage.lineage_id),
+                    current_display_name(connection, lineage.lineage_id),
                     retired=_is_retired(connection, lineage.lineage_id),
                 )
         except (OperationalError, PoolTimeoutError):
