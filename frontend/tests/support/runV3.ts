@@ -1,6 +1,5 @@
 import type {
   DefectiveRunRow,
-  RunCancellability,
   RunListRow,
   RunNotCancellableReason,
   RunV3,
@@ -30,11 +29,11 @@ export function eventCursor(sequence: number): string {
  */
 export function cancellableBlock(
   targetNodeExecutionId = "d".repeat(64)
-): RunCancellability {
+): RunV3["cancellation"] {
   return { cancellable: true, reason: null, target_node_execution_id: targetNodeExecutionId };
 }
 
-export function notCancellableBlock(reason: RunNotCancellableReason): RunCancellability {
+export function notCancellableBlock(reason: RunNotCancellableReason): RunV3["cancellation"] {
   return { cancellable: false, reason, target_node_execution_id: null };
 }
 

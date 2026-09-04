@@ -17,7 +17,7 @@ import type { CockpitRoute } from "./route";
  * Settings and catalog detail use their canonical paths, declared alongside
  * the server's cold-load paths in `servedPaths.json`.
  */
-export type WorkshopRoomId = "workbench" | "catalog" | "history";
+type WorkshopRoomId = "workbench" | "catalog" | "history";
 
 export type WorkshopDestination = {
   id: WorkshopRoomId | "settings";

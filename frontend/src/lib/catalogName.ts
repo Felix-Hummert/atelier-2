@@ -76,7 +76,7 @@ export function problemCode(error: unknown): string | null {
   return problemTypeCode(error.problem);
 }
 
-export function problemTypeCode(problem: Pick<Problem, "type">): string | null {
+function problemTypeCode(problem: Pick<Problem, "type">): string | null {
   if (!problem.type.startsWith(PROBLEM_TYPE_PREFIX)) return null;
   return problem.type.slice(PROBLEM_TYPE_PREFIX.length);
 }

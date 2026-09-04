@@ -16,7 +16,7 @@ import { groupSavedWorkflows } from "./savedWorkflows";
  * not executable can never become startable by admission, so it never wears the
  * admission's words.
  */
-export type CatalogEntryState =
+type CatalogEntryState =
   | { kind: "startable" }
   | { kind: "not-admitted" }
   | { kind: "not-executable"; reason: string };

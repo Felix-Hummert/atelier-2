@@ -1,7 +1,7 @@
 import { workbenchPageCopy } from "./workbenchPageCopy";
 
 /** Who said a line: the operator, or the house answering for itself. */
-export type ChatSpeaker = "you" | "house";
+type ChatSpeaker = "you" | "house";
 
 export type ChatMessage = {
   /** Stable within one transcript, so a keyed list never re-creates a rendered line. */
