@@ -509,12 +509,13 @@ describe("the Workbench pins open decisions (#580)", () => {
     // read of that one run alone -- so the double this room re-asks after
     // the event is the same one it always asks, pointed at the newer set.
     let runs: RunV3[] = [waitingRun()];
+    const listRuns = vi.fn(async (_after?: string, state?: string) => ({
+      items: state === "WAITING_INPUT" ? runs.map(runRow) : [],
+      next_after: null
+    }));
     openWorkbench([], {
       answer,
-      listRuns: vi.fn(async (_after?: string, state?: string) => ({
-        items: state === "WAITING_INPUT" ? runs.map(runRow) : [],
-        next_after: null
-      })),
+      listRuns,
       openAttentionEvents: feed.openAttention,
       getNodeDetail: vi.fn(async (_publicReference: string, nodeId: string) =>
         nodeId === "next-gate"
@@ -531,6 +532,7 @@ describe("the Workbench pins open decisions (#580)", () => {
     const landed = await screen.findByRole("status", { name: workbenchPageCopy.answerLanded });
     expect(landed.isConnected).toBe(true);
 
+    const listRunsCallsBeforeEvent = listRuns.mock.calls.length;
     feed.handlers?.opened();
     runs = [nextWait];
     feed.handlers?.event(
@@ -542,6 +544,19 @@ describe("the Workbench pins open decisions (#580)", () => {
         })
       )
     );
+
+    // Anchored on the reload the nudge itself triggers, not on the eventual
+    // settle below: the 202's own frozen "approve" snapshot is still the
+    // component's `landedRun` right here, mid-flight, so a broken
+    // `hasLeftWait` guard that re-absorbs it resurrects the answered
+    // question in this exact window -- a flash the final `waitFor` alone
+    // would never sample, since by the time it next polls the fresher read
+    // has already overwritten it.
+    await waitFor(() => {
+      expect(listRuns.mock.calls.length).toBeGreaterThan(listRunsCallsBeforeEvent);
+      expect(screen.queryByRole("heading", { name: question })).toBeNull();
+      expect(screen.getByRole("status", { name: workbenchPageCopy.answerLanded }).isConnected).toBe(true);
+    });
 
     await waitFor(
       () => {
