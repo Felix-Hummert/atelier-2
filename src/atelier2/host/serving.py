@@ -671,13 +671,20 @@ def _runner_lease_executor_registrations(
     (`DbosRuntimeSettings.__post_init__`, reached through
     `runtime_settings()`, refuses a partial declaration by name). Real
     providers over a Runner lease wait on `#15` and B-3.
+
+    Its two jobs are printing a line and holding until it is reaped, so the
+    call reaches no file of the attempt and the registration says `WITHHELD`
+    rather than keeping the permissive default: a node that pins a tool grant
+    is refused against this candidate instead of being cast onto it (#1166).
     """
 
     if settings.runner_lease_root is None:
         return ()
     return (
         AgentExecutorRegistration.startable(
-            FreeRunnerExecutorFactory(), AgentExecutorCarrier.RUNNER_LEASE
+            FreeRunnerExecutorFactory(),
+            AgentExecutorCarrier.RUNNER_LEASE,
+            WorkspaceFileTools.WITHHELD,
         ),
     )
 

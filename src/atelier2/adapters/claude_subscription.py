@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import shutil
 import stat
@@ -48,6 +49,8 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
+
+_LOG = logging.getLogger("atelier2")
 
 CLAUDE_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
     ProviderId("anthropic"), AgentExecutorRevision("claude-subscription/v1")
@@ -775,27 +778,47 @@ def _sweep_scrub_residue(lease: AgentAttemptWorkspaceLease) -> None:
     has ended and before anything reads the tree.
 
     Only an entry of the measured list that stands empty is removed -- a
-    zero-byte regular file or a directory holding nothing -- so a file the
-    model wrote under one of those names, and a pinned file the scrub found
-    already there and left alone, both survive untouched. What this cannot
-    tell apart is a pinned tree that itself ships one of those names as a
-    zero-byte file: the executor first sees the working directory when the
-    process has ended, because that is the only seam an executor is handed the
-    lease at, so an entry that was empty before the launch is indistinguishable
-    from one the scrub created. Named rather than guarded (#1166): closing it
+    zero-byte regular file or a directory holding nothing -- so a non-empty
+    file the model wrote under one of those names, and a non-empty pinned file
+    the scrub found already there and left alone, both survive untouched. What
+    this cannot tell apart is either zero-byte case: the executor first sees
+    the working directory when the process has ended, because that is the only
+    seam an executor is handed the lease at, so a name the pin itself ships
+    empty, or that the model created and left empty, is indistinguishable from
+    one the scrub prepared. Named rather than guarded (#1166): closing it
     exactly needs an observation between the pin's materialization and the
     launch, which no executor seam offers today.
 
     Symbolic links are followed nowhere: every component is opened with
     `O_NOFOLLOW` relative to the leased descriptor, so a link the pin carries
     is neither removed nor walked through.
+
+    A workspace this cannot take an entry back out of -- a directory the pin
+    or the CLI left unwritable is the reachable case -- leaves that entry
+    standing and says so, rather than travelling out of the decode. What is at
+    stake per entry is one empty placeholder in a candidate tree; what a raised
+    `OSError` costs is the whole attempt, stranded before any ending was
+    recorded. The residue is contained one entry at a time so a single
+    unremovable name cannot decide the others either.
     """
 
     with entered_leased_directory(
         lease.working_directory, lease.device, lease.inode
     ) as (_entered, descriptor):
         for name in _SUBPROCESS_ENVIRONMENT_SCRUB_RESIDUE:
-            _remove_an_empty_entry(descriptor, name)
+            try:
+                _remove_an_empty_entry(descriptor, name)
+            except OSError as error:
+                _LOG.warning(
+                    "Left the scrub residue entry %s standing in the workspace: %s",
+                    name,
+                    error,
+                    exc_info=error,
+                    extra={
+                        "event": "claude_scrub_residue_entry_left",
+                        "entry": name,
+                    },
+                )
 
 
 def _remove_an_empty_entry(descriptor: int, name: str) -> None:
@@ -839,7 +862,8 @@ def _opened_directory(descriptor: int, name: str) -> int | None:
     Nothing covers the three shapes that are simply not a directory the scrub
     made: absent, a file, and a symbolic link -- `O_NOFOLLOW` refuses the last
     one rather than walking through a link the pinned project carries. Every
-    other refusal is this machine saying something is wrong and travels on.
+    other refusal is this workspace saying it cannot be walked and travels on
+    to the sweep, which leaves that entry standing.
     """
 
     try:

@@ -269,6 +269,14 @@ class AgentExecutorV2(Protocol):
         correlate through its own mutable state -- and one executor object
         serves every attempt on its key, so overlapping attempts would decode
         each other's answers into durable results.
+
+        Decoding is therefore not purely a reading of bytes: the invocation
+        carries the lease, and an executor may here take back what its own CLI
+        left standing in that workspace beside the model's work -- the one
+        moment between the process ending and anything reading the tree, and
+        the only seam that offers it. What such a take-back must never touch is
+        the attempt's own work; an executor that cannot tell the two apart
+        leaves the entry standing rather than guessing.
         """
         ...
 

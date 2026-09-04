@@ -15,6 +15,7 @@ unbilled with no credential in reach.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -140,10 +141,18 @@ def _an_answer() -> bytes:
     )
 
 
+UNWRITABLE_DIRECTORY = 0o500
+"""Readable and enterable, but nothing in it can be removed -- the sweep's wall."""
+
+WRITABLE_AGAIN = 0o700
+"""Given back before the tree is read, so the scenario ends where it started."""
+
+
 def _what_the_attempt_left(
     tmp_path: Path,
     open_executor: Callable[[Path], AgentExecutorV2],
     wrote: Mapping[str, str],
+    sealed: tuple[str, ...] = (),
 ) -> LeasedWorkingTree:
     """Run one Claude invocation's decode over a pinned workspace, and read the tree.
 
@@ -151,6 +160,9 @@ def _what_the_attempt_left(
     is simulated: the measured scrub preparation, plus whatever this scenario
     says the model itself wrote. The tree comes back from the project's own
     candidate store, the same reading a run makes before it pays for anything.
+
+    `sealed` names lease directories this scenario makes unwritable while the
+    decode runs: the workspace the sweep cannot take an entry back out of.
     """
 
     root = tmp_path / "project"
@@ -161,6 +173,9 @@ def _what_the_attempt_left(
     _prepare_scrub_targets(lease.working_directory)
     write_into_checkout(lease.working_directory, wrote)
 
+    for name in sealed:
+        (lease.working_directory / name).chmod(UNWRITABLE_DIRECTORY)
+
     executor = open_executor(tmp_path / "deployment")
     command = executor.prepare_process(execution.request)
     try:
@@ -169,6 +184,8 @@ def _what_the_attempt_left(
             AgentProcessCompletion(0, _an_answer(), b""),
         )
     finally:
+        for name in sealed:
+            (lease.working_directory / name).chmod(WRITABLE_AGAIN)
         executor.release_credential_channel(command)
         executor.close()
     assert isinstance(decoded, AgentExecutionResult)
@@ -198,7 +215,7 @@ def test_a_claude_call_that_changed_nothing_leaves_the_tree_equal_to_the_pin(
 ) -> None:
     """The scrub's placeholders are not the attempt's work, and do not read as it.
 
-    Without the sweep this tree carries seventeen empty files and three empty
+    Without the sweep this tree carries seventeen empty files and five empty
     directories nobody wrote, which is what let live pass 5 pay for a
     verification and push a commit of placeholders (#1166).
     """
@@ -238,3 +255,36 @@ def test_what_the_call_really_wrote_survives_the_sweep(
     assert b"package.json" not in changes
     assert b".env" not in changes
     assert b"yarn.lock" not in changes
+
+
+def test_an_entry_the_sweep_cannot_remove_is_left_standing_and_named(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One unremovable placeholder costs its own line, never the whole attempt.
+
+    A `.claude` the pin or the CLI left unwritable is what a raised `OSError`
+    would travel out of the decode on, stranding the attempt before any ending
+    was recorded -- the repository's own unrecoverable state, paid for an empty
+    directory. So the entry stays, the operator is told which one, and the rest
+    of the residue is still taken back.
+    """
+
+    with caplog.at_level(logging.WARNING, logger="atelier2"):
+        written = _what_the_attempt_left(
+            tmp_path, _workspace_tool_executor, {}, sealed=(".claude",)
+        )
+
+    workspace = tmp_path / "workspace"
+    assert (workspace / ".claude" / "agents").is_dir()
+    assert not (workspace / ".env").exists()
+    assert written.tree == written.pin.tree
+    left = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and getattr(record, "event", None) == "claude_scrub_residue_entry_left"
+    ]
+    assert {getattr(record, "entry", None) for record in left} == {
+        ".claude/agents",
+        ".claude/commands",
+    }

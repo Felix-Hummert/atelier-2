@@ -388,7 +388,7 @@ def test_an_executable_that_never_names_an_unknown_flag_cannot_be_attested(
 # invocation's own working directory before it can launch the door child under
 # bubblewrap: empty bind-mount targets neither this executor nor the model asked
 # for. A subset of the exact list #1166 then measured
-# (`SUBPROCESS_ENVIRONMENT_SCRUB_RESIDUE`), spelled here rather than imported
+# (`_SUBPROCESS_ENVIRONMENT_SCRUB_RESIDUE`), spelled here rather than imported
 # so this stays a fake CLI's own behaviour and not the sweep agreeing with
 # itself.
 DOORS_SCRUB_RESIDUE_FILES = (

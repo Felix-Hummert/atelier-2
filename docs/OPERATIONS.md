@@ -1090,7 +1090,11 @@ refused before the run exists
 `agent-executor-binding-unavailable`). Arming is an operations step of its own
 -- add the flag to `serve-live.sh` and restart
 `atelier2-serve.service` -- and, like every executor arming, it widens what a
-billed run may do on this host.
+billed run may do on this host. The flag is only half of it: the builder
+model's registry row must also resolve to an agent configuration published on
+`claude-subscription-tools/v1`, because a row still naming a tool-free Claude
+is cast onto an executor that reaches no file, and the start then answers
+`agent-executor-binding-unavailable` with the flag already in place.
 
 ## Connect a git definition source, see where it stands, and take it in
 
