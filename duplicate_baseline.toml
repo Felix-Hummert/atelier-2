@@ -1,0 +1,64 @@
+# The copied code this tree already carries, one entry per pair of qualified
+# names. `scripts/check_architecture.py` reads it: a pair that is not listed
+# turns the gate red, and an entry whose pair is gone turns it red too, so the
+# list shrinks with the copies it records and never grows quietly.
+#
+# Every entry below is a copy waiting for an owner (#1195 names the follow-up
+# slices): one HTTP client for the host commands, one subscription core for the
+# executor adapters, one result payload for the GitHub effects.
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription.ClaudeAtelierDoorsExecutor.release_credential_channel"
+right = "atelier2.adapters.claude_subscription.ClaudeSubscriptionExecutor.release_credential_channel"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription.ClaudeAtelierDoorsExecutor.release_credential_channel"
+right = "atelier2.adapters.claude_subscription.ClaudeWorkspaceToolExecutor.release_credential_channel"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription.ClaudeSubscriptionExecutor.release_credential_channel"
+right = "atelier2.adapters.claude_subscription.ClaudeWorkspaceToolExecutor.release_credential_channel"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription._content_blocks"
+right = "atelier2.adapters.grok_subscription._message_content_blocks"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription._job_with_output_schema_ask"
+right = "atelier2.adapters.grok_subscription._job_with_output_schema_ask"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription._stream_entry"
+right = "atelier2.adapters.grok_subscription._stream_entry"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription._token_count"
+right = "atelier2.adapters.grok_subscription._token_count"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription._usage_step"
+right = "atelier2.adapters.grok_subscription._usage_step"
+
+[[pair]]
+left = "atelier2.adapters.claude_subscription._write_private_file"
+right = "atelier2.adapters.codex_subscription._write_private_file"
+
+[[pair]]
+left = "atelier2.adapters.github.effects._result_payload"
+right = "atelier2.adapters.github.live_effects._result_payload"
+
+[[pair]]
+left = "atelier2.application.publish_workflow_revision.WorkflowPublicationLimits.__post_init__"
+right = "atelier2.contracts.workflow_projections.EnrichedPageBudget.__post_init__"
+
+[[pair]]
+left = "atelier2.contracts.node_records_v3.MaterializedOrderMember.__post_init__"
+right = "atelier2.contracts.node_records_v3.ReceiptOutput.__post_init__"
+
+[[pair]]
+left = "atelier2.host.mcp_command._api_url"
+right = "atelier2.host.run_command._api_url"
+
+[[pair]]
+left = "atelier2.host.mcp_command._decoded"
+right = "atelier2.host.run_command._decoded"

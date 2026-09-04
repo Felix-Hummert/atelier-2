@@ -1354,6 +1354,18 @@ file it stands in is the whole justification:
 An entry naming something the gate no longer reports is red too: when a caller
 arrives, or the code goes, its entry goes with it.
 
+## The duplicate ratchet
+
+`uv run --locked python scripts/check_architecture.py` also refuses copied
+code. It reads every function of `src/atelier2` long enough to be recognised
+again as five-token shingles, with its literals and its own names normalised,
+so a copy someone renamed and reflowed still matches; a pair whose shingles
+overlap by 95 per cent or more is the same code. `duplicate_baseline.toml`
+names the pairs this tree already carries. A pair that is not listed turns the
+gate red, and so does an entry whose pair is gone -- a list that only grows
+stops describing anything. Resolving a listed pair therefore means giving the
+two one owner *and* deleting its entry.
+
 ## Code rules: gates, metrics, audit
 
 The code rules in [`AGENTS.md`](../AGENTS.md) fall into three classes, and this
@@ -1361,12 +1373,12 @@ section only says which class a rule is in; `.github/workflows/ci.yml` stays the
 live list of what actually runs.
 
 Machine-checkable rules are gates there. Running today: the architecture check
-(`scripts/check_architecture.py`, package boundaries) and the dead-code gates
-above. Dispatched and not landed yet: `ruff check --select ANN401` over
-`contracts`, `ports`, `application` and `api` (#1196) and the duplicate ratchet
-inside the architecture check (#1195). The size, complexity and narrative checks
-are ruled but unbuilt, and the core-test-import ratchet starts only once the
-first adapter-bound test module has moved.
+(`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
+above, and the dead-code gates above. Dispatched and not landed yet: `ruff
+check --select ANN401` over `contracts`, `ports`, `application` and `api`
+(#1196). The size, complexity and narrative checks are ruled but unbuilt, and
+the core-test-import ratchet starts only once the first adapter-bound test
+module has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become
