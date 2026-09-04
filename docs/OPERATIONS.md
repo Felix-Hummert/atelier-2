@@ -1320,6 +1320,24 @@ was not reached at 96 on 2026-08-19 (`ed6376b`) and stays leftover.
 Writer-lock, process spawn, watchdog cgroup, and memory are named only when
 the harness observes them.
 
+## Land a pull request
+
+**`gh pr merge --auto --merge` queues a pull request; it does not merge it on
+the spot.** GitHub's merge queue builds a merge candidate from one or more
+armed pull requests, runs `ci.yml` once against that candidate on the
+`merge_group` event, and merges the pull request only once the ruleset's
+required checks report green on that run; a red candidate leaves its pull
+request out of the queue instead of blocking the ones behind it. This
+replaces re-arming a pull request by hand after every trunk landing: the queue
+absorbs a `main` move by rebuilding the candidate itself, instead of leaving a
+`BEHIND` pull request to `cancel-in-progress` its own in-flight run.
+
+The one-time ruleset step this depends on -- turning on "Require merge queue"
+on the `main-protection` ruleset (merge method `merge`, group size cap 5,
+admitting only non-failing pull requests) -- is an operator/head step done
+once, through `gh api`, after this change lands; the queue has no effect on
+pull requests opened before that step runs.
+
 ## Dead-code gates
 
 Two gates keep code that nothing reaches out of the tree, and they do not yet
