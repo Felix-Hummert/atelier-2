@@ -51,6 +51,15 @@ MAXIMUM_TOOL_GRANT_DOCUMENT_BYTES = 4_096
 MAXIMUM_VERIFICATION_COMMAND_BYTES = 4_096
 """How long the exact argv of one verification may be, as its durable record holds it."""
 
+MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES = 2_048
+"""How much of pytest's own summary line one failed verification's receipt keeps.
+
+Mirrors `MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES` (#1137): a receipt is a
+sentence an operator reads at a glance, not a log, and a project's own test
+runner is free to compose a summary of any length even though pytest's own is
+short in practice.
+"""
+
 
 class ToolGrantCapability(StrEnum):
     """The closed set of capabilities a published tool grant may name.

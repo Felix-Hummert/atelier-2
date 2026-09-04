@@ -33,6 +33,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
 )
 from atelier2.contracts.agents import AgentExecutionResult
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -77,6 +78,7 @@ from atelier2.ports.agent_tool_effects import (
     AgentToolEffectPending,
     redeem_prepared_tool_effect,
 )
+from atelier2.ports.artifacts import PublishArtifactResult
 from atelier2.ports.project_verification import (
     PinnedProjectSource,
     ProjectVerificationOutcome,
@@ -255,6 +257,21 @@ class _NeverRedeemedVerifications:
         )
 
 
+@dataclass
+class _UnreachedArtifactPublisher:
+    """A publisher a passing verification must never touch.
+
+    A redeemable `run-project-verification` grant is wired with one before any
+    provider work runs; a check that exits zero never publishes anything, so
+    reaching this fake's own method would itself be the defect under test.
+    """
+
+    def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
+        raise AssertionError(
+            "a passing verification must not publish anything", artifact
+        )
+
+
 def _drive(
     project: PinnedProjectSource, root: Path
 ) -> tuple[_ClaimingStore, _RecordingSupervisor, _LeasingWorkspaces]:
@@ -268,6 +285,7 @@ def _drive(
         supervisor,  # type: ignore[arg-type]
         workspaces,  # type: ignore[arg-type]
         project,
+        _UnreachedArtifactPublisher(),  # type: ignore[arg-type]
     )
     return store, supervisor, workspaces
 

@@ -955,15 +955,17 @@ the canary's four hashes above are not copied either.
 
 When the redeemed `run-project-verification` grant exits nonzero, the
 attempt's node receipt no longer names only an exit code. It names the exact
-command, pytest's own short summary line where the retained tail carries one,
-and -- when the check printed anything at all -- the address of an artifact
-holding the last 64 KiB of its combined stdout and stderr, e.g.
-`project-verification-failed: exit 1; uv run --locked pytest …; 3 failed,
-5961 passed; output artifact sha256:<hash>`. That artifact is the same
-content-addressed material `POST /artifacts` publishes and `GET
-/artifacts/{hash}` reads back (#1089); no second store and no new wire
-concept carry it. A verification that exits zero keeps no artifact -- the
-outcome's own hash and summary are proof enough for a check that passed.
+command, how long it ran, pytest's own short summary line where the retained
+tail carries one, and -- when the check printed anything at all -- the
+address of an artifact holding the last 64 KiB of its combined stdout and
+stderr, e.g. `project-verification-failed: exit 1; uv run --locked pytest …;
+after 806 s; 3 failed, 5961 passed in 45.23s; output artifact
+sha256:<hash>`. That artifact is the same content-addressed material `POST
+/artifacts` publishes and `GET /artifacts/{hash}` reads back (#1089); no
+second store and no new wire concept carry it, and any credential shape
+`redact_credentials` recognises is replaced before the tail is kept. A
+verification that exits zero keeps no artifact -- the outcome's own hash and
+summary are proof enough for a check that passed.
 
 ## Pin an executor toolchain
 

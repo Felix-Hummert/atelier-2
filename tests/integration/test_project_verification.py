@@ -45,6 +45,7 @@ from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
     ToolGrantCapability,
@@ -65,6 +66,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 from atelier2.ports.artifacts import ArtifactCreated, PublishArtifactResult
+from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import (
     MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES,
@@ -95,31 +97,51 @@ A_PIN_NO_SOURCE_ANSWERS_FOR = ProjectSourcePin("f0" * 20, "e1" * 20)
 
 PYTEST_SUMMARY_LINE_CASES: tuple[tuple[str, bytes, str | None], ...] = (
     (
-        "a quiet pytest's own last line",
+        "a real pytest -q run's own last line, no warnings",
         (
-            b"collected 6 items\n"
-            b"..F...\n"
-            b"=================== 1 failed, 5 passed in 0.42s ===================\n"
+            b"F.\n"
+            b"=========================== short test summary info ============================\n"
+            b"FAILED tests/test_sample.py::test_fail\n"
+            b"1 failed, 1 passed in 0.06s\n"
         ),
-        "1 failed, 5 passed in 0.42s",
+        "1 failed, 1 passed in 0.06s",
     ),
     (
-        "a run xdist bracketed the same way",
-        b"===== 3 failed, 5961 passed in 45.23s (0:00:45) =====\n",
-        "3 failed, 5961 passed in 45.23s (0:00:45)",
+        "a real pytest -q run whose last line follows a warnings section",
+        (
+            b"F.w\n"
+            b"=============================== warnings summary ===============================\n"
+            b"tests/test_sample.py::test_warns\n"
+            b"  tests/test_sample.py:10: DeprecationWarning: deprecated thing\n"
+            b"\n"
+            b"=========================== short test summary info ============================\n"
+            b"FAILED tests/test_sample.py::test_fail\n"
+            b"1 failed, 2 passed, 1 warning in 0.09s\n"
+        ),
+        "1 failed, 2 passed, 1 warning in 0.09s",
     ),
     (
-        "no tests collected at all",
-        b"=========================== no tests ran in 0.00s ============================\n",
+        "a real pytest -n auto run: the same bare verdict, no xdist decoration",
+        (
+            b"..F                                                        [100%]\n"
+            b"1 failed, 2 passed, 1 warning in 7.51s\n"
+        ),
+        "1 failed, 2 passed, 1 warning in 7.51s",
+    ),
+    (
+        "a real pytest -q run that collected nothing at all",
+        b"\nno tests ran in 0.00s\n",
         "no tests ran in 0.00s",
     ),
     (
-        "the run's own last line follows a warnings section pytest also brackets",
-        (
-            b"================================ warnings summary =================================\n"
-            b"=========================== 1 passed, 1 warning in 0.01s ===========================\n"
-        ),
-        "1 passed, 1 warning in 0.01s",
+        "a real run long enough to also carry the H:MM:SS parenthetical",
+        b"1 passed in 61.01s (0:01:01)\n",
+        "1 passed in 61.01s (0:01:01)",
+    ),
+    (
+        "a bracketed section header that names no verdict count of its own",
+        b"=============================== warnings summary ===============================\n",
+        None,
     ),
     ("plain output naming no test at all", b"hello from a build script\n", None),
     ("empty output", b"", None),
@@ -683,6 +705,15 @@ class _RecordingArtifactPublisher:
 
 
 @dataclass
+class _UnavailableArtifactPublisher:
+    """A publisher wired but unable to write, the way a database outage answers."""
+
+    def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
+        del artifact
+        return DurableWriteUnavailable()
+
+
+@dataclass
 class _SucceedingExecutor:
     """A provider that answers; the verification after it is the subject."""
 
@@ -772,6 +803,7 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
             pin,
             THE_GRANT,
         ),
+        _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         clock=lambda: TRANSCRIPT_RECORDED_AT,
     )
 
@@ -812,14 +844,18 @@ FAILING_VERIFICATION_COMMAND = [
 ]
 
 
-def _driven_through_a_real_failing_verification(
-    tmp_path: Path, artifacts: _RecordingArtifactPublisher | None
-) -> _RecordingSuccessStore:
-    """A red check run by the real adapter, and what the store was handed."""
+def _drive_through_a_real_failing_verification(
+    tmp_path: Path,
+    artifacts: _RecordingArtifactPublisher | _UnavailableArtifactPublisher | None,
+    store: _RecordingSuccessStore,
+    command: list[str] | None = None,
+) -> None:
+    """A red check run by the real adapter, driven into the given store."""
 
     root = tmp_path / "project"
-    pin = git_project(root, declaring_verification(FAILING_VERIFICATION_COMMAND))
-    store = _RecordingSuccessStore()
+    pin = git_project(
+        root, declaring_verification(command or FAILING_VERIFICATION_COMMAND)
+    )
     execute_agent_attempt(
         agent_attempt_execution(agent_execution_request_v2()),
         _SucceedingExecutor(),  # type: ignore[arg-type]
@@ -835,21 +871,26 @@ def _driven_through_a_real_failing_verification(
         ),
         artifacts,  # type: ignore[arg-type]
     )
-    return store
 
 
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
-def test_a_nonzero_verification_without_a_publisher_is_a_wiring_defect(
+def test_a_grant_with_no_artifact_publisher_refuses_at_preflight(
     tmp_path: Path,
 ) -> None:
     """A runtime that can redeem a grant must be able to keep what a red check said.
 
-    Silently dropping the check's output back to six words -- `exit 1` -- is
-    exactly the loss #1137 exists to close, so a runtime wired without a place
-    to keep it fails loud rather than reproducing that loss quietly.
+    Refused before the claim and before any provider process -- not discovered
+    only once a check has already exited nonzero. Silently dropping the
+    check's output back to six words -- `exit 1` -- is exactly the loss
+    #1137 exists to close, so a runtime wired without a place to keep it fails
+    loud rather than reproducing that loss quietly.
     """
+    store = _RecordingSuccessStore()
+
     with pytest.raises(RuntimeError, match="artifact publisher"):
-        _driven_through_a_real_failing_verification(tmp_path, None)
+        _drive_through_a_real_failing_verification(tmp_path, None, store)
+
+    assert store.calls == ["prepare"]
 
 
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
@@ -859,17 +900,81 @@ def test_a_nonzero_verification_publishes_its_tail_and_names_it_in_the_evidence(
     """The store is handed the summary line and the address the tail was kept at."""
 
     publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
 
-    store = _driven_through_a_real_failing_verification(tmp_path, publisher)
+    _drive_through_a_real_failing_verification(tmp_path, publisher, store)
 
     assert store.calls == ["prepare", "claim", "complete_success"]
     evidence = store.verification_failure_evidence
     assert isinstance(evidence, ProjectVerificationFailureEvidence)
     assert evidence.summary_line == "2 failed, 3 passed in 0.01s"
+    assert evidence.duration_seconds >= 0
+    assert evidence.redacted is False
+    assert evidence.retention_failure is None
     assert len(publisher.published) == 1
     published = publisher.published[0]
     assert published.content == FAILING_VERIFICATION_TAIL
     assert evidence.output_artifact_hash == published.artifact_hash
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_check_that_cannot_be_kept_degrades_the_words_instead_of_abandoning_the_attempt(
+    tmp_path: Path,
+) -> None:
+    """A publisher that answers but cannot write still ends the attempt named.
+
+    Preflight only catches a publisher this runtime was never wired with; a
+    wired publisher that fails once the check has already run must not turn
+    a `LAUNCH_ARMED` attempt no replay can resolve. The exit code, command and
+    summary line still reach the receipt, with a note of their own for why the
+    tail itself is not kept beside them.
+    """
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(
+        tmp_path, _UnavailableArtifactPublisher(), store
+    )
+
+    assert store.calls == ["prepare", "claim", "complete_success"]
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.summary_line == "2 failed, 3 passed in 0.01s"
+    assert evidence.output_artifact_hash is None
+    assert evidence.retention_failure is not None
+
+
+FAILING_VERIFICATION_WITH_A_CREDENTIAL_COMMAND = [
+    "/bin/sh",
+    "-c",
+    (
+        "printf 'token: sk-ant-abcdefghijklmnopqrstuvwx\\n"
+        "2 failed, 3 passed in 0.01s\\n'; exit 1"
+    ),
+]
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_credential_shape_in_a_red_checks_output_is_redacted_before_it_is_kept(
+    tmp_path: Path,
+) -> None:
+    """A token a project's own tooling printed does not become HTTP-readable material."""
+
+    publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(
+        tmp_path,
+        publisher,
+        store,
+        command=FAILING_VERIFICATION_WITH_A_CREDENTIAL_COMMAND,
+    )
+
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.redacted is True
+    published = publisher.published[0]
+    assert b"sk-ant-" not in published.content
+    assert REDACTION_MARKER.encode() in published.content
 
 
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")

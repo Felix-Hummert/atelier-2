@@ -318,11 +318,20 @@ class ProjectVerificationFailureEvidence:
     reopens a process or a released workspace to learn what one already said.
     `output_artifact_hash` is absent where the verification printed nothing to
     keep, and `summary_line` is absent where the retained tail carried no
-    pytest summary to read.
+    pytest summary to read. `redacted` is true where `redact_credentials` found
+    and replaced a credential shape in the tail before it was published, so a
+    reader knows the artifact is not the command's exact bytes.
+    `retention_failure` names why nothing could be kept where the tail was
+    nonempty and publication itself failed -- distinct from an absent
+    `output_artifact_hash` beside no `retention_failure`, which means there was
+    nothing to keep in the first place.
     """
 
     summary_line: str | None
     output_artifact_hash: ArtifactHash | None
+    duration_seconds: float
+    redacted: bool
+    retention_failure: str | None = None
 
 
 class AgentAttemptStore(AgentAttemptReader, Protocol):

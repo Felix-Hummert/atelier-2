@@ -160,7 +160,10 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
-from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
+from atelier2.contracts.tool_grants_v3 import (
+    MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES,
+    ToolRedemptionReceipt,
+)
 from atelier2.contracts.verdicts import Verdict, read_verdict
 from atelier2.contracts.workflows import (
     NodeCompletion,
@@ -1102,13 +1105,37 @@ def _verification_failure_verdict(
 
     words = [f"exit {redemption.exit_code}", " ".join(redemption.command)]
     if evidence is not None:
+        words.append(f"after {evidence.duration_seconds:.0f} s")
         if evidence.summary_line is not None:
-            words.append(evidence.summary_line)
+            words.append(_bounded_verification_summary(evidence.summary_line))
         if evidence.output_artifact_hash is not None:
             words.append(
                 f"output artifact sha256:{evidence.output_artifact_hash.value}"
             )
+        if evidence.redacted:
+            words.append("output redacted")
+        if evidence.retention_failure is not None:
+            words.append(f"output could not be kept: {evidence.retention_failure}")
     return "; ".join(words)
+
+
+def _bounded_verification_summary(summary_line: str) -> str:
+    """Pytest's own summary line, bounded the way `ProcessExitSignature` bounds free text.
+
+    A project's own test runner is free to compose a summary of any length; a
+    receipt is a sentence an operator reads at a glance, not a log (#1137).
+    """
+
+    encoded = summary_line.encode("utf-8")
+    if len(encoded) <= MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES:
+        return summary_line
+    tail = encoded[-MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES:].decode(
+        "utf-8", "replace"
+    )
+    return (
+        f"last {MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES} of "
+        f"{len(encoded)} summary bytes: {tail}"
+    )
 
 
 def _keep_tool_redemption(

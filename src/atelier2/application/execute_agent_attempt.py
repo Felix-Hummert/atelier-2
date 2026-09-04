@@ -7,14 +7,17 @@ from dataclasses import dataclass, replace
 from atelier2.application.publish_artifact import (
     ArtifactPublicationCreated,
     ArtifactPublicationExisting,
+    ArtifactPublicationInvalid,
     publish_artifact,
 )
+from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     ProcessExitSignature,
 )
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.secret_redaction import redact_credentials
 from atelier2.contracts.tool_grants_v3 import (
     ToolGrantCapability,
     ToolGrantCapabilityNotRedeemed,
@@ -88,7 +91,10 @@ def execute_agent_attempt(
     what it printed, so the words the attempt ends with can name where that
     proof lives rather than just the exit code (#1137). It is required exactly
     where a project is pinned with a redeemable grant; every other attempt never
-    reads it.
+    reads it. A runtime pinned with a grant but wired with no publisher refuses
+    beside the verification's own preflight, before any provider process, so a
+    check that later exits nonzero never discovers the missing door while
+    trying to keep what it already ran.
 
     What the attempt made is kept last of all, after any granted check has run
     and before the attempt is completed. Last, because the candidate must be the
@@ -115,6 +121,16 @@ def execute_agent_attempt(
             project.source.attest(project.pin)
             if project.grant is not None:
                 project.verifications.preflight(project.pin)
+                if (
+                    project.grant.capability
+                    is ToolGrantCapability.RUN_PROJECT_VERIFICATION
+                    and artifacts is None
+                ):
+                    raise RuntimeError(
+                        "a project pinned a redeemable run-project-verification "
+                        "grant, but this attempt was given no artifact "
+                        "publisher to keep a failed verification's output with"
+                    )
         supervisor.prepare(execution)
         claim = store.claim(execution)
         if not isinstance(claim, AgentAttemptClaimedByThisCall):
@@ -183,12 +199,11 @@ def execute_agent_attempt(
                 # Past that, `redemption` here is a value this branch is *known*
                 # to have and known to be a pass, so its evidence travels into
                 # whichever ending follows.
-                if redemption is not None and not redemption.satisfied_the_project:
-                    assert redeemed is not None
+                if redeemed is not None and not redeemed.receipt.satisfied_the_project:
                     outcome = store.complete_success(
                         execution,
                         result,
-                        redemption,
+                        redeemed.receipt,
                         _published_verification_failure_evidence(
                             redeemed.outcome, artifacts
                         ),
@@ -304,28 +319,65 @@ def _published_verification_failure_evidence(
     store refuses empty content by its own rule, and a refusal naming no
     artifact is exactly as honest as one naming an empty one. Publication is
     idempotent by content, so a replay of this same attempt lands on the same
-    address rather than growing a second copy.
+    address rather than growing a second copy. Any credential shape
+    `redact_credentials` recognises is replaced before the tail ever reaches
+    the publisher, because this artifact is HTTP-readable durable material,
+    not a transcript already behind its own boundary.
+
+    A publisher this runtime was never wired with is refused by preflight,
+    before any provider work; `artifacts` is `None` here only if that
+    invariant broke, which this treats as this function's own defect rather
+    than repeating preflight's wiring refusal. A publisher that answers but
+    refuses, cannot be reached, or answers with a state no write sequence
+    could have produced degrades the attempt's words instead of abandoning
+    it: the exit code, the command and the summary line still reach the
+    receipt, with a note naming why the tail itself is not kept beside them.
     """
 
     if not outcome.output_tail:
-        return ProjectVerificationFailureEvidence(outcome.summary_line, None)
-    if artifacts is None:
-        raise RuntimeError(
-            "a project verification exited nonzero with output to keep, but "
-            "this attempt was given no artifact publisher to keep it with"
+        return ProjectVerificationFailureEvidence(
+            outcome.summary_line, None, outcome.duration_seconds, redacted=False
         )
-    published = publish_artifact(outcome.output_tail, artifacts)
+    if artifacts is None:
+        raise AssertionError(
+            "preflight refuses a redeemable grant with no artifact publisher "
+            "before any provider work; reaching publication without one is a "
+            "defect in this runtime, not a condition this attempt can name"
+        )
+    redacted_tail = redact_credentials(outcome.output_tail.decode("utf-8", "replace"))
+    published = publish_artifact(redacted_tail.text.encode("utf-8"), artifacts)
     match published:
         case ArtifactPublicationCreated(artifact) | ArtifactPublicationExisting(
             artifact
         ):
             return ProjectVerificationFailureEvidence(
-                outcome.summary_line, artifact.artifact_hash
+                outcome.summary_line,
+                artifact.artifact_hash,
+                outcome.duration_seconds,
+                redacted=redacted_tail.redacted,
             )
-        case _:
-            raise RuntimeError(
-                f"a failed project verification's output could not be kept: {published}"
+        case ArtifactPublicationInvalid() | WriteUnavailable() | DurableStateCorrupt():
+            return ProjectVerificationFailureEvidence(
+                outcome.summary_line,
+                None,
+                outcome.duration_seconds,
+                redacted=redacted_tail.redacted,
+                retention_failure=_publication_failure_reason(published),
             )
+
+
+def _publication_failure_reason(
+    published: ArtifactPublicationInvalid | WriteUnavailable | DurableStateCorrupt,
+) -> str:
+    """Why a failed check's output could not be kept, in the reader's own words."""
+
+    match published:
+        case ArtifactPublicationInvalid(verdict):
+            return str(verdict)
+        case WriteUnavailable(detail):
+            return detail if detail is not None else "artifact write unavailable"
+        case DurableStateCorrupt():
+            return "durable artifact state corrupt"
 
 
 @dataclass(frozen=True)
