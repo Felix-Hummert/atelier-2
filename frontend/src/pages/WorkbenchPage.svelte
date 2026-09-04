@@ -4,7 +4,6 @@
   import {
     type CockpitApi,
     type DefectiveRunRow,
-    type RunEvent,
     type RunEventSubscription,
     type RunV3
   } from "../api/client";
@@ -42,7 +41,7 @@
   import { conductorChatCopy } from "../lib/conductorChatCopy";
   import {
     conductorConversationShape,
-    newestConductorConversation,
+    orderedConductorCandidates,
     resolveConductorConnection,
     type ConductorConnectionState
   } from "../lib/conductorEpisode";
@@ -89,9 +88,9 @@
    * The room is alive: it holds the attention stream the Board used to hold, so
    * a decision that opens while the operator is sitting here appears where it
    * belongs instead of waiting for the next visit. An event is only a nudge --
-   * every one of them is projected through the canonical `getRun` read, so what
-   * this room shows is always a run the API confirmed, never a frame's own
-   * story.
+   * every one of them is projected through a fresh read of the same canonical
+   * run list `load()` already reads, so what this room shows is always what
+   * the API confirmed, never a frame's own story (#1148).
    */
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
@@ -121,10 +120,21 @@
   let hold: AttentionHold = startAttentionHold();
   let stream: RunEventSubscription | null = null;
   let streamFailureMessage: string | null = null;
-  let projectionFailure: string | null = null;
   let disposed = false;
-  let eventQueue: Promise<void> = Promise.resolve();
-  const pendingEvents: RunEvent[] = [];
+  /**
+   * At most one `load()` in flight, and at most one more queued behind it
+   * (#1148): the attention feed replays one durable event per run it has
+   * ever named on every fresh connect, with no cursor to resume from, so a
+   * room with many non-terminal runs sees a burst of nudges at once. Every
+   * field a nudged card needs is already on the run list `load()` reads
+   * (#1148 -- state, workflow name, work item, answer/refusal), so a nudge
+   * earns one more list read, never a read of its own; a burst earns at
+   * most one more after the read already running, never one each.
+   */
+  let loadInFlight = false;
+  let loadPending = false;
+  /** Whether the read queued behind the one in flight also wants the described catalog (#1148 REVISE M1). */
+  let pendingReadCatalog = false;
   let transcript: readonly ChatMessage[] = currentChatTranscript();
   let conversationTranscript: readonly (ChatMessage | ConductorMessage)[] = transcript;
   let conductorTranscript: ConductorTranscript = emptyConductorTranscript();
@@ -166,7 +176,7 @@
   const settingsPath = WORKSHOP_DESTINATION.settings.path;
 
   onMount(() => {
-    void load();
+    requestLoad(true);
     holdAttention();
     void resolveConductor();
     const unsubscribe = subscribeChatTranscript((next) => {
@@ -174,9 +184,12 @@
     });
     // A read that failed while the connection was lost stays failed once the
     // connection returns until something asks again -- reload was the only
-    // way out (#700).
+    // way out (#700). The described catalog and the conductor revision
+    // resolution return here too, same as a fresh open (#1148 REVISE M1):
+    // the connection was down long enough that either could have moved, and
+    // the attention feed carries no event that would say so on its own.
     const unsubscribeConnection = onConnectionRecovered(() => {
-      void load();
+      requestLoad(true);
       void resolveConductor();
     });
     return () => {
@@ -249,21 +262,32 @@
     }
   }
 
+  /**
+   * Walks the run list newest first (`orderedConductorCandidates`'s own
+   * tie-break) and resolves one candidate's revision at a time, stopping at
+   * the first conductor-shaped one (#1148 REVISE M3): the ordinary room,
+   * where the newest non-terminal run already carries the answer, costs one
+   * `getWorkflowRevision` lookup, never one per distinct revision the run
+   * list happens to carry.
+   */
   async function selectConductorConversation(runs: readonly RunV3[]): Promise<void> {
-    const revisions = await Promise.all(
-      [...new Set(runs.map((run) => run.workflow_revision_hash))].map(async (workflowRevisionHash) => {
-        try {
-          const revision = await cockpitApi.getWorkflowRevision(workflowRevisionHash);
-          return conductorConversationShape(revision) === null ? null : workflowRevisionHash;
-        } catch {
-          return null;
+    const checkedHashes: string[] = [];
+    let selected: RunV3 | null = null;
+    for (const run of orderedConductorCandidates(runs)) {
+      const workflowRevisionHash = run.workflow_revision_hash;
+      if (checkedHashes.includes(workflowRevisionHash)) continue;
+      checkedHashes.push(workflowRevisionHash);
+      try {
+        const revision = await cockpitApi.getWorkflowRevision(workflowRevisionHash);
+        if (conductorConversationShape(revision) !== null) {
+          selected = run;
+          break;
         }
-      })
-    );
-    const conductorRevisions = new Set(
-      revisions.filter((workflowRevisionHash): workflowRevisionHash is string => workflowRevisionHash !== null)
-    );
-    const selected = newestConductorConversation(runs, conductorRevisions);
+      } catch {
+        // An unreadable revision names no conductor either; the next
+        // candidate's own revision still gets its own honest answer.
+      }
+    }
     if (selected === null || selected.public_run_reference === conductorRun?.public_run_reference) return;
     conductorRun = selected;
     followConductor(selected);
@@ -343,19 +367,33 @@
    * it -- a run still confirms with its own real fields when its name could not
    * be resolved, falling back to the run id honestly.
    *
-   * The list is the cold read; the attention hold nudges each change through
-   * the same canonical `getRun` so a decision that opens while the operator
-   * is sitting here appears without a reload.
+   * The list is the cold read; the attention hold nudges a fresh one of the
+   * same shape through `requestLoad` so a decision that opens while the
+   * operator is sitting here appears without a reload, without a second read
+   * shaped only for the one run the nudge named (#1148).
+   *
+   * `readCatalog` tells the two reads bundled into that same shape apart
+   * (#1148 REVISE M1): the described catalog (`listWorkflowRevisions`, this
+   * room's `workflowNames`) and, through `confirm`, which revisions carry a
+   * conductor conversation (`getWorkflowRevision` per unique hash). Both cost
+   * one read per revision the run list currently names, so a nudge -- which
+   * names no catalog change of its own, only a run to look at again -- keeps
+   * whatever this room already confirmed for both instead of paying that
+   * cost again on every event.
    */
-  async function load(): Promise<void> {
+  async function load(readCatalog: boolean): Promise<void> {
     const begun = beginRead(live);
-    live = begun.read;
+    // A background refresh over content already on screen stays silent: no
+    // loading band, no shifted room (#1148 REVISE M2). Only the generation
+    // advances, so a stale response still loses to a fresher one; the
+    // visible request state carries over unchanged until this read lands.
+    live = live.confirmed !== null ? { ...begun.read, request: live.request } : begun.read;
     try {
       const [started, waitingInput, waitingReconciliation, revisions] = await Promise.all([
         readEveryRun((after) => cockpitApi.listRuns(after, "STARTED")),
         readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_INPUT")),
         readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_RECONCILIATION")),
-        readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after))
+        readCatalog ? readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after)) : null
       ]);
       const runReadings = [started, waitingInput, waitingReconciliation];
       if (runReadings.some((reading) => !reading.complete)) {
@@ -365,14 +403,17 @@
         });
         return;
       }
-      const workflowNames = revisions.complete
-        ? new Map(
-            revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name])
-          )
-        : null;
+      const workflowNames =
+        revisions === null
+          ? (live.confirmed?.workflowNames ?? null)
+          : revisions.complete
+            ? new Map(
+                revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name])
+              )
+            : null;
       const rows = newestReadOfEachRun(runReadings.flatMap((reading) => reading.runs));
       const { runs, defective } = splitRunListRows(rows);
-      confirm(begun.generation, { runs, defective, workflowNames });
+      confirm(begun.generation, { runs, defective, workflowNames }, readCatalog);
     } catch {
       live = failRead(live, begun.generation, {
         kind: "unavailable",
@@ -381,17 +422,19 @@
     }
   }
 
-  function confirm(generation: number, confirmed: WorkbenchRuns): void {
+  function confirm(generation: number, confirmed: WorkbenchRuns, readCatalog: boolean): void {
     const before = live;
     live = confirmRead(live, generation, confirmed);
     if (live === before) return;
     publishCount(confirmed.runs);
-    if (conductorLink.kind === "connected") {
+    // Resolving which revision carries a conductor conversation is the same
+    // per-hash catalog cost `readCatalog` already named (#1148 REVISE M1): a
+    // nudge that only refreshed the run lists keeps whichever conversation
+    // is already followed instead of asking `getWorkflowRevision` again for
+    // every hash the list now shows.
+    if (readCatalog && conductorLink.kind === "connected") {
       void selectConductorConversation(confirmed.runs);
     }
-    // An event that arrived while this read was in flight has truth to be
-    // absorbed into now.
-    if (pendingEvents.length > 0) queueDrain();
   }
 
   /**
@@ -429,53 +472,45 @@
       }
       return;
     }
-    pendingEvents.push(applied.event);
-    queueDrain();
-  }
-
-  function retryProjection(): void {
-    if (disposed) return;
-    projectionFailure = null;
-    queueDrain();
-  }
-
-  function queueDrain(): void {
-    eventQueue = eventQueue.then(drainAttention).catch((error: unknown) => {
-      if (disposed) return;
-      projectionFailure = humanErrorMessage(
-        error,
-        wrapDisplayCopy(workbenchPageCopy.eventUnapplied)
-      );
-    });
+    // The event names which run to look at; what it now looks like is
+    // already the next `load()`'s to answer (#1148), off the same list
+    // every open reads. `isAttentionEvent` (attentionHold.ts) never names a
+    // catalog change -- only WAITING_INPUT, AGENT_FAILED,
+    // ACTION_RECONCILIATION_REQUIRED -- so this asks for the run lists alone
+    // (#1148 REVISE M1).
+    requestLoad();
   }
 
   /**
-   * Each nudged run, read canonically and absorbed in the order the events
-   * arrived. A read that fails keeps its event at the head of the queue: the
-   * room says so and offers one move rather than skipping a run and pretending
-   * it is up to date.
+   * The one gate every `load()` trigger passes through -- the initial mount,
+   * a returned connection (#700), a retry, and an attention nudge alike --
+   * so a burst of any of them still costs at most the read already running
+   * plus one more, never one each. `readCatalog` is true only for the
+   * callers that open this room fresh -- mount, a returned connection, an
+   * explicit Retry -- and false for an attention nudge (#1148 REVISE M1); a
+   * queued call that wants the catalog still gets it even when the one that
+   * wins the immediate read did not ask.
    */
-  async function drainAttention(): Promise<void> {
-    if (disposed || projectionFailure !== null) return;
-    while (!disposed && pendingEvents.length > 0 && projectionFailure === null) {
-      const event = pendingEvents[0];
-      if (event === undefined) break;
-      try {
-        const run = await cockpitApi.getRun(event.public_run_reference);
-        if (disposed) return;
-        // Nothing to absorb it into yet: the event waits for the first
-        // confirmed read rather than being dropped or inventing a room.
-        if (!absorbRun(run)) return;
-        pendingEvents.shift();
-      } catch (error) {
-        if (disposed) return;
-        projectionFailure = humanErrorMessage(
-          error,
-          wrapDisplayCopy(workbenchPageCopy.eventUnapplied)
-        );
-        return;
-      }
+  function requestLoad(readCatalog = false): void {
+    pendingReadCatalog ||= readCatalog;
+    if (loadInFlight) {
+      loadPending = true;
+      return;
     }
+    void runLoad();
+  }
+
+  async function runLoad(): Promise<void> {
+    loadInFlight = true;
+    loadPending = false;
+    const readCatalog = pendingReadCatalog;
+    pendingReadCatalog = false;
+    try {
+      await load(readCatalog);
+    } finally {
+      loadInFlight = false;
+    }
+    if (loadPending && !disposed) requestLoad();
   }
 
   /** The rail's ochre count: the last confirmed read, and no earlier. */
@@ -484,8 +519,11 @@
   }
 
   /**
-   * One canonically read run, taken into what this room shows -- whether it
-   * came from an answered decision or from the attention stream.
+   * One canonically read run, taken into what this room shows the moment a
+   * pinned decision answers or resends (`PinnedDecision`'s own `onRunRead`) --
+   * the attention feed's own nudges go through `requestLoad` instead (#1148),
+   * since the list a fresh load reads already carries what a nudge would
+   * have named.
    *
    * A run that still moves or waits stands here with its fresher truth; one
    * that has ended leaves for History the moment it does, so a pin never
@@ -494,8 +532,7 @@
    *
    * Nothing is absorbed while this room holds no confirmed truth of its own --
    * inventing a one-run list out of a stream would dress a pending or failed
-   * read up as a room. The caller keeps the event instead, so it lands the
-   * moment a read confirms.
+   * read up as a room.
    */
   // Returns whether the read could be taken in; see the note above.
   function absorbRun(read: RunV3): boolean {
@@ -757,19 +794,11 @@
   {#if streamFailureMessage !== null}
     <ProblemNotice message={streamFailureMessage} />
   {/if}
-  {#if projectionFailure !== null}
-    <ProblemNotice
-      message={projectionFailure}
-      actionLabel={wrapDisplayCopy(workbenchPageCopy.retryEvent)}
-      onAction={retryProjection}
-      actionAttributes={{ [workbenchQuestionAttribute]: workbenchQuestions.retryProjection.id }}
-    />
-  {/if}
 
   <ReadState
     read={live}
     label={workbenchPageCopy.runsLabel}
-    onRetry={() => { void load(); }}
+    onRetry={() => requestLoad(true)}
   />
   {#if snapshot !== null && snapshot.workflowNames === null}
     <p class="names-notice" role="status">{wrapDisplayCopy(workbenchPageCopy.workflowNamesUnavailable)}</p>

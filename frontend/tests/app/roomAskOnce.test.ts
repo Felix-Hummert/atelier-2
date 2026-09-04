@@ -11,8 +11,9 @@ import {
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { conductorConnectionOverrides } from "../support/conductorConnection";
 import { notCancellableBlock } from "../support/runV3";
-import { revisionHash, runRow, startedRun } from "../support/runV3";
+import { revisionHash, runRow, startedRun, waitingInput } from "../support/runV3";
 
 /**
  * REQ-UIQ-08: a surface that exceeds its interaction budget is a defect.
@@ -27,10 +28,15 @@ import { revisionHash, runRow, startedRun } from "../support/runV3";
  *
  * Workbench rows are STARTED living-shelf runs. Catalog rows are
  * admitted workflow tiles. History rows are finished V3 runs of one
- * workflow. A click into a row, a stream event after open, a
- * Workbench open-decision pin, the Run page, Settings, a question
- * sheet, and a createElement overlay are outside what this open
- * counts.
+ * workflow. A click into a row, a Workbench open-decision pin, the Run
+ * page, Settings, a question sheet, and a createElement overlay are
+ * outside what this open counts. The attention feed's own connect-time
+ * replay is inside it (#1148): a fresh `GET /events` hands back one
+ * durable event per non-terminal run before the operator has touched
+ * anything, and this open pays for reading that burst off the run list.
+ * A stream event delivered later, once the room has already settled, is
+ * the outside case -- a decision that opens while the operator is
+ * sitting here, not this open's own cost.
  *
  * History reads its workflow, work item and terminal result off the
  * listed run itself (#1045) -- no per-row node detail, no per-hash
@@ -119,6 +125,11 @@ function hexId(index: number, fill: string): string {
   return index.toString(16).padStart(64, fill);
 }
 
+/** The event cursor a run's own public reference must agree with (`validateEventCursor`). */
+function eventCursorFor(publicRunReference: string, sequence: number): string {
+  return `event1.${publicRunReference.slice("run1.".length)}.${sequence}`;
+}
+
 function minutesAgo(minutes: number): string {
   return new Date(Date.now() - minutes * 60_000).toISOString();
 }
@@ -201,14 +212,49 @@ function workbenchApi(rows: number): Partial<CockpitApi> {
     const runId = `shelf-${index}`;
     return startedRun({
       run_id: runId,
-      public_run_reference: encodePublicRunReference(runId)
+      public_run_reference: encodePublicRunReference(runId),
+      // Each row names its own revision hash (#1148 REVISE M3, same
+      // rationale as `historyRun`): a reintroduced per-hash
+      // `getWorkflowRevision` fan-out inside `selectConductorConversation`
+      // would then scale with the row count and this suite's own growth
+      // assertions would catch it again -- a shared hash across every row
+      // hid that fan-out instead of proving it stays bounded.
+      workflow_revision_hash: hexId(index, "2")
     });
   });
   return {
     listRuns: vi.fn(async (_after?: string, state?: RunV3["state"]) => ({
       items: state === "STARTED" ? runs.map(runRow) : [],
       next_after: null
-    }))
+    })),
+    // GET /events replays every durable attention-kind event with no cursor
+    // to resume from, so a fresh connect hands back one frame per run this
+    // dataset ever named -- exactly what a real connect does today (#1148
+    // Befund: 83 requests on an 83-run Workbench). This fake reproduces that
+    // replay so a per-run read the burst would otherwise hide shows up here.
+    openAttentionEvents: vi.fn((handlers) => {
+      handlers.opened();
+      runs.forEach((run, index) => {
+        const sequence = index + 1;
+        handlers.event(
+          JSON.stringify(
+            waitingInput(sequence, {
+              public_run_reference: run.public_run_reference,
+              cursor: eventCursorFor(run.public_run_reference, sequence)
+            })
+          )
+        );
+      });
+      return { close: vi.fn() };
+    }),
+    getRun: vi.fn(async (reference: string) =>
+      runs.find((run) => run.public_run_reference === reference) ??
+      startedRun({ public_run_reference: reference })
+    ),
+    // A CONNECTED conductor (#1148 REVISE M3) so a Workbench open really
+    // reaches `selectConductorConversation`'s own per-hash resolution
+    // instead of this suite silently never exercising it.
+    ...conductorConnectionOverrides()
   };
 }
 
@@ -228,9 +274,19 @@ async function measureOpen(room: Room, rows: number): Promise<OpenCount> {
     }
   });
   try {
+    // A room fed by an attention stream can drain a burst of nudges across
+    // several sequential reads, each with its own idle gap between requests
+    // in flight (#1148): the first quiet moment is not necessarily the last
+    // one, so this waits for two consecutive idle reads to agree on the same
+    // count rather than trusting the first.
+    let previousCount = -1;
     await waitFor(() => {
       expect(visibleRowCount(room)).toBe(rows);
       expect(counting.idle()).toBe(true);
+      const currentCount = counting.requestCount();
+      const settled = currentCount === previousCount;
+      previousCount = currentCount;
+      expect(settled).toBe(true);
     });
     return { surface: room, rows, requests: counting.requestCount() };
   } finally {
