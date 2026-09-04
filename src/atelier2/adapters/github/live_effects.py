@@ -26,6 +26,7 @@ a lease, a receipt, an event, a log, or an API projection.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,8 @@ from atelier2.adapters.github.effects import (
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
 from atelier2.contracts.effect_requests import (
+    HeadBranch,
+    OpenPullRequest,
     ReviewedDocumentationPullRequest,
 )
 from atelier2.contracts.effects import (
@@ -72,11 +75,19 @@ GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
 # race's exact counterpart, and equally not a refusal.
 _PULL_REQUEST_ALREADY_EXISTS_STATUS = 422
 
-# GitHub does not document a hard title length limit; this is a defensive
-# bound well under every limit third-party clients have observed, so a very
-# long predecessor answer cannot make the create request itself malformed.
-_MAXIMUM_PULL_REQUEST_TITLE_CHARACTERS = 256
 _DEFAULT_PULL_REQUEST_TITLE = "Atelier open-pr"
+
+# A GitHub pull request title reads as a headline, not a paragraph; 72
+# characters is the conventional commit-summary width every reader here
+# already expects (ADR-independent editorial choice, not a platform limit).
+_MAXIMUM_RENDERED_TITLE_CHARACTERS = 72
+_SENTENCE_TERMINATOR = re.compile(r"[.!?](?:\s|$)")
+
+# A candidate's own summary is provider text: unbounded, and never rendered
+# into Markdown without a ceiling. 4000 characters keeps a pull request body
+# readable and leaves ample room below GitHub's own much larger limit.
+_MAXIMUM_RENDERED_BODY_CHARACTERS = 4000
+_RENDERED_BODY_TRUNCATION_NOTE = "\n\n[truncated at 4000 characters]"
 
 
 class GitHubCredentialUnresolvable(RuntimeError):
@@ -139,16 +150,99 @@ class _RecordedPullRequest:
     body: str
 
 
-def _body_for(request: OpenPullRequestRequest, request_hash: str) -> str:
-    return f"{request.body}\n\n{marker_line(request_hash)}\n"
+@dataclass(frozen=True)
+class _RenderedOpenPullRequest:
+    """The readable title and body an `OpenPullRequest`'s raw report renders to."""
+
+    title: str
+    body: str
 
 
-def _title_for(body: str) -> str:
-    for line in body.splitlines():
-        candidate = line.strip()
-        if candidate:
-            return candidate[:_MAXIMUM_PULL_REQUEST_TITLE_CHARACTERS]
-    return _DEFAULT_PULL_REQUEST_TITLE
+def _summary_and_changed_paths(raw_body: str) -> tuple[str, tuple[str, ...]]:
+    """Read the builder's own summary and changed paths from its raw report.
+
+    `raw_body` is provider output carried verbatim in the request (the
+    `issue_to_pr_candidate_report` schema's `summary`/`changed_paths`
+    document, when the workflow that produced it declares that shape). A
+    request bound to a looser body schema, or an answer that failed its own
+    contract, still owes a pull request: its whole text becomes the summary
+    and no path list renders, rather than refusing the effect over a report
+    this adapter does not own the shape of.
+    """
+
+    try:
+        decoded = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return raw_body.strip(), ()
+    if not isinstance(decoded, dict):
+        return raw_body.strip(), ()
+    summary = decoded.get("summary")
+    if not isinstance(summary, str) or not summary:
+        return raw_body.strip(), ()
+    changed_paths = decoded.get("changed_paths")
+    if isinstance(changed_paths, list) and all(
+        isinstance(path, str) and path for path in changed_paths
+    ):
+        return summary, tuple(changed_paths)
+    return summary, ()
+
+
+def _rendered_title(summary: str) -> str:
+    stripped = summary.strip()
+    if not stripped:
+        return _DEFAULT_PULL_REQUEST_TITLE
+    first_line = stripped.splitlines()[0]
+    ending = _SENTENCE_TERMINATOR.search(first_line)
+    sentence = first_line[: ending.start() + 1] if ending else first_line
+    title = sentence.strip()[:_MAXIMUM_RENDERED_TITLE_CHARACTERS].strip()
+    return title or _DEFAULT_PULL_REQUEST_TITLE
+
+
+def _acceptance_line(head_branch: HeadBranch) -> str:
+    # The default exemption every Atelier-opened pull request states until an
+    # item with `proves(...)` sentences supplies the real identifiers; the
+    # branch name is the one work-item identity already carried this far.
+    return (
+        "Literal acceptance sentence(s): none: opened by the Atelier "
+        f"from work item {head_branch.value}"
+    )
+
+
+def _bounded_prose(prose: str, tail: str) -> str:
+    if len(prose) + len(tail) <= _MAXIMUM_RENDERED_BODY_CHARACTERS:
+        return f"{prose}{tail}"
+    budget = max(
+        0,
+        _MAXIMUM_RENDERED_BODY_CHARACTERS
+        - len(tail)
+        - len(_RENDERED_BODY_TRUNCATION_NOTE),
+    )
+    return f"{prose[:budget]}{_RENDERED_BODY_TRUNCATION_NOTE}{tail}"
+
+
+def _rendered_open_pull_request(request: OpenPullRequest) -> _RenderedOpenPullRequest:
+    summary, changed_paths = _summary_and_changed_paths(request.body)
+    sections = [summary]
+    if changed_paths:
+        sections.append(
+            "Changed paths:\n" + "\n".join(f"- {path}" for path in changed_paths)
+        )
+    prose = "\n\n".join(sections)
+    tail = f"\n\n{_acceptance_line(request.head_branch)}"
+    return _RenderedOpenPullRequest(
+        _rendered_title(summary), _bounded_prose(prose, tail)
+    )
+
+
+def _title_and_content_for(request: OpenPullRequestRequest) -> tuple[str, str]:
+    if isinstance(request, ReviewedDocumentationPullRequest):
+        return request.title, request.body
+    rendered = _rendered_open_pull_request(request)
+    return rendered.title, rendered.body
+
+
+def _body_with_trailer(content: str, request_hash: str) -> str:
+    return f"{content}\n\n{marker_line(request_hash)}\n"
 
 
 def _result_payload(branch: str, pr_number: int) -> bytes:
@@ -335,13 +429,10 @@ class LiveGitHubEffectAdapter:
         self, intent: EffectIntent, request: OpenPullRequestRequest
     ) -> _RecordedPullRequest:
         branch = request.head_branch.value
-        body = _body_for(request, intent.request.request_hash.value)
+        title, content = _title_and_content_for(request)
+        body = _body_with_trailer(content, intent.request.request_hash.value)
         create_body: ReposOwnerRepoPullsPostBodyType = {
-            "title": (
-                request.title
-                if isinstance(request, ReviewedDocumentationPullRequest)
-                else _title_for(body)
-            ),
+            "title": title,
             "head": branch,
             "base": self._repository.base_branch,
             "body": body,
