@@ -20,7 +20,17 @@ was never satisfied. Only a passing check is ever recorded: the stored exit code
 is fixed at zero, so a redemption cannot say a command failed. A command that exits nonzero ends the
 attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
 `failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
-and no `tool_redemptions` row -- there is nothing it redeemed. A granted verification that exceeds its
+and no `tool_redemptions` row -- there is nothing it redeemed. That receipt also
+names what the check said no *to*: the schema revision and value hash of the
+answer the provider gave, and the address of a bounded, redacted artifact
+holding the attempt's own patch against the pinned tree. The work itself is
+still not kept as a candidate; only the evidence is.
+A grant is redeemed at all only where the attempt changed something: a lease
+still holding exactly the pinned tree ends `FAILED` under `CANDIDATE_UNCHANGED`
+before any command starts, with the pinned tree and the agent's own bounded
+answer in the receipt. Only an attempt of a node that pinned a grant is asked
+that question -- a node that redeems nothing may answer without touching a
+file. A granted verification that exceeds its
 declared `timeout_seconds` after the claim ends the same way: the attempt is
 `FAILED` under `PROJECT_VERIFICATION_FAILED`, the `failed` `node-receipt/v3`
 reason names the timeout, and the attempt is not left `LAUNCH_ARMED`. The
