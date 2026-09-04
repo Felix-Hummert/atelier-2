@@ -89,9 +89,14 @@ depend on assembly order. Behind that binding, nothing: the registries are ports
 caller supplies. A durable catalog adapter now
 publishes exact revision bytes, founds a named lineage through a typed writer
 that derives the lineage id, and resolves an admitted name or lineage id to
-those bytes. A workflow already published through `POST /workflow-revisions`
-is named through `POST /workflow-lineages` from those same bytes and the same
-hash; founding does not invent a second identity. Run-configuration binding is
+those bytes. A document already published through the door of its kind
+is named through `POST /catalog-lineages` from those same bytes and the same
+hash; founding does not invent a second identity. That door family is
+kind-generic: one founding, member and retirement door, and one
+`GET /catalog-revisions/by-name/{kind}/{name}`, serve every published kind, and
+the founding name comes from the document per kind -- a V3 workflow's `name`,
+an agent definition's frontmatter `name` -- so a workflow and an agent may carry
+the same name in two lineages. Run-configuration binding is
 still lineage-free and a reference's `ref` is carried into that snapshot
 without calling `resolve_reference`. A
 64-hex query is a lineage id; anything else is a display name. A retired

@@ -366,16 +366,16 @@ export const projectModelResolutionSchema = z
   .strict();
 
 /**
- * What `GET /workflow-revisions/by-name/{name}` answers: which revision that
- * catalog name holds. The described listing does not carry lineage recency, so
- * the picker reads this existing resource for the head instead of inventing an
- * order from the hash-sorted page.
+ * What `GET /catalog-revisions/by-name/{kind}/{name}` answers: which revision
+ * that catalog name holds under that kind. The described listing does not carry
+ * lineage recency, so the picker reads this existing resource for the head
+ * instead of inventing an order from the hash-sorted page.
  */
 export const catalogNameResolutionSchema = z
   .object({
     display_name: z.string().min(1).max(128),
     lineage_id: sha256,
-    workflow_revision_hash: sha256,
+    catalog_revision_hash: sha256,
     revision_number: positiveSafeInteger,
   })
   .strict();
@@ -384,7 +384,7 @@ const catalogAdmissionSchema = z
   .object({
     display_name: z.string().min(1).max(128),
     lineage_id: sha256,
-    workflow_revision_hash: sha256,
+    catalog_revision_hash: sha256,
     revision_number: positiveSafeInteger,
   })
   .strict();
@@ -431,8 +431,18 @@ const libraryAdditionSchema = z
   })
   .strict();
 
+/**
+ * The published kinds this cockpit gives a catalog lineage.
+ *
+ * The door itself takes every kind the registry publishes; these two are the
+ * ones a person hands in here, and the ones whose documents author their own
+ * catalog name.
+ */
+export type CatalogLineageKind = "workflow" | "agent_definition";
+
 interface CatalogAdmissionInput {
-  workflow_revision_hash: string;
+  kind: CatalogLineageKind;
+  catalog_revision_hash: string;
   actor: string;
   activated_at: string;
 }
@@ -661,6 +671,22 @@ export const agentDefinitionRevisionPageSchema = z
   .object({
     items: z.array(agentDefinitionRevisionListItemSchema),
     next_after_revision_hash: sha256.nullable(),
+  })
+  .strict();
+
+/**
+ * One published agent definition read back by its hash, which is where the
+ * cockpit learns the name its frontmatter authored: publication answers the
+ * hash alone, and the catalog lineage is founded under the authored name.
+ */
+export const agentDefinitionRevisionDetailSchema = z
+  .object({
+    agent_definition_revision_hash: sha256,
+    name: z.string().min(1),
+    description: z.string().min(1),
+    model: z.string().min(1).nullable().optional(),
+    system_prompt: z.string().min(1).max(16_384),
+    tools: z.array(z.string().min(1).max(16_384)).max(128).nullable().optional(),
   })
   .strict();
 
@@ -2431,6 +2457,9 @@ export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
 export type WorkflowRevisionSummary = z.infer<
   typeof workflowRevisionSummarySchema
 >;
+type AgentDefinitionRevisionDetail = z.infer<
+  typeof agentDefinitionRevisionDetailSchema
+>;
 type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
 type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
 export type LibraryRecognition = z.infer<typeof libraryRecognitionSchema>;
@@ -2580,6 +2609,9 @@ export interface CockpitApi {
   publishAgentDefinition(
     document: string,
   ): Promise<HttpResult<AgentDefinitionRevision>>;
+  getAgentDefinitionRevision(
+    revisionHash: string,
+  ): Promise<AgentDefinitionRevisionDetail>;
   /**
    * Publish material by its exact bytes and answer with the address it
    * hashes to (`POST /artifacts`, #1089). A caller may hand text, which
@@ -2588,7 +2620,10 @@ export interface CockpitApi {
    */
   publishArtifact(content: Uint8Array | string): Promise<HttpResult<ArtifactResource>>;
   listObservedQueueItems(after?: string): Promise<ObservedQueueItemPage>;
-  getRevisionByName(name: string): Promise<CatalogNameResolution>;
+  getRevisionByName(
+    kind: CatalogLineageKind,
+    name: string,
+  ): Promise<CatalogNameResolution>;
   foundCatalogLineage(
     input: CatalogAdmissionInput,
   ): Promise<HttpResult<CatalogAdmission>>;
@@ -3007,6 +3042,14 @@ export function createCockpitApi(
         [200, 201],
         agentDefinitionRevisionSchema,
       ),
+    getAgentDefinitionRevision: (revisionHash: string) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/agent-definition-revisions/${encodeURIComponent(revisionHash)}`,
+        {},
+        [200],
+        agentDefinitionRevisionDetailSchema,
+      ),
     publishArtifact: (content) =>
       requestJsonResult(
         fetcher,
@@ -3021,10 +3064,10 @@ export function createCockpitApi(
         [200, 201],
         artifactResourceSchema,
       ),
-    getRevisionByName: async (name: string) => {
+    getRevisionByName: async (kind: CatalogLineageKind, name: string) => {
       const resolution = await requestJson(
         fetcher,
-        `/atelier/api/v1/workflow-revisions/by-name/${encodeURIComponent(name)}`,
+        `/atelier/api/v1/catalog-revisions/by-name/${kind}/${encodeURIComponent(name)}`,
         {},
         [200],
         catalogNameResolutionSchema,
@@ -3039,12 +3082,13 @@ export function createCockpitApi(
     foundCatalogLineage: (input) =>
       requestJsonResult(
         fetcher,
-        "/atelier/api/v1/workflow-lineages",
+        "/atelier/api/v1/catalog-lineages",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            workflow_revision_hash: input.workflow_revision_hash,
+            kind: input.kind,
+            catalog_revision_hash: input.catalog_revision_hash,
             actor: input.actor,
             activated_at: input.activated_at,
           }),
@@ -3055,12 +3099,13 @@ export function createCockpitApi(
     admitCatalogMember: (lineageId, input) =>
       requestJsonResult(
         fetcher,
-        `/atelier/api/v1/workflow-lineages/${encodeURIComponent(lineageId)}/members`,
+        `/atelier/api/v1/catalog-lineages/${encodeURIComponent(lineageId)}/members`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            workflow_revision_hash: input.workflow_revision_hash,
+            kind: input.kind,
+            catalog_revision_hash: input.catalog_revision_hash,
             actor: input.actor,
             activated_at: input.activated_at,
           }),
@@ -3071,7 +3116,7 @@ export function createCockpitApi(
     retireCatalogLineage: (lineageId, input) =>
       requestJson(
         fetcher,
-        `/atelier/api/v1/workflow-lineages/${encodeURIComponent(lineageId)}/retirements`,
+        `/atelier/api/v1/catalog-lineages/${encodeURIComponent(lineageId)}/retirements`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },

@@ -217,7 +217,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     getRevisionByName: vi.fn(async () => ({
       display_name: workflowName,
       lineage_id: "e".repeat(64),
-      workflow_revision_hash: revisionHash,
+      catalog_revision_hash: revisionHash,
       revision_number: 1
     })),
     getWorkflowRevision: vi.fn(async () => detail()),

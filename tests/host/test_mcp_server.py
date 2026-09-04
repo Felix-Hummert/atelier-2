@@ -36,6 +36,7 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionSummaryResourceV2,
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, Artifact
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main, mcp_command
 from atelier2.host.mcp_command import (
@@ -94,8 +95,11 @@ RUN_PATH = f"{RUNS_PATH}/{PUBLIC_RUN_REFERENCE}"
 ANSWERS_PATH = f"{RUN_PATH}/answers"
 ARTIFACTS_PATH = API_PREFIX + "/artifacts"
 DESCRIBED_PATH = API_PREFIX + "/workflow-revisions?view=described"
-BY_NAME_PATH = API_PREFIX + f"/workflow-revisions/by-name/{WORKFLOW_NAME}"
-MISSING_NAME_PATH = API_PREFIX + "/workflow-revisions/by-name/no-such-workflow"
+CATALOG_NAME_PREFIX = (
+    API_PREFIX + f"/catalog-revisions/by-name/{RevisionKind.WORKFLOW.value}"
+)
+BY_NAME_PATH = f"{CATALOG_NAME_PREFIX}/{WORKFLOW_NAME}"
+MISSING_NAME_PATH = f"{CATALOG_NAME_PREFIX}/no-such-workflow"
 
 
 @dataclass(frozen=True)
@@ -272,7 +276,7 @@ def catalog_resolution() -> CatalogNameResolutionResource:
     return CatalogNameResolutionResource(
         display_name=WORKFLOW_NAME,
         lineage_id=LINEAGE_ID,
-        workflow_revision_hash=REVISION_HASH,
+        catalog_revision_hash=REVISION_HASH,
         revision_number=1,
     )
 

@@ -874,9 +874,12 @@ the live instance. This is a landing operation, in this order:
    budget file's local SHA-256 is not a publication receipt.
 3. Publish each resulting YAML document through
    `POST /atelier/api/v1/workflow-revisions`. Admit each returned workflow hash
-   through `POST /atelier/api/v1/workflow-lineages`; when its authored name
-   already owns a lineage, resolve that name and append through
-   `POST /atelier/api/v1/workflow-lineages/<lineage-id>/members` instead.
+   through `POST /atelier/api/v1/catalog-lineages` with
+   `{"kind": "workflow", "catalog_revision_hash": "<hash>", …}`; when its
+   authored name already owns a lineage, resolve that name through
+   `GET /atelier/api/v1/catalog-revisions/by-name/workflow/<name>` and append
+   through `POST /atelier/api/v1/catalog-lineages/<lineage-id>/members`
+   instead.
 4. Only after all three admissions answer with their exact workflow hashes,
    activate the deployed revision and start the canary oneshot. A partial
    publication is not activation authority.
@@ -1182,6 +1185,21 @@ belongs to, so an edited file becomes the next revision of the same catalog
 entry and the revision before it stays exactly what it was. Continuity is the
 repository path, never the authored name: renaming a file in the source starts
 a new lineage.
+
+Retire a lineage of any kind through
+`POST /atelier/api/v1/catalog-lineages/<lineage-id>/retirements`. Repeating it
+answers 204 again, and afterwards
+`GET /atelier/api/v1/catalog-revisions/by-name/<kind>/<name>` answers
+`catalog-lineage-retired` rather than a revision. Retirement takes the name out
+of the live catalog and nothing else: every published revision stays readable by
+its hash, and a run already under way keeps running.
+
+Retiring an agent lineage does not yet stop a workflow start. A workflow
+document references no agent definition today -- an agent reaches a run through
+the role binding the start supplies, which names an agent configuration
+revision and never a catalog name -- so there is nothing for a retired agent
+name to refuse. Making such a start refuse by name needs that reference to
+exist first; it is a named gap on #66, not a promise this door keeps.
 
 Private repositories, project-scoped registration, disconnecting a source, and
 the catalog's own Connect and Pull buttons are named absences, not oversights.

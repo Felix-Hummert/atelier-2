@@ -550,72 +550,82 @@ describe("the saved-workflow listing the cockpit asks for", () => {
 });
 
 describe("the catalog name the picker asks for the head", () => {
-  it("asks the existing by-name door and decodes the resolution the document serves", async () => {
-    const body = {
-      display_name: "drei-saetze-review-sehend",
-      lineage_id: digest,
-      workflow_revision_hash: digest,
-      revision_number: 2
-    };
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify(body), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      })
-    );
+  it.each(["workflow", "agent_definition"] as const)(
+    "asks the by-name door of kind %s and decodes the resolution the document serves",
+    async (kind) => {
+      const body = {
+        display_name: "drei-saetze-review-sehend",
+        lineage_id: digest,
+        catalog_revision_hash: digest,
+        revision_number: 2
+      };
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
 
-    const resolved = await createCockpitApi(fetcher).getRevisionByName(
-      "drei-saetze-review-sehend"
-    );
+      const resolved = await createCockpitApi(fetcher).getRevisionByName(
+        kind,
+        "drei-saetze-review-sehend"
+      );
 
-    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-      "/atelier/api/v1/workflow-revisions/by-name/drei-saetze-review-sehend"
-    );
-    expect(resolved).toEqual(body);
-  });
+      expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+        `/atelier/api/v1/catalog-revisions/by-name/${kind}/drei-saetze-review-sehend`
+      );
+      expect(resolved).toEqual(body);
+    }
+  );
 
   it("refuses a catalog head whose display name is not the asked name", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
         display_name: "another-name",
         lineage_id: digest,
-        workflow_revision_hash: digest,
+        catalog_revision_hash: digest,
         revision_number: 2
       }), { status: 200, headers: { "content-type": "application/json" } })
     );
 
-    await expect(createCockpitApi(fetcher).getRevisionByName("drei-saetze-review-sehend"))
-      .rejects.toThrow(/another display name/);
+    await expect(
+      createCockpitApi(fetcher).getRevisionByName("workflow", "drei-saetze-review-sehend")
+    ).rejects.toThrow(/another display name/);
   });
 
-  it("proves(a-cockpit-published-v3-workflow-is-named-over-the-api): founds a lineage through the existing door", async () => {
-    const body = {
-      display_name: "diff-review",
-      lineage_id: digest,
-      workflow_revision_hash: digest,
-      revision_number: 1
-    };
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify(body), {
-        status: 201,
-        headers: { "content-type": "application/json" }
-      })
-    );
+  it.each(["workflow", "agent_definition"] as const)(
+    "proves(a-cockpit-published-v3-workflow-is-named-over-the-api): founds a %s lineage through the one door",
+    async (kind) => {
+      const body = {
+        display_name: "diff-review",
+        lineage_id: digest,
+        catalog_revision_hash: digest,
+        revision_number: 1
+      };
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status: 201,
+          headers: { "content-type": "application/json" }
+        })
+      );
 
-    const founded = await createCockpitApi(fetcher).foundCatalogLineage({
-      workflow_revision_hash: digest,
-      actor: "atelier2-cockpit",
-      activated_at: "2026-08-18T07:00:00Z"
-    });
+      const founded = await createCockpitApi(fetcher).foundCatalogLineage({
+        kind,
+        catalog_revision_hash: digest,
+        actor: "atelier2-cockpit",
+        activated_at: "2026-08-18T07:00:00Z"
+      });
 
-    expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/workflow-lineages");
-    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
-      workflow_revision_hash: digest,
-      actor: "atelier2-cockpit",
-      activated_at: "2026-08-18T07:00:00Z"
-    });
-    expect(founded).toEqual({ status: 201, value: body });
-  });
+      expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/catalog-lineages");
+      expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
+        kind,
+        catalog_revision_hash: digest,
+        actor: "atelier2-cockpit",
+        activated_at: "2026-08-18T07:00:00Z"
+      });
+      expect(founded).toEqual({ status: 201, value: body });
+    }
+  );
 });
 
 describe("answering a wait over the existing door", () => {

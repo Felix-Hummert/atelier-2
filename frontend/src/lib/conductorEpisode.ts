@@ -49,8 +49,8 @@ export async function resolveConductorConnection(
 ): Promise<ConductorConnectionState> {
   let workflowRevisionHash: string;
   try {
-    const resolution = await cockpitApi.getRevisionByName(CONDUCTOR_WORKFLOW_NAME);
-    workflowRevisionHash = resolution.workflow_revision_hash;
+    const resolution = await cockpitApi.getRevisionByName("workflow", CONDUCTOR_WORKFLOW_NAME);
+    workflowRevisionHash = resolution.catalog_revision_hash;
   } catch (error) {
     const code = problemCode(error);
     if (code === "catalog-name-not-found" || code === "catalog-lineage-retired") {
