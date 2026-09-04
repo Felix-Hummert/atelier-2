@@ -296,7 +296,7 @@ test("proves(a-v3-workflow-is-started-from-the-picker) proves(the-work-item-pick
   }
 });
 
-test("proves(a-diff-review-shaped-workflow-with-an-object-order): starts a diff-review-shaped workflow with review_questions typed as text and diff as an object order's Raw JSON, both through the real artifact door, and sends orders on the wire as {name, artifact_hash} (#438 Scheibe 1b)", async ({ page }, testInfo) => {
+test("starts a diff-review-shaped workflow with review_questions typed as text and diff as an object order's Raw JSON, both through the real artifact door, and sends orders on the wire as {name, artifact_hash} (#438 Scheibe 1b)", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   const token = `${testInfo.repeatEachIndex}-${Date.now()}`;
   const workflowName = `diff-review-e2e-${token}`;
@@ -437,7 +437,7 @@ test("proves(a-diff-review-shaped-workflow-with-an-object-order): starts a diff-
   expect(job).toContain(`--- order: diff ---\n\n${diffRawJson}`);
 });
 
-test("proves(the-real-diff-review-revision-starts-with-both-orders-typed-as-text): starts the real diff-review revision from the catalog with review_questions and diff both typed as text (#1130 Done-when)", async ({ page }, testInfo) => {
+test("starts the real diff-review revision from the catalog with review_questions and diff both typed as text (#1130 Done-when)", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   const token = `${testInfo.repeatEachIndex}-${Date.now()}`;
   const profileId = `diff-review-real-e2e-${token}`;
