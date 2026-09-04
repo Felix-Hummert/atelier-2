@@ -54,6 +54,7 @@ nodes:
     instruction: Review one bounded diff.
 """
 SECOND_DOCUMENT = DOCUMENT.replace(b"Review one bounded diff.", b"Review it again.")
+BY_NAME = f"{API_PREFIX}/catalog-revisions/by-name/{RevisionKind.WORKFLOW.value}"
 
 
 @pytest.fixture
@@ -98,22 +99,23 @@ def test_a_name_answers_with_the_revision_it_resolves_to(
 ) -> None:
     revision = found(runtime)
 
-    response = client(runtime).get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+    response = client(runtime).get(f"{BY_NAME}/{NAME}")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["workflow_revision_hash"] == revision.revision_hash.value
+    assert body["catalog_revision_hash"] == revision.revision_hash.value
     assert body["display_name"] == NAME
     assert body["revision_number"] == 1
 
 
 @pytest.mark.proves("the-name-path-is-never-read-as-a-revision-hash")
 def test_the_name_path_is_not_read_as_a_revision_hash(runtime: DbosRuntime) -> None:
-    # `by-name` sits under the same prefix as `{revision_hash}`; if the hash
-    # route claims it first, every name is refused as a malformed hash.
+    # The name now answers under its own prefix rather than beside
+    # `/workflow-revisions/{hash}`, so no hash route can claim it. This asks a
+    # name and reads a name back, which is what that separation is for.
     found(runtime)
 
-    response = client(runtime).get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+    response = client(runtime).get(f"{BY_NAME}/{NAME}")
 
     assert response.status_code == 200
 
@@ -122,9 +124,7 @@ def test_the_name_path_is_not_read_as_a_revision_hash(runtime: DbosRuntime) -> N
 def test_a_name_nobody_admitted_is_a_named_problem(runtime: DbosRuntime) -> None:
     found(runtime)
 
-    response = client(runtime).get(
-        f"{API_PREFIX}/workflow-revisions/by-name/no-such-workflow"
-    )
+    response = client(runtime).get(f"{BY_NAME}/no-such-workflow")
 
     assert response.status_code == 404
     assert response.json()["type"].endswith("catalog-name-not-found")
@@ -148,7 +148,7 @@ def test_a_retired_lineage_refuses_by_name_instead_of_answering(
         CatalogActivatedAt("2026-08-17T00:01:00Z"),
     )
 
-    response = client(runtime).get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+    response = client(runtime).get(f"{BY_NAME}/{NAME}")
 
     assert response.status_code == 410
     assert response.json()["type"].endswith("catalog-lineage-retired")
@@ -180,11 +180,11 @@ def test_a_position_answers_the_member_the_caller_asked_for(
     )
     api = client(runtime)
 
-    head = api.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
-    first_member = api.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}?position=1")
+    head = api.get(f"{BY_NAME}/{NAME}")
+    first_member = api.get(f"{BY_NAME}/{NAME}?position=1")
 
-    assert head.json()["workflow_revision_hash"] == second.revision_hash.value
-    assert first_member.json()["workflow_revision_hash"] == first.revision_hash.value
+    assert head.json()["catalog_revision_hash"] == second.revision_hash.value
+    assert first_member.json()["catalog_revision_hash"] == first.revision_hash.value
 
 
 @pytest.mark.proves("a-name-the-catalog-cannot-honour-is-refused-by-its-own-reason")
@@ -193,9 +193,7 @@ def test_a_position_that_is_not_a_member_is_a_named_problem(
 ) -> None:
     found(runtime)
 
-    response = client(runtime).get(
-        f"{API_PREFIX}/workflow-revisions/by-name/{NAME}?position=7"
-    )
+    response = client(runtime).get(f"{BY_NAME}/{NAME}?position=7")
 
     assert response.status_code == 404
     assert response.json()["type"].endswith("catalog-name-not-found")
@@ -207,9 +205,7 @@ def test_a_position_that_is_neither_a_number_nor_head_is_refused(
 ) -> None:
     found(runtime)
 
-    response = client(runtime).get(
-        f"{API_PREFIX}/workflow-revisions/by-name/{NAME}?position=later"
-    )
+    response = client(runtime).get(f"{BY_NAME}/{NAME}?position=later")
 
     assert response.status_code == 400
     assert response.json()["type"].endswith("invalid-catalog-position")
@@ -272,7 +268,7 @@ def test_a_reference_lookup_outage_answers_unavailable_instead_of_a_500(
         )
     )
 
-    response = failing_client.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+    response = failing_client.get(f"{BY_NAME}/{NAME}")
 
     assert response.status_code == 503
     assert response.json()["type"].endswith("temporarily-unavailable")
@@ -307,7 +303,7 @@ def test_a_database_corruption_answers_durable_state_corrupt_instead_of_a_500(
             )
         )
 
-    response = client(runtime).get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+    response = client(runtime).get(f"{BY_NAME}/{NAME}")
 
     assert response.status_code == 500
     assert response.json()["type"].endswith("durable-state-corrupt")

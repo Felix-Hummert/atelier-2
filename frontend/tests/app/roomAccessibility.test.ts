@@ -191,7 +191,7 @@ function surfaceApi(): CockpitApi {
     getRevisionByName: vi.fn(async () => ({
       display_name: SAMPLE_WORKFLOW_NAME,
       lineage_id: "e".repeat(64),
-      workflow_revision_hash: WORKFLOW_HASH,
+      catalog_revision_hash: WORKFLOW_HASH,
       revision_number: 1
     })),
     listWorkflowRevisions: vi.fn(async () => ({

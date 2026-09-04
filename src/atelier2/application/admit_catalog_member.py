@@ -3,8 +3,8 @@
 **Why this exists.** The store has been able to found a lineage and admit a
 member since the catalog landed, and nothing in production ever called either:
 a name reached the catalog only when a test wrote the row. The read door answers
-`GET /workflow-revisions/by-name/{name}` over whatever is there, so without this
-the catalog was a table only its own tests could fill.
+`GET /catalog-revisions/by-name/{kind}/{name}` over whatever is there, so
+without this the catalog was a table only its own tests could fill.
 
 **Why here and not in the route.** Both acts are the same composition -- read the
 exact published bytes the caller named, then hand them to the catalog -- and a
@@ -15,10 +15,16 @@ behind the publication door (`workflow_revisions`); founding does not invent a
 second hash and does not ask the caller for a hidden catalog publish.
 
 **Founding is an admission, not a different act.** ADR 0007 Decision 3 keeps
-publication and admission apart; it does not split admission in two. A V3
-revision supplies the name from its published bytes; an older format needs an
-explicit name because it carries none. Later V3 admissions append their own
-authored names as aliases, while older formats preserve the current name.
+publication and admission apart; it does not split admission in two. A format
+that authors its own name supplies it from its published bytes; a format that
+authors none needs an explicit name because it carries none. Later admissions of
+an authoring format append their own authored names as aliases, while the others
+preserve the current name.
+
+**Which formats author a name is a per-kind fact, not a per-door one.** ADR 0007
+names two on `main`: a V3 workflow's `name` and an agent definition's frontmatter
+`name`. Both are read here, through the parser each kind already publishes with,
+so one door serves every kind and no kind gets its own copy of admission.
 """
 
 from __future__ import annotations
@@ -26,11 +32,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
+from atelier2.application.reconstruct_agent_definition import AgentDefinitionParser
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ProjectionTooLarge,
     WriteUnavailable,
 )
+from atelier2.contracts.agent_definitions import AgentDefinitionRefused
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -44,7 +52,7 @@ from atelier2.contracts.revisions_v3 import (
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
-from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
@@ -133,6 +141,7 @@ def found_catalog_lineage(
     revisions: PublishedRevisionResolver,
     admissions: CatalogAdmissions,
     parser: WorkflowDocumentParser,
+    agent_definitions: AgentDefinitionParser,
     workflows: WorkflowRevisionQueries,
 ) -> FoundLineageResult:
     """Admit one published revision under its format-owned name."""
@@ -140,7 +149,9 @@ def found_catalog_lineage(
     revision = _named_revision(kind, revision_hash, revisions, workflows)
     if not isinstance(revision, PublishedRevision):
         return revision
-    display_name = _founding_display_name(revision, explicit_display_name, parser)
+    display_name = _founding_display_name(
+        revision, explicit_display_name, parser, agent_definitions
+    )
     if not isinstance(display_name, CatalogLineageDisplayName):
         return display_name
     founded = admissions.found_lineage(revision, display_name, actor, activated_at)
@@ -166,9 +177,10 @@ def admit_catalog_member(
     catalog: CatalogResolver,
     admissions: CatalogAdmissions,
     parser: WorkflowDocumentParser,
+    agent_definitions: AgentDefinitionParser,
     workflows: WorkflowRevisionQueries,
 ) -> AdmitMemberResult:
-    """Admit one revision, appending a V3 name only its bytes authored."""
+    """Admit one revision, appending only a name its own bytes authored."""
 
     match catalog.resolve_name(kind, lineage_id, "head"):
         case CatalogNameFound(current_display_name=current_display_name):
@@ -184,7 +196,9 @@ def admit_catalog_member(
     revision = _named_revision(kind, revision_hash, catalog, workflows)
     if not isinstance(revision, PublishedRevision):
         return revision
-    display_name = _member_display_name(revision, current_display_name, parser)
+    display_name = _member_display_name(
+        revision, current_display_name, parser, agent_definitions
+    )
     if not isinstance(display_name, CatalogLineageDisplayName):
         return display_name
     return _application_answer(
@@ -254,14 +268,15 @@ def _founding_display_name(
     revision: PublishedRevision,
     explicit_display_name: CatalogLineageDisplayName | None,
     parser: WorkflowDocumentParser,
+    agent_definitions: AgentDefinitionParser,
 ) -> CatalogLineageDisplayName | _NameRefusal:
-    parsed = _parsed_workflow(revision, parser)
-    if isinstance(parsed, DurableStateCorrupt):
-        return parsed
-    if isinstance(parsed, WorkflowGraphV3):
+    authored = _authored_display_name(revision, parser, agent_definitions)
+    if isinstance(authored, CatalogDisplayNameInvalid | DurableStateCorrupt):
+        return authored
+    if authored is not None:
         if explicit_display_name is not None:
             return CatalogAuthoredNameRestated()
-        return _catalog_display_name(parsed.name)
+        return authored
     if explicit_display_name is None:
         return CatalogExplicitNameRequired()
     return explicit_display_name
@@ -271,24 +286,46 @@ def _member_display_name(
     revision: PublishedRevision,
     current_display_name: CatalogLineageDisplayName,
     parser: WorkflowDocumentParser,
+    agent_definitions: AgentDefinitionParser,
 ) -> CatalogLineageDisplayName | CatalogDisplayNameInvalid | DurableStateCorrupt:
-    parsed = _parsed_workflow(revision, parser)
-    if isinstance(parsed, DurableStateCorrupt):
-        return parsed
-    if isinstance(parsed, WorkflowGraphV3):
-        return _catalog_display_name(parsed.name)
-    return current_display_name
+    authored = _authored_display_name(revision, parser, agent_definitions)
+    if isinstance(authored, CatalogDisplayNameInvalid | DurableStateCorrupt):
+        return authored
+    return current_display_name if authored is None else authored
 
 
-def _parsed_workflow(
-    revision: PublishedRevision, parser: WorkflowDocumentParser
-) -> AnyWorkflowDocument | None | DurableStateCorrupt:
-    if revision.kind is not RevisionKind.WORKFLOW:
-        return None
-    try:
-        return parser(revision.document)
-    except WorkflowDocumentInvalid:
-        return DurableStateCorrupt()
+def _authored_display_name(
+    revision: PublishedRevision,
+    parser: WorkflowDocumentParser,
+    agent_definitions: AgentDefinitionParser,
+) -> CatalogLineageDisplayName | None | CatalogDisplayNameInvalid | DurableStateCorrupt:
+    """The name this revision's own format authored, or None when it authors none."""
+
+    authored = _authored_name_text(revision, parser, agent_definitions)
+    if authored is None or isinstance(authored, DurableStateCorrupt):
+        return authored
+    return _catalog_display_name(authored)
+
+
+def _authored_name_text(
+    revision: PublishedRevision,
+    parser: WorkflowDocumentParser,
+    agent_definitions: AgentDefinitionParser,
+) -> str | None | DurableStateCorrupt:
+    """Bytes that no longer parse are corrupt state: publication already read them."""
+
+    if revision.kind is RevisionKind.WORKFLOW:
+        try:
+            parsed = parser(revision.document)
+        except WorkflowDocumentInvalid:
+            return DurableStateCorrupt()
+        return parsed.name if isinstance(parsed, WorkflowGraphV3) else None
+    if revision.kind is RevisionKind.AGENT_DEFINITION:
+        try:
+            return agent_definitions(revision.document).name
+        except AgentDefinitionRefused:
+            return DurableStateCorrupt()
+    return None
 
 
 def _catalog_display_name(

@@ -141,7 +141,7 @@ project-list row also shows the one project and, when the published revision
 answers a name, the workflow. The saved-workflow picker offers one row per authored name the described
 listing already publishes, not one row per revision hash. Several revisions
 that share a name collapse; the catalog head from
-`GET /workflow-revisions/by-name/{name}` is the default when that name
+`GET /catalog-revisions/by-name/workflow/{name}` is the default when that name
 resolves, and older members sit in a collapsed revision choice. A name with
 one listed revision has no empty submenu. A published title the catalog does
 not hold is named Unlisted when it is a legal catalog name and Unnamable when
@@ -161,8 +161,12 @@ recognition reports what it saw, and the person chooses Workflow or Agent —
 the kinds the catalog can hold as a tile; that choice travels with the
 addition. An uncertain file still gets those chips instead of a Close-only
 refusal. A mistaken kind is named on the sheet before anything stands in the
-catalog. After the intake it publishes and admits through the existing
-revision doors so a workflow or agent is startable, all or nothing.
+catalog. After the intake it publishes through the revision door of that
+kind and admits through the one catalog-lineage family, so a workflow and an
+agent alike get a named lineage with numbered revisions, all or nothing. An
+agent's lineage name is the `name` its frontmatter authored, read back from the
+published revision; a name the catalog grammar refuses leaves the revision
+published but unnamed.
 Separately, `POST /library/recognitions`
 says what a loose document is without writing anything: opaque bytes plus an
 optional `file_name`, answered as a recognized workflow (format, authored name

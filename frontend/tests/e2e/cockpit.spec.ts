@@ -255,7 +255,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
   const workflow = await page.request.post(`${api}/workflow-revisions`, { headers: { "content-type": "application/yaml" }, data: ["format_version: 3", `name: ${workflowName}`, "nodes:", "  - id: build", "    type: agent", "    role: builder", "    mode: headless", "    instruction: Prove the Catalog start door.", ...declaredOutput(schemaHash), ""].join("\n") });
   expect(workflow.status()).toBe(201);
   const workflowRevisionHash = (await workflow.json()).workflow_revision_hash as string;
-  const lineage = await page.request.post(`${api}/workflow-lineages`, { data: { workflow_revision_hash: workflowRevisionHash, actor: "e2e", activated_at: "2026-08-24T00:00:00Z" } });
+  const lineage = await page.request.post(`${api}/catalog-lineages`, { data: { kind: "workflow", catalog_revision_hash: workflowRevisionHash, actor: "e2e", activated_at: "2026-08-24T00:00:00Z" } });
   expect(lineage.status()).toBe(201);
 
   const configurationHash = "b".repeat(64);
@@ -526,8 +526,8 @@ test("Start sheet presents a current role configuration without retaining a draf
     ].join("\n")
   });
   expect(workflow.status()).toBe(201);
-  const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
-    data: { workflow_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" }
+  const admitted = await page.request.post("/atelier/api/v1/catalog-lineages", {
+    data: { kind: "workflow", catalog_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" }
   });
   expect(admitted.status()).toBe(201);
   const configurationHash = "c".repeat(64);
@@ -622,9 +622,10 @@ test("Catalog start sheet refuses an array order schema before starting", async 
     ].join("\n")
   });
   expect(workflow.status()).toBe(201);
-  const admitted = await page.request.post(`${api}/workflow-lineages`, {
+  const admitted = await page.request.post(`${api}/catalog-lineages`, {
     data: {
-      workflow_revision_hash: (await workflow.json()).workflow_revision_hash,
+      kind: "workflow",
+      catalog_revision_hash: (await workflow.json()).workflow_revision_hash,
       actor: "e2e",
       activated_at: "2026-08-26T00:00:00Z"
     }
@@ -864,8 +865,8 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
   });
   expect(workflow.status()).toBe(201);
   const workflowRevisionHash = (await workflow.json()).workflow_revision_hash as string;
-  const admitted = await page.request.post(`${api}/workflow-lineages`, {
-    data: { workflow_revision_hash: workflowRevisionHash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" }
+  const admitted = await page.request.post(`${api}/catalog-lineages`, {
+    data: { kind: "workflow", catalog_revision_hash: workflowRevisionHash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" }
   });
   expect(admitted.status()).toBe(201);
 
@@ -976,7 +977,7 @@ test("Catalog start sheet names current startability for checked configurations"
   const schema = await anyJsonSchema(page);
   const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", { headers: { "content-type": "application/yaml" }, data: ["format_version: 3", `name: ${name}`, "nodes:", "  - id: build", "    type: agent", "    role: builder", "    mode: headless", "    instruction: Choose a working executor.", ...declaredOutput(schema), ""].join("\n") });
   expect(workflow.status()).toBe(201);
-  expect((await page.request.post("/atelier/api/v1/workflow-lineages", { data: { workflow_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
+  expect((await page.request.post("/atelier/api/v1/catalog-lineages", { data: { kind: "workflow", catalog_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
   const unavailableHash = "1".repeat(64);
   const availableHash = "2".repeat(64);
   await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [
@@ -1019,7 +1020,7 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
   const output = await anyJsonSchema(page);
   const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", { headers: { "content-type": "application/yaml" }, data: ["format_version: 3", `name: ${name}`, "graph_inputs:", "  - name: work_item", "    schema:", "      ref: work-item", `      revision: ${workItem}`, "nodes:", "  - id: build", "    type: agent", "    role: builder", "    mode: headless", "    instruction: Use the selected work item.", "    inputs:", "      - name: work_item", "        from:", "          graph_input: work_item", ...declaredOutput(output), ""].join("\n") });
   expect(workflow.status()).toBe(201);
-  expect((await page.request.post("/atelier/api/v1/workflow-lineages", { data: { workflow_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
+  expect((await page.request.post("/atelier/api/v1/catalog-lineages", { data: { kind: "workflow", catalog_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
   await page.route("**/atelier/api/v1/queue-items*", async (route) => await route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -1069,7 +1070,7 @@ test("Catalog detail draws a published V3 workflow before it starts", async ({ p
   const schema = await anyJsonSchema(page);
   const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", { headers: { "content-type": "application/yaml" }, data: ["format_version: 3", `name: ${name}`, "nodes:", "  - id: build", "    type: agent", "    role: builder", "    mode: headless", "    instruction: Draw this first.", ...declaredOutput(schema), ""].join("\n") });
   expect(workflow.status()).toBe(201);
-  expect((await page.request.post("/atelier/api/v1/workflow-lineages", { data: { workflow_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
+  expect((await page.request.post("/atelier/api/v1/catalog-lineages", { data: { kind: "workflow", catalog_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
   await page.goto(`/atelier/catalog/${name}`);
   await expect(page.getByRole("heading", { name })).toBeVisible();
   await expect(page.getByRole("region", { name: workflowGraphCopy.label }).getByRole("button", { name: "build" })).toBeVisible();
@@ -1723,9 +1724,10 @@ test("opening a Catalog detail draws its nodes before a run exists", async ({
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const admitted = await page.request.post(`${api}/workflow-lineages`, {
+  const admitted = await page.request.post(`${api}/catalog-lineages`, {
     data: {
-      workflow_revision_hash: (await published.json()).workflow_revision_hash,
+      kind: "workflow",
+      catalog_revision_hash: (await published.json()).workflow_revision_hash,
       actor: "e2e",
       activated_at: "2026-08-26T00:00:00Z"
     }
@@ -1806,9 +1808,10 @@ test("a declared order is a material field on start, and the typed value travels
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const admitted = await page.request.post(`${api}/workflow-lineages`, {
+  const admitted = await page.request.post(`${api}/catalog-lineages`, {
     data: {
-      workflow_revision_hash: (await published.json()).workflow_revision_hash,
+      kind: "workflow",
+      catalog_revision_hash: (await published.json()).workflow_revision_hash,
       actor: "e2e",
       activated_at: "2026-08-26T00:00:00Z"
     }
@@ -1909,26 +1912,28 @@ test("the Catalog detail names the admitted head of a V3 lineage", async ({
   expect(newestPublished.status()).toBe(201);
   const newestHash = (await newestPublished.json()).workflow_revision_hash as string;
 
-  const founded = await page.request.post(`${api}/workflow-lineages`, {
+  const founded = await page.request.post(`${api}/catalog-lineages`, {
     data: {
-      workflow_revision_hash: olderHash,
+      kind: "workflow",
+      catalog_revision_hash: olderHash,
       actor: "e2e",
       activated_at: "2026-08-17T00:00:00Z"
     }
   });
   expect(founded.status()).toBe(201);
   const lineageId = (await founded.json()).lineage_id as string;
-  const admitted = await page.request.post(`${api}/workflow-lineages/${lineageId}/members`, {
+  const admitted = await page.request.post(`${api}/catalog-lineages/${lineageId}/members`, {
     data: {
-      workflow_revision_hash: newestHash,
+      kind: "workflow",
+      catalog_revision_hash: newestHash,
       actor: "e2e",
       activated_at: "2026-08-17T00:00:01Z"
     }
   });
   expect(admitted.status()).toBe(201);
-  const head = await page.request.get(`${api}/workflow-revisions/by-name/${lineageName}`);
+  const head = await page.request.get(`${api}/catalog-revisions/by-name/workflow/${lineageName}`);
   expect(head.status()).toBe(200);
-  expect((await head.json()).workflow_revision_hash).toBe(newestHash);
+  expect((await head.json()).catalog_revision_hash).toBe(newestHash);
 
   await page.goto("/atelier/catalog");
   const row = page.getByRole("listitem").filter({ hasText: lineageName });
@@ -2116,17 +2121,17 @@ test("an admitted V3 workflow is named by the Catalog", async ({
   });
   expect(published.status()).toBe(201);
   const workflowRevisionHash = (await published.json()).workflow_revision_hash as string;
-  const admitted = await page.request.post(`${api}/workflow-lineages`, {
-    data: { workflow_revision_hash: workflowRevisionHash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" }
+  const admitted = await page.request.post(`${api}/catalog-lineages`, {
+    data: { kind: "workflow", catalog_revision_hash: workflowRevisionHash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" }
   });
   expect(admitted.status()).toBe(201);
 
-  const head = await page.request.get(`${api}/workflow-revisions/by-name/${lineageName}`);
+  const head = await page.request.get(`${api}/catalog-revisions/by-name/workflow/${lineageName}`);
   expect(head.status()).toBe(200);
   const named = await head.json();
   expect(named.display_name).toBe(lineageName);
   expect(named.lineage_id).toMatch(/^[0-9a-f]{64}$/);
-  expect(named.workflow_revision_hash).toMatch(/^[0-9a-f]{64}$/);
+  expect(named.catalog_revision_hash).toMatch(/^[0-9a-f]{64}$/);
 
   await page.goto("/atelier/catalog");
   const row = page.getByRole("listitem").filter({ hasText: lineageName });

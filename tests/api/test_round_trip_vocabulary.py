@@ -65,7 +65,18 @@ ROUND_TRIPS = (
     RoundTrip(
         "FoundCatalogLineageRequestResource",
         ("WorkflowRevisionDetailResource",),
-        frozenset({"actor", "activated_at"}),
+        # `kind` is a caller's choice: it decides which registry its bytes were
+        # published into, and no answer decides that for it.
+        #
+        # `catalog_revision_hash` is the one field of this API a consumer does
+        # copy across spellings, and it is the price of one kind-generic
+        # admission door (#1172): the publish answer of each kind names its own
+        # hash -- `workflow_revision_hash`, `agent_definition_revision_hash` --
+        # while the catalog family, serving every kind through one body, can
+        # only name the hash as what it is there. The alternative is one request
+        # body per kind, which is the parallel copy this family exists to
+        # remove.
+        frozenset({"kind", "catalog_revision_hash", "actor", "activated_at"}),
     ),
 )
 

@@ -94,6 +94,10 @@ PROJECT_SOURCE_IMPORT_PATH = API_PREFIX + "/project-sources/import"
 LIBRARY_RECOGNITIONS_PATH = API_PREFIX + "/library/recognitions"
 LIBRARY_ADDITIONS_PATH = API_PREFIX + "/library/additions"
 LIBRARY_ADDITION_PATH = LIBRARY_ADDITIONS_PATH + "/{intake_id}"
+CATALOG_LINEAGES_PATH = API_PREFIX + "/catalog-lineages"
+CATALOG_LINEAGE_MEMBERS_PATH = CATALOG_LINEAGES_PATH + "/{lineage_id}/members"
+CATALOG_LINEAGE_RETIREMENTS_PATH = CATALOG_LINEAGES_PATH + "/{lineage_id}/retirements"
+CATALOG_REVISION_BY_NAME_PATH = API_PREFIX + "/catalog-revisions/by-name/{kind}/{name}"
 
 EVENT_MODELS_V3 = (
     AgentCompletedEventResourceV3,
@@ -255,7 +259,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/workflow-lineages", "post"): (
+    (CATALOG_LINEAGES_PATH, "post"): (
         "invalid-request",
         "unsupported-media-type",
         "catalog-revision-unpublished",
@@ -267,7 +271,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/workflow-lineages/{lineage_id}/members", "post"): (
+    (CATALOG_LINEAGE_MEMBERS_PATH, "post"): (
         "invalid-request",
         "unsupported-media-type",
         "catalog-revision-unpublished",
@@ -280,14 +284,15 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/workflow-lineages/{lineage_id}/retirements", "post"): (
+    (CATALOG_LINEAGE_RETIREMENTS_PATH, "post"): (
         "invalid-request",
         "catalog-lineage-missing",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/workflow-revisions/by-name/{name}", "get"): (
+    (CATALOG_REVISION_BY_NAME_PATH, "get"): (
+        "invalid-request",
         "catalog-name-not-found",
         "catalog-lineage-retired",
         "catalog-revision-not-a-member",

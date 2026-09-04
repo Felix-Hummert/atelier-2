@@ -21,6 +21,7 @@ from atelier2.api.openapi import (
     API_PREFIX,
     ARTIFACT_PATH,
     ARTIFACTS_PATH,
+    CATALOG_REVISION_BY_NAME_PATH,
     WORKFLOW_DOCUMENT_COMPONENT,
 )
 from atelier2.api.wire.requests import (
@@ -120,10 +121,10 @@ McpHttpDoor = tuple[str, str]
 MCP_TOOL_HTTP_DOORS: dict[McpToolName, tuple[McpHttpDoor, ...]] = {
     McpToolName.LIST_WORKFLOWS: (
         ("get", API_PREFIX + "/workflow-revisions"),
-        ("get", API_PREFIX + "/workflow-revisions/by-name/{name}"),
+        ("get", CATALOG_REVISION_BY_NAME_PATH),
     ),
     McpToolName.START_RUN: (
-        ("get", API_PREFIX + "/workflow-revisions/by-name/{name}"),
+        ("get", CATALOG_REVISION_BY_NAME_PATH),
         ("post", API_PREFIX + "/runs"),
     ),
     McpToolName.RUN_STATUS: (("get", API_PREFIX + "/runs/{public_ref}"),),
@@ -142,7 +143,7 @@ def tool_definitions() -> tuple[dict[str, Any], ...]:
             "description": (
                 "List catalog workflows as name, lineage and head. Composed from "
                 "GET /workflow-revisions?view=described and GET "
-                "/workflow-revisions/by-name/{name}. Unadmitted published titles "
+                "/catalog-revisions/by-name/{kind}/{name}. Unadmitted published titles "
                 "are omitted. There is no caller authentication on this API: the "
                 "stdio child has the same loopback trust as the browser. #82 is "
                 "human OIDC and is not this door; machine credentials wait on "
