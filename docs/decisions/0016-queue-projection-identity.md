@@ -44,11 +44,18 @@ implicit permission.
 ### Priority, dependencies, and capacity have one owner
 
 Each project has append-only queue-policy revisions. The active-run cap is read
-from the current revision. Proposal revisions and their dependency edges are
-append-only, and every edge names the exact proposal revision that declared it.
-Dependencies are project-local. A prerequisite is satisfied only when its
-launch-bound run is `COMPLETED`; any other run state remains a blocker. Ready
-items order by priority rank, then item id, so equal ranks are deterministic.
+from the current revision. A project with no published policy revision has no
+cap: launch reservation skips the capacity check rather than refusing the
+reservation, because absence of a revision is a legitimate project state, not
+corrupt durable state (operator ruling 28.08.2026). A published revision still
+holds `maximum_active_runs` as `NOT NULL`; there is no sentinel or nullable cap
+column for "unlimited" — the absence of a revision is what expresses it.
+
+Proposal revisions and their dependency edges are append-only, and every edge
+names the exact proposal revision that declared it. Dependencies are
+project-local. A prerequisite is satisfied only when its launch-bound run is
+`COMPLETED`; any other run state remains a blocker. Ready items order by
+priority rank, then item id, so equal ranks are deterministic.
 
 The projection names blockers with `QueueBlockerKind`. `GET /queue-items`
 reports only facts the durable read can prove without making a reservation or
@@ -157,6 +164,8 @@ left the tracker's open set.
 - The durable binding, rather than a repeated catalog lookup, is the authority
   for which exact workflow revision starts.
 - Capacity is not a best-effort count outside the write transaction.
+- A project with no published policy revision has no cap, not a corrupt state
+  (operator ruling 28.08.2026).
 - V43 remains a published predecessor object; V44 is the Phase-D schema.
 - Automatic authorization, cross-project dependencies, and tracker write-back
   remain outside D1.
