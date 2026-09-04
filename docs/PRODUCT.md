@@ -17,6 +17,17 @@ not by itself a defect, and compatibility layers, migration ceremony, and
 deprecation paths are not owed. `AGENTS.md` already refuses compatibility
 layers without a current caller; the stage names why no such caller exists.
 
+Operator ruling 04.09.2026: *"ja der lauf darf raus! alles darf raus! es ist
+noch alles ein prototyp!"* — a defective run, revision, or row in the live store
+may be removed without asking first. A stage that owes no migration ceremony
+owes no preservation of data that is already broken: an unreadable row buys
+nothing and costs journal noise and failed reads. Removal is not silent: it is
+taken with a copy of the store, with the Serve stopped for the write, with an
+integrity check afterwards, and it is named in the report.
+[OPERATIONS.md](OPERATIONS.md) owns that procedure. What still stops for a
+question is unchanged — repository content, a branch carrying real work, and
+anything that spends money.
+
 The stage frees the work from ceremony, not from rigour. Correctness,
 security, honest failure classes, behavioural tests, clean ownership, and
 deleting a predecessor when its successor lands are untouched: a prototype may
