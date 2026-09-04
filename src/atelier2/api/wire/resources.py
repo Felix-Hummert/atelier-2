@@ -98,6 +98,19 @@ class ApiModel(BaseModel):
     )
 
 
+class RedeployBlockedResource(ApiModel):
+    """Named once the auto-redeploy watcher has failed the same way repeatedly.
+
+    `blocked_since` is when the watcher most recently confirmed the block --
+    its own last failing tick, the newest fact the watcher's status file
+    carries -- and `reason` is that tick's own message, the same sentence the
+    watcher already journals.
+    """
+
+    blocked_since: str | None = Field(default=None, pattern=RECORDED_AT_PATTERN)
+    reason: str = Field(min_length=1)
+
+
 class HealthResource(ApiModel):
     status: Literal["serving"]
     source_commit: str
@@ -106,6 +119,12 @@ class HealthResource(ApiModel):
         pattern=RECORDED_AT_PATTERN,
         description="When this serve process started, so a client can tell a "
         "redeploy from the commit it loaded with.",
+    )
+    redeploy: RedeployBlockedResource | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Named only once the auto-redeploy watcher has failed "
+        "three or more ticks in a row, or its own status file is unreadable.",
     )
 
 

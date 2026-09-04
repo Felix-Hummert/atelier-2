@@ -85,6 +85,7 @@ from atelier2.application.read_projects import (
     GetProjectResult,
     ListProjectsResult,
 )
+from atelier2.application.read_redeploy_status import ReadRedeployStatusResult
 from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import (
     GetNodeDetailUseCaseResult,
@@ -166,6 +167,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionResolverWithSession,
 )
 from atelier2.ports.queue_projection import QueueProjection
+from atelier2.ports.redeploy_status import RedeployStatusReader
 from atelier2.ports.run_events import (
     RunEventQueries,
 )
@@ -216,6 +218,10 @@ class ApiPorts:
     # project has no tracker to observe, and the import door says so by name.
     tracker_item_source: TrackerItemSource | None = None
     model_registry_inspector: ProviderModelInspector | None = None
+    # None is the honest default too: a deployment with no auto-redeploy
+    # watcher in front of it (every test app, and any host serving without
+    # one) has no status file for GET /health to read.
+    redeploy_status_reader: RedeployStatusReader | None = None
 
 
 @dataclass(frozen=True)
@@ -383,6 +389,7 @@ class ApiUseCases:
     ]
     list_queue_items: Callable[[QueueItemId | None, int], ListQueueItemsOutcome]
     import_project_source_issues: Callable[[], ImportProjectSourceIssuesOutcome]
+    read_redeploy_status: Callable[[], ReadRedeployStatusResult]
 
 
 @dataclass(frozen=True)
