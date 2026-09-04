@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,11 +44,13 @@ from atelier2.contracts.host_configuration import (
     SourceKind,
     SourceReference,
 )
+from atelier2.contracts.when import recorded_instant
 from tests.scenarios.api import durable_api_client
 
 PROJECT = ProjectId("studio")
 OWNER = "atelier2-operator"
 REPO = "atelier2-target"
+READ_INSTANT = recorded_instant(datetime(2026, 9, 4, 13, 8, 32, tzinfo=UTC))
 WORKFLOW_DOCUMENT = b"""format_version: 3
 name: triage-backlog
 nodes:
@@ -93,7 +96,13 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
 def issue_source(
     tmp_path: Path, listing: _FakeGitHubIssueListing
 ) -> LiveGitHubIssueSource:
-    """The source exactly as serve composes it: from the connection record."""
+    """The source exactly as serve composes it: from the connection record.
+
+    The reading clock is fixed as well as the transport, because the import
+    re-stamps every observed title with the listing's read instant: against the
+    real clock a repeated import would differ from the first one whenever the
+    two land in different wall-clock seconds.
+    """
 
     credential_directory = tmp_path / "github-credential"
     credential_directory.mkdir(exist_ok=True)
@@ -113,7 +122,11 @@ def issue_source(
             SourceReference("main"),
         )
     )
-    return replace(composed, transport=httpx.MockTransport(listing.handle))
+    return replace(
+        composed,
+        transport=httpx.MockTransport(listing.handle),
+        clock=lambda: READ_INSTANT,
+    )
 
 
 def connected_api(
