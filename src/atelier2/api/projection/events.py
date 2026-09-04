@@ -143,6 +143,8 @@ def run_event_resource(
                     "OUTPUT_SCHEMA_REFUSED",
                     "AGENT_REFUSED",
                     "PROJECT_VERIFICATION_FAILED",
+                    "CANDIDATE_CAPTURE_FAILED",
+                    "CANDIDATE_UNCHANGED",
                 ],
                 failure_code,
             ),

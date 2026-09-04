@@ -1345,6 +1345,9 @@ CREATE TABLE run_events (
     # attempt itself, so 38 is the last version that published this shape.
     (38, "tool_redemptions"): _TOOL_REDEMPTIONS_BOUND_TO_THE_AGENT_RECEIPT,
     (39, "agent_attempts"): _AGENT_ATTEMPTS_WITH_CANDIDATE_CAPTURE_FAILURE,
+    # V40 through V49 left the attempt table untouched, so the hop off 49 parks
+    # exactly the text V39 published; V50 widens its failure-code vocabulary.
+    (49, "agent_attempts"): _AGENT_ATTEMPTS_WITH_CANDIDATE_CAPTURE_FAILURE,
     (39, "tool_redemptions"): _TOOL_REDEMPTIONS_BOUND_TO_THE_ATTEMPT,
     # V15 introduced the table in this shape and no hop before V39 moved it,
     # so the step that adds it builds the record rather than today's table.
