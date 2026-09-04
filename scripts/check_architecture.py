@@ -23,6 +23,7 @@ EXPECTED_CONTRACT_NAMES = {
     "route-vocabulary": "Routes name no port type",
     "schema-owner": "JSON Schema evaluation stays inside one profile owner",
     "yaml-owner": "PyYAML stays inside its document adapters",
+    "httpx-owner": "httpx stays inside its declared transport owners",
 }
 ROOT_PACKAGE = "atelier2"
 PORT_PACKAGE = "atelier2.ports"

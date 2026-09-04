@@ -54,6 +54,7 @@ dependencies = [
     { name = "dbos" },
     { name = "fastapi" },
     { name = "githubkit" },
+    { name = "httpx" },
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -63,7 +64,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "import-linter" },
     { name = "openapi-spec-validator" },
     { name = "pyright" },
@@ -79,6 +79,7 @@ requires-dist = [
     { name = "dbos", specifier = "==2.29.0" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "githubkit", specifier = "==0.16.1" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyyaml", specifier = "==6.0.3" },
@@ -88,7 +89,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = "==0.28.1" },
     { name = "import-linter", specifier = "==2.13" },
     { name = "openapi-spec-validator", specifier = "==0.9.0" },
     { name = "pyright", specifier = "==1.1.411" },
