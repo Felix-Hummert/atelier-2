@@ -24,21 +24,30 @@ export type WaitAnswerOutcome =
   | { kind: "uncertain"; pending: WaitMutation; run: RunV3 }
   | { kind: "failed"; pending: WaitMutation | null; message: string };
 
-/** Builds one V3 wait's exact mutation and journals it as prepared, before it ever reaches the wire. */
+/**
+ * Builds one V3 wait's exact mutation and journals it as prepared, before it
+ * ever reaches the wire.
+ *
+ * `isStringSchema` is the caller's own knowledge of the waiting node's schema
+ * (`WaitAnswerSchemaResourceV3.kind === "string"`) -- the one fact
+ * `encodeWaitAnswer` needs to send raw text verbatim instead of a
+ * JSON-encoded string (#1091).
+ */
 export async function prepareWaitAnswer(
   mutationJournal: MutationJournal,
   publicRunReference: string,
   workflowRevisionHash: string,
   nodeId: string,
   expectedNodeExecutionId: string,
-  typedOrExactAnswer: string
+  typedOrExactAnswer: string,
+  isStringSchema: boolean
 ): Promise<WaitMutation> {
   const mutation = await waitMutation(
     publicRunReference,
     workflowRevisionHash,
     nodeId,
     expectedNodeExecutionId,
-    encodeWaitAnswer(typedOrExactAnswer)
+    encodeWaitAnswer(typedOrExactAnswer, isStringSchema)
   );
   const prepared = await mutationJournal.prepare(mutation);
   if (prepared.kind !== "wait") {

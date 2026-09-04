@@ -535,6 +535,10 @@
       justify-self: end;
     }
 
+    :global(.workshop .workshop-rail .serve-footer) {
+      grid-column: 1 / -1;
+    }
+
     :global(.workshop .workshop-rail .rail-project) {
       min-width: 0;
       overflow: hidden;

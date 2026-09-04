@@ -663,6 +663,49 @@ def test_list_names_a_superseded_model_apart_from_a_missing_receipt() -> None:
     assert item["not_startable_reason"] == "model-not-registered"
 
 
+def test_list_names_a_superseded_model_over_its_own_failed_receipt() -> None:
+    """#1128: the reason the wire names must be the evidence the wire carries.
+
+    A superseded model outranks its own failed receipt in the precedence
+    (`test_list_names_a_superseded_model_apart_from_a_missing_receipt`), but
+    the receipt can itself have failed rather than merely being missing --
+    live: a config demoted by a newer revision while its last probe was
+    still recorded as a failure. The response must answer 200 with
+    `model-not-registered` and no probe evidence, never surface the failed
+    receipt's evidence for a reason that does not name it.
+    """
+
+    catalog = RecordingCatalog(
+        object(),
+        list_result=AgentConfigurationRevisionPage(
+            (
+                AgentConfigurationRevisionListItem(
+                    CONFIGURATION,
+                    AUTH,
+                    True,
+                    False,
+                    False,
+                    ProviderProbeFailure(
+                        ProviderProbeProblemCode("provider-overloaded"),
+                        RecordedAt("2026-09-03T11:22:00Z"),
+                    ),
+                ),
+            ),
+            None,
+        ),
+    )
+
+    response = _client(catalog).get(API_PREFIX + "/agent-configuration-revisions")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["startable"] is False
+    assert item["structurally_startable"] is True
+    assert item["not_startable_reason"] == "model-not-registered"
+    assert item["provider_probe_problem_code"] is None
+    assert item["provider_probe_observed_at"] is None
+
+
 def test_list_empty_is_an_empty_page() -> None:
     response = _client(RecordingCatalog(object())).get(
         API_PREFIX + "/agent-configuration-revisions"

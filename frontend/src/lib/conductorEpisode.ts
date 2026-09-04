@@ -135,7 +135,10 @@ export function conductorConversationShape(
     waits[0]?.id === "next_message" &&
     agents[0]?.id === "conduct" &&
     agents[0]?.role === role &&
-    waitAnswer?.kind === "free" &&
+    // The conductor's own fixed message schema (`CONDUCTOR_MESSAGE_SCHEMA`,
+    // `host/conductor_workflow.py`) is `{type: "string", minLength: 1}`, so
+    // its wait classifies "string" (#1091), not "free".
+    waitAnswer?.kind === "string" &&
     moreWaitAnswers.length === 0
     ? { role, maximumRounds: loop.maximum_rounds }
     : null;

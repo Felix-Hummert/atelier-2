@@ -76,10 +76,17 @@ class WaitAnswerClassification:
     exactly that kind of match, so it happens here, beside the other reader of
     references this layer already owns (`resolve_declared_reference`), and
     the API receives only this plain, portless verdict.
+
+    `string_typed` is required, never inferred from `kind` downstream: it is
+    the one fact a composer needs to send an `enum` answer's `values` back
+    verbatim rather than JSON-encoded (#1091 PR #1108 finding 1) -- true for
+    every `string` classification and for an `enum` whose schema also names
+    `type: string`, false for `boolean`, `free`, and every other `enum`.
     """
 
     node_id: str
-    kind: Literal["boolean", "enum", "free"]
+    kind: Literal["boolean", "enum", "string", "free"]
+    string_typed: bool
     values: tuple[str, ...] | None = None
 
 
@@ -240,21 +247,50 @@ def _classify_wait_answer(
     hull unresolved on the wire. Each of those four reasons classifies `free`,
     the honest little this reader can say, rather than refuse the whole read
     over a reference nothing has bound yet.
+
+    `string` names the one other shape a composer must read differently:
+    where the schema's own top level is exactly `type: string` and it names
+    no `enum` (an `enum` still classifies `enum`, the more specific answer),
+    the value a person types *is* the answer with no JSON-quoting layer
+    around it (`schemas_v3.instance_for_schema` is the one door that reads it
+    that way).
+
+    `string_typed` carries that same fact onto an `enum` classification too:
+    the door decides raw-versus-JSON-encoded by the schema's top-level
+    `type` alone, never by whether it also names `enum` (#1091 PR #1108
+    finding 1 -- `workflows/schemas/refine_ruling.json`,
+    `{"type": "string", "enum": [...]}`, is exactly this shape on the live
+    `refine` workflow). So a `type: string` schema's `enum` members carry
+    their own raw text in `values`, not the JSON-encoded text every other
+    `enum` still carries -- a wire consumer that did not know this would keep
+    handing the door a JSON-quoted `"ja"` the door refuses.
     """
     schema = _resolved_schema_document(node.outputs[0].schema_reference, resolver)
     if isinstance(schema, (ReadUnavailable, DurableStateCorrupt)):
         return schema
     if isinstance(schema, dict):
         if schema.get("type") == "boolean":
-            return WaitAnswerClassification(node.id, "boolean")
+            return WaitAnswerClassification(node.id, "boolean", string_typed=False)
+        string_typed = schema.get("type") == "string"
         enum = schema.get("enum")
         if isinstance(enum, list):
-            encoded = [_json_wire_scalar(member) for member in enum]
-            if all(member is not None for member in encoded):
-                return WaitAnswerClassification(
-                    node.id, "enum", cast(tuple[str, ...], tuple(encoded))
-                )
-    return WaitAnswerClassification(node.id, "free")
+            if string_typed:
+                if all(isinstance(member, str) for member in enum):
+                    return WaitAnswerClassification(
+                        node.id, "enum", string_typed=True, values=tuple(enum)
+                    )
+            else:
+                encoded = [_json_wire_scalar(member) for member in enum]
+                if all(member is not None for member in encoded):
+                    return WaitAnswerClassification(
+                        node.id,
+                        "enum",
+                        string_typed=False,
+                        values=cast(tuple[str, ...], tuple(encoded)),
+                    )
+        elif string_typed:
+            return WaitAnswerClassification(node.id, "string", string_typed=True)
+    return WaitAnswerClassification(node.id, "free", string_typed=False)
 
 
 def _resolved_schema_document(
