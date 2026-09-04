@@ -160,7 +160,10 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
-from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
+from atelier2.contracts.tool_grants_v3 import (
+    MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES,
+    ToolRedemptionReceipt,
+)
 from atelier2.contracts.verdicts import Verdict, read_verdict
 from atelier2.contracts.workflows import (
     NodeCompletion,
@@ -193,6 +196,7 @@ from atelier2.ports.agent_attempts import (
     AgentExecutorBindingRefusalNeedsPreparedCleanup,
     AgentExecutorBindingRefusalResult,
     AgentExecutorBindingRefusalWritten,
+    ProjectVerificationFailureEvidence,
     RunCancellationAccepted,
     RunCancellationCommandConflict,
     RunCancellationEndedRun,
@@ -1083,6 +1087,55 @@ def _proof_of_a_passed_check(
     if redemption is None or not redemption.satisfied_the_project:
         return None
     return redemption
+
+
+def _verification_failure_verdict(
+    redemption: ToolRedemptionReceipt,
+    evidence: ProjectVerificationFailureEvidence | None,
+) -> str:
+    """Everything a reader needs to judge a red check without rerunning it.
+
+    The exit code alone is six words that answer nothing: an operator cannot
+    tell a broken test from a broken environment from it (#1137). Every real
+    redemption failure supplies `evidence`, because the caller that ran the
+    check already read what it printed; it is absent only for a caller this
+    store cannot assume exists yet, so a missing evidence still names the exit
+    code and the command rather than raising.
+    """
+
+    words = [f"exit {redemption.exit_code}", " ".join(redemption.command)]
+    if evidence is not None:
+        words.append(f"after {evidence.duration_seconds:.0f} s")
+        if evidence.summary_line is not None:
+            words.append(_bounded_verification_summary(evidence.summary_line))
+        if evidence.output_artifact_hash is not None:
+            words.append(
+                f"output artifact sha256:{evidence.output_artifact_hash.value}"
+            )
+        if evidence.redacted:
+            words.append("output redacted")
+        if evidence.retention_failure is not None:
+            words.append(f"output could not be kept: {evidence.retention_failure}")
+    return "; ".join(words)
+
+
+def _bounded_verification_summary(summary_line: str) -> str:
+    """Pytest's own summary line, bounded the way `ProcessExitSignature` bounds free text.
+
+    A project's own test runner is free to compose a summary of any length; a
+    receipt is a sentence an operator reads at a glance, not a log (#1137).
+    """
+
+    encoded = summary_line.encode("utf-8")
+    if len(encoded) <= MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES:
+        return summary_line
+    tail = encoded[-MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES:].decode(
+        "utf-8", "replace"
+    )
+    return (
+        f"last {MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES} of "
+        f"{len(encoded)} summary bytes: {tail}"
+    )
 
 
 def _keep_tool_redemption(
@@ -2133,6 +2186,7 @@ class DbosAgentAttemptStore:
         result: AgentExecutionResult,
         *,
         redemption: ToolRedemptionReceipt | None = None,
+        verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
         runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         request = execution.request
@@ -2202,7 +2256,9 @@ class DbosAgentAttemptStore:
                 AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
                 node_receipt_reason(
                     NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
-                    f"exit {redemption.exit_code}",
+                    _verification_failure_verdict(
+                        redemption, verification_failure_evidence
+                    ),
                 ),
                 runner_evidence_hash=runner_evidence_hash,
                 transcript=result.transcript,
@@ -2598,6 +2654,7 @@ class DbosAgentAttemptStore:
         execution: AgentAttemptExecution,
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
+        verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         """Write the one success this attempt is allowed, or its named refusal.
 
@@ -2615,7 +2672,10 @@ class DbosAgentAttemptStore:
         instead of dying on an exception nobody stored.
         A granted verification that exits nonzero is the same named seam under
         `PROJECT_VERIFICATION_FAILED`, with how the command ended in the reason
-        and without a `tool_redemptions` row.
+        and without a `tool_redemptions` row. `verification_failure_evidence`
+        names, in that same reason, what the redemption's exit code alone does
+        not: pytest's own summary line where the retained tail carried one, and
+        the address of the artifact that tail was kept under.
 
         A V3 success additionally keeps what the run now knows durably: the
         produced value as `node-artifact/v3` and the `succeeded`
@@ -2646,6 +2706,7 @@ class DbosAgentAttemptStore:
                 graph,
                 result,
                 redemption=redemption,
+                verification_failure_evidence=verification_failure_evidence,
             )
 
     def complete_known_failure(
