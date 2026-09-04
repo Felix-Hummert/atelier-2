@@ -27,6 +27,8 @@ from atelier2.contracts.schemas_v3 import (
     InstanceRefused,
     SchemaAccepted,
     declared_instance_in_answer,
+    instance_for_schema,
+    read_authored_instance_document,
     read_instance_document,
     read_schema_document,
 )
@@ -369,3 +371,123 @@ def test_a_narrowed_value_is_still_held_to_the_profile_the_whole_answer_is() -> 
     duplicated = b'Here:\n{"name": "a", "name": "b", "portions": 1}'
 
     assert declared_instance_in_answer(duplicated, A_MEAL) is None
+
+
+# `read_authored_instance_document` judges a value a caller authored -- an
+# order a start supplies, or an answer a person types at a wait -- rather than
+# one an executor produced. `read_instance_document` stays the produced-value
+# door and is unaffected: these tests pin exactly where the two disagree.
+
+A_NONEMPTY_STRING = accepted(b'{"type": "string", "minLength": 1}')
+AN_UNBOUNDED_STRING = accepted(b'{"type": "string"}')
+
+
+def test_an_authored_string_schema_value_reads_the_artifacts_raw_text() -> None:
+    """The bytes ARE the string: no second, JSON-quoting layer is owed."""
+    verdict = read_authored_instance_document(b"stir gently", A_NONEMPTY_STRING)
+
+    assert verdict == InstanceAccepted("stir gently")
+
+
+def test_an_authored_string_schema_value_still_enforces_minlength() -> None:
+    """Reading raw text does not skip the schema the author still pinned."""
+    verdict = read_authored_instance_document(b"", A_NONEMPTY_STRING)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is InstanceRefusal.SCHEMA_VIOLATED
+
+
+def test_an_authored_object_schema_value_still_demands_json() -> None:
+    """Only a `\"string\"`-typed schema changes; every other shape is unaffected."""
+    accepted_value = read_authored_instance_document(
+        b'{"name": "lasagne", "portions": 4}', A_MEAL
+    )
+    refused_value = read_authored_instance_document(b"lasagne", A_MEAL)
+
+    assert accepted_value == InstanceAccepted({"name": "lasagne", "portions": 4})
+    assert isinstance(refused_value, InstanceRefused)
+    assert refused_value.refusal is InstanceRefusal.INSTANCE_NOT_JSON
+
+
+def test_a_json_encoded_string_stays_a_string_that_carries_its_own_quotes() -> None:
+    """The chosen rule, pinned: a quoted JSON string is a string, quotes and all.
+
+    Atelier owes no second reading that would strip a quoting an author never
+    asked for (prototype rule, `docs/PRODUCT.md`) -- an author who means the
+    bare word writes the bare word.
+    """
+    verdict = read_authored_instance_document(b'"hi"', AN_UNBOUNDED_STRING)
+
+    assert verdict == InstanceAccepted('"hi"')
+
+
+def test_the_produced_value_door_keeps_demanding_json_for_a_string_schema() -> None:
+    """`read_instance_document` (agent/node output) is untouched by this rule.
+
+    A produced value already arrives under its own executor's JSON-encoding
+    promise (`atelier2.adapters.claude_subscription`'s StructuredOutput
+    wrap/unwrap, #1061), so the same bytes read differently through the two
+    doors on purpose.
+    """
+    quoted = read_instance_document(b'"hi"', AN_UNBOUNDED_STRING)
+    bare = read_instance_document(b"hi", AN_UNBOUNDED_STRING)
+
+    assert quoted == InstanceAccepted("hi")
+    assert isinstance(bare, InstanceRefused)
+    assert bare.refusal is InstanceRefusal.INSTANCE_NOT_JSON
+
+
+@pytest.mark.parametrize(
+    ("label", "instance", "expected"),
+    (
+        ("not utf-8", b"\xff", InstanceRefusal.INSTANCE_NOT_UTF8),
+        (
+            "a byte order mark",
+            "﻿stir gently".encode(),
+            InstanceRefusal.INSTANCE_CARRIES_BYTE_ORDER_MARK,
+        ),
+    ),
+    ids=("utf8", "bom"),
+)
+def test_an_authored_string_schema_value_still_refuses_broken_bytes(
+    label: str, instance: bytes, expected: InstanceRefusal
+) -> None:
+    """A `\"string\"` schema reads raw text, not raw bytes: it still owes UTF-8."""
+    verdict = read_authored_instance_document(instance, A_NONEMPTY_STRING)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is expected
+
+
+def test_an_invalid_utf8_refusal_names_the_broken_byte_offset() -> None:
+    """The ruled sentence is the place, not only the reason: a person cannot fix
+    "invalid start byte" without knowing where in the artifact it broke."""
+    verdict = read_instance_document(
+        b'{"name": "stir \xff gently", "portions": 1}', A_MEAL
+    )
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is InstanceRefusal.INSTANCE_NOT_UTF8
+    assert verdict.subject == "invalid start byte at byte 15"
+
+
+def test_an_authored_string_schema_refusal_also_names_the_broken_byte_offset() -> None:
+    verdict = read_authored_instance_document(b"stir \xff gently", A_NONEMPTY_STRING)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is InstanceRefusal.INSTANCE_NOT_UTF8
+    assert verdict.subject == "invalid start byte at byte 5"
+
+
+def test_instance_for_schema_is_the_one_dispatch_both_checks_agree_are_bound() -> None:
+    """The decode-only unit `read_authored_instance_document` is built on.
+
+    Exercised directly so the type dispatch is pinned independently of the
+    bound and violation checks layered on top of it.
+    """
+    assert instance_for_schema(b"stir gently", A_NONEMPTY_STRING.schema) == (
+        "stir gently"
+    )
+    assert instance_for_schema(
+        b'{"name": "lasagne", "portions": 4}', A_MEAL.schema
+    ) == {"name": "lasagne", "portions": 4}

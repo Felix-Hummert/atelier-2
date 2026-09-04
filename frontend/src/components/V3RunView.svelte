@@ -420,7 +420,8 @@
         run.workflow_revision_hash,
         run.current_node_id,
         nodeExecutionId,
-        typed
+        typed,
+        currentWaitAnswerSchema?.string_typed ?? false
       );
       pendingWait = mutation;
       waitAccepted = false;
@@ -616,6 +617,7 @@
       validationMessage={waitValidationMessage}
       failureMessage={waitFailureMessage}
       answerKind={currentWaitAnswerSchema?.kind ?? "free"}
+      answerStringTyped={currentWaitAnswerSchema?.string_typed ?? false}
       answerValues={currentWaitAnswerSchema?.values ?? []}
       onAnswer={(answer) => { void submitWait(answer); }}
       onRetry={() => { void retryWait(); }}

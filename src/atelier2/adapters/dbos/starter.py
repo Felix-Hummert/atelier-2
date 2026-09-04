@@ -84,7 +84,7 @@ from atelier2.contracts.schemas_v3 import (
     MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     InstanceRefused,
     SchemaRefused,
-    read_instance_document,
+    read_authored_instance_document,
     read_schema_document,
 )
 from atelier2.contracts.work_items import (
@@ -321,8 +321,12 @@ def _refused_order(
                 # The value is judged as it will be read, which for an ordered
                 # artifact is its full content: the route it arrived by already
                 # bounded it, and refusing it a second time under the inline
-                # bound would refuse what the artifact door admitted.
-                verdict = read_instance_document(
+                # bound would refuse what the artifact door admitted. It is
+                # judged as an *authored* value, not a produced one: a caller
+                # supplying an order owes no JSON-encoding promise an executor
+                # would, so a `"string"`-typed schema reads this order's raw
+                # text directly (`schemas_v3.read_authored_instance_document`).
+                verdict = read_authored_instance_document(
                     order.value, schema, MAXIMUM_ARTIFACT_BYTES
                 )
         if isinstance(verdict, InstanceRefused):

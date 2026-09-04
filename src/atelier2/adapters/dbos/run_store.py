@@ -82,7 +82,6 @@ from atelier2.contracts.node_records_v3 import (
     NodeReceiptReason,
     PersistedReceiptDisposition,
     RunInput,
-    RunInputSchemaKind,
     node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -96,7 +95,9 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.schemas_v3 import (
     InstanceRefused,
+    SchemaAccepted,
     SchemaRefused,
+    read_authored_instance_document,
     read_instance_document,
     read_schema_document,
 )
@@ -159,6 +160,15 @@ def load_run_inputs(
     The start refused the run unless every order it declares was supplied, so an
     order named here and absent from the store is a store that disagrees with the
     run it holds, not an input somebody forgot.
+
+    This reads exactly the columns `run_inputs_v3` carries -- no join against
+    `published_revisions` -- because #1091 retired the one reader that needed a
+    second, resolved fact about the order's schema (whether its top level
+    declared `type: string`, for composition). The start (`starter.py`)
+    already resolved and validated that same schema revision before writing
+    this row, and a schema revision is immutable once published, so trusting
+    this durable pin here re-reads no invariant the write did not already
+    settle.
     """
     read = {
         entry.source.graph_input
@@ -172,31 +182,9 @@ def load_run_inputs(
             str(record.name),
             PublishedRevisionHash(str(record.schema_revision_hash)),
             bytes(record.value),
-            _declared_input_schema_kind(
-                PublishedRevisionHash(str(record.schema_revision_hash)),
-                None
-                if record.schema_revision_kind is None
-                else str(record.schema_revision_kind),
-                None
-                if record.schema_document is None
-                else bytes(record.schema_document),
-            ),
         )
         for record in session.execute(
-            sa.select(
-                run_inputs_v3,
-                published_revisions.c.kind.label("schema_revision_kind"),
-                published_revisions.c.document.label("schema_document"),
-            )
-            .outerjoin(
-                published_revisions,
-                sa.and_(
-                    published_revisions.c.kind == RevisionKind.SCHEMA.value,
-                    published_revisions.c.revision_hash
-                    == run_inputs_v3.c.schema_revision_hash,
-                ),
-            )
-            .where(run_inputs_v3.c.run_id == run_id.value)
+            sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == run_id.value)
         ).all()
     }
     missing = sorted(read - stored.keys())
@@ -205,29 +193,6 @@ def load_run_inputs(
             f"the run carries no order named {missing[0]!r}, which this node reads"
         )
     return tuple(stored[name] for name in sorted(read))
-
-
-def _declared_input_schema_kind(
-    revision: PublishedRevisionHash, kind: str | None, document: bytes | None
-) -> RunInputSchemaKind:
-    """The schema distinction that changes how an order is composed for a node."""
-    if kind is None or document is None:
-        raise RunTransitionConflict(
-            f"a stored run input names a missing schema revision: {revision.value}"
-        )
-    if kind != RevisionKind.SCHEMA.value:
-        raise RunTransitionConflict(
-            f"a stored run input names a {kind} revision instead of a schema: "
-            f"{revision.value}"
-        )
-    schema = read_schema_document(document)
-    if isinstance(schema, SchemaRefused):
-        raise RunTransitionConflict(
-            f"a stored run input names a refused schema revision: {schema}"
-        )
-    if isinstance(schema.schema, Mapping) and schema.schema.get("type") == "string":
-        return RunInputSchemaKind.PLAIN_STRING
-    return RunInputSchemaKind.JSON
 
 
 def load_run_orders(
@@ -494,9 +459,10 @@ def load_node_outputs(
     disagrees with itself, and it refuses here rather than travelling into a job.
 
     It is then read against the schema the producing node's author pinned for
-    that output, by the same owner the producing node's own success write asks.
-    A value written by an older build never passed that write, so the value that
-    travels is judged where it travels rather than trusted for having been stored.
+    that output, through the same door that first admitted it: an Agent's output
+    is a produced JSON value, while a Wait's answer is authored text. A value
+    written by an older build never passed that write, so the value that travels
+    is judged where it travels rather than trusted for having been stored.
 
     A node that reads nothing gets nothing: no query runs, and the composition
     is the authored instruction alone.
@@ -537,9 +503,19 @@ def load_node_outputs(
         declared = next(
             output for output in producer.outputs if output.name == source.output
         )
-        refuse_an_output_its_schema_does_not_admit(
-            session, source.node, declared, payload
-        )
+        if isinstance(producer, WaitNodeV3):
+            refusal = why_a_wait_node_does_not_admit_an_answer(
+                session, producer, payload
+            )
+            if refusal is not None:
+                raise NodeOutputSchemaRefused(
+                    f"node {source.node!r} carried an answer its own schema "
+                    f"refuses: {refusal}"
+                )
+        else:
+            refuse_an_output_its_schema_does_not_admit(
+                session, source.node, declared, payload
+            )
         delivered.append(DeliveredOutput(source.node, source.output, payload))
     return tuple(delivered)
 
@@ -614,20 +590,18 @@ def load_published_schema_document(session: Any, revision: str) -> bytes | None:
     return None if document is None else bytes(document)
 
 
-def why_a_value_its_declared_schema_refuses(
-    session: Any,
-    node_id: str,
-    declared: NodeOutput,
-    payload: bytes,
-) -> str | None:
-    """The schema owner's own words against this value, or nothing where it admits it.
+def _pinned_schema_or_conflict(
+    session: Any, node_id: str, declared: NodeOutput
+) -> SchemaAccepted:
+    """The schema `declared`'s pinned revision reads as, or a raised transition conflict.
 
-    A refusal is answered rather than raised because the two callers owe their
-    own callers different vocabularies: a node that produced bad bytes is a
-    transition conflict, and a person who typed an answer the wait's schema
-    refuses is not an error of the run at all. A store that cannot answer for the
-    schema it froze is neither, and still raises -- that is the store disagreeing
-    with itself.
+    Both a produced value (`why_a_value_its_declared_schema_refuses`) and an
+    authored one (`why_a_wait_node_does_not_admit_an_answer`) are judged
+    against the exact schema the run's own document pinned for this output --
+    this is the one place either reads it, so the two judgements can never
+    disagree about which schema they mean. A store that cannot answer for the
+    schema it froze is neither's fault, and still raises -- that is the store
+    disagreeing with itself.
     """
     document = load_published_schema_document(
         session, declared.schema_reference.revision
@@ -643,6 +617,28 @@ def why_a_value_its_declared_schema_refuses(
             f"the schema node {node_id!r} pinned for output "
             f"{declared.name!r} is not one: {schema}"
         )
+    return schema
+
+
+def why_a_value_its_declared_schema_refuses(
+    session: Any,
+    node_id: str,
+    declared: NodeOutput,
+    payload: bytes,
+) -> str | None:
+    """The schema owner's own words against this produced value, or nothing where it admits it.
+
+    A refusal is answered rather than raised because this seam's caller owes
+    its own caller a different vocabulary: a node that produced bad bytes is a
+    transition conflict, not an error of the run's own author.
+
+    `payload` is judged as a produced value (`read_instance_document`,
+    always JSON): it comes back from a node whose own execution already
+    promised the schema it would honour, so a `"string"`-typed schema still
+    demands a JSON-encoded instance here -- unlike an authored value's own
+    door, `why_a_wait_node_does_not_admit_an_answer`.
+    """
+    schema = _pinned_schema_or_conflict(session, node_id, declared)
     verdict = read_instance_document(payload, schema)
     return str(verdict) if isinstance(verdict, InstanceRefused) else None
 
@@ -969,16 +965,22 @@ def why_a_wait_node_does_not_admit_an_answer(
     """Why these bytes are no answer to this waiting node, or nothing where they are.
 
     A Wait node declares no answer type: it declares one output with a schema,
-    and that schema is what judges the value -- the same owner that reads every
-    other value a run produces, asked here about the one a person typed.
+    and that schema is what judges the value -- the same schema owner every
+    other value a run produces answers to, asked here about the one a person
+    typed.
+
+    `answer_bytes` is judged as an authored value (`read_authored_instance_document`),
+    not a produced one: a person typing an answer owes no JSON-encoding
+    promise a node's own execution would, so a `"string"`-typed schema reads
+    the answer's raw text directly.
 
     It is answered here rather than in the use case that receives the submission,
     because which vocabulary applies is a fact about the node, and the node is
     only reachable from the document this store holds.
     """
-    return why_a_value_its_declared_schema_refuses(
-        session, node.id, node.outputs[0], answer_bytes
-    )
+    schema = _pinned_schema_or_conflict(session, node.id, node.outputs[0])
+    verdict = read_authored_instance_document(answer_bytes, schema)
+    return str(verdict) if isinstance(verdict, InstanceRefused) else None
 
 
 def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSnapshot:

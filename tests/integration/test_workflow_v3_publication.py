@@ -496,6 +496,7 @@ nodes:
             "node_id": "approve",
             "schema": {"ref": "decision", "revision": "schema-decision"},
             "kind": "free",
+            "string_typed": False,
             "values": None,
         }
     ]
@@ -550,6 +551,7 @@ nodes:
             "node_id": "go",
             "schema": {"ref": "decision", "revision": boolean_schema},
             "kind": "boolean",
+            "string_typed": False,
             "values": None,
         }
     ]
@@ -566,6 +568,7 @@ nodes:
             "node_id": "go",
             "schema": {"ref": "decision", "revision": enum_schema},
             "kind": "enum",
+            "string_typed": False,
             "values": ['"approve"', '"revise"'],
         }
     ]

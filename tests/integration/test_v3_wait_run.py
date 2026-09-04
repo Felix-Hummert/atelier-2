@@ -114,12 +114,18 @@ from tests.scenarios.durable_state import (
 from tests.scenarios.run_waiting import wait_for_workflow_completion
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
-APPROVAL_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
+APPROVAL_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA, b'{"type": "string", "minLength": 1}'
+)
 """The contract the wait node pins, narrow enough to refuse a wrong answer.
 
 The pause is the subject here, so the schema is the smallest one that can say no
-to something: a JSON string is admitted and every other JSON value is not. A
-schema admitting everything would make the refusal below unprovable.
+to something. A person's answer is authored, not produced
+(`schemas_v3.read_authored_instance_document`): the bytes typed ARE the string,
+so a bare `41` or `{"verdict": "approved"}` is now an admitted answer's own
+text rather than a JSON value of the wrong shape. `minLength` keeps one thing
+this schema can still refuse -- silence -- because a schema admitting every
+byte string would make the refusal below unprovable.
 """
 
 WAIT_IN_THE_MIDDLE = (
@@ -813,8 +819,8 @@ def test_an_already_applied_answer_replays_without_a_second_event(
 
 @pytest.mark.parametrize(
     "rejected",
-    [b"41", b'{"verdict": "approved"}', b"approved", b""],
-    ids=["a number", "an object", "text that is no JSON value", "nothing at all"],
+    [b"", b"\xff"],
+    ids=["nothing at all", "bytes that are no text"],
 )
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
 def test_an_answer_the_waits_own_schema_refuses_leaves_the_run_waiting(
@@ -826,7 +832,9 @@ def test_an_answer_the_waits_own_schema_refuses_leaves_the_run_waiting(
     Refused rather than kept: nothing durable is written, the run is still owed
     an answer, and the person can send another. The judge is the same schema
     owner that reads every value this run produces, so an answer and an agent
-    output are held to one standard.
+    output are held to one standard -- though an answer is read as one a person
+    authored, not one a node produced (`schemas_v3.read_authored_instance_document`):
+    only silence and broken bytes are left for `APPROVAL_SCHEMA` to refuse.
     """
     started, _ = runtime
     workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
@@ -843,6 +851,31 @@ def test_an_answer_the_waits_own_schema_refuses_leaves_the_run_waiting(
     assert stored == 0
     assert str(state) == RunState.WAITING_INPUT.value
     assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [b"41", b'{"verdict": "approved"}', b"approved"],
+    ids=["a bare number's digits", "a bare object's braces", "an unquoted word"],
+)
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_an_authored_string_answer_is_admitted_as_the_raw_text_typed(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+    raw_text: bytes,
+) -> None:
+    """A `\"string\"`-typed wait no longer demands the person quote their answer.
+
+    Before #1091 only a JSON-quoted string was admitted, so `41` read as the
+    JSON number 41 (refused) rather than the two-character answer a person who
+    typed it meant. The bytes typed ARE the string now, so all three of these
+    -- shapes that used to look like a JSON number, object or bare word -- are
+    admitted as exactly the text a person wrote.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    assert isinstance(answer(started, workflow, raw_text), AnswerAcceptedPending)
 
 
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
@@ -937,10 +970,6 @@ def test_racing_answers_leave_one_durable_answer_and_one_heir(
     [
         pytest.param(b"", id="nothing at all"),
         pytest.param(b"\xff", id="bytes that are no text"),
-        pytest.param(b"+5", id="a plus-signed number is no JSON"),
-        pytest.param(b"05", id="a leading zero is no JSON"),
-        pytest.param(b" 5", id="a padded number is JSON the schema refuses"),
-        pytest.param(b"-0", id="negative zero is JSON the schema refuses"),
     ],
 )
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
@@ -956,9 +985,11 @@ def test_the_store_door_itself_refuses_an_inadmissible_answer_and_writes_nothing
     no answer row, no enqueued answer workflow, no event, no moved run.
 
     A V3 wait has no `answer_type`: its judge is the JSON schema its author
-    pinned, so the old canonical-integer vocabulary has no door here. The same
-    byte shapes it once refused for canonicality are still refused, but as
-    non-JSON (`+5`, `05`) or as schema-refused values (` 5`, `-0`).
+    pinned. Since #1091 reads an answer as the raw text a person typed rather
+    than a second JSON encoding of it, a shape that once looked like a
+    malformed JSON number (`+5`, `05`, ` 5`, `-0`) is now simply the text those
+    characters spell, and `APPROVAL_SCHEMA` admits it; only silence and bytes
+    that are not text at all are left refused.
     """
     started, _ = runtime
     workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)

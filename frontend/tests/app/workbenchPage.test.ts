@@ -268,7 +268,8 @@ describe("the workbench conductor conversation", () => {
           {
             node_id: "next_message",
             schema: { ref: "message", revision: conductorRevisionHash },
-            kind: "free",
+            kind: "string",
+            string_typed: true,
             values: null
           }
         ],
@@ -620,7 +621,9 @@ describe("the workbench conductor conversation", () => {
         run.workflow_revision_hash,
         run.current_node_id,
         run.current_node_execution_id,
-        encodeWaitAnswer("an earlier, different attempt")
+        // The conductor's message wait is a string schema (#1091): a real
+        // earlier attempt would have been journaled verbatim, not JSON-quoted.
+        encodeWaitAnswer("an earlier, different attempt", true)
       )
     );
 
@@ -1171,6 +1174,7 @@ describe("the workbench is the room the workshop opens on", () => {
             node_id: "approve",
             schema: { ref: "decision", revision: "e".repeat(64) },
             kind: "boolean",
+            string_typed: false,
             values: null
           }
         ],

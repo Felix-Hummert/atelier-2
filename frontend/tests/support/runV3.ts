@@ -55,6 +55,7 @@ export function workflowRevision(): WorkflowRevisionDetail {
           node_id: "wait",
           schema: { ref: "answer.schema.json", revision: revisionHash },
           kind: "free",
+          string_typed: false,
           values: null
         }
       ],

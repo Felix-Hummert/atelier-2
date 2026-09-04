@@ -151,6 +151,9 @@ PORTIONS_SCHEMA = PublishedRevision(
     b'"minimum": 1}}, "required": ["portions"], "additionalProperties": false}',
 )
 NOT_A_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "nonsense"}')
+NONEMPTY_STRING_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA, b'{"type": "string", "minLength": 1}'
+)
 
 ORDER_NAME = "order"
 DYING_COOK_SAID = b"cook: this provider takes no order that long"
@@ -339,6 +342,62 @@ def test_the_order_reaches_the_agent_and_is_stored_under_the_run(
     ]
 
     assert b'{"portions": 4}' in jobs_handed_to(cook)[0]
+
+
+def test_a_string_schema_order_starts_a_run_with_the_artifacts_raw_text(
+    runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
+) -> None:
+    """A `\"string\"`-typed order is read as the plain text it is, not JSON.
+
+    A caller supplying an order owes no JSON-encoding promise an executor
+    would: the bytes an author writes for a `\"string\"` schema ARE the value,
+    so this start admits the raw words rather than refusing them as bad JSON.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime, NONEMPTY_STRING_SCHEMA)
+    run_id = RunId("v3/string-order")
+
+    created = start(
+        runtime,
+        workflow,
+        bindings,
+        run_id,
+        order(b"stir gently", NONEMPTY_STRING_SCHEMA),
+    )
+    assert isinstance(created, DurableRunCreated), created
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    with runtime.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == run_id.value)
+            )
+            .mappings()
+            .all()
+        )
+    assert [(str(row["name"]), bytes(row["value"])) for row in stored] == [
+        (ORDER_NAME, b"stir gently")
+    ]
+    assert b"stir gently" in jobs_handed_to(cook)[0]
+
+
+def test_an_empty_string_order_is_refused_by_minlength(runtime: DbosRuntime) -> None:
+    """Reading raw text does not skip the schema the document still pinned."""
+    workflow, bindings = publish_ordered_workflow(runtime, NONEMPTY_STRING_SCHEMA)
+    run_id = RunId("v3/empty-string-order")
+
+    refused = start(
+        runtime, workflow, bindings, run_id, order(b"", NONEMPTY_STRING_SCHEMA)
+    )
+
+    assert isinstance(refused, DurableV3StartInputRefused), refused
+    assert refused.refusal is V3InputRefusal.VALUE_REFUSED
+    assert refused.name == ORDER_NAME
+    assert refused.violation is not None
+    assert refused.violation.reason == "'' should be non-empty"
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
 @pytest.mark.proves("a-run-input-binds-as-a-materialized-package-member")

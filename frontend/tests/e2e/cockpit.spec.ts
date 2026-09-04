@@ -2327,6 +2327,7 @@ test("a waiting V3 run with a boolean answer schema offers decision buttons", as
         node_id: "ship",
         schema: { ref: "decision-schema", revision: booleanSchemaHash },
         kind: "boolean",
+        string_typed: false,
         values: null
       }
     ];
