@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import signal
 import socket
 import subprocess
@@ -98,7 +99,7 @@ from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeVectorId,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
-from atelier2.contracts.when import recorded_instant
+from atelier2.contracts.when import RECORDED_AT_PATTERN, recorded_instant
 from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
@@ -1317,7 +1318,9 @@ def test_real_console_launcher_starts_and_closes_one_runtime(tmp_path: Path) -> 
 
     first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        assert wait_for_health(port) == {
+        health = wait_for_health(port)
+        assert re.fullmatch(RECORDED_AT_PATTERN, health.pop("serve_started_at", ""))
+        assert health == {
             "status": "serving",
             "source_commit": "exact-commit",
             "source_tree": "exact-tree",

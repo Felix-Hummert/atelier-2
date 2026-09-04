@@ -441,6 +441,17 @@ button.quiet {
   .rail-grow {
     display: none;
   }
+
+  /* Without a basis, a flex item takes its own single-line content width
+     instead of shrinking to wrap (#1100): the commit-and-timestamp line would
+     either overflow the row or crowd Settings' click target. A full row of
+     its own, the same way the phone layout already gives every rail addendum
+     one, fixes both. */
+  .serve-footer {
+    flex-basis: 100%;
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+  }
 }
 
 h1,

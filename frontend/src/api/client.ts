@@ -281,6 +281,7 @@ export const healthResourceSchema = z
     status: z.literal("serving"),
     source_commit: z.string(),
     source_tree: z.string(),
+    serve_started_at: recordedAtStamp,
   })
   .strict();
 export type HealthResource = z.infer<typeof healthResourceSchema>;

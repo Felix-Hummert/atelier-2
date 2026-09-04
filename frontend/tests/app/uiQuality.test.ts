@@ -149,9 +149,14 @@ async function railShowsOwnedPseudoLocale(): Promise<void> {
     .map((node) => node.textContent);
   expect(labels).toEqual(OWNED_RAIL);
 
+  // The provenance footer's quiet line (#1100) names a commit and a
+  // timestamp: data, like a run id or a fingerprint elsewhere on the
+  // workshop, never prose a pseudo-locale would translate. Its "new version
+  // available" state is real copy, still in scope and still wrapped.
+  const RAIL_DATA_SUBTREE = '[aria-hidden="true"], .serve-footer:not(.new-version)';
   const walker = document.createTreeWalker(rail, NodeFilter.SHOW_TEXT, {
     acceptNode: (node) =>
-      node.parentElement?.closest('[aria-hidden="true"]') == null
+      node.parentElement?.closest(RAIL_DATA_SUBTREE) == null
         ? NodeFilter.FILTER_ACCEPT
         : NodeFilter.FILTER_REJECT
   });
@@ -172,7 +177,12 @@ async function railShowsOwnedPseudoLocale(): Promise<void> {
   }
   expect(unowned, `unowned rail copy escapes the pseudo-locale wrap: ${unowned.join("; ")}`).toEqual([]);
 
+  // Titles never live inside the decorative aria-hidden glyphs, only on the
+  // footer's own data (the full commit hash); exempting the wider
+  // RAIL_DATA_SUBTREE here would also wave through a stray title an
+  // aria-hidden wrapper happened to carry elsewhere.
   const unwrappedTitles = [...rail.querySelectorAll("[title]")]
+    .filter((element) => element.closest(".serve-footer:not(.new-version)") == null)
     .map((element) => element.getAttribute("title") ?? "")
     .filter((title) => title !== "" && !isPseudoLocaleWrapped(title));
   expect(unwrappedTitles, `unwrapped rail title: ${unwrappedTitles.join("; ")}`).toEqual([]);
