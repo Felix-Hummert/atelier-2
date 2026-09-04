@@ -105,7 +105,7 @@ from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import AttentionEvent, AttentionEventPage
 from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import agent_scratch_root
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import durable_queries, healthy_runs
 from tests.scenarios.durable_state import (
     canonical_loopback_effects,
     canonical_runtime_settings,
@@ -704,8 +704,9 @@ def test_an_ended_action_run_does_not_acquire_abandoned_without_a_matching_inten
     assert found.projection.reconciliation is None
     assert found.projection.run.state is ending
     assert isinstance(listed, RunPage)
-    assert listed.runs[0].reconciliation is None
-    assert listed.runs[0].run.state is ending
+    listed_run = healthy_runs(listed)[0]
+    assert listed_run.reconciliation is None
+    assert listed_run.run.state is ending
 
     detail = queries.get_node_detail(intent.binding.run_id, ACTION_NODE_ID)
     assert isinstance(detail, NodeDetailFound)

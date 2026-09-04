@@ -17,6 +17,7 @@ from fastapi.sse import ServerSentEvent
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 
 from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import (
@@ -88,7 +89,9 @@ from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_projections import (
+    DefectiveRunProjection,
     RunPage,
+    RunProjectionProblemCode,
 )
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -131,6 +134,7 @@ from tests.scenarios.api import (
     api_ports,
     durable_queries,
     event_poll_backoff,
+    healthy_runs,
     permissive_projection_limit,
     stream_page_reader,
     stream_run_projection,
@@ -1191,7 +1195,7 @@ def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
     while True:
         page = queries.list_runs(after, 1)
         assert isinstance(page, RunPage)
-        found.extend(projection.run.run_id for projection in page.runs)
+        found.extend(projection.run.run_id for projection in healthy_runs(page))
         if page.next_after is None:
             break
         after = page.next_after
@@ -1201,7 +1205,7 @@ def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
     missing_boundary = RunId("m")
     after_missing = queries.list_runs(missing_boundary, 100)
     assert isinstance(after_missing, RunPage)
-    assert tuple(item.run.run_id for item in after_missing.runs) == tuple(
+    assert tuple(item.run.run_id for item in healthy_runs(after_missing)) == tuple(
         run_id
         for run_id in expected
         if run_id.value.encode("utf-8") > missing_boundary.value.encode("utf-8")
@@ -1219,7 +1223,10 @@ def test_list_runs_answers_only_the_named_state(engine: Engine) -> None:
     completed = durable_queries(engine).list_runs(None, 100, RunState.COMPLETED)
 
     assert isinstance(started, RunPage)
-    assert {projection.run.run_id for projection in started.runs} == {first, second}
+    assert {projection.run.run_id for projection in healthy_runs(started)} == {
+        first,
+        second,
+    }
     assert isinstance(completed, RunPage)
     assert completed.runs == ()
 
@@ -1246,7 +1253,7 @@ def test_the_run_list_route_filters_by_state_and_names_an_unknown_one(
     refused = client.get(API_PREFIX + "/runs", params={"state": "NOT_A_STATE"})
 
     assert listed.status_code == 200
-    assert {item["run_id"] for item in listed.json()["items"]} == {
+    assert {item["run"]["run_id"] for item in listed.json()["items"]} == {
         first.value,
         second.value,
     }
@@ -1481,7 +1488,9 @@ def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empt
     assert isinstance(page, RunPage)
     assert len(order_selects) == 1
     assert "run_inputs_v3.run_id IN" in order_selects[0]
-    projections = {projection.run.run_id: projection for projection in page.runs}
+    projections = {
+        projection.run.run_id: projection for projection in healthy_runs(page)
+    }
     assert projections[ordered_run_id].orders == (
         RunInput("headline", PublishedRevisionHash(schema_hash), order_value),
     )
@@ -1838,7 +1847,23 @@ def test_terminal_results_cost_a_constant_number_of_statements_across_a_mixed_en
     }
 
 
-def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrupt(
+def _assert_run_page_carries_one_defective_row(result: object, run_id: RunId) -> None:
+    """The row a run's own projection failure becomes on a list page (#1042).
+
+    A single run's projection failing no longer fails the whole page: the
+    page still answers, and that one row is told apart as
+    `DefectiveRunProjection` instead. `get_run` (the single-run read) stays
+    the fail-loud `QueryDurableStateCorrupt` these scenarios predate.
+    """
+    assert isinstance(result, RunPage)
+    assert len(result.runs) == 1
+    row = result.runs[0]
+    assert isinstance(row, DefectiveRunProjection)
+    assert row.run_id == run_id
+    assert row.problem_code is RunProjectionProblemCode.DURABLE_STATE_CORRUPT
+
+
+def test_a_node_execution_with_two_answer_bearing_events_is_a_defective_row(
     engine: Engine,
 ) -> None:
     """#1045 REVISE C1 (second delta): a duplicate answer-bearing event used
@@ -1847,6 +1872,9 @@ def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrup
     seen. Two different answer-bearing kinds on one execution is the shape
     that reaches this: the store's own unique index already refuses two rows
     of the *same* kind on one execution.
+
+    A listed page no longer fails whole for this one run's own defect
+    (#1042): the row becomes `DefectiveRunProjection` instead.
     """
 
     revision = WorkflowRevision(_v3_workflow_document())
@@ -1886,10 +1914,10 @@ def test_a_node_execution_with_two_answer_bearing_events_is_durable_state_corrup
 
     result = durable_queries(engine).list_runs(None, 100)
 
-    assert isinstance(result, QueryDurableStateCorrupt)
+    _assert_run_page_carries_one_defective_row(result, run_id)
 
 
-def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_durable_state_corrupt(
+def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_a_defective_row(
     engine: Engine,
 ) -> None:
     """#1045 REVISE (second delta, second round): the batched attempt-receipt
@@ -1898,15 +1926,17 @@ def test_an_attempt_receipt_whose_artifact_disagrees_with_its_value_hash_is_dura
     (`agent_attempt_store.py`). Restored in `_run_terminal_results`: a
     mismatch is the store disagreeing with itself, never a value this
     projection shows.
+
+    A listed page no longer fails whole for this one run's own defect
+    (#1042): the row becomes `DefectiveRunProjection` instead.
     """
 
-    _seed_attempt_receipt_refusal(
-        engine, RunId("mismatched-artifact"), mismatched_artifact=True
-    )
+    run_id = RunId("mismatched-artifact")
+    _seed_attempt_receipt_refusal(engine, run_id, mismatched_artifact=True)
 
     result = durable_queries(engine).list_runs(None, 100)
 
-    assert isinstance(result, QueryDurableStateCorrupt)
+    _assert_run_page_carries_one_defective_row(result, run_id)
 
 
 def test_an_attempt_receipt_whose_artifact_matches_its_value_hash_reads_the_refusal(
@@ -1924,6 +1954,32 @@ def test_an_attempt_receipt_whose_artifact_matches_its_value_hash_reads_the_refu
 
     assert isinstance(page, RunPage)
     assert len(page.runs) == 1
+
+
+def test_a_locked_database_during_row_projection_is_read_unavailable_not_defective(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`OperationalError` is a `DatabaseError` subclass (#1109 delta HIGH): if
+    `_run_rows`' `except ... DatabaseError` clauses caught it before the
+    `OperationalError` re-raise, a locked or unavailable SQLite would turn
+    every row into a `DefectiveRunProjection` and the page would still answer
+    200 — a lie. Both the batch and the per-row retry re-raise
+    `OperationalError` ahead of `DatabaseError` so `list_runs`'s own
+    `except (OperationalError, PoolTimeoutError): return ReadUnavailable()`
+    keeps owning it.
+    """
+
+    revision = WorkflowRevision(_v3_workflow_document())
+    _seed_runs(engine, ((RunId("locked-during-projection"), revision),))
+
+    def locked_projections(*_args: object, **_kwargs: object) -> object:
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(DbosQueries, "_run_projections", locked_projections)
+
+    result = durable_queries(engine).list_runs(None, 100)
+
+    assert isinstance(result, ReadUnavailable)
 
 
 def test_run_page_batches_waiting_reconciliation_and_projects_command_owner_state(
@@ -2104,7 +2160,9 @@ nodes:
     assert len(intent_selects) == 1
     assert "effect_intents.logical_key IN" in intent_selects[0]
     assert "effect_intents.run_id IN" not in intent_selects[0]
-    projections = {projection.run.run_id: projection for projection in page.runs}
+    projections = {
+        projection.run.run_id: projection for projection in healthy_runs(page)
+    }
     waiting = projections[waiting_run_id].reconciliation
     owned = projections[owned_run_id].reconciliation
     assert waiting is not None

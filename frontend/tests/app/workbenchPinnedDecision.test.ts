@@ -13,7 +13,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
-import { cancellableBlock } from "../support/runV3";
+import { cancellableBlock, runRow } from "../support/runV3";
 import { waitingInput } from "../support/runV3";
 
 /**
@@ -122,7 +122,7 @@ function openWorkbench(runs: readonly RunV3[], overrides: Partial<CockpitApi> = 
     props: {
       cockpitApi: cockpitApiStub({
         listRuns: vi.fn(async (_after?: string, state?: string) => ({
-          items: state === "WAITING_INPUT" ? [...runs] : [],
+          items: state === "WAITING_INPUT" ? runs.map(runRow) : [],
           next_after: null
         })),
         getNodeDetail: vi.fn(async () => questionDetail() as never),
