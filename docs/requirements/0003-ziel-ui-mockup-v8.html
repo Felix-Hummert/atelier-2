@@ -1632,7 +1632,11 @@ command stopped before an answer</div>
         <details class="raw"><summary>Raw JSON</summary><textarea rows="3">{"priority": "high", "scope": "backend"}</textarea></details>
       </div>
       <div class="fld"><label>weights</label>
-        <div class="in degraded"><span title="This order's schema is an array; the start sheet renders string, object, and work-item schemas only.">Unsupported schema (array)</span><a href="#">Start via CLI/API →</a></div>
+        <div class="in degraded"><span>This order's schema is not a string, an object, or a work item. Start this workflow through the CLI or the HTTP API instead.</span></div>
+      </div>
+      <div class="fld"><label>accepted_sentences</label>
+        <label>Raw JSON for accepted_sentences</label>
+        <textarea rows="3">{"sentences": ["a", "b"]}</textarea>
       </div>
       <div class="foot"><span class="btn held" title="fix the weights order before starting">Start run</span><span class="btn quiet">Cancel</span></div>
     </div>
@@ -1640,7 +1644,7 @@ command stopped before an answer</div>
 </div>
 <dl class="uq">
   <div><dt>Text or file, same order</dt><dd>"How do I hand over a paragraph, or a whole file?" — a string-schema order takes typed text or a dropped file; either way the exact bytes publish as one artifact before the run starts (#438), and the order carries only that address. The byte count against the artifact store's own bound stays beside the field.</dd></div>
-  <div><dt>Raw JSON beside the schema form</dt><dd>"The form doesn't have the field I need." — every object order folds open a Raw JSON field beside its per-field form; invalid JSON stays visibly empty at the marked position, the start stays locked, and fixing either the fields or the JSON both work (#438 Zeile 9).</dd></div>
+  <div><dt>Raw JSON beside the schema form, or alone</dt><dd>"The form doesn't have the field I need." — an object order's Raw JSON field stands beside its per-field form when the form can type every field, alone when it cannot (<code>accepted_sentences</code>, above, whose nested array no field input encodes); invalid JSON stays visibly empty at the marked position, the start stays locked, and fixing either the fields or the JSON both work (#438 Zeile 9).</dd></div>
   <div><dt>Ochre refusal names the way out</dt><dd>"Why can't I fill this one in?" — a schema shape the sheet cannot render (an array, here) says so and names the CLI or the API instead of a dead end (#438 Zeile 11); "This order must be an object to start here" without a next move is gone.</dd></div>
 </dl>
 

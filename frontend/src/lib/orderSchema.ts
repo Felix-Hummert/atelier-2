@@ -50,6 +50,15 @@ const UNSUPPORTED_ORDER_WAY_OUT =
 export const WORK_ITEM_ORDER_SCHEMA_REVISION =
   "e57e281851b809afc32527cdde2a2a76b033f4b6b4301ad592472147bc7c978a";
 
+/**
+ * What a person reads for a schema this door cannot render at all -- a
+ * scalar other than a string (boolean, number, null) or an array. Exported
+ * so the surfaces that assert this refusal (unit and end-to-end) read it
+ * from its one owner instead of retyping it.
+ */
+export const SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON =
+  "This order's schema is not a string, an object, or a work item. " + UNSUPPORTED_ORDER_WAY_OUT;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -133,12 +142,7 @@ export function classifyStartOrderSchema(
     return { kind: "string" };
   }
   if (!fieldTypesAreExactly(declaredTypes(document), "object")) {
-    return {
-      kind: "unsupported",
-      reason:
-        "This order's schema is not a string, an object, or a work item. " +
-        UNSUPPORTED_ORDER_WAY_OUT
-    };
+    return { kind: "unsupported", reason: SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON };
   }
   const properties = declaredProperties(document);
   const required = declaredRequired(document);

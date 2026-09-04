@@ -700,9 +700,7 @@ describe("string orders and Raw JSON on the catalog start sheet (#438 Scheibe 1b
 
     const alert = await within(group).findByRole("alert");
     expect(alert.textContent).toContain("line 1");
-    expect(alert.textContent).toContain(
-      "Fix the JSON, or clear this field and fill the form above instead."
-    );
+    expect(alert.textContent).toContain(workflowStartCopy.rawJsonWayOutBesideForm);
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
     expect(cockpitApi.publishArtifact).not.toHaveBeenCalled();
   });
@@ -734,6 +732,28 @@ describe("string orders and Raw JSON on the catalog start sheet (#438 Scheibe 1b
     const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
     const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
     expect(request.orders).toEqual([{ name: "weights", artifact_hash: weightsArtifactHash }]);
+  });
+
+  it("names the no-form way out for invalid Raw JSON on an order Raw JSON alone can reach (#1130 finding 2)", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([weightsOrder])),
+      getSchemaRevision: vi.fn(async () => weightsSchema)
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order weights" });
+    await fireEvent.input(within(group).getByLabelText(workflowStartCopy.rawJsonFor("weights")), {
+      target: { value: '{sentences: ["a", "b"]}' }
+    });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+
+    const alert = await within(group).findByRole("alert");
+    expect(alert.textContent).toContain(workflowStartCopy.rawJsonWayOutAlone);
+    expect(alert.textContent).not.toContain(workflowStartCopy.rawJsonWayOutBesideForm);
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(cockpitApi.publishArtifact).not.toHaveBeenCalled();
   });
 });
 

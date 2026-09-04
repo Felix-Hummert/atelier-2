@@ -11,6 +11,7 @@ import {
   workflowStartCopy
 } from "../../src/lib/catalogPageCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
+import { SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON } from "../../src/lib/orderSchema";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { retryLabel } from "../../src/lib/readStateCopy";
@@ -571,7 +572,7 @@ test("Start sheet presents a current role configuration without retaining a draf
   await expect(picker).toHaveValue("");
 });
 
-test("Catalog start sheet refuses scalar and array order schemas before starting", async ({ page }) => {
+test("Catalog start sheet refuses an array order schema before starting", async ({ page }) => {
   const api = "/atelier/api/v1";
   const workflowName = "unsupported-order-shapes";
   const scalarSchema = await page.request.post(`${api}/schema-revisions`, {
@@ -640,13 +641,18 @@ test("Catalog start sheet refuses scalar and array order schemas before starting
   await page.getByRole("button", { name: "Start" }).click();
   const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
   await expect(sheet).toBeVisible();
-  await expect(sheet.getByRole("group", { name: "Order scalar_order" }).getByRole("alert")).toHaveText(
-    "This order must be an object to start here."
+  const startRun = sheet.getByRole("button", { name: "Start run" });
+  await expect(startRun).toBeDisabled();
+
+  const scalarGroup = sheet.getByRole("group", { name: "Order scalar_order" });
+  const scalarText = scalarGroup.getByLabel(workflowStartCopy.orderText);
+  await expect(scalarText).toBeVisible();
+  await scalarText.fill("a string order starts here");
+
+  await expect(sheet.getByRole("group", { name: "Order array_order" }).getByRole("status")).toHaveText(
+    SCALAR_OR_ARRAY_ORDER_UNSUPPORTED_REASON
   );
-  await expect(sheet.getByRole("group", { name: "Order array_order" }).getByRole("alert")).toHaveText(
-    "This order must be an object to start here."
-  );
-  await expect(sheet.getByRole("button", { name: "Start run" })).toBeDisabled();
+  await expect(startRun).toBeDisabled();
 });
 
 test("walks the whole workshop: the workbench into the run, and one named way back", async ({ page }) => {

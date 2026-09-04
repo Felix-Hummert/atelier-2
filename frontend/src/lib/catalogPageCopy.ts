@@ -181,7 +181,13 @@ export const workflowStartCopy = {
   orderText: "Text",
   publishFromFile: (orderName: string) => `Publish ${orderName} from a file`,
   rawJson: "Raw JSON",
-  rawJsonFor: (orderName: string) => `Raw JSON for ${orderName}`
+  rawJsonFor: (orderName: string) => `Raw JSON for ${orderName}`,
+  // The way out a Raw JSON syntax refusal names (#438 Zeile 11, #1130 finding
+  // 2): an order that keeps its per-field form beside Raw JSON can send a
+  // person back to that form, but an order Raw JSON alone can reach
+  // (`raw_object`) has no form to name -- so the two sentences differ.
+  rawJsonWayOutBesideForm: "Fix the JSON, or clear this field and fill the form above instead.",
+  rawJsonWayOutAlone: "Fix the JSON to start; this order has no field form."
 } as const;
 
 export function startConfigurationLabel(

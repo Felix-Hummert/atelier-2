@@ -13,8 +13,6 @@ export type RawOrderJson =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
-const WAY_OUT = "Fix the JSON, or clear this field and fill the form above instead.";
-
 /**
  * Whether `text` parses as JSON, and if not, where it broke.
  *
@@ -24,13 +22,18 @@ const WAY_OUT = "Fix the JSON, or clear this field and fill the form above inste
  * or empty text -- no position whatsoever. The last case still names the
  * mistake and the way out; it never invents a line or column the engine did
  * not give.
+ *
+ * The way out itself is the caller's to say, not this module's: an object
+ * order that keeps a field form beside Raw JSON has one way out (fill the
+ * form instead), while an order Raw JSON alone can reach has another (there
+ * is no form to fall back to). `wayOut` carries whichever sentence applies.
  */
-export function readRawOrderJson(text: string): RawOrderJson {
+export function readRawOrderJson(text: string, wayOut: string): RawOrderJson {
   try {
     JSON.parse(text);
     return { ok: true };
   } catch (error) {
-    return { ok: false, reason: `${jsonSyntaxErrorPosition(text, error)} ${WAY_OUT}` };
+    return { ok: false, reason: `${jsonSyntaxErrorPosition(text, error)} ${wayOut}` };
   }
 }
 

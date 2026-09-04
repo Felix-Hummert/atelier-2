@@ -354,14 +354,27 @@
     };
   }
 
+  /**
+   * The way out a Raw JSON syntax refusal names for `order`: an
+   * `inline_object` order keeps its per-field form beside Raw JSON, so it
+   * can send a person back there; a `raw_object` order has no such form
+   * (that is why it fell back to Raw JSON alone), so it names a different
+   * one (#1130 finding 2).
+   */
+  function rawJsonWayOut(order: OrderDraft): string {
+    return order.shape?.kind === "raw_object"
+      ? workflowStartCopy.rawJsonWayOutAlone
+      : workflowStartCopy.rawJsonWayOutBesideForm;
+  }
+
   function orderCanStart(order: OrderDraft): boolean {
     if (order.resource === null || order.shape === null || order.shape.kind === "unsupported") {
       return false;
     }
     if (order.shape.kind === "work_item") return (order.values.work_item?.length ?? 0) > 0;
     if (order.shape.kind === "string") return order.stringValue.length > 0;
-    if (order.shape.kind === "raw_object") return readRawOrderJson(order.rawJson).ok;
-    if (order.rawJson.trim().length > 0) return readRawOrderJson(order.rawJson).ok;
+    if (order.shape.kind === "raw_object") return readRawOrderJson(order.rawJson, rawJsonWayOut(order)).ok;
+    if (order.rawJson.trim().length > 0) return readRawOrderJson(order.rawJson, rawJsonWayOut(order)).ok;
     return requiredFieldsFilled(order);
   }
 
@@ -816,7 +829,7 @@
       {/snippet}
       {#snippet rawJsonRefusal(order: OrderDraft)}
         {#if order.rawJson.trim().length > 0}
-          {@const rawJsonVerdict = readRawOrderJson(order.rawJson)}
+          {@const rawJsonVerdict = readRawOrderJson(order.rawJson, rawJsonWayOut(order))}
           {#if !rawJsonVerdict.ok}
             <p class="failure" role="alert">{rawJsonVerdict.reason}</p>
           {/if}
@@ -831,7 +844,7 @@
             <div class="work-item">
               <span>{workflowStartCopy.workItem}</span>
               {#if observedQueueItems.length === 0}
-                <div class="degraded">
+                <div class="degraded with-action">
                   <span>{workflowStartCopy.noSource}</span>
                   <button
                     type="button"
@@ -1056,9 +1069,10 @@
   fieldset, label { display: grid; gap: var(--space-1); margin: var(--space-4) 0; }
   input, select, textarea { min-height: var(--tap); font: inherit; }
   textarea { resize: vertical; min-height: calc(var(--tap) * 2); font-family: inherit; }
-  .pill { display: inline-block; border: var(--edge) solid var(--line); border-radius: var(--r-pill); padding: 0 var(--space-2); color: var(--ink-dim); background: var(--chip); font-size: var(--text-2xs); line-height: 1.65; }
+  .pill { display: inline-block; justify-self: start; white-space: nowrap; border: var(--edge) solid var(--line); border-radius: var(--r-pill); padding: 0 var(--space-2); color: var(--ink-dim); background: var(--chip); font-size: var(--text-2xs); line-height: 1.65; }
   .failure { color: var(--signal-failure); }
-  .degraded { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border: 1px dashed var(--signal-attention); padding: var(--space-2); color: var(--signal-attention); }
+  .degraded { display: flex; align-items: center; gap: var(--space-2); border: 1px dashed var(--signal-attention); padding: var(--space-2); color: var(--signal-attention); }
+  .degraded.with-action { justify-content: space-between; }
   .link { min-height: var(--tap); border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: var(--weight-strong); text-decoration: underline; }
   .work-item { display: grid; gap: var(--space-1); }
   .picker-field { display: flex; width: 100%; justify-content: space-between; gap: var(--space-2); background: var(--panel2); border-color: var(--line); font-weight: var(--weight-medium); text-align: left; }
