@@ -148,7 +148,7 @@ from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
     candidate_runner_manifest,
 )
-from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.runs import TERMINAL_RUN_STATES, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_executions import (
@@ -952,6 +952,58 @@ def _runner_lease_attempt_driver(
     )
 
 
+_TERMINAL_RUN_STATE_VALUES = frozenset(state.value for state in TERMINAL_RUN_STATES)
+"""A run's own ending, not its intents' states, decides whether it still binds.
+
+A `CONFIRMED` intent can still belong to a driver workflow that crashed after
+`commit_resolution()` marked it confirmed but before its continuation reached
+DBOS `SUCCESS`; recovery resolves the adapter binding before replaying that
+continuation, so exempting every confirmed row could strand a run still in
+flight. An intent counts against a differing identity for exactly as long as
+the run it belongs to has not ended -- history under a completed run's own
+finished intents never blocks, whatever state each individually recorded.
+"""
+_BINDING_CONFLICT_LOGICAL_KEY_PREVIEW_LENGTH = 32
+_BINDING_CONFLICT_INTENT_PREVIEW_LIMIT = 5
+"""How many offending intents the refusal message names outright.
+
+An operator reconciling a moved identity needs enough examples to start, not
+every row a large backlog produced; the omitted count still says how much is
+left to look at.
+"""
+
+
+def _open_binding_conflict_message(
+    open_effect_intents: list[sa.Row[Any]],
+    effect_bindings: set[EffectAdapterBinding],
+) -> str:
+    offending = [
+        record
+        for record in open_effect_intents
+        if EffectAdapterBinding(
+            AdapterRevision(str(record.adapter_revision)),
+            EffectDestination(str(record.destination_identity)),
+            AdapterOperationalIdentity(str(record.adapter_operational_identity)),
+            AdapterOperationName(str(record.operation_name)),
+        )
+        not in effect_bindings
+    ]
+    preview = offending[:_BINDING_CONFLICT_INTENT_PREVIEW_LIMIT]
+    omitted_count = len(offending) - len(preview)
+    named = ", ".join(
+        f"{record.operation_name} intent "
+        f"{str(record.logical_key)[:_BINDING_CONFLICT_LOGICAL_KEY_PREVIEW_LENGTH]}… "
+        f"is still {record.state}"
+        for record in preview
+    )
+    if omitted_count > 0:
+        named = f"{named}, and {omitted_count} more"
+    return (
+        "runtime adapter binding differs from durable effect intents still open "
+        f"for reconciliation under another identity: {named}"
+    )
+
+
 def _open_binding(
     settings: DbosRuntimeSettings,
     agent_registry: AgentExecutorRegistry,
@@ -1021,6 +1073,24 @@ def _open_binding(
             engine, settings.project_id, settings.database_path
         )
         with engine.connect() as connection:
+            open_effect_intents = list(
+                connection.execute(
+                    sa.select(
+                        effect_intents.c.logical_key,
+                        effect_intents.c.state,
+                        effect_intents.c.operation_name,
+                        effect_intents.c.adapter_revision,
+                        effect_intents.c.destination_identity,
+                        effect_intents.c.adapter_operational_identity,
+                    )
+                    .select_from(
+                        effect_intents.join(
+                            runs, runs.c.run_id == effect_intents.c.run_id
+                        )
+                    )
+                    .where(runs.c.state.notin_(_TERMINAL_RUN_STATE_VALUES))
+                )
+            )
             durable_bindings = {
                 EffectAdapterBinding(
                     AdapterRevision(str(record.adapter_revision)),
@@ -1030,14 +1100,7 @@ def _open_binding(
                     ),
                     AdapterOperationName(str(record.operation_name)),
                 )
-                for record in connection.execute(
-                    sa.select(
-                        effect_intents.c.adapter_revision,
-                        effect_intents.c.destination_identity,
-                        effect_intents.c.adapter_operational_identity,
-                        effect_intents.c.operation_name,
-                    ).distinct()
-                )
+                for record in open_effect_intents
             }
             required_agent_capabilities = {
                 (
@@ -1079,7 +1142,9 @@ def _open_binding(
             }
         if not durable_bindings.issubset(set(effect_bindings)):
             raise DbosRuntimeBindingConflict(
-                "runtime adapter binding differs from durable effect intents"
+                _open_binding_conflict_message(
+                    open_effect_intents, set(effect_bindings)
+                )
             )
         required_agent_keys = {key for key, _capability in required_agent_capabilities}
         if not required_agent_keys.issubset(agent_registry.keys):
