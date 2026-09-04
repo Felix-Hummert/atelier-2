@@ -41,6 +41,7 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptFailed,
     AgentAttemptSucceeded,
     AgentExecutorBindingRefusalResult,
+    ProjectVerificationFailureEvidence,
 )
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
@@ -352,8 +353,11 @@ class _FailingAttemptStore:
         execution: AgentAttemptExecution,
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
+        verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
     ) -> AgentAttemptSucceeded:
-        raise AssertionError((execution, result, redemption))
+        raise AssertionError(
+            (execution, result, redemption, verification_failure_evidence)
+        )
 
     def complete_project_verification_failure(
         self,

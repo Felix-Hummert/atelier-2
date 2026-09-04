@@ -230,7 +230,9 @@ class _RunOnceVerifications:
     ) -> ProjectVerificationOutcome:
         del pin, lease
         self.ran += 1
-        return ProjectVerificationOutcome(("/bin/true",), 0, Sha256Hash.of(b""))
+        return ProjectVerificationOutcome(
+            ("/bin/true",), 0, Sha256Hash.of(b""), 0.0, b"", None
+        )
 
 
 @dataclass
