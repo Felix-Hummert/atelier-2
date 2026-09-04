@@ -69,6 +69,21 @@ const contextSchema = {
 };
 const contextArtifactHash = "8".repeat(64);
 
+// #1130 fix round finding 1: a top-level object schema with a field the form
+// cannot type -- an array, here, matching the real `accepted_sentences.json`
+// shape -- classifies as `raw_object` and offers Raw JSON alone.
+const weightsOrder = {
+  name: "weights",
+  schema: { ref: "weights-schema", revision: "0".repeat(64) }
+};
+const weightsSchema = {
+  type: "object",
+  required: ["sentences"],
+  additionalProperties: false,
+  properties: { sentences: { type: "array", items: { type: "string" } } }
+};
+const weightsArtifactHash = "3".repeat(64);
+
 function stringAndObjectOrderSchema(schemaRevisionHash: string): JsonSchemaDocument {
   if (schemaRevisionHash === reviewQuestionsOrder.schema.revision) return reviewQuestionsSchema;
   if (schemaRevisionHash === contextOrder.schema.revision) return contextSchema;
@@ -519,7 +534,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    expect((await screen.findByRole("alert")).textContent).toContain("canonical work-item schema");
+    expect((await screen.findByRole("status")).textContent).toContain("canonical work-item schema");
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
@@ -536,7 +551,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    expect((await screen.findByRole("alert")).textContent).toContain(
+    expect((await screen.findByRole("status")).textContent).toContain(
       "not a string, an object, or a work item"
     );
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
@@ -690,6 +705,35 @@ describe("string orders and Raw JSON on the catalog start sheet (#438 Scheibe 1b
     );
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
     expect(cockpitApi.publishArtifact).not.toHaveBeenCalled();
+  });
+
+  it("renders Raw JSON alone for an object order the form cannot encode, and starts with the returned hash (#1130 finding 1)", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([weightsOrder])),
+      getSchemaRevision: vi.fn(async () => weightsSchema),
+      publishArtifact: vi.fn(async () => ({
+        status: 201,
+        value: { artifact_hash: weightsArtifactHash }
+      }))
+    });
+    await openStart(cockpitApi);
+
+    const group = screen.getByRole("group", { name: "Order weights" });
+    expect(within(group).queryByText(workflowStartCopy.rawJson)).toBeNull();
+    expect(within(group).queryByLabelText(/sentences/)).toBeNull();
+    await fireEvent.input(within(group).getByLabelText(workflowStartCopy.rawJsonFor("weights")), {
+      target: { value: '{"sentences": ["a", "b"]}' }
+    });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
+      target: { value: configurationHash }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(cockpitApi.publishArtifact).toHaveBeenCalledWith('{"sentences": ["a", "b"]}');
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.orders).toEqual([{ name: "weights", artifact_hash: weightsArtifactHash }]);
   });
 });
 

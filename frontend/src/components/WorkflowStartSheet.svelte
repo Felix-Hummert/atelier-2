@@ -360,6 +360,7 @@
     }
     if (order.shape.kind === "work_item") return (order.values.work_item?.length ?? 0) > 0;
     if (order.shape.kind === "string") return order.stringValue.length > 0;
+    if (order.shape.kind === "raw_object") return readRawOrderJson(order.rawJson).ok;
     if (order.rawJson.trim().length > 0) return readRawOrderJson(order.rawJson).ok;
     return requiredFieldsFilled(order);
   }
@@ -803,6 +804,24 @@
       <p class="failure" role="alert">{failure}</p>
       <button type="button" onclick={() => { void load(); }}>{workflowStartCopy.retry}</button>
     {:else}
+      {#snippet rawJsonField(order: OrderDraft)}
+        <label>
+          {workflowStartCopy.rawJsonFor(order.name)}
+          <textarea
+            value={order.rawJson}
+            disabled={starting}
+            oninput={(event) => setOrderRawJson(order.name, event.currentTarget.value)}
+          ></textarea>
+        </label>
+      {/snippet}
+      {#snippet rawJsonRefusal(order: OrderDraft)}
+        {#if order.rawJson.trim().length > 0}
+          {@const rawJsonVerdict = readRawOrderJson(order.rawJson)}
+          {#if !rawJsonVerdict.ok}
+            <p class="failure" role="alert">{rawJsonVerdict.reason}</p>
+          {/if}
+        {/if}
+      {/snippet}
       {#each orders as order (order.name)}
         <fieldset aria-label={orderGroupLabel(order)}>
           {#if order.shape?.kind !== "work_item"}
@@ -916,9 +935,9 @@
                 }}
               />
             </label>
-            <p class="byte-count">
+            <span class="pill">
               {startOrderByteCount(orderByteLength(order.stringValue), MAXIMUM_ARTIFACT_BYTES)}
-            </p>
+            </span>
           {:else if order.shape?.kind === "inline_object"}
             {#each order.resource?.summary.fields ?? [] as field (field.name)}
               <label>
@@ -946,23 +965,16 @@
             {/each}
             <details>
               <summary>{workflowStartCopy.rawJson}</summary>
-              <label>
-                {workflowStartCopy.rawJsonFor(order.name)}
-                <textarea
-                  value={order.rawJson}
-                  disabled={starting}
-                  oninput={(event) => setOrderRawJson(order.name, event.currentTarget.value)}
-                ></textarea>
-              </label>
-              {#if order.rawJson.trim().length > 0}
-                {@const rawJsonVerdict = readRawOrderJson(order.rawJson)}
-                {#if !rawJsonVerdict.ok}
-                  <p class="failure" role="alert">{rawJsonVerdict.reason}</p>
-                {/if}
-              {/if}
+              {@render rawJsonField(order)}
             </details>
+            {@render rawJsonRefusal(order)}
+          {:else if order.shape?.kind === "raw_object"}
+            {@render rawJsonField(order)}
+            {@render rawJsonRefusal(order)}
           {:else}
-            <p class="failure" role="alert">{order.shape?.reason ?? workflowStartCopy.orderUnavailable}</p>
+            <div class="degraded" role="status">
+              <span>{order.shape?.reason ?? workflowStartCopy.orderUnavailable}</span>
+            </div>
           {/if}
         </fieldset>
       {/each}
@@ -1044,7 +1056,7 @@
   fieldset, label { display: grid; gap: var(--space-1); margin: var(--space-4) 0; }
   input, select, textarea { min-height: var(--tap); font: inherit; }
   textarea { resize: vertical; min-height: calc(var(--tap) * 2); font-family: inherit; }
-  .byte-count { color: var(--ink-dim); font-size: var(--text-2xs); margin: 0; }
+  .pill { display: inline-block; border: var(--edge) solid var(--line); border-radius: var(--r-pill); padding: 0 var(--space-2); color: var(--ink-dim); background: var(--chip); font-size: var(--text-2xs); line-height: 1.65; }
   .failure { color: var(--signal-failure); }
   .degraded { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border: 1px dashed var(--signal-attention); padding: var(--space-2); color: var(--signal-attention); }
   .link { min-height: var(--tap); border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: var(--weight-strong); text-decoration: underline; }

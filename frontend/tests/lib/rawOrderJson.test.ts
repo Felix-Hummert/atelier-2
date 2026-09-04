@@ -21,11 +21,10 @@ describe("reading the start sheet's Raw JSON field", () => {
     expect(readRawOrderJson("").ok).toBe(false);
   });
 
-  it("still names the mistake and the way out when the engine gives no position at all", () => {
+  it("still refuses an unquoted-value syntax mistake and names the way out (#1130 finding 7: the engine's own message shape for this input is not pinned)", () => {
     const verdict = readRawOrderJson('{"priority": high}');
     expect(verdict.ok).toBe(false);
     if (verdict.ok) throw new Error("expected a refusal");
-    expect(verdict.reason).not.toMatch(/line \d/);
     expect(verdict.reason).toContain("Fix the JSON, or clear this field and fill the form above instead.");
   });
 });

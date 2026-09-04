@@ -31,6 +31,7 @@ export type StartOrderSchemaShape =
   | { readonly kind: "work_item" }
   | { readonly kind: "string" }
   | { readonly kind: "inline_object" }
+  | { readonly kind: "raw_object" }
   | { readonly kind: "unsupported"; readonly reason: string };
 
 /**
@@ -103,8 +104,11 @@ function isWorkItemOrderSchema(document: Record<string, unknown>): boolean {
 
 /**
  * A start never manufactures an object for a scalar or array schema. It can
- * render the canonical tracker picker and ordinary object fields; anything
- * else stays visibly unavailable until its own renderer exists.
+ * render the canonical tracker picker and ordinary object fields; a top-level
+ * `object` schema with a field this form cannot type -- an array, a bare
+ * `enum`, a nested object -- still gets a way in, through Raw JSON alone
+ * (`raw_object`), rather than the refusal a shape outside `object`/`string`/
+ * `work_item` still gets.
  */
 export function classifyStartOrderSchema(
   document: JsonSchemaDocument,
@@ -140,19 +144,11 @@ export function classifyStartOrderSchema(
   const required = declaredRequired(document);
   const fieldNames = [...new Set([...Object.keys(properties), ...required])];
   const supported = new Set(["boolean", "number", "integer", "string"]);
-  if (
-    fieldNames.some((name) => {
-      const types = declaredTypes(properties[name]);
-      return types === null || types.length !== 1 || !supported.has(types[0] ?? "");
-    })
-  ) {
-    return {
-      kind: "unsupported",
-      reason:
-        "This order has a field the start sheet's form cannot encode. " + UNSUPPORTED_ORDER_WAY_OUT
-    };
-  }
-  return { kind: "inline_object" };
+  const hasUnencodableField = fieldNames.some((name) => {
+    const types = declaredTypes(properties[name]);
+    return types === null || types.length !== 1 || !supported.has(types[0] ?? "");
+  });
+  return { kind: hasUnencodableField ? "raw_object" : "inline_object" };
 }
 
 /**
