@@ -54,6 +54,11 @@ FRAMEWORK_RESERVED_NAMES = ("proves_absence", "model_config", "add_workflow")
 ALLOWLIST_FILE = Path(".vulture_allowlist.py")
 PENDING_FILE = Path("vulture_pending.py")
 FROZEN_FILE = Path("vulture_frozen.py")
+# What a caller can fill by keyword: a field, never a function, a class, or a
+# parameter. vulture reports a parameter as a variable it is certain about,
+# which is how the two are told apart.
+KEYWORD_FILLABLE_TYPES = frozenset({"variable", "attribute"})
+CERTAIN_CONFIDENCE = 100
 ALLOWLIST_BINDING = "REACHED_BY_A_SITE_VULTURE_CANNOT_SEE"
 PENDING_BINDING = "WAITING_FOR_A_DECISION"
 FROZEN_BINDING = "WAITING_FOR_A_CALLER"
@@ -155,6 +160,22 @@ def names_used_as_keyword_arguments(source_root: Path) -> frozenset[str]:
     return frozenset(used)
 
 
+def _is_a_field_filled_by_keyword(
+    item: Item, passed_by_keyword: frozenset[str]
+) -> bool:
+    """Whether this finding is a field some call fills by keyword.
+
+    The keyword vocabulary is names, not sites, so it may only excuse what a
+    keyword argument can fill. A dead function or a dead parameter that happens
+    to share a name with someone else's keyword stays a finding.
+    """
+    return (
+        item.typ in KEYWORD_FILLABLE_TYPES
+        and item.confidence < CERTAIN_CONFIDENCE
+        and item.name in passed_by_keyword
+    )
+
+
 def production_findings(source_root: Path) -> tuple[Item, ...]:
     scavenger = Vulture(
         ignore_names=FRAMEWORK_RESERVED_NAMES,
@@ -165,7 +186,7 @@ def production_findings(source_root: Path) -> tuple[Item, ...]:
     return tuple(
         item
         for item in scavenger.get_unused_code(min_confidence=MINIMUM_CONFIDENCE)
-        if item.name not in passed_by_keyword
+        if not _is_a_field_filled_by_keyword(item, passed_by_keyword)
     )
 
 

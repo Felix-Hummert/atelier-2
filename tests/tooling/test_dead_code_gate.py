@@ -43,6 +43,26 @@ class Answer:
 def answer() -> Answer:
     return Answer({A_WIRE_FIELD}="yes")
 """
+A_DEAD_PARAMETER = "unused_knob"
+A_DEAD_FUNCTION = "dead_but_named_like_a_keyword"
+A_MODULE_WHOSE_DEAD_NAMES_ARE_ALSO_KEYWORDS = f"""
+def with_a_dead_parameter(value: int, {A_DEAD_PARAMETER}: int) -> int:
+    return value
+
+
+def {A_DEAD_FUNCTION}() -> int:
+    return 2
+
+
+def keyword_taker(**filled: int) -> int:
+    return sum(filled.values())
+
+
+def answer() -> int:
+    return with_a_dead_parameter(1, 2) + keyword_taker(
+        {A_DEAD_PARAMETER}=1, {A_DEAD_FUNCTION}=1
+    )
+"""
 
 
 def a_group(name: str, **stated: str) -> str:
@@ -134,6 +154,28 @@ def test_a_field_only_ever_passed_by_keyword_counts_as_reached(tmp_path: Path) -
 
     assert result.returncode == 0, result.stderr
     assert A_WIRE_FIELD not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "dead_name",
+    [
+        pytest.param(A_DEAD_PARAMETER, id="a parameter"),
+        pytest.param(A_DEAD_FUNCTION, id="a function"),
+    ],
+)
+def test_a_dead_name_another_call_uses_as_a_keyword_stays_dead(
+    tmp_path: Path, dead_name: str
+) -> None:
+    lists = Lists(allowlist=(allowed("answer"),))
+
+    result = run_gate(
+        scratch_project(
+            tmp_path, lists, source=A_MODULE_WHOSE_DEAD_NAMES_ARE_ALSO_KEYWORDS
+        )
+    )
+
+    assert result.returncode == 1
+    assert dead_name in result.stderr
 
 
 @pytest.mark.parametrize(
