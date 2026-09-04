@@ -3,7 +3,9 @@
 - Status: accepted for the first product slice; the format-version-1 Agent
   execution mechanism (exact-output executor commit, `AgentReceipt`) amended
   out 2026-08-31 (operator ruling 30.08.2026 on issue #901, built in #923) —
-  the paragraphs describing it are rewritten in place
+  the paragraphs describing it are rewritten in place; amended 2026-09-04 (see
+  [ADR 0021](0021-no-language-switch-no-microservices.md): Temporal is now
+  evaluated and rejected with a resumption trigger)
 - Date: 2026-08-10
 - Evidence: H0/AD0 probe for board item `fc45ff2cff8d46e397c16ea12d94affa`
 
@@ -18,6 +20,14 @@ product state and the runtime ledger.
 
 We evaluated DBOS rather than building a workflow engine. Temporal is not scored
 or rejected by the probe; it is outside the V1 single-process operating model.
+
+**2026-09-04 amendment ([ADR 0021](0021-no-language-switch-no-microservices.md),
+operator ruling on [#1194](https://github.com/FlexOr2/atelier-2/issues/1194)):**
+Temporal is no longer unscored. It is evaluated and rejected — a separate
+server, worker fleet and second state store are a second operating surface for
+one live instance, against no measured gain — and it is reopened only by
+independent scaling or by more than one user or repository. This record's own
+decision is unchanged.
 
 ## Decision
 
