@@ -5,14 +5,10 @@ the same published protocol: a handshake, a session, one prompt, and a stream
 of updates in which the agent asks its client for a permission or a file. What
 differs per vendor is the vocabulary inside those messages, not the protocol
 around them, so the lifecycle, the correlation and the bounds live here once
-and a vendor's own spelling reaches them through `AcpVocabulary`.
-
-**Why the vocabulary never hands back a provider's own object.** A classifier
-that returned the raw message would move the decision -- what effect is this,
-which file, which tool -- back into the caller, which must not decide it. It
-answers with typed values or with `Unrepresentable`, and an unrepresentable
-request that would have reached a file or a shell is refused closed: an
-extension cannot widen what a provider may do by being unreadable.
+and a vendor's own spelling reaches them through `AcpVocabulary`, which answers
+in typed values or refuses to name what it read. An unrepresentable request that
+would have reached a file or a shell is refused closed: an extension cannot
+widen what a provider may do by being unreadable.
 
 **Why nothing here raises.** This runs inside the loop that owns the child
 process, where a raised exception is a state nobody can answer for. Every
@@ -28,8 +24,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
 
+from atelier2.adapters.acp_vocabulary import (
+    AcpToolCallStatus,
+    AcpVocabulary,
+    AssistantText,
+    NothingToRecord,
+    StandardAcpVocabulary,
+    ToolCallAnnounced,
+    Unrepresentable,
+    cut_to_field,
+)
 from atelier2.adapters.newline_json_rpc import (
     INTERNAL_ERROR_CODE,
     INVALID_PARAMS_CODE,
@@ -47,7 +52,6 @@ from atelier2.adapters.newline_json_rpc import (
     JsonRpcProtocolFault,
     JsonRpcRequest,
     JsonRpcResponse,
-    JsonValue,
     NewlineJsonRpc,
     OutgoingMessage,
     UnsendableFrame,
@@ -58,10 +62,7 @@ from atelier2.contracts.agent_permissions import (
     MINIMUM_PERMISSION_CALL_ORDINAL,
     PermissionCorrelationId,
     PermissionDecision,
-    PermissionEffect,
     PermissionRequest,
-    PermissionScope,
-    PermissionScopeKind,
 )
 from atelier2.contracts.agent_transcripts import (
     MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
@@ -128,29 +129,6 @@ class AcpStopReason(StrEnum):
     MAX_TURN_REQUESTS = "max_turn_requests"
 
 
-class AcpToolKind(StrEnum):
-    """The tool kinds whose effect the standard vocabulary can name by itself.
-
-    `execute` and `fetch` are absent, and their absence is the decision: a
-    standard permission request names no command and no host, so a shell or a
-    network right read from it would be one nobody could scope.
-    """
-
-    READ = "read"
-    EDIT = "edit"
-    DELETE = "delete"
-    MOVE = "move"
-
-
-class AcpToolCallStatus(StrEnum):
-    """How far one tool call has got, as a standard update reports it."""
-
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
 class AcpSelectableOption(StrEnum):
     """The only two permission options this client will ever select.
 
@@ -160,17 +138,6 @@ class AcpSelectableOption(StrEnum):
 
     ALLOW_ONCE = "allow_once"
     REJECT_ONCE = "reject_once"
-
-
-class AcpSessionUpdate(StrEnum):
-    """The standard update variants this core reads."""
-
-    USER_MESSAGE_CHUNK = "user_message_chunk"
-    AGENT_MESSAGE_CHUNK = "agent_message_chunk"
-    AGENT_THOUGHT_CHUNK = "agent_thought_chunk"
-    TOOL_CALL = "tool_call"
-    TOOL_CALL_UPDATE = "tool_call_update"
-    AVAILABLE_COMMANDS_UPDATE = "available_commands_update"
 
 
 class AcpConversationFault(StrEnum):
@@ -197,23 +164,12 @@ _FATAL_FRAME_FAULTS = {
 }
 """A frame nobody can answer is the exchange itself having stopped being one."""
 
-_EFFECT_OF_TOOL_KIND = {
-    AcpToolKind.READ: PermissionEffect.WORKSPACE_READ,
-    AcpToolKind.EDIT: PermissionEffect.WORKSPACE_WRITE,
-    AcpToolKind.DELETE: PermissionEffect.WORKSPACE_WRITE,
-    AcpToolKind.MOVE: PermissionEffect.WORKSPACE_WRITE,
-}
-
 _EFFECT_OF_FILE_METHOD: dict[str, ProviderFilesystemEffect] = {
     AcpMethod.READ_TEXT_FILE: ProviderFilesystemEffect.READ,
     AcpMethod.WRITE_TEXT_FILE: ProviderFilesystemEffect.WRITE,
 }
 
 _STOP_REASONS_THAT_ONLY_END_A_TURN = frozenset(AcpStopReason)
-
-_SETTLED_TOOL_CALL_STATUSES = frozenset(
-    {AcpToolCallStatus.COMPLETED, AcpToolCallStatus.FAILED}
-)
 
 _REASON_OF_ENDING = {
     ProviderConversationEnding.CANCELLED_BY_OPERATOR: (
@@ -242,174 +198,6 @@ _UNREADABLE_PARAMS_MESSAGE = "this client could not read that request"
 _WRITE_ACKNOWLEDGED: JsonObject = {}
 PROTOCOL_FAULT_EVIDENCE = "acp protocol fault: "
 """How a broken promise is named in the one step that keeps it."""
-
-
-@dataclass(frozen=True, slots=True)
-class AssistantText:
-    """Prose the agent produced, to be read together with what stands beside it."""
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCallAnnounced:
-    """The agent said which door it is opening, and where."""
-
-    title: str
-    locations: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCallSettled:
-    """That door is finished, and this is how it went."""
-
-    status: AcpToolCallStatus
-    content: str
-
-
-@dataclass(frozen=True, slots=True)
-class NothingToRecord:
-    """A standard message whose content this transcript already owns."""
-
-
-@dataclass(frozen=True, slots=True)
-class Unrepresentable:
-    """This vocabulary cannot say what the message said."""
-
-
-type ClassifiedUpdate = (
-    AssistantText
-    | ToolCallAnnounced
-    | ToolCallSettled
-    | NothingToRecord
-    | Unrepresentable
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ClassifiedEffect:
-    """What one permission request would actually do, in Atelier's vocabulary."""
-
-    effect: PermissionEffect
-    scope: PermissionScope
-
-
-type ClassifiedPermission = ClassifiedEffect | Unrepresentable
-
-
-class AcpVocabulary(Protocol):
-    """What one provider's spelling of a standard message means, or nothing.
-
-    The seam a vendor extension arrives through: it reads the message and
-    answers with this module's own values, so a field an implementation does
-    not know cannot become a permission, a path or a step by accident.
-    """
-
-    def classify_update(self, update: JsonObject) -> ClassifiedUpdate:
-        """Read one `session/update` as a step of the story, or as nothing."""
-        ...
-
-    def classify_permission(self, tool_call: JsonObject) -> ClassifiedPermission:
-        """Read what one permission request would do, or refuse to name it."""
-        ...
-
-
-def _text_of(block: JsonValue) -> str:
-    """The text of one standard content block, or nothing where it carries none."""
-
-    if not isinstance(block, dict):
-        return ""
-    text = block.get("text")
-    return text if isinstance(text, str) else ""
-
-
-def _tool_content_of(blocks: JsonValue) -> str:
-    """Every text a standard tool call reported, in the order it reported it."""
-
-    if not isinstance(blocks, list):
-        return ""
-    return "\n".join(
-        text
-        for block in blocks
-        if isinstance(block, dict)
-        for text in (_text_of(block.get("content")),)
-        if text
-    )
-
-
-def _locations_of(update: JsonObject) -> tuple[str, ...]:
-    """Every path a standard tool call named, and nothing a vendor named."""
-
-    locations = update.get("locations")
-    if not isinstance(locations, list):
-        return ()
-    return tuple(
-        path
-        for location in locations
-        if isinstance(location, dict)
-        for path in (location.get("path"),)
-        if isinstance(path, str) and path
-    )
-
-
-def _cut(text: str) -> str:
-    return text[:MAXIMUM_AGENT_FIELD_CHARACTERS]
-
-
-@dataclass(frozen=True, slots=True)
-class StandardAcpVocabulary:
-    """The published protocol read exactly as published, and not one field more."""
-
-    def classify_update(self, update: JsonObject) -> ClassifiedUpdate:
-        try:
-            variant = AcpSessionUpdate(update.get("sessionUpdate"))
-        except ValueError:
-            return Unrepresentable()
-        match variant:
-            case (
-                AcpSessionUpdate.AGENT_MESSAGE_CHUNK
-                | AcpSessionUpdate.AGENT_THOUGHT_CHUNK
-            ):
-                spoken = _text_of(update.get("content"))
-                return AssistantText(spoken) if spoken else NothingToRecord()
-            case AcpSessionUpdate.TOOL_CALL | AcpSessionUpdate.TOOL_CALL_UPDATE:
-                return self._tool_call(update)
-            case (
-                AcpSessionUpdate.USER_MESSAGE_CHUNK
-                | AcpSessionUpdate.AVAILABLE_COMMANDS_UPDATE
-            ):
-                return NothingToRecord()
-
-    def classify_permission(self, tool_call: JsonObject) -> ClassifiedPermission:
-        try:
-            kind = AcpToolKind(tool_call.get("kind"))
-        except ValueError:
-            return Unrepresentable()
-        locations = _locations_of(tool_call)
-        if not locations:
-            return Unrepresentable()
-        return ClassifiedEffect(
-            _EFFECT_OF_TOOL_KIND[kind],
-            PermissionScope(PermissionScopeKind.PATH_PREFIX, _cut(locations[0])),
-        )
-
-    def _tool_call(self, update: JsonObject) -> ClassifiedUpdate:
-        status = update.get("status")
-        if status is not None:
-            return self._status(status, update)
-        title = update.get("title")
-        if not isinstance(title, str) or not title:
-            return Unrepresentable()
-        return ToolCallAnnounced(_cut(title), _locations_of(update))
-
-    def _status(self, status: JsonValue, update: JsonObject) -> ClassifiedUpdate:
-        try:
-            settled = AcpToolCallStatus(status)
-        except ValueError:
-            return Unrepresentable()
-        if settled not in _SETTLED_TOOL_CALL_STATUSES:
-            return NothingToRecord()
-        return ToolCallSettled(settled, _tool_content_of(update.get("content")))
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,7 +398,7 @@ class AgentClientProtocolConversation:
         if not spoken:
             self._stop_talking(AcpConversationFault.NO_STOP_REASON)
         elif spoken not in _STOP_REASONS_THAT_ONLY_END_A_TURN:
-            self._stop_reason = _cut(spoken)
+            self._stop_reason = cut_to_field(spoken)
         return self._flushed() + (ProviderConversationComplete(),)
 
     def _permission_asked(self, asked: JsonRpcRequest) -> Actions:
