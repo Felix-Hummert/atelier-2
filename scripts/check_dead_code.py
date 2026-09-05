@@ -5,7 +5,11 @@ symbol only its own test reaches is not a symbol the product uses, and letting
 the suite vouch for source is how a codebase keeps machinery it retired.
 
 Three files carry the names that survive a finding, and each says something
-different about the name:
+different about the name. Every entry in every list names its symbol as
+`module/path.py:symbol`, relative to `src/atelier2`, exactly as vulture reports
+it: qualifying by module, not by bare name, is what stops excusing one
+vocabulary word in one module from silently vouching for a dead namesake with
+the same name in another.
 
 * `.vulture_allowlist.py` -- a production site does reach the name, and vulture
   cannot see that site: a program built as text, a vocabulary the wire selects
@@ -16,13 +20,11 @@ different about the name:
   a parked decision cannot be parked forever.
 * `vulture_frozen.py` -- the name is built ahead of its caller and is kept
   (operator ruling 04.09.2026: freeze, do not throw away). No expiry; every
-  entry names the open item that owns the caller, and names the symbol where it
-  was built (`contracts/agent_permissions.py:COMMAND`), so freezing one
-  vocabulary word never vouches for a dead namesake in another module. Reported
-  every run so it stays visible, never red.
+  entry names the open item that owns the caller. Reported every run so it
+  stays visible, never red.
 
-An entry naming something vulture no longer reports is itself red: the lists
-shrink with the code they excuse.
+An entry naming something vulture no longer reports is orphaned and is itself
+red: the lists shrink with the code they excuse.
 """
 
 from __future__ import annotations
@@ -72,18 +74,22 @@ class DeadCodeGateError(RuntimeError):
 
 @dataclass(frozen=True)
 class ExcusedName:
-    """One name a list excuses, with the sentence that justifies it."""
+    """One qualified symbol a list excuses, with the sentence that justifies it.
 
+    Excused only in the module that carries it: a bare name would let a
+    namesake in another module satisfy the entry it was never written for.
+    """
+
+    module: str
     name: str
     why: str
 
     def excuses(self, name: str, module: str) -> bool:
-        del module
-        return name == self.name
+        return name == self.name and module == self.module
 
     @property
     def label(self) -> str:
-        return self.name
+        return f"{self.module}:{self.name}"
 
 
 @dataclass(frozen=True)
@@ -93,17 +99,9 @@ class PendingName(ExcusedName):
 
 @dataclass(frozen=True)
 class FrozenName(ExcusedName):
-    """A frozen name, excused only in the module that built it."""
+    """A frozen name, naming the open item that owns its caller."""
 
-    module: str
     item: str
-
-    def excuses(self, name: str, module: str) -> bool:
-        return name == self.name and module == self.module
-
-    @property
-    def label(self) -> str:
-        return f"{self.module}:{self.name}"
 
 
 def _read_groups(project_root: Path, file: Path, binding: str) -> Iterator[dict]:
@@ -139,35 +137,38 @@ def _validated_names(file: Path, group: dict, *required: str) -> tuple[str, ...]
 
 def read_allowlist(project_root: Path) -> tuple[ExcusedName, ...]:
     return tuple(
-        ExcusedName(name, group["why"])
+        ExcusedName(*_path_qualified(ALLOWLIST_FILE, entry), group["why"])
         for group in _read_groups(project_root, ALLOWLIST_FILE, ALLOWLIST_BINDING)
-        for name in _validated_names(ALLOWLIST_FILE, group)
+        for entry in _validated_names(ALLOWLIST_FILE, group)
     )
 
 
 def read_pending(project_root: Path) -> tuple[PendingName, ...]:
     return tuple(
-        PendingName(name, group["why"], date.fromisoformat(group["expires_on"]))
+        PendingName(
+            *_path_qualified(PENDING_FILE, entry),
+            group["why"],
+            date.fromisoformat(group["expires_on"]),
+        )
         for group in _read_groups(project_root, PENDING_FILE, PENDING_BINDING)
-        for name in _validated_names(PENDING_FILE, group, "expires_on")
+        for entry in _validated_names(PENDING_FILE, group, "expires_on")
     )
 
 
 def read_frozen(project_root: Path) -> tuple[FrozenName, ...]:
-    frozen: list[FrozenName] = []
-    for group in _read_groups(project_root, FROZEN_FILE, FROZEN_BINDING):
-        for entry in _validated_names(FROZEN_FILE, group, "item"):
-            module, name = _path_qualified(entry)
-            frozen.append(FrozenName(name, group["why"], module, group["item"]))
-    return tuple(frozen)
+    return tuple(
+        FrozenName(*_path_qualified(FROZEN_FILE, entry), group["why"], group["item"])
+        for group in _read_groups(project_root, FROZEN_FILE, FROZEN_BINDING)
+        for entry in _validated_names(FROZEN_FILE, group, "item")
+    )
 
 
-def _path_qualified(entry: str) -> tuple[str, str]:
+def _path_qualified(file: Path, entry: str) -> tuple[str, str]:
     """Read one `module/path.py:symbol` entry, refusing a bare name."""
     module, separator, name = entry.rpartition(":")
     if not separator or not module.endswith(".py") or not name:
         raise DeadCodeGateError(
-            f"{FROZEN_FILE}: {entry!r} must name the module it was built in, "
+            f"{file}: {entry!r} must name the module holding the symbol, "
             "as contracts/agent_permissions.py:COMMAND"
         )
     return module, name
