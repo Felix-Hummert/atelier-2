@@ -16,7 +16,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_COUNT = 262
+EXPECTED_SOURCE_MODULE_COUNT = 233
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -56,7 +56,7 @@ PORT_ANSWERS_THE_API_MATCHES = frozenset(
 )
 EXPECTED_LAYER_ROWS = (
     "__main__",
-    "host | runner",
+    "host",
     "api | adapters",
     "application",
     "ports",
@@ -66,7 +66,6 @@ EXPECTED_LAYER_MEMBERS = frozenset(
     {
         "__main__",
         "host",
-        "runner",
         "api",
         "adapters",
         "application",

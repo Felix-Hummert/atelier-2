@@ -1,8 +1,11 @@
 # ADR 0020: One session port carries every provider on the path that runs the live attempts; a permission is authorisation, the transcript its projection
 
 - Status: ACCEPTED 2026-09-04; amended 2026-09-04 (§3, the policy is bound at
-  dispatch) — step 1 carries the typed policy and the decider seam; steps 2-6
-  are not implemented
+  dispatch), 2026-09-05 (issue #1252: the frozen Agent Runner inventory named
+  in §1 -- `runner/session.py`, `runner/executors.py`, and the rest of the
+  container-hosted cluster ADR 0009 describes -- was deleted for having no
+  live caller and lives on in Git history) — step 1 carries the typed policy
+  and the decider seam; steps 2-6 are not implemented
 - Date: 2026-09-04
 - Decision authority: the operator ruling of 2026-09-04 on proposal
   [#1177](https://github.com/FlexOr2/atelier-2/issues/1177), which owns the
@@ -65,12 +68,13 @@ mid-turn.
 Its owner is the path that runs the live attempts:
 `application/execute_agent_attempt.py`, with `AgentProcessSupervisor` — the
 watchdog-backed implementation every live attempt has gone through — as the
-first implementation of the port. The Agent Runner
-(`runner/session.py`, `runner/executors.py`) is frozen inventory under the
-2026-09-04 ruling, not the owner. When a caller for it exists — isolation for
-foreign repositories, or more than one user — the same port moves behind the
-Runner boundary of ADR 0009 unchanged. That is the designed seam, and it is why
-the freeze costs nothing: the port, not its host, is the contract.
+first implementation of the port. The Agent Runner (`runner/session.py`,
+`runner/executors.py`) was frozen inventory under the 2026-09-04 ruling, never
+the owner, and was deleted 2026-09-05 (issue #1252) for having no live caller;
+it lives on in Git history. When a caller for it exists — isolation for
+foreign repositories, or more than one user — the same port moves behind a
+Runner boundary built fresh for that caller. That is the designed seam, and it
+is why the deletion costs nothing: the port, not its host, is the contract.
 
 In either placement a provider implementation is a contained child process or an
 Atelier-owned bridge process, never code loaded into the driving process, and
