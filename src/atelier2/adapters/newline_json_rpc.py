@@ -13,11 +13,12 @@ than this conversation may hold, must be refused while it is still a length --
 decoding first is exactly the buffer this bound exists to refuse. Both the
 completed frame and the exact unfinished remainder are held to it. Spelling
 an outgoing frame is measured the same way: a string leaf is escaped in
-slices of at most `maximum_bytes // 12` code points and folded straight into
-one growing buffer, so this codec's peak memory while spelling one frame
-never passes `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times the caller's own
-bound, whatever the string's real length is (below the escape width, a fixed
-amount plus the bound instead -- see that constant).
+slices of at most `max(1, maximum_bytes // 12)` code points and folded
+straight into one growing buffer, so this codec's peak memory while
+spelling one frame is payload-sized transient storage bounded by
+`5 × maximum_bytes + fixed runtime/object overhead`, whatever the
+string's real length is (below the escape width, `48 + maximum_bytes +
+fixed overhead` instead -- see that constant).
 
 **Why a broken frame is a value, not an exception.** Everything a provider can
 get wrong -- unparseable bytes, a batch, an id that is not an id, an answer to
@@ -73,24 +74,26 @@ this codec's contract is stated against.
 """
 
 _MAXIMUM_TRANSIENT_FACTOR_OF_BOUND = _TRANSIENT_BUFFERS_PER_SLICE + 1
-"""How many multiples of `maximum_bytes` this codec's peak memory ever reaches.
+"""The multiple of `maximum_bytes` this codec's payload-sized transient
+storage peak ever reaches.
 
 `_spelled_within` accumulates every already-spelled piece into one `bytearray`
 that never grows past `maximum_bytes`, refusing before an append would cross
 it: that buffer, together with its own bounded growth slack, is one
 payload-width quantity, alongside the `_TRANSIENT_BUFFERS_PER_SLICE` buffers
-of whichever slice is being escaped into it -- five in total, this factor.
-The one-time final `bytes(buffer)` copy at the end coexists only with that
-same buffer, a strictly smaller peak the figure above already covers.
+of whichever slice is being escaped into it -- five in total, this factor, so
+the peak is `5 × maximum_bytes + fixed runtime/object overhead`. The
+one-time final `bytes(buffer)` copy at the end coexists only with that same
+buffer, a strictly smaller peak the figure above already covers.
 
 This factor is not a universal claim: below `_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES`
 bytes, `_string_slice_characters` clamps to one code point rather than a
 bound-proportional count, so the `_TRANSIENT_BUFFERS_PER_SLICE` escaping
 buffers are a fixed `_TRANSIENT_BUFFERS_PER_SLICE *
 _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` (48) bytes -- but the accumulating buffer is
-still bounded by `maximum_bytes` on its own, so the peak there is that fixed
-48 bytes plus `maximum_bytes`, never this factor times it. Every sentence
-elsewhere naming this factor carries this same exception.
+still bounded by `maximum_bytes` on its own, so the peak there is
+`48 + maximum_bytes + fixed overhead`, never this factor times it. Every
+sentence elsewhere naming this factor carries this same exception.
 """
 
 
@@ -323,11 +326,13 @@ def _spelled_within(payload: JsonObject, maximum_bytes: int) -> bytes | None:
     overhead is not bounded by this frame's own byte bound the way one
     buffer's contents are, and JSON fragmented into many small pieces could
     otherwise cost far more than `maximum_bytes` in bookkeeping alone. Each
-    string leaf is sliced to `maximum_bytes // _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES`
-    code points first, so even a string this payload never gets to spell in
-    full is never held past `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times
-    `maximum_bytes` (below the escape width, a fixed amount plus this buffer
-    instead) -- see that constant for the buffers counted into it.
+    string leaf is sliced to
+    `max(1, maximum_bytes // _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES)` code points
+    first, so even a string this payload never gets to spell in full holds
+    only payload-sized transient storage, bounded by
+    `5 × maximum_bytes + fixed runtime/object overhead` (below the escape
+    width, `48 + maximum_bytes + fixed overhead` instead) -- see that
+    constant for the buffers counted into it.
     """
 
     frame_bytes = maximum_bytes - len(_FRAME_SEPARATOR)
@@ -399,9 +404,10 @@ class NewlineJsonRpc:
         line: the escaping and the envelope are part of what has to be written.
         A caller carrying a payload of unknown width refuses it against the
         same bound before it composes the message, because the encoder never
-        holds more than `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times this same
-        bound however long that string is (below the escape width, a fixed
-        amount plus the bound instead -- see that constant).
+        holds more than payload-sized transient storage, bounded by
+        `5 × maximum_bytes + fixed runtime/object overhead` however long
+        that string is (below the escape width, `48 + maximum_bytes + fixed
+        overhead` instead -- see that constant).
         """
 
         data = _spelled_within(_payload(message), maximum_bytes)
