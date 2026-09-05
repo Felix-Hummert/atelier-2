@@ -1,0 +1,11 @@
+[[directory]]
+path = "tests/domain"
+adapter_importing_test_modules = 23
+
+[[directory]]
+path = "tests/application"
+adapter_importing_test_modules = 0
+
+[[directory]]
+path = "tests/api"
+adapter_importing_test_modules = 10
