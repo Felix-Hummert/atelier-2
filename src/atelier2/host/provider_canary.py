@@ -59,7 +59,6 @@ from pydantic import TypeAdapter, ValidationError
 from atelier2.adapters import claude_subscription as claude_subscription_adapter
 from atelier2.adapters import codex_subscription as codex_subscription_adapter
 from atelier2.adapters import grok_subscription as grok_subscription_adapter
-from atelier2.adapters import runner_cli_pins as runner_cli_pins_adapter
 from atelier2.adapters.claude_subscription import (
     CLAUDE_ATELIER_DOORS_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
@@ -403,16 +402,12 @@ _PROVIDER_LAYER_ADAPTER_MODULES = (
     claude_subscription_adapter,
     codex_subscription_adapter,
     grok_subscription_adapter,
-    runner_cli_pins_adapter,
 )
-"""Every module that decides how this deployment talks to a provider. The
-three adapters are named through the same modules `_WORKFLOW_BY_EXECUTOR`
-above draws its executor keys from -- not a second, separately maintained
-file list -- so a fourth provider adapter joins the digest the moment its
-module is imported here for its own executor keys. `runner_cli_pins.py` joins
-them (#1124 review): the one place a Runner's own CLI-pin attestation is
-decided for those same executor keys, so a changed conformance set turns
-receipts over too. Narrower than the full provider surface on purpose: the
+"""Every module that decides how this deployment talks to a provider, named
+through the same modules `_WORKFLOW_BY_EXECUTOR` above draws its executor keys
+from -- not a second, separately maintained file list -- so a fourth provider
+adapter joins the digest the moment its module is imported here for its own
+executor keys. Narrower than the full provider surface on purpose: the
 pinned CLI executable path (`serve-live.sh`'s `--claude-executable`), the
 probe workflow bytes (`workflows/provider-canary-*.yaml`), and the executor
 start-binding wiring stay out -- OPERATIONS.md names that residual, backstopped
@@ -424,8 +419,8 @@ def provider_layer_digest() -> Sha256Hash:
 
     Every module in `_PROVIDER_LAYER_ADAPTER_MODULES`, plus this canary client
     and the receipt contract it writes -- together the places provider
-    behaviour and its Runner-side CLI pin are actually decided. Computed from
-    files on disk alone, identically by the Serve process
+    behaviour is actually decided. Computed from files on disk alone,
+    identically by the Serve process
     (`adapters/dbos/runtime.py`'s receipt gate, wired through
     `host/serving.py`) and by this canary client running beside it on the same
     checkout, so neither has to learn the other's live state to agree. A

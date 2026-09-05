@@ -231,7 +231,6 @@ from atelier2.contracts.tool_grants_v3 import (
 from atelier2.host import main
 from atelier2.ports.run_queries import RunFound
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
-from tests.integration.test_runner_terminal_evidence_store import _bound
 from tests.integration.test_v3_wait_in_loop import public_client
 from tests.integration.test_v3_wait_run import (
     ANSWER,
@@ -3601,10 +3600,27 @@ def test_an_exact_v31_store_migrates_to_v32_by_a_trigger_swap(
 def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A row bound to the frozen Runner's own generation/manifest columns
+    (#1252: the Runner's application layer is deleted; the durable columns
+    stay) survives the V32 trigger swap untouched, same as any other row."""
+
     database_path = tmp_path / "atelier.sqlite"
-    runtime, store, execution, _binding = _bound(
-        tmp_path, "migration/v31-runner-attempt"
-    )
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    request = attempt_request(runtime, "migration/v31-runner-attempt")
+    execution = agent_attempt_execution(request)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    prepared = store.prepare(execution)
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            agent_attempts.update()
+            .where(agent_attempts.c.attempt_id == execution.attempt_id.value)
+            .values(
+                state_version=prepared.state_version + 1,
+                runner_manifest_id="a" * 64,
+                runner_generation_id="runner-generation-1",
+            )
+        )
     durable = store.load(execution.attempt_id)
     assert durable.runner_manifest_id is not None
     assert durable.runner_invocation_id is None

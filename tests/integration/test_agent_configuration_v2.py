@@ -51,9 +51,6 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
-    RunnerGenerationBinding,
-    RunnerGenerationId,
-    RunnerManifestId,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
@@ -1655,10 +1652,10 @@ def test_prepared_attempt_is_cleaned_through_durable_node_when_executor_is_unava
 
 @pytest.mark.parametrize(
     "predecessor",
-    ("launch-armed", "cancel-requested", "runner-bound"),
+    ("launch-armed", "cancel-requested"),
 )
 @pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
-def test_unavailable_executor_refusal_leaves_launch_and_runner_fences_unchanged(
+def test_unavailable_executor_refusal_leaves_launch_fences_unchanged(
     tmp_path: Path, predecessor: str
 ) -> None:
     runtime = attempt_runtime(tmp_path)
@@ -1686,16 +1683,6 @@ def test_unavailable_executor_refusal_leaves_launch_and_runner_fences_unchanged(
                         )
                     ),
                     AgentAttemptCancellationAccepted,
-                )
-            case "runner-bound":
-                store.bind_runner_generation(
-                    execution,
-                    RunnerGenerationBinding(
-                        execution.attempt_id,
-                        execution.request.request_hash,
-                        RunnerGenerationId("existing-runner-generation"),
-                        RunnerManifestId.of(b"existing-runner-manifest"),
-                    ),
                 )
             case _ as unreachable:
                 raise AssertionError(f"unexpected fence predecessor: {unreachable}")

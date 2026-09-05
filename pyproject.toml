@@ -21,9 +21,6 @@ dependencies = [
 
 [project.scripts]
 atelier2 = "atelier2.host:main"
-atelier2-runner-launcher = "atelier2.host.runner_launcher:main"
-atelier2-runner = "atelier2.runner:main"
-atelier2-runner-identity-receiver = "atelier2.runner.identity_receiver:main"
 
 [dependency-groups]
 dev = [
@@ -92,7 +89,7 @@ type = "layers"
 containers = ["atelier2"]
 layers = [
     "__main__",
-    "host | runner",
+    "host",
     "api | adapters",
     "application",
     "ports",
