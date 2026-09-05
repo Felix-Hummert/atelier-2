@@ -130,6 +130,7 @@ WAITING_FOR_A_CALLER = (
     {
         "names": (
             "contracts/agent_permissions.py:WORKSPACE_READ",
+            "contracts/agent_permissions.py:WORKSPACE_WRITE",
             "contracts/agent_permissions.py:COMMAND",
             "contracts/agent_permissions.py:NETWORK",
             "contracts/agent_permissions.py:SECRET_READ",
