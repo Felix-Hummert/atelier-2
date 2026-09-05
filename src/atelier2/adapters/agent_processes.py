@@ -12,10 +12,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import assert_never
 
 from atelier2.adapters.agent_process_watchdog import (
     CONTROL_FRAME_TIMEOUT_SECONDS,
+    EXCHANGE_HOLD_SECONDS,
     MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
+    MAXIMUM_AGENT_EXCHANGE_RESPONSE_BYTES,
     MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
     encode_control_frame,
     maximum_agent_wait_response_bytes,
@@ -29,6 +32,9 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_permissions import PermissionRequest
+from atelier2.contracts.agent_transcripts import TranscriptEvent
+from atelier2.contracts.agents import AgentExecutorRevision
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.ports.agent_attempts import AgentAttemptStore
 from atelier2.ports.agent_executions import (
@@ -38,7 +44,25 @@ from atelier2.ports.agent_executions import (
     AgentProcessOwnerNotLocal,
     AgentSession,
     PermissionDecider,
+    ProviderCancellationCause,
+    ProviderCancellationFrame,
+    ProviderConversationAction,
+    ProviderConversationBinding,
+    ProviderConversationEnding,
+    ProviderFilesystemRequest,
+    ProviderSessionEvent,
+    ProviderStandardInput,
+    ProviderTerminalOutcome,
 )
+
+_ENDING_OF_EXCHANGE_ARM: dict[str, ProviderConversationEnding] = {
+    "COMPLETED": ProviderConversationEnding.OUTPUT_ENDED,
+    **{
+        cause.value: ProviderConversationEnding.of_cancellation(cause)
+        for cause in ProviderCancellationCause
+    },
+}
+"""How the watchdog's own ending vocabulary reads to a conversation."""
 
 MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS = 2
 
@@ -55,12 +79,160 @@ class _OwnedWatchdog:
     wait_completed: threading.Event = field(default_factory=threading.Event)
     condition: threading.Condition = field(default_factory=threading.Condition)
     launch_frame: bytes | None = None
+    conversation_revision: AgentExecutorRevision | None = None
     completion: AgentProcessCompletion | None = None
     failure: str | None = None
     owner_not_local_failure: bool = False
     closed: bool = False
     finalizing: bool = False
     finalized: bool = False
+
+
+@dataclass(frozen=True)
+class _ConversationEvidence:
+    """What a conversation left for the completion: its steps and its outcome."""
+
+    steps: tuple[TranscriptEvent, ...] = ()
+    outcome: ProviderTerminalOutcome | None = None
+
+
+_NOTHING_WAS_SAID = _ConversationEvidence()
+"""What a print-mode invocation leaves: no conversation ever ran."""
+
+
+class _ConversationRelay:
+    """One conversation's bounded state on the side that holds the process.
+
+    It owns everything the conversation is not allowed to own: how many bytes
+    have crossed in each direction, what is still waiting to be written, which
+    cancellation frame the watchdog has been given, and the steps published so
+    far. It is also the one place a question or a file request is carried to
+    the authority that answers it, so the conversation reaches neither. Every
+    bound the executor declared is checked here, because this is the side that
+    allocates the buffers -- a conversation that never finishes a frame,
+    answers past its reply bound or floods standard input ends the attempt
+    loudly instead of being trusted.
+    """
+
+    def __init__(
+        self, conversation: ProviderConversationBinding, permissions: PermissionDecider
+    ) -> None:
+        self._driver = conversation.driver
+        self._files = conversation.files
+        self._bounds = conversation.driver.bounds
+        self._permissions = permissions
+        self._pending_input = b""
+        self._accepted_input_bytes = 0
+        self._delivered_output_bytes = 0
+        self._unanswered_output_bytes = 0
+        self._unpublished_cancellation: bytes | None = None
+        self._steps: list[TranscriptEvent] = []
+
+    def exchange_request(self) -> dict[str, object]:
+        """What this relay hands over next, addressed by cumulative byte counts.
+
+        Both directions are counted rather than acknowledged, so the exchange
+        the control channel had to retry delivers nothing twice: the watchdog
+        skips input it already took, and output it already sent simply arrives
+        again.
+        """
+
+        return {
+            "cancellation_frame": base64.b64encode(
+                self._unpublished_cancellation or b""
+            ).decode("ascii"),
+            "delivered_output_bytes": self._delivered_output_bytes,
+            "operation": "EXCHANGE",
+            "standard_input": base64.b64encode(self._pending_input).decode("ascii"),
+            "standard_input_offset": self._accepted_input_bytes,
+        }
+
+    def exchanged(
+        self, response: dict[str, object]
+    ) -> ProviderConversationEnding | None:
+        """Read one exchange, and say how the process ended if it has."""
+
+        accepted = response.get("accepted_input_bytes")
+        output_value = response.get("standard_output")
+        ending = response.get("ending")
+        if (
+            type(accepted) is not int
+            or type(output_value) is not str
+            or type(ending) is not str
+            or not self._accepted_input_bytes
+            <= accepted
+            <= self._accepted_input_bytes + len(self._pending_input)
+        ):
+            raise RuntimeError("watchdog conversation exchange is malformed")
+        try:
+            chunk = base64.b64decode(output_value, validate=True)
+        except ValueError as error:
+            raise RuntimeError("watchdog conversation exchange is malformed") from error
+        self._pending_input = self._pending_input[
+            accepted - self._accepted_input_bytes :
+        ]
+        self._accepted_input_bytes = accepted
+        self._unpublished_cancellation = None
+        if chunk:
+            self._receive(chunk)
+            return None
+        if not ending:
+            return None
+        return _ENDING_OF_EXCHANGE_ARM.get(
+            ending, ProviderConversationEnding.TERMINATED
+        )
+
+    def ended(self, ending: ProviderConversationEnding) -> _ConversationEvidence:
+        """Let the conversation close its own story, and hand back what it left."""
+
+        closing = self._driver.finish(ending)
+        self._steps.extend(event.step for event in closing.steps)
+        return _ConversationEvidence(tuple(self._steps), closing.outcome)
+
+    def _receive(self, chunk: bytes) -> None:
+        self._delivered_output_bytes += len(chunk)
+        if self._delivered_output_bytes > self._bounds.maximum_total_output_bytes:
+            raise RuntimeError("conversation output exceeds its declared bound")
+        self._unanswered_output_bytes += len(chunk)
+        actions = self._driver.receive_output(chunk)
+        if actions:
+            self._unanswered_output_bytes = 0
+        elif (
+            self._unanswered_output_bytes > self._bounds.maximum_incomplete_frame_bytes
+        ):
+            raise RuntimeError("conversation frame exceeds its declared bound")
+        self._apply(actions)
+
+    def _apply(self, actions: tuple[ProviderConversationAction, ...]) -> None:
+        for action in actions:
+            match action:
+                case ProviderStandardInput(data):
+                    self._queue_input(data)
+                case ProviderCancellationFrame(data):
+                    if len(data) > self._bounds.maximum_cancel_bytes:
+                        raise RuntimeError(
+                            "conversation cancellation frame exceeds its declared bound"
+                        )
+                    self._unpublished_cancellation = data
+                case PermissionRequest() as request:
+                    decision = self._permissions.decide(request)
+                    self._queue_input(self._driver.answer_permission(decision).data)
+                case ProviderFilesystemRequest() as request:
+                    reply = self._files.answer(request)
+                    self._queue_input(self._driver.answer_filesystem(reply).data)
+                case ProviderSessionEvent(step):
+                    self._steps.append(step)
+                case _ as unreachable:
+                    assert_never(unreachable)
+
+    def _queue_input(self, data: bytes) -> None:
+        if len(data) > self._bounds.maximum_reply_bytes:
+            raise RuntimeError("conversation reply exceeds its declared bound")
+        if len(self._pending_input) + len(data) > (
+            self._bounds.maximum_pending_input_bytes
+        ):
+            raise RuntimeError("conversation standard input exceeds its declared bound")
+        self._pending_input += data
 
 
 class AgentProcessSupervisor(AgentSession):
@@ -193,11 +365,6 @@ class AgentProcessSupervisor(AgentSession):
         invocation: AgentProcessInvocation,
         permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
-        # A print-mode child has no channel to ask on: it is launched with
-        # whatever the provider CLI was configured to allow and answers nothing
-        # back. The authority is carried so that the seam is the same one an
-        # asking session uses; this one never puts a question to it.
-        del permissions
         launch_request = _launch_request(invocation)
         launch_frame = encode_control_frame(launch_request)
         if len(launch_frame) > MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES:
@@ -216,13 +383,22 @@ class AgentProcessSupervisor(AgentSession):
                 or durable.watchdog_generation_id != owned.generation
             ):
                 raise AgentProcessOwnerNotLocal
+            conversation = invocation.conversation
+            revision = None if conversation is None else conversation.executor_revision
             with owned.condition:
                 if owned.closed or owned.finalized:
                     raise AgentProcessOwnerNotLocal
                 if owned.launch_frame is None:
                     owned.launch_frame = launch_frame
+                    owned.conversation_revision = revision
                     leads_attempt = True
-                elif owned.launch_frame != launch_frame:
+                elif (
+                    owned.launch_frame != launch_frame
+                    or owned.conversation_revision != revision
+                ):
+                    # A conversation is live state this armed session cannot
+                    # share: two revisions speaking into one child would each
+                    # read the other's frames as their own.
                     raise RuntimeError("local watchdog invocation changed")
                 else:
                     leads_attempt = False
@@ -242,6 +418,11 @@ class AgentProcessSupervisor(AgentSession):
                 raise AgentProcessOwnerNotLocal
             else:
                 raise RuntimeError("watchdog refused the exact launch")
+            evidence = (
+                _NOTHING_WAS_SAID
+                if conversation is None
+                else self._relay_conversation(owned, conversation, permissions)
+            )
             wait_response = self._request_with_retry(
                 owned,
                 {"operation": "WAIT"},
@@ -251,7 +432,9 @@ class AgentProcessSupervisor(AgentSession):
                 ),
             )
             completion = _completion_from_response(
-                wait_response, invocation.command.standard_output_frame_bytes
+                wait_response,
+                invocation.command.standard_output_frame_bytes,
+                evidence,
             )
         except Exception as error:
             with owned.condition:
@@ -269,7 +452,9 @@ class AgentProcessSupervisor(AgentSession):
             return completion
 
     def cancel(
-        self, attempt: AgentAttempt
+        self,
+        attempt: AgentAttempt,
+        cause: ProviderCancellationCause = ProviderCancellationCause.OPERATOR,
     ) -> tuple[
         AgentAttemptCancellationDisposition,
         AgentProcessOwnerId,
@@ -286,7 +471,7 @@ class AgentProcessSupervisor(AgentSession):
                 raise AgentProcessOwnerNotLocal
         response = self._request_with_retry(
             owned,
-            {"operation": "CANCEL"},
+            {"cause": cause.value, "operation": "CANCEL"},
             timeout_seconds=(self._grace_seconds * 2) + 2,
             maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
         )
@@ -436,6 +621,34 @@ class AgentProcessSupervisor(AgentSession):
         with lock:
             if self._owned.get(attempt_id) is owned:
                 self._owned.pop(attempt_id, None)
+
+    def _relay_conversation(
+        self,
+        owned: _OwnedWatchdog,
+        conversation: ProviderConversationBinding,
+        permissions: PermissionDecider,
+    ) -> _ConversationEvidence:
+        """Carry one conversation between the child and this run's authority.
+
+        The whole duplex channel lives here, on the parent side of the control
+        socket: the watchdog services pipes, deadlines and signals and never
+        calls a conversation or a decider, so no provider's parser and no
+        durable receipt write can sit between a cancellation and its signal.
+        """
+
+        relay = _ConversationRelay(conversation, permissions)
+        while True:
+            response = self._request_with_retry(
+                owned,
+                relay.exchange_request(),
+                timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS + EXCHANGE_HOLD_SECONDS,
+                maximum_response_bytes=MAXIMUM_AGENT_EXCHANGE_RESPONSE_BYTES,
+            )
+            if response.get("type") != "EXCHANGED":
+                raise RuntimeError("watchdog did not answer the conversation exchange")
+            ending = relay.exchanged(response)
+            if ending is not None:
+                return relay.ended(ending)
 
     def _attempt_lock(self, attempt_id: AgentAttemptId) -> threading.Lock:
         with self._registry_lock:
@@ -606,7 +819,7 @@ def _close_watchdog_pipes(process: subprocess.Popen[bytes]) -> None:
 
 def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
     command = invocation.command
-    return {
+    request: dict[str, object] = {
         "arguments": command.arguments,
         "environment": command.environment,
         "operation": "LAUNCH",
@@ -618,10 +831,17 @@ def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
         # directory it finds against.
         "working_directory_identity": [invocation.lease.device, invocation.lease.inode],
     }
+    # A print-mode launch names no conversation at all, so its frame stays
+    # byte-for-byte the one this watchdog protocol has always carried.
+    if invocation.conversation is not None:
+        request["duplex"] = True
+    return request
 
 
 def _completion_from_response(
-    response: dict[str, object], standard_output_frame_bytes: int
+    response: dict[str, object],
+    standard_output_frame_bytes: int,
+    conversation: _ConversationEvidence = _NOTHING_WAS_SAID,
 ) -> AgentProcessCompletion:
     response_type = response.get("type")
     if response_type in {"RECOVERY_HANDOFF", "STOPPED"}:
@@ -647,7 +867,13 @@ def _completion_from_response(
         or len(standard_error) > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
     ):
         raise RuntimeError("watchdog process completion exceeds its exact bound")
-    return AgentProcessCompletion(return_code, standard_output, standard_error)
+    return AgentProcessCompletion(
+        return_code,
+        standard_output,
+        standard_error,
+        conversation.steps,
+        conversation.outcome,
+    )
 
 
 def _cgroup_populated(cgroup: Path) -> bool:

@@ -42,6 +42,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PrintModeExecutor,
 )
 from atelier2.ports.project_source import ProjectSourceUnavailable
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
@@ -234,7 +235,7 @@ REPORT_THE_TREE = (
 
 
 @dataclass
-class TreeReportingExecutor:
+class TreeReportingExecutor(PrintModeExecutor):
     """A provider of no particular vendor, keeping what it was started in."""
 
     reported: list[bytes] = field(default_factory=list)

@@ -80,6 +80,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PrintModeExecutor,
 )
 
 GROK_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
@@ -1134,7 +1135,7 @@ class GrokSubscriptionProcessCommand(AgentProcessCommand):
 
 
 @dataclass(frozen=True)
-class GrokSubscriptionExecutor:
+class GrokSubscriptionExecutor(PrintModeExecutor):
     settings: GrokSubscriptionSettings
     _invocation_directories: set[Path] = field(
         default_factory=set, init=False, compare=False, repr=False

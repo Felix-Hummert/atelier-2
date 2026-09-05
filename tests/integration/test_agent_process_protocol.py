@@ -171,7 +171,13 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
 
         for operation, handler, cached in (
             ("WAIT", watchdog._handle_wait, cached_wait),
-            ("CANCEL", watchdog._handle_cancel, cached_cancel),
+            (
+                "CANCEL",
+                lambda connection, now: watchdog._handle_cancel(
+                    connection, {"operation": "CANCEL"}, now
+                ),
+                cached_cancel,
+            ),
         ):
             server, peer = socket.socketpair()
             peers.append(peer)

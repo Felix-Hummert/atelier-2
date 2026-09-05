@@ -418,6 +418,22 @@ bound, a separate decision from the durable answer bound. After a chain the job
 can carry the instruction, the run's orders, and earlier results; a composition
 past that bound is refused by name.
 
+An executor whose provider speaks rather than prints opens a conversation for
+its invocation after the workspace is leased and before anything starts. The
+same supervised child then keeps its standard input open: supervision hands
+every output frame to that conversation, puts each permission question to the
+authority the dispatch bound and each file request to the access its binding
+names, writes the answers back as standard input, and holds every buffer to the
+bounds the executor declared. The conversation itself reaches nothing — it
+reads bytes and asks — and nothing of it reaches the watchdog, which keeps
+servicing pipes, deadlines and signals alone. A stop therefore still writes the
+conversation's prepared stop frame once and signals in the same breath, and it
+carries why it was asked for — an operator, a budget, a policy — because a
+signal cannot say that afterwards. The conversation ends by saying in its own
+typed terms how the attempt really finished, beside the bytes and the steps it
+leaves. An invocation that opens no conversation is the print-mode call above,
+unchanged in every byte.
+
 The call itself is deliberately the barest one its authentication allows: no
 tools, no hooks, no MCP servers, no plugins or skills, no project configuration
 discovery, no session or prompt history surviving the invocation, no retries,

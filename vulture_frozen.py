@@ -17,6 +17,24 @@ Read as data by the gate; never imported at runtime.
 WAITING_FOR_A_CALLER = (
     {
         "names": (
+            "ports/agent_executions.py:READ",
+            "ports/agent_executions.py:ENDED",
+            "ports/agent_executions.py:POLICY_REFUSED",
+            "ports/agent_executions.py:BUDGET_EXHAUSTED",
+            "ports/agent_executions.py:terminal_outcome",
+        ),
+        "why": (
+            "The duplex conversation seam (ADR 0020 step 2, slice 2-B): the "
+            "supervisor relays file requests, cancellation causes and the typed "
+            "terminal outcome a conversation composes, but every executor this "
+            "product runs still answers in print mode, so no production site "
+            "reads a file effect, a terminal reason or the completion's outcome "
+            "until the first speaking provider arrives."
+        ),
+        "item": "#1177 Schritt 2 (2-C ACP-Client, 2-D Grok-Executor)",
+    },
+    {
+        "names": (
             "adapters/docker_carrier.py:attest_runner_inspect",
             "adapters/free_runner_executor.py:encode_free_runner_job",
             "contracts/runner_session_codec.py:MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES",

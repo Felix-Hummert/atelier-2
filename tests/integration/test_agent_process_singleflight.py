@@ -70,11 +70,17 @@ def test_concurrent_local_waiters_share_one_process_completion(
         decode_count = 0
 
         def count_decode(
-            response: dict[str, object], standard_output_frame_bytes: int
+            response: dict[str, object],
+            standard_output_frame_bytes: int,
+            conversation: process_module._ConversationEvidence = (
+                process_module._NOTHING_WAS_SAID
+            ),
         ) -> AgentProcessCompletion:
             nonlocal decode_count
             decode_count += 1
-            return decode_completion(response, standard_output_frame_bytes)
+            return decode_completion(
+                response, standard_output_frame_bytes, conversation
+            )
 
         monkeypatch.setattr(process_module, "_completion_from_response", count_decode)
 
