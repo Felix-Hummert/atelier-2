@@ -45,6 +45,8 @@ type JsonRpcId = int | str
 NO_PARAMS: JsonObject = {}
 _COMPACT_SEPARATORS = (",", ":")
 _FRAME_SEPARATOR = b"\n"
+_ENCODER = json.JSONEncoder(separators=_COMPACT_SEPARATORS)
+"""One spelling of JSON, reused: an encoder holds its settings and no state."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +195,29 @@ def _payload(message: OutgoingMessage) -> JsonObject:
             assert_never(unreachable)
 
 
+def _spelled_within(payload: JsonObject, maximum_bytes: int) -> bytes | None:
+    """This payload's own bytes, or nothing once they would pass the bound.
+
+    Counted as the encoder spells them rather than after: escaping can multiply
+    a text several times over, so a payload measured before it is spelled is
+    not measured at all -- and spelling it whole to find out is exactly the
+    buffer the bound exists to refuse. A piece with more characters than there
+    are bytes left cannot fit however it encodes, so it is refused unencoded.
+    """
+
+    remaining = maximum_bytes - len(_FRAME_SEPARATOR)
+    spelled: list[bytes] = []
+    for piece in _ENCODER.iterencode(payload):
+        if len(piece) > remaining:
+            return None
+        encoded = piece.encode()
+        remaining -= len(encoded)
+        if remaining < 0:
+            return None
+        spelled.append(encoded)
+    return b"".join(spelled)
+
+
 @dataclass
 class NewlineJsonRpc:
     """One conversation's framing: bytes in, named messages out, ids of its own.
@@ -250,15 +275,14 @@ class NewlineJsonRpc:
         knows which of them it is spelling. What is measured is the finished
         line: the escaping and the envelope are part of what has to be written.
         A caller carrying a payload of unknown width refuses it against the
-        same bound before it composes the message, because what arrives here is
-        spelled once whatever its length.
+        same bound before it composes the message, because the encoder spells
+        one string in one piece however long that string is.
         """
 
-        data = json.dumps(_payload(message), separators=_COMPACT_SEPARATORS).encode()
-        framed = data + _FRAME_SEPARATOR
-        if len(framed) > maximum_bytes:
+        data = _spelled_within(_payload(message), maximum_bytes)
+        if data is None:
             return UnsendableFrame()
-        return EncodedFrame(framed)
+        return EncodedFrame(data + _FRAME_SEPARATOR)
 
     def _framing_is_lost(
         self, frames: list[IncomingFrame]

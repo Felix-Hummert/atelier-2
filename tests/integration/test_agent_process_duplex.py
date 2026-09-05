@@ -2,7 +2,9 @@
 
 The subject is the seam, not a provider: a fake conversation stands in for the
 wire format so that what is proven here is the relay -- who reads, who decides,
-who writes, and which bound refuses -- and not one vendor's frames.
+who writes, and which bound refuses -- and not one vendor's frames. One test
+drives the standard ACP conversation instead, because a port only ever relayed
+for a fake proves the fake.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters import agent_processes as process_module
+from atelier2.adapters.agent_client_protocol import AgentClientProtocolConversation
 from atelier2.adapters.agent_processes import AgentProcessSupervisor
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.contracts.agent_attempts import (
@@ -86,6 +89,8 @@ _GRANTS_THE_WORKSPACE = PermissionPolicyRevision(
 )
 _CONVERSING_REVISION = AgentExecutorRevision("fake-conversation/v1")
 _ANOTHER_REVISION = AgentExecutorRevision("fake-conversation/v2")
+_STANDARD_ACP_REVISION = AgentExecutorRevision("standard-acp/v1")
+_ACP_SESSION = "01a06f4c-7326-79d0-9bde-ed08ee7e716c"
 
 _PROVIDER_PRINTS_ONE_FRAME = r"""
 import os, sys
@@ -152,6 +157,40 @@ os.write(1, b'{"say":"bye"}\n')
 _PROVIDER_STOPS_ITSELF = r"""
 import os, sys
 os.write(1, b'{"stop":"' + sys.argv[1].encode() + b'"}\n')
+"""
+
+# It answers the handshake, the session and the prompt this client sends, and
+# splits the one update in between so that the relay has to hand a partial
+# frame to a conversation that owns its own reassembly.
+_PROVIDER_SPEAKS_ACP_AND_SPLITS_ONE_UPDATE = r"""
+import json, os, sys, time
+
+def asked():
+    return json.loads(sys.stdin.readline())
+
+def answer(identifier, result):
+    frame = json.dumps({"jsonrpc": "2.0", "id": identifier, "result": result})
+    os.write(1, frame.encode() + b"\n")
+
+session, said = sys.argv[1], sys.argv[2]
+answer(asked()["id"], {"protocolVersion": 1})
+answer(asked()["id"], {"sessionId": session})
+prompt = asked()
+update = json.dumps({
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+        "sessionId": session,
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": said},
+        },
+    },
+}).encode()
+os.write(1, update[:24])
+time.sleep(0.2)
+os.write(1, update[24:] + b"\n")
+answer(prompt["id"], {"stopReason": "end_turn"})
 """
 
 _PROVIDER_SPLITS_ONE_FRAME_AND_COALESCES_TWO = r"""
@@ -701,6 +740,40 @@ def test_split_and_coalesced_frames_reach_the_conversation_whole(
         # partial one -- without that the reassembly above proves nothing.
         assert len(conversation.chunks) > 1
         assert b"".join(conversation.chunks) == completion.standard_output
+        attempt.finalize_after_failure()
+
+
+def test_the_standard_acp_conversation_speaks_with_a_real_child_through_the_relay(
+    tmp_path: Path,
+) -> None:
+    """The seam is proven here with a fake, so the conversation this product
+    ships is proven once against the relay itself: everything the relay asks of
+    a conversation -- its bounds, its unfinished frame, the actions it
+    publishes -- has to be there before a live attempt reads its first byte."""
+    said = "half a frame, then the rest"
+    with _claimed_attempt(tmp_path, "process/standard-acp") as attempt:
+        conversation = AgentClientProtocolConversation(
+            attempt.execution.attempt_id,
+            "append one line to README.md",
+            tmp_path,
+            _bounds(),
+            maximum_tool_calls=8,
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_SPEAKS_ACP_AND_SPLITS_ONE_UPDATE,
+            _ACP_SESSION,
+            said,
+            conversation=ProviderConversationBinding(
+                _STANDARD_ACP_REVISION, conversation, _FakeFilesystemAccess()
+            ),
+        )
+
+        completion = attempt.launch(invocation, _AuthorityNothingMayAsk()).completion
+
+        assert completion.session_events == (AssistantTurn(said),)
+        assert completion.terminal_outcome == ProviderTerminalOutcome(
+            ProviderTerminalReason.ENDED
+        )
         attempt.finalize_after_failure()
 
 

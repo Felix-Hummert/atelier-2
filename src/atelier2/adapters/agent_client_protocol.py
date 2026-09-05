@@ -256,6 +256,7 @@ class AgentClientProtocolConversation:
         default_factory=dict, init=False
     )
     _session: str = field(default="", init=False)
+    _claimed_session: str = field(default="", init=False)
     _tool_calls: dict[str, str] = field(default_factory=dict, init=False)
     _asked_questions: int = field(default=0, init=False)
     _asked_files: int = field(default=0, init=False)
@@ -270,6 +271,12 @@ class AgentClientProtocolConversation:
         if type(self.maximum_tool_calls) is not int or self.maximum_tool_calls < 1:
             raise ValueError("a conversation admits at least one tool call")
         self._codec = NewlineJsonRpc(self.bounds.maximum_incomplete_frame_bytes)
+
+    @property
+    def incomplete_frame_bytes(self) -> int:
+        """What stands after the last newline, which no frame has completed yet."""
+
+        return len(self._codec.incomplete_frame())
 
     def open(self) -> Actions:
         """Say the handshake, before this process has said anything."""
@@ -347,12 +354,29 @@ class AgentClientProtocolConversation:
     def _notified(self, method: str, params: JsonObject) -> Actions:
         if method != AcpMethod.SESSION_UPDATE:
             return ()
-        if self._session and self._foreign(params):
+        if not self._session:
+            return self._claimed(params)
+        if self._foreign(params):
             return self._faulted(AcpConversationFault.FOREIGN_SESSION)
         update = params.get("update")
         if not isinstance(update, dict):
             return self._flushed() + self._evidence(rendered(params))
         return self._updated(update)
+
+    def _claimed(self, params: JsonObject) -> Actions:
+        """Note which session an update claims while there is still none, and stop.
+
+        A released agent narrates the session it is opening before `session/new`
+        is answered, so an early update is not a fault -- but neither is it this
+        conversation's story yet: nothing said under a session id nobody has
+        confirmed may spend the tool ceiling, name a tool call or become a step.
+        The first id one claims is kept and held against the answer.
+        """
+
+        claimed = params.get("sessionId")
+        if not self._claimed_session and isinstance(claimed, str) and claimed:
+            self._claimed_session = claimed
+        return ()
 
     def _updated(self, update: JsonObject) -> Actions:
         identifier = update.get("toolCallId")
@@ -388,9 +412,8 @@ class AgentClientProtocolConversation:
         A request is held to it always: nothing may reach this attempt's
         authority or its workspace under a session nobody here opened, and
         before `session/new` is answered there is no session to ask under at
-        all. An update is held to it once the id is known -- a released agent
-        narrates the session it is opening before that answer arrives, and
-        there is no second session those first updates could belong to.
+        all. An update that arrives before that answer is held to the id it
+        claimed instead, once the answer names one.
         """
 
         return params.get("sessionId") != self._session
@@ -413,6 +436,8 @@ class AgentClientProtocolConversation:
         session = result.get("sessionId")
         if not isinstance(session, str) or not session:
             return self._faulted(AcpConversationFault.NO_SESSION)
+        if self._claimed_session and self._claimed_session != session:
+            return self._faulted(AcpConversationFault.FOREIGN_SESSION)
         self._session = session
         cancellation = self._codec.encode(
             JsonRpcNotification(AcpMethod.SESSION_CANCEL, {"sessionId": session}),
@@ -555,11 +580,18 @@ class AgentClientProtocolConversation:
     def _settled(
         self, identifier: str, status: AcpToolCallStatus, content: str
     ) -> Steps:
+        """The outcome of one call this conversation took on, and of no other.
+
+        A call it never took on -- one the ceiling already refused, one narrated
+        before the session was named -- has no step to be the outcome of, and an
+        outcome without its call reads as a tool nobody called.
+        """
+
+        if identifier not in self._tool_calls:
+            return ()
         answered = f"{status.value}: {content}" if content else status.value
         return (
-            ProviderSessionEvent(
-                ToolReturned(self._tool_calls.get(identifier, ""), answered)
-            ),
+            ProviderSessionEvent(ToolReturned(self._tool_calls[identifier], answered)),
         )
 
     def _spoken(self, text: str) -> Actions:

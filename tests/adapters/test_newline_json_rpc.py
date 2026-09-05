@@ -9,6 +9,7 @@ an error frame.
 from __future__ import annotations
 
 import json
+import tracemalloc
 
 import pytest
 
@@ -260,6 +261,28 @@ def test_a_message_that_does_not_fit_its_bound_is_refused_with_its_envelope(
     assert isinstance(spelled, EncodedFrame)
 
     assert codec.encode(message, len(spelled.data) - 1) == UnsendableFrame()
+
+
+def test_a_message_whose_escaping_passes_the_bound_is_refused_before_it_is_held() -> (
+    None
+):
+    """Escaping is what a frame really costs: a payload that fits raw can still
+    be a line nobody may buffer, and a codec that only learns that after
+    spelling it whole has already held what the bound exists to refuse."""
+    escaped_bytes_per_control_character = 6  # a null is six characters escaped
+    written = ["\x00" * 50] * 2_000
+    raw_characters = sum(len(line) for line in written)
+    room_for_the_raw_text_twice_over = 2 * raw_characters
+
+    tracemalloc.start()
+    refused = _codec().encode(
+        JsonRpcResponse(7, {"lines": written}), room_for_the_raw_text_twice_over
+    )
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert refused == UnsendableFrame()
+    assert peak < escaped_bytes_per_control_character * raw_characters
 
 
 def test_the_unfinished_tail_is_kept_exactly_as_it_arrived() -> None:

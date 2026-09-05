@@ -895,6 +895,60 @@ def test_a_message_bound_to_another_session_is_a_protocol_fault(frame: bytes) ->
     _broke(conversation, AcpConversationFault.FOREIGN_SESSION)
 
 
+def test_what_the_agent_narrates_before_its_session_is_named_is_no_part_of_it() -> None:
+    """A released agent talks while `session/new` is still in flight, and what
+    it says then stands under a session nobody has confirmed: it neither spends
+    this attempt's tool ceiling nor reaches its transcript."""
+    conversation = _conversation(maximum_tool_calls=1)
+    conversation.open()
+    conversation.receive_output(
+        _answer(INITIALIZE_ID, {"protocolVersion": ACP_PROTOCOL_VERSION})
+    )
+
+    early = conversation.receive_output(
+        _updates({"sessionUpdate": "tool_call", "toolCallId": "early", "title": "a"})
+        + _updates({"sessionUpdate": "agent_message_chunk", "content": _text("hi")})
+    )
+    conversation.receive_output(_answer(SESSION_NEW_ID, {"sessionId": SESSION}))
+    taken = conversation.receive_output(
+        _updates({"sessionUpdate": "tool_call", "toolCallId": "first", "title": "b"})
+    )
+
+    assert early == ()
+    assert _steps(taken) == (ToolCalled("b", ""),)
+    assert not [
+        action for action in taken if isinstance(action, ProviderCancellationRequest)
+    ]
+
+
+def test_a_session_other_than_the_one_an_early_update_claimed_is_a_protocol_fault() -> (
+    None
+):
+    """The id an early update claimed is held against the answer when it comes:
+    two session ids in one exchange means what this client read was another's."""
+    conversation = _conversation()
+    conversation.open()
+    conversation.receive_output(
+        _answer(INITIALIZE_ID, {"protocolVersion": ACP_PROTOCOL_VERSION})
+    )
+    conversation.receive_output(
+        _notifies(
+            AcpMethod.SESSION_UPDATE,
+            {
+                "sessionId": "another-session",
+                "update": {"sessionUpdate": "agent_message_chunk"},
+            },
+        )
+    )
+
+    opened = conversation.receive_output(
+        _answer(SESSION_NEW_ID, {"sessionId": SESSION})
+    )
+
+    assert opened == (ProviderConversationComplete(),)
+    _broke(conversation, AcpConversationFault.FOREIGN_SESSION)
+
+
 def test_the_agents_questions_are_answered_while_its_prompt_is_still_open() -> None:
     conversation = _conversation()
     _prompting(conversation)
@@ -949,6 +1003,30 @@ def test_no_tool_call_is_taken_on_after_the_ceiling_stopped_the_attempt() -> Non
     )
 
     assert _steps(later) == ()
+
+
+def test_an_outcome_for_a_call_this_conversation_never_took_on_is_no_step() -> None:
+    """A ceiling that refused a call refused its outcome with it: a step naming
+    no call at all reads as a tool nobody called."""
+    conversation = _conversation(maximum_tool_calls=1)
+    _prompting(conversation)
+    conversation.receive_output(
+        _updates({"sessionUpdate": "tool_call", "toolCallId": "one", "title": "a"})
+        + _updates({"sessionUpdate": "tool_call", "toolCallId": "two", "title": "b"})
+    )
+
+    settled = conversation.receive_output(
+        _updates(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "three",
+                "status": "completed",
+                "content": [{"type": "content", "content": _text("done")}],
+            }
+        )
+    )
+
+    assert _steps(settled) == ()
 
 
 @pytest.mark.parametrize(
