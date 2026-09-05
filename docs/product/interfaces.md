@@ -9,7 +9,13 @@ priority, workflow lineage, and prerequisites the operator will inspect through
 `POST /queue-admissions`. The policy revision also carries the project's
 `automation_label`: with one named, the sweep confirms every inspected
 proposal whose tracker item carries that label under the `AUTOMATION_RULE`
-authority, and with none named it admits nothing automatically. The priority
+authority, and with none named it admits nothing automatically. It may also
+carry `default_workflow_lineage_id`, `default_priority_rank`, and
+`automation_disposition_default` -- stated together or not at all -- and then
+a labelled item that carries no proposal is proposed from them, with
+`proposal.source` reading `POLICY_DEFAULT` instead of `OPERATOR`. The
+disposition is `HUMAN_REQUIRED` unless the operator states otherwise, so the
+defaults propose work without releasing it. The priority
 wire shape is `{"rank": n}`. Queue
 responses use the contract's typed state, authority, automation disposition,
 and blocker values. A tracker read failure never drops a durable queue row: the

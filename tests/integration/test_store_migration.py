@@ -128,6 +128,8 @@ from atelier2.adapters.dbos.schema import (
     node_receipts_v3,
     published_revisions,
     queue_items,
+    queue_project_policy_revisions,
+    queue_proposal_revisions,
     run_agent_bindings,
     run_configuration_revisions,
     run_events,
@@ -209,6 +211,13 @@ from atelier2.contracts.host_configuration import (
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+)
+from atelier2.contracts.queue_projection import (
+    QueueAutomationDisposition,
+    QueueItemState,
+    QueueProposalSource,
+    TrackerItemReference,
+    WorkItemReference,
 )
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
@@ -496,15 +505,44 @@ def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
     )
 
 
+def _restore_v51_queue_defaults_predecessor(connection: sqlite3.Connection) -> None:
+    """Take back the policy defaults and the proposal source V52 added.
+
+    Rebuilding both tables in the shape V51 published is the hop run the other
+    way: every stored row keeps its remaining columns, and the columns V52
+    introduced simply stop being.
+    """
+
+    schema_module._rebuild_product_table(
+        connection,
+        schema_module.queue_proposal_revisions,
+        "queue_proposal_revisions_v52",
+        schema_module._QUEUE_PROPOSAL_TRIGGERS,
+        52,
+        51,
+    )
+    schema_module._rebuild_product_table(
+        connection,
+        schema_module.queue_project_policy_revisions,
+        "queue_project_policy_revisions_v52",
+        schema_module._QUEUE_POLICY_TRIGGERS,
+        52,
+        51,
+    )
+
+
 def _restore_v50_permission_ledger_predecessor(
     connection: sqlite3.Connection,
 ) -> None:
     """Take back the ledger V51 added, leaving every other table alone.
 
     V51 is additive, so a predecessor of it differs from today only by not
-    carrying the ledger; dropping it is the whole restoration.
+    carrying the ledger; dropping it is the whole restoration -- past the
+    queue columns V52 added, which a V50 store predates just as a V51 one
+    does.
     """
 
+    _restore_v51_queue_defaults_predecessor(connection)
     for trigger in schema_module._PERMISSION_RECEIPT_TRIGGERS:
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     connection.execute(f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}")
@@ -6400,12 +6438,18 @@ def _populated_v50_store_with(database_path: Path) -> None:
 
 
 def _dumped_rows(connection: sqlite3.Connection) -> frozenset[str]:
-    """Every dumped statement except the version the hop is expected to raise."""
+    """Every dumped row except the version the hop is expected to raise.
+
+    Rows only: the statements around them carry table shapes, and a hop that
+    widens a table is expected to change those while leaving what is stored
+    exactly as it was.
+    """
 
     return frozenset(
         statement
         for statement in connection.iterdump()
-        if "atelier_schema_versions" not in statement
+        if statement.startswith("INSERT INTO")
+        and "atelier_schema_versions" not in statement
     )
 
 
@@ -6417,7 +6461,9 @@ def test_a_populated_v50_store_gains_the_permission_ledger_with_its_rows_intact(
 
     Nothing is backfilled: an attempt armed before this ledger existed answered
     whatever it answered under a policy nobody wrote down, and a row invented
-    for it would be an authorisation that never authorised anything.
+    for it would be an authorisation that never authorised anything. The hops
+    onto today's version run in the same command, so every stored row standing
+    at V50 is still stored, unchanged, at the end of the chain.
     """
 
     database_path = tmp_path / "atelier.sqlite"
@@ -6429,7 +6475,7 @@ def test_a_populated_v50_store_gains_the_permission_ledger_with_its_rows_intact(
     capsys.readouterr()
 
     with sqlite3.connect(database_path) as connection:
-        assert _dumped_rows(connection) > standing
+        assert _dumped_rows(connection) == standing
         assert connection.execute(
             "SELECT count(*) FROM permission_receipts"
         ).fetchone() == (0,)
@@ -6457,6 +6503,114 @@ def test_a_v50_store_already_carrying_a_permission_ledger_is_refused_whole(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (50,)
+
+
+def _populated_v51_store_with(database_path: Path) -> None:
+    """A published V51 store holding one policy and one proposal an operator wrote."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    published = PublishedRevision(RevisionKind.WORKFLOW, b"name: queue\n")
+    lineage = CatalogLineage(published.kind, published.revision_hash)
+    reference = WorkItemReference(ProjectId("studio"), TrackerItemReference("gh:1236"))
+    with engine.begin() as connection:
+        connection.execute(
+            published_revisions.insert().values(
+                kind=published.kind.value,
+                revision_hash=published.revision_hash.value,
+                document=published.document,
+            )
+        )
+        connection.execute(
+            catalog_lineages.insert().values(
+                lineage_id=lineage.lineage_id.value,
+                kind=published.kind.value,
+                founding_revision_hash=published.revision_hash.value,
+            )
+        )
+        connection.execute(
+            queue_project_policy_revisions.insert().values(
+                project_id=reference.project.value,
+                revision_number=1,
+                maximum_active_runs=2,
+                automation_label="bereit",
+            )
+        )
+        connection.execute(
+            queue_items.insert().values(
+                item_id=reference.item_id.value,
+                project_id=reference.project.value,
+                tracker_item_reference=reference.tracker_item.value,
+                state=QueueItemState.OBSERVED.value,
+                state_version=0,
+            )
+        )
+        connection.execute(
+            queue_proposal_revisions.insert().values(
+                item_id=reference.item_id.value,
+                proposal_revision=1,
+                project_id=reference.project.value,
+                priority_rank=7,
+                workflow_lineage_id=lineage.lineage_id.value,
+                automation_disposition=(
+                    QueueAutomationDisposition.HUMAN_REQUIRED.value
+                ),
+                policy_revision=1,
+                source=QueueProposalSource.OPERATOR.value,
+            )
+        )
+        connection.execute(
+            queue_items.update()
+            .where(queue_items.c.item_id == reference.item_id.value)
+            .values(
+                state=QueueItemState.PROPOSED.value,
+                state_version=1,
+                current_proposal_revision=1,
+            )
+        )
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v51_queue_defaults_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 51")
+        connection.commit()
+        _require_product_shape(connection, 51)
+
+
+def test_a_populated_v51_policy_and_proposal_cross_the_v52_hop(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The defaults arrive empty and the proposal keeps the source it was written by.
+
+    A policy published before this hop named no defaults, so inventing a
+    workflow for it would put a choice into the record that no operator made.
+    A proposal, by contrast, has exactly one writer in that record -- the
+    operator's own door -- so every stored row crosses as OPERATOR.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _populated_v51_store_with(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT maximum_active_runs, automation_label, "
+            "default_workflow_lineage_id, default_priority_rank, "
+            "automation_disposition_default FROM queue_project_policy_revisions"
+        ).fetchall() == [(2, "bereit", None, None, None)]
+        assert connection.execute(
+            "SELECT priority_rank, automation_disposition, policy_revision, source "
+            "FROM queue_proposal_revisions"
+        ).fetchall() == [(7, "HUMAN_REQUIRED", 1, "OPERATOR")]
+        assert connection.execute(
+            "SELECT state, state_version FROM queue_items"
+        ).fetchall() == [("PROPOSED", 1)]
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
+        _require_product_shape(connection, SCHEMA_VERSION)
 
 
 REDEEMED_AUTH = AuthProfileRevision(

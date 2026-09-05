@@ -417,11 +417,11 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head publishes the two attempt failure codes an `AGENT_FAILED`
-    event may now carry: `CANDIDATE_UNCHANGED`, the ending of an attempt that
-    left its pinned tree untouched, and `CANDIDATE_CAPTURE_FAILED`, which the
-    store has written since #642 while this vocabulary silently refused it
-    (#1156).
+    it. This head publishes what a queue policy may now state -- the workflow
+    lineage, priority rank and automation disposition a labelled item with no
+    proposal is proposed under -- and the source every proposal names, so a
+    reader can tell the operator's own triage from one the policy wrote
+    (#1236).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 

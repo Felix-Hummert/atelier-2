@@ -16,6 +16,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemState,
     QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyDefaults,
     QueueProjectPolicyRevision,
     QueueProposal,
     TrackerItemReference,
@@ -130,3 +131,20 @@ def test_a_policy_names_one_automation_label_and_refuses_the_wildcard() -> None:
     )
     with pytest.raises(ValueError, match="names one label"):
         QueueProjectPolicyRevision(project, 1, 2, QUEUE_AUTOMATION_LABEL_WILDCARD)
+
+
+def test_a_policy_default_reserves_its_work_for_a_human_unless_stated() -> None:
+    """REQ-QUEUE-05: the queue proposes the work; only a stated word releases it."""
+
+    unstated = QueueProjectPolicyDefaults(LINEAGE, QueuePriorityRank(2))
+    stated = QueueProjectPolicyDefaults(
+        LINEAGE,
+        QueuePriorityRank(2),
+        QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+    )
+
+    assert unstated.automation_disposition is QueueAutomationDisposition.HUMAN_REQUIRED
+    assert (
+        stated.automation_disposition
+        is QueueAutomationDisposition.AUTOMATION_AUTHORIZED
+    )

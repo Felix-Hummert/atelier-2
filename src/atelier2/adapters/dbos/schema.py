@@ -73,6 +73,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     QueueAutomationDisposition,
     QueueDecisionAuthority,
+    QueueProposalSource,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
@@ -108,10 +109,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 50 adds the authorisation ledger `permission_receipts`, so every provider
-# permission question this product answers is durable before its answer is given
-# out (ADR 0020 §2, #1216).
-_HOP_PREDECESSOR_VERSION = 50
+# Hop 51 gives the queue policy the workflow, priority and disposition a label
+# alone is proposed under, and every proposal the decision that wrote it
+# (#79 ruling 04.09.2026, #1236).
+_HOP_PREDECESSOR_VERSION = 51
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -156,6 +157,7 @@ _VERSION_FORTY_EIGHT = 48
 _VERSION_FORTY_NINE = 49
 _VERSION_FIFTY = 50
 _VERSION_FIFTY_ONE = 51
+_VERSION_FIFTY_TWO = 52
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -328,6 +330,11 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # append-only row per provider permission question, keyed by the attempt and the
 # correlation id the question was minted with, bound to the policy revision its
 # answer stands on.
+# V52 gives a project policy the optional workflow lineage, priority rank and
+# automation disposition a labelled item with no proposal is proposed under,
+# and every proposal revision the source that wrote it. A stored proposal
+# crosses as OPERATOR: the operator's own door is the only writer that existed
+# before this hop.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -376,6 +383,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     49: "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2",
     50: "bb34288b35fbf4fe059960323b7a92ee4e5473b5a945e697c0f4b9fe29c6d8a9",
     51: "2b0be085b59e160db8b9d925bbb889205b32a2bbd45fcad673277b2b229fd622",
+    52: "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -2382,6 +2390,12 @@ queue_project_policy_revisions = sa.Table(
     sa.Column("revision_number", sa.Integer, nullable=False),
     sa.Column("maximum_active_runs", sa.Integer, nullable=False),
     sa.Column("automation_label", sa.Text, nullable=True),
+    # The three defaults a labelled item with no proposal is proposed under.
+    # They stand or fall together, because a proposal carries a workflow, a
+    # rank and a disposition at once.
+    sa.Column("default_workflow_lineage_id", sa.Text, nullable=True),
+    sa.Column("default_priority_rank", sa.Integer, nullable=True),
+    sa.Column("automation_disposition_default", sa.Text, nullable=True),
     sa.PrimaryKeyConstraint("project_id", "revision_number"),
     sa.CheckConstraint(
         f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
@@ -2394,6 +2408,28 @@ queue_project_policy_revisions = sa.Table(
         "automation_label IS NULL OR length(automation_label) BETWEEN 1 AND "
         f"{MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS}"
     ),
+    # A CHECK refuses a row only when its condition is false, and each of the
+    # three below is NULL rather than false for a policy that states no
+    # defaults; the shape constraint after them is what decides when that
+    # absence is allowed.
+    sa.CheckConstraint(
+        "length(default_workflow_lineage_id) = 64 "
+        "AND default_workflow_lineage_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("default_priority_rank >= 1"),
+    sa.CheckConstraint(
+        _closed_vocabulary_sql(
+            "automation_disposition_default", QueueAutomationDisposition
+        )
+    ),
+    sa.CheckConstraint(
+        "(default_workflow_lineage_id IS NULL "
+        "AND default_priority_rank IS NULL "
+        "AND automation_disposition_default IS NULL) "
+        "OR (default_workflow_lineage_id IS NOT NULL "
+        "AND default_priority_rank IS NOT NULL "
+        "AND automation_disposition_default IS NOT NULL)"
+    ),
 )
 queue_proposal_revisions = sa.Table(
     "queue_proposal_revisions",
@@ -2405,6 +2441,7 @@ queue_proposal_revisions = sa.Table(
     sa.Column("workflow_lineage_id", sa.Text, nullable=False),
     sa.Column("automation_disposition", sa.Text, nullable=False),
     sa.Column("policy_revision", sa.Integer, nullable=True),
+    sa.Column("source", sa.Text, nullable=False),
     sa.PrimaryKeyConstraint("item_id", "proposal_revision"),
     sa.UniqueConstraint("item_id", "proposal_revision", "project_id"),
     sa.ForeignKeyConstraint(
@@ -2427,6 +2464,7 @@ queue_proposal_revisions = sa.Table(
         f"'{QueueAutomationDisposition.AUTOMATION_AUTHORIZED.value}')"
     ),
     sa.CheckConstraint("policy_revision IS NULL OR policy_revision >= 1"),
+    sa.CheckConstraint(_closed_vocabulary_sql("source", QueueProposalSource)),
 )
 queue_dependency_edges = sa.Table(
     "queue_dependency_edges",
@@ -3885,9 +3923,12 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
-    # V51 adds the authorisation ledger. V50 widened one table's failure-code
-    # vocabulary and added no table, so V49 and V50 hold the same set: today's
-    # without that ledger.
+    # V52 widened two queue tables and added none, so V51 holds exactly today's
+    # set. V51 adds the authorisation ledger; V50 widened one table's
+    # failure-code vocabulary and added no table, so V49 and V50 hold the same
+    # set: today's without that ledger.
+    if version == _VERSION_FIFTY_ONE:
+        return PRODUCT_TABLE_NAMES
     if version in {_VERSION_FIFTY, _VERSION_FORTY_NINE}:
         return before_permission_receipts
     if version in {_VERSION_FORTY_EIGHT, _VERSION_FORTY_SEVEN}:
@@ -5948,9 +5989,7 @@ def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
                 f"schema version 43 already has {table.name}; "
                 "this command will not alter it"
             )
-        connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-        )
+        connection.execute(_table_shape_at(_VERSION_FORTY_FOUR, table))
     for trigger_name in _PHASE_D_QUEUE_IMMUTABILITY_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger_name])
     _rebuild_product_table(
@@ -6345,6 +6384,49 @@ def _apply_v50_to_v51(connection: sqlite3.Connection) -> None:
     )(connection)
 
 
+_QUEUE_POLICY_TRIGGERS = (
+    "queue_project_policy_revisions_no_update",
+    "queue_project_policy_revisions_no_delete",
+)
+_QUEUE_PROPOSAL_TRIGGERS = (
+    "queue_proposal_revisions_no_update",
+    "queue_proposal_revisions_no_delete",
+)
+_V51_QUEUE_PROJECT_POLICY_REVISIONS = "queue_project_policy_revisions_v51"
+_V51_QUEUE_PROPOSAL_REVISIONS = "queue_proposal_revisions_v51"
+
+
+def _apply_v51_to_v52(connection: sqlite3.Connection) -> None:
+    """Give the policy its proposal defaults, and every proposal its source.
+
+    Both tables keep every stored row. The policy's three default columns are
+    nullable and stay empty: a policy published before this hop named no
+    defaults, and filling them would put a workflow choice into the record
+    that no operator made. A proposal's source is not nullable and every
+    carried row takes `OPERATOR`, which is what the record says -- the
+    operator's own `PUT /queue-proposals` was the only writer that existed.
+    """
+
+    _rebuild_product_table(
+        connection,
+        queue_project_policy_revisions,
+        _V51_QUEUE_PROJECT_POLICY_REVISIONS,
+        _QUEUE_POLICY_TRIGGERS,
+        _VERSION_FIFTY_ONE,
+        _VERSION_FIFTY_TWO,
+    )
+    _rebuild_product_table(
+        connection,
+        queue_proposal_revisions,
+        _V51_QUEUE_PROPOSAL_REVISIONS,
+        _QUEUE_PROPOSAL_TRIGGERS,
+        _VERSION_FIFTY_ONE,
+        _VERSION_FIFTY_TWO,
+        filled_columns={"source": f"'{QueueProposalSource.OPERATOR.value}'"},
+    )
+    _raise_declared_version(connection, _VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6523,6 +6605,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FORTY_EIGHT, _VERSION_FORTY_NINE, _apply_v48_to_v49),
     _SchemaMigrationStep(_VERSION_FORTY_NINE, _VERSION_FIFTY, _apply_v49_to_v50),
     _SchemaMigrationStep(_VERSION_FIFTY, _VERSION_FIFTY_ONE, _apply_v50_to_v51),
+    _SchemaMigrationStep(_VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO, _apply_v51_to_v52),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

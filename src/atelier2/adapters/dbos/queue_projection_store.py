@@ -9,6 +9,7 @@ from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.schema import (
+    catalog_lineages,
     queue_dependency_edges,
     queue_items,
     queue_launch_bindings,
@@ -38,10 +39,12 @@ from atelier2.contracts.queue_projection import (
     QueueLaunchBinding,
     QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyDefaults,
     QueueProjectPolicyRevision,
     QueueProposal,
     QueueProposalRefusal,
     QueueProposalRefused,
+    QueueProposalSource,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -183,6 +186,7 @@ def _snapshot_from_record(
                 if proposal_record["policy_revision"] is None
                 else int(proposal_record["policy_revision"])
             ),
+            QueueProposalSource(str(proposal_record["source"])),
         )
         if admission is not None:
             admission = QueueAdmission(
@@ -424,6 +428,7 @@ class DbosQueueProjectionStore:
                         workflow_lineage_id=proposal.workflow_lineage_id.value,
                         automation_disposition=proposal.automation_disposition.value,
                         policy_revision=proposal.policy_revision,
+                        source=proposal.source.value,
                     )
                 )
                 for prerequisite in proposal.prerequisite_item_ids:
@@ -550,12 +555,26 @@ class DbosQueueProjectionStore:
                     return QueueProjectPolicyUnchanged(policy)
                 if expected_revision != actual or policy.revision_number != actual + 1:
                     return QueueProjectPolicyRevisionConflict(expected_revision, actual)
+                defaults = policy.defaults
                 connection.execute(
                     queue_project_policy_revisions.insert().values(
                         project_id=policy.project_id.value,
                         revision_number=policy.revision_number,
                         maximum_active_runs=policy.maximum_active_runs,
                         automation_label=policy.automation_label,
+                        default_workflow_lineage_id=(
+                            None
+                            if defaults is None
+                            else defaults.workflow_lineage_id.value
+                        ),
+                        default_priority_rank=(
+                            None if defaults is None else defaults.priority.rank
+                        ),
+                        automation_disposition_default=(
+                            None
+                            if defaults is None
+                            else defaults.automation_disposition.value
+                        ),
                     )
                 )
                 return QueueProjectPolicyPublished(policy)
@@ -698,6 +717,18 @@ class DbosQueueProjectionStore:
                 return QueueProposalRefused(
                     QueueProposalRefusal.POLICY_REVISION_MISSING
                 )
+        lineage_exists = connection.scalar(
+            sa.select(sa.literal(True)).where(
+                sa.exists(
+                    sa.select(catalog_lineages.c.lineage_id).where(
+                        catalog_lineages.c.lineage_id
+                        == proposal.workflow_lineage_id.value
+                    )
+                )
+            )
+        )
+        if lineage_exists is not True:
+            return QueueProposalRefused(QueueProposalRefusal.WORKFLOW_LINEAGE_MISSING)
         if proposal.prerequisite_item_ids:
             rows = connection.execute(
                 sa.select(queue_items.c.item_id).where(
@@ -883,6 +914,13 @@ class DbosQueueProjectionStore:
 
 
 def _policy_from_record(record: Mapping[Any, Any]) -> QueueProjectPolicyRevision:
+    lineage_id = record["default_workflow_lineage_id"]
+    priority_rank = record["default_priority_rank"]
+    disposition = record["automation_disposition_default"]
+    if (lineage_id is None) != (priority_rank is None) or (lineage_id is None) != (
+        disposition is None
+    ):
+        raise ValueError("a queue policy states all of its proposal defaults or none")
     return QueueProjectPolicyRevision(
         ProjectId(str(record["project_id"])),
         int(record["revision_number"]),
@@ -891,6 +929,15 @@ def _policy_from_record(record: Mapping[Any, Any]) -> QueueProjectPolicyRevision
             None
             if record["automation_label"] is None
             else str(record["automation_label"])
+        ),
+        (
+            None
+            if lineage_id is None
+            else QueueProjectPolicyDefaults(
+                CatalogLineageId(str(lineage_id)),
+                QueuePriorityRank(int(priority_rank)),
+                QueueAutomationDisposition(str(disposition)),
+            )
         ),
     )
 

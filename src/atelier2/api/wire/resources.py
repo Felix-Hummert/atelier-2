@@ -82,6 +82,7 @@ from atelier2.contracts.queue_projection import (
     QueueBlockerKind,
     QueueDecisionAuthority,
     QueueItemState,
+    QueueProposalSource,
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
 from atelier2.contracts.run_projections import (
@@ -848,6 +849,7 @@ class QueueProposalResource(ApiModel):
     prerequisite_item_ids: tuple[str, ...]
     automation_disposition: QueueAutomationDisposition
     policy_revision: int | None = Field(default=None, ge=1, le=MAX_SIGNED_INT64)
+    source: QueueProposalSource
 
 
 class QueueAdmissionResource(ApiModel):
@@ -911,6 +913,11 @@ class QueueProjectPolicyResource(ApiModel):
         min_length=1,
         max_length=MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     )
+    default_workflow_lineage_id: str | None = Field(
+        default=None, pattern=SHA256_HASH_PATTERN
+    )
+    default_priority_rank: int | None = Field(default=None, ge=1, le=MAX_SIGNED_INT64)
+    automation_disposition_default: QueueAutomationDisposition | None = None
 
 
 class QueueProposalDecisionResource(ApiModel):

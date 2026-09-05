@@ -235,6 +235,15 @@ repository observes every open issue as one OBSERVED row (reference grammar
 identity and insert-or-ignore -- a repeated import adds nothing and never
 rewinds a proposal or admission.
 
+A project policy may state the workflow lineage, priority rank, and automation
+disposition a labelled item with no proposal is proposed under (V52). The
+label sweep then writes that proposal itself, recording `POLICY_DEFAULT` as
+its source and the policy revision it came from, before the same admission CAS
+runs; a policy without those defaults leaves such an item observed exactly as
+before. The disposition defaults to `HUMAN_REQUIRED`, so an operator who
+states no authorisation gets a proposal to release rather than a started run
+(REQ-QUEUE-05).
+
 `GET /atelier/api/v1/queue-items` is the one typed read across OBSERVED,
 PROPOSED, and ADMITTED rows. Project policy is written with an expected
 revision, proposals through `PUT /atelier/api/v1/queue-proposals`, and

@@ -91,6 +91,7 @@ from atelier2.contracts.queue_projection import (
     QueueDecisionAuthority,
     QueueItemState,
     QueueProjectionRevision,
+    QueueProposalSource,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
@@ -455,6 +456,10 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "queue_proposal_revisions.automation_disposition": _values(
         QueueAutomationDisposition
     ),
+    "queue_proposal_revisions.source": _values(QueueProposalSource),
+    "queue_project_policy_revisions.automation_disposition_default": _values(
+        QueueAutomationDisposition
+    ),
     "host_project_source_connection_revisions.auth_method": _values(
         SourceConnectionAuthMethod
     ),
@@ -631,6 +636,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "queue_items.item_id",
         "queue_items.workflow_lineage_id",
         "queue_launch_bindings.workflow_revision_hash",
+        "queue_project_policy_revisions.default_workflow_lineage_id",
         "host_definition_source_revisions.revision_hash",
         "host_definition_source_revisions.source_id",
         "host_definition_source_selections.revision_hash",

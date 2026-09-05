@@ -138,6 +138,12 @@ class PutQueueProposalRequestResource(ApiModel):
 
 
 class PutQueueProjectPolicyRequestResource(ApiModel):
+    """The filter, the ceiling, and what a labelled item alone is proposed under.
+
+    The three default fields are stated together or not at all; a policy
+    without them admits only items an operator has already proposed.
+    """
+
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
     expected_revision: int = Field(ge=0, le=MAX_SIGNED_INT64)
     maximum_active_runs: int = Field(ge=1, le=MAXIMUM_QUEUE_ACTIVE_RUNS)
@@ -146,6 +152,13 @@ class PutQueueProjectPolicyRequestResource(ApiModel):
         min_length=1,
         max_length=MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     )
+    default_workflow_lineage_id: str | None = Field(
+        default=None, pattern=SHA256_HASH_PATTERN
+    )
+    default_priority_rank: int | None = Field(default=None, ge=1, le=MAX_SIGNED_INT64)
+    automation_disposition_default: (
+        Literal["HUMAN_REQUIRED", "AUTOMATION_AUTHORIZED"] | None
+    ) = None
 
 
 class PublishAuthProfileRevisionRequestResource(ApiModel):

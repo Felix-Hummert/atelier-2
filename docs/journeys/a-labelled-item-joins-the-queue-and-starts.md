@@ -19,9 +19,11 @@ a gap:
    tracker stays the one source of item truth; the Atelier holds no second
    copy of item state (REQ-QUEUE-09, REQ-QUEUE-14). No label named means no
    automatic admission at all.
-2. **Triage decides throughput, not the verdict.** For an item that already
-   carries an inspected proposal — priority and workflow, written once via
-   `PUT /queue-proposals` — the sweep reads the tracker at decision time and
+2. **Triage decides throughput, not the verdict.** For an item that carries an
+   inspected proposal — priority and workflow, written once via
+   `PUT /queue-proposals`, or written by the sweep itself from the policy's
+   own `default_workflow_lineage_id` and `default_priority_rank` — the sweep
+   reads the tracker at decision time and
    admits every such item whose label matches the policy, under the
    `AUTOMATION_RULE` authority
    (`the-automation-label-admits-the-items-that-carry-it`); every other item
@@ -43,10 +45,10 @@ a gap:
    against (REQ-QUEUE-03, REQ-QUEUE-12): work above it waits in priority
    order instead of starting anyway.
 
-What is not landed yet: nothing derives a workflow or a priority for a
-labelled item by itself — today's automation only confirms a proposal a human
-already wrote, so "und nutze den XXX-Workflow" still names a human's earlier
-choice, not the label alone (#79, Scheibe C2). No surface shows the queue as
+What is not landed yet: nothing *derives* a workflow or a priority from an
+item's own content — "und nutze den XXX-Workflow" is the one workflow the
+policy names for every labelled item, not a per-item measurement (REQ-QUEUE-02,
+#79). No surface shows the queue as
 its own view — Studio's start sheet calls the same read door only to fill its
 picker (#79, Scheibe B) — so REQ-QUEUE-13's Queue-Regel-Tor and REQ-QUEUE-15's
 bound, visible priority have no place to show themselves yet. And the walk
