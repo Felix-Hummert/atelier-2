@@ -1066,7 +1066,7 @@ Fake-executor load (CI n=2):
 
 Cockpit e2e harness (`npm --prefix frontend run e2e`, driving
 `tests/e2e/serve_cockpit.py`): `frontend/playwright.config.ts` allocates a
-free loopback port per run and passes it to the harness and the browser as
-`ATELIER2_E2E_PORT`, so two worktrees running the suite at once never
-collide. Set `ATELIER2_E2E_PORT` explicitly to pin the harness to one port
-instead.
+free loopback port per run and passes it to the harness env as
+`ATELIER2_E2E_PORT` and to the browser as `baseURL`, so two worktrees running
+the suite at once never collide. Set `ATELIER2_E2E_PORT` explicitly to pin
+the harness to one port instead.

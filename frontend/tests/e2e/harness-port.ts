@@ -26,9 +26,11 @@ export async function chooseHarnessPort(): Promise<number> {
   return allocatedPort;
 }
 
+const DECIMAL_STRING = /^[0-9]+$/;
+
 function parseTcpPort(value: string): number {
   const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_TCP_PORT) {
+  if (!DECIMAL_STRING.test(value) || parsed <= 0 || parsed > MAX_TCP_PORT) {
     throw new Error(`ATELIER2_E2E_PORT must be a TCP port number, got "${value}"`);
   }
   return parsed;

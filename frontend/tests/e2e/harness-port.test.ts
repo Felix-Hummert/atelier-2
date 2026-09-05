@@ -42,9 +42,14 @@ describe("chooseHarnessPort", () => {
     await expect(chooseHarnessPort()).resolves.toBe(18423);
   });
 
-  it("rejects a non-numeric ATELIER2_E2E_PORT", async () => {
-    process.env.ATELIER2_E2E_PORT = "not-a-port";
+  it.each(["not-a-port", "0", "65536", "8080x", "12.9"])(
+    "rejects an ATELIER2_E2E_PORT of %j",
+    async (invalidValue) => {
+      process.env.ATELIER2_E2E_PORT = invalidValue;
 
-    await expect(chooseHarnessPort()).rejects.toThrow('ATELIER2_E2E_PORT must be a TCP port number, got "not-a-port"');
-  });
+      await expect(chooseHarnessPort()).rejects.toThrow(
+        `ATELIER2_E2E_PORT must be a TCP port number, got "${invalidValue}"`
+      );
+    }
+  );
 });
