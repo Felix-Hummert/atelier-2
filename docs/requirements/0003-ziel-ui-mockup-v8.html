@@ -259,6 +259,11 @@ input::placeholder{color:var(--ink-dim);opacity:1}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .log{background:#0f1012;color:#cfd3c6}}
 .log .t{opacity:.6}
 .cursor{display:inline-block;width:.55em;height:1em;background:currentColor;vertical-align:text-bottom}
+/* The seat replaces the conductor conversation: a live tmux/ttyd terminal, not a rendered chat. */
+.seat{margin-top:.9rem;padding-top:.9rem;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:.5rem;flex:1;min-height:0}
+.seat-bar{display:flex;align-items:center;gap:.6rem;font-size:.76rem;color:var(--ink-dim)}
+.seat-bar b{font-family:var(--mono);color:var(--ink);font-weight:600}
+.seat .log{flex:1;min-height:8rem}
 details.back{margin-top:.6rem;font-size:.85rem;color:var(--ink-dim)}
 details.back summary{cursor:pointer;min-height:2rem;display:flex;align-items:center;font-weight:600}
 details.back dl{display:grid;grid-template-columns:max-content 1fr;gap:.15rem .9rem;margin:.4rem 0 0}
@@ -508,12 +513,13 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.21 · 03.09.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.22 · 05.09.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
   <p class="note"><b>Changelog v8.20</b> · The Log tab shows where the time went. Elapsed between events leads; the recorded clock sits dim on the event. A long wait is a taller band. Events from before moments existed say so and invent no time.</p>
   <p class="note"><b>03.09.2026 · #962 Scheibe 8</b> · A search field in the start sheet's work item picker narrows the grouped list by number or title, live; "no match" and "all retired" speak in the chooser instead of opening nothing. Vorschlag zur Segnung.</p>
   <p class="note"><b>Changelog v8.21</b> · 03.09.2026 · #914 · A poisoned mutation journal gets its own frame: one honest sentence, one door — never called "Discard" — and the retire card's three answers (Disappears / Stays / Permanent), plus the line that a wait answer already sent stays sent. Vorschlag nach Ruling.</p>
+  <p class="note"><b>Changelog v8.22</b> · 05.09.2026 · #1099 · Die Werkbank bekommt einen Terminal-Sitz: eine tmux-Sitzung mit laufender Agenten-CLI und Atelier-MCP tritt an die Stelle der Conductor-Unterhaltung, Bühne und Warteschlange bleiben unverändert daneben. Neuladen hängt sich an dieselbe Sitzung wieder an; ist ttyd nicht erreichbar, nennt eine ochrefarbene Absage den CLI/API-Ausweg. Die Conductor-Unterhaltung ist damit abgelöst. Vorschlag zur Segnung.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -613,7 +619,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
 <h2><span class="no">02</span>Workbench</h2>
 <p class="q">You enter the room and the workshop holds out the one piece that needs you; beneath it every other open question, compact. Below, what breathes. Below that the conversation — the atelier on the left with the cards of the runs and questions that came of its words, you on the right — and at the bottom the ear, always within reach.</p>
 
-<h3 class="frame-title">Full <small>— two open questions, two runs, the conversation with its cards</small></h3>
+<h3 class="frame-title">Full <small>— two open questions, two runs, the conversation with its cards · abgelöst durch den Terminal-Sitz <code>#v8-22-seat-full</code> (#1099, Vorschlag zur Segnung)</small></h3>
 <div class="frame">
   <nav class="rail" data-on="workbench" data-needs="2"></nav>
   <div class="stage">
@@ -669,6 +675,131 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div><dt>Card in the flow: question (ochre, ↑)</dt><dd>"Where in the conversation did this question come from?" — the same question as on the stage, as a card where it arose; the arrow says "answer above". While it is open the stage is its place to answer, the card its place in the record.</dd></div>
   <div><dt>Ear: input + Send</dt><dd>"What do I want next?" — always within reach, sticks to the bottom, no scrolling even in a long conversation.</dd></div>
 </dl>
+
+<section id="v8-22-seat">
+<h3 class="frame-title">Werkbank · Terminal-Sitz <small>— tmux-Sitzung mit laufender Agenten-CLI, an der Stelle der Conductor-Unterhaltung; Bühne und Warteschlange bleiben unverändert daneben (#1099, Vorschlag zur Segnung)</small></h3>
+<div class="frame room" id="v8-22-seat-full">
+  <nav class="rail" data-on="workbench" data-needs="1"></nav>
+  <div class="stage">
+    <div class="asks">
+    <section class="ask">
+      <p class="from"><b>merge gate</b> in the run <b>Finish the preview door</b> · #450 — the review is green.</p>
+      <h5>Ship it, or hold it back?</h5>
+      <div class="acts"><span class="btn primary">Ship it</span><span class="btn">Hold it back</span><span class="aside"><a href="#">open the run</a></span></div>
+    </section>
+    </div>
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Finish the preview door <span class="item">#450</span></span><span class="why">iterate-code</span></span>
+      <span class="now"></span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="h need"></i><u></u><i class="s"></i></span>
+      <span class="clock">22 min</span>
+    </a>
+    </div>
+    <details class="queue"><summary><b>12 queued</b> · next: #446 Loopback refusal<span class="chev" aria-hidden="true">▾</span></summary></details>
+    <div class="seat">
+      <div class="seat-bar"><b>atelier-seat-atelier-2</b><span>tmux · ttyd · nur Loopback</span></div>
+      <div class="log seat-log">$ claude
+Atelier-MCP verbunden — list_workflows, start_run, run_status …
+
+&gt; Schließ die Loopback-Absage ab, dann zeig mir, was als Nächstes ansteht.
+start_run({"workflow": "iterate-code", "work_item": "#446"}) …<span class="cursor"></span></div>
+      <p class="note">Eine pty ist eine Shell — dieselbe Vertrauensgrenze wie der Loopback-Serve (#650), ein Nutzer, kein Login (#82 offen).</p>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Terminal statt Unterhaltung</dt><dd>„Wie rede ich mit dem Agenten?" — an der Stelle von Gesprächsverlauf und Ohr steht der Sitz: eine tmux-Sitzung <code>atelier-seat-&lt;project&gt;</code> mit laufender Agenten-CLI, per ttyd auf Loopback angehängt. Das Atelier schreibt hier nichts mit; es liefert Läufe, Warten, Journal und Belege drum herum.</dd></div>
+  <div><dt>Bühne und Warteschlange bleiben, wie sie waren</dt><dd>„Ändert sich sonst etwas?" — nein: die offene Frage oben, der laufende Lauf, die Warteschlange sind dieselbe Mechanik wie im abgelösten Rahmen; nur die Unterhaltung wird zum Sitz.</dd></div>
+  <div><dt>tmux-Statuszeile</dt><dd>„Welche Sitzung ist das, und wie hängt sie dran?" — Sitzname, tmux, ttyd, Loopback stehen offen da, weil die Vertrauensgrenze sichtbar sein muss.</dd></div>
+  <div><dt>Die Grenze steht auf der Seite</dt><dd>„Was darf diese Sitzung, und wer darf sie öffnen?" — eine pty ist eine Shell: dieselbe Vertrauensgrenze wie der Loopback-Serve (#650), ein Nutzer, kein Login (#82 offen); die Seite sagt das, statt es zu verschweigen.</dd></div>
+</dl>
+
+<h3 class="frame-title">Terminal-Sitz nach Neuladen <small>— dieselbe tmux-Sitzung, derselbe Verlauf; ttyd hängt sich wieder an</small></h3>
+<div class="frame" id="v8-22-seat-reconnect">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Finish the preview door <span class="item">#450</span></span><span class="why">iterate-code</span></span>
+      <span class="now">opening the pull request</span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="h ok"></i><u class="ok"></u><i class="s live breath"></i></span>
+      <span class="clock">24 min</span>
+    </a>
+    </div>
+    <div class="seat">
+      <div class="seat-bar"><b>atelier-seat-atelier-2</b><span>tmux · ttyd · nur Loopback</span><span class="pill">wieder verbunden</span></div>
+      <div class="log seat-log">$ claude
+Atelier-MCP verbunden — list_workflows, start_run, run_status …
+
+&gt; Schließ die Loopback-Absage ab, dann zeig mir, was als Nächstes ansteht.
+start_run({"workflow": "iterate-code", "work_item": "#446"}) …
+Lauf gestartet: Loopback-Absage schließen<span class="cursor"></span></div>
+      <p class="note">Neu geladen — dieselbe tmux-Sitzung, derselbe Verlauf; nichts geht verloren.</p>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>"wieder verbunden"</dt><dd>„Habe ich noch dieselbe Sitzung, oder fängt sie neu an?" — dieselbe tmux-Sitzung, derselbe Verlauf im Fenster; ttyd hängt sich nur neu an (Atelier-1-Muster "cockpit-seat-reconnect"), es startet nichts neu.</dd></div>
+  <div><dt>Scrollback bleibt stehen</dt><dd>„Was war vor dem Neuladen?" — derselbe Terminal-Inhalt wie zuvor, mit dem inzwischen gestarteten Lauf darin; ein Tab-Wechsel oder Neuladen der Seite verliert nichts.</dd></div>
+</dl>
+
+<h3 class="frame-title">Terminal-Sitz nicht erreichbar <small>— ttyd antwortet nicht; die ochrefarbene Absage nennt den CLI/API-Ausweg</small></h3>
+<div class="frame" id="v8-22-seat-unreachable">
+  <nav class="rail" data-on="workbench" data-needs="1"></nav>
+  <div class="stage">
+    <div class="asks">
+    <section class="ask">
+      <p class="from"><b>merge gate</b> in the run <b>Finish the preview door</b> · #450 — the review is green.</p>
+      <h5>Ship it, or hold it back?</h5>
+      <div class="acts"><span class="btn primary">Ship it</span><span class="btn">Hold it back</span><span class="aside"><a href="#">open the run</a></span></div>
+    </section>
+    </div>
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Finish the preview door <span class="item">#450</span></span><span class="why">iterate-code</span></span>
+      <span class="now"></span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="h need"></i><u></u><i class="s"></i></span>
+      <span class="clock">22 min</span>
+    </a>
+    </div>
+    <div class="seat">
+      <div class="seat-bar"><b>atelier-seat-atelier-2</b><span>tmux · ttyd · nur Loopback</span></div>
+      <div class="in degraded"><span>ttyd ist gerade nicht erreichbar. Sprich in der Zwischenzeit direkt mit der Agenten-CLI (<code>claude</code>) oder über die Atelier-HTTP-API mit dem MCP.</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Ochre-Absage nennt den Ausweg</dt><dd>„Warum sehe ich kein Terminal, und was mache ich jetzt?" — dieselbe Form wie die Ausweg-Absage im Start-Sheet (<code>.in.degraded</code>, #438 Scheibe 1b): ein Satz statt eines toten Endpunkts, der sofort die Agenten-CLI oder die HTTP-API als Weg nennt. Bühne, Läufe und Warteschlange bleiben unberührt — nur der Sitz selbst ist weg.</dd></div>
+</dl>
+
+<h3 class="frame-title">Katalog-Workflow aus dem Sitz gestartet <small>— start_run über den Atelier-MCP, der Lauf erscheint auf der Bühne</small></h3>
+<div class="frame" id="v8-22-seat-run-started">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Loopback-Absage schließen <span class="item">#446</span></span><span class="why">iterate-code</span></span>
+      <span class="now">der Planer liest die Ausgabe</span>
+      <span class="mini"><i class="c live breath"></i><u></u><i class="c"></i><u></u><i class="c"></i><u></u><i class="c"></i><u></u><i class="h"></i><u></u><i class="s"></i></span>
+      <span class="clock">gerade eben</span>
+    </a>
+    </div>
+    <div class="seat">
+      <div class="seat-bar"><b>atelier-seat-atelier-2</b><span>tmux · ttyd · nur Loopback</span></div>
+      <div class="log seat-log">$ claude
+&gt; Starte iterate-code für #446 über den Atelier-MCP.
+start_run({"workflow": "iterate-code", "work_item": "#446"})
+→ Lauf gestartet: Loopback-Absage schließen<span class="cursor"></span></div>
+      <p class="note">Eine pty ist eine Shell — dieselbe Vertrauensgrenze wie der Loopback-Serve (#650), ein Nutzer, kein Login (#82 offen).</p>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Der Lauf erscheint auf der Bühne</dt><dd>„Woher weiß ich, dass es losging?" — <code>start_run</code> über den MCP legt denselben Lauf an wie ein Klick im Katalog; die neue Zeile in den Läufen ist der Beweis, den das Atelier dazu zeigt — der Sitz selbst führt kein zweites Protokoll.</dd></div>
+  <div><dt>Derselbe Name, dieselbe Grafik</dt><dd>„Ist das ein besonderer Lauf, weil er aus dem Terminal kam?" — nein: Name, Arbeitsposten und Mini-Grafik sind die der gewöhnlichen Laufzeile; woher ein Lauf gestartet wurde, trägt die Zeile nicht.</dd></div>
+</dl>
+</section>
 
 <h3 class="frame-title">Answered <small>— the moment after the click</small></h3>
 <div class="frame short">

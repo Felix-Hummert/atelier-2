@@ -1,8 +1,12 @@
 # ADR 0020: One session port carries every provider on the path that runs the live attempts; a permission is authorisation, the transcript its projection
 
 - Status: ACCEPTED 2026-09-04; amended 2026-09-04 (§3, the policy is bound at
-  dispatch) — step 1 carries the typed policy and the decider seam; steps 2-6
-  are not implemented
+  dispatch), 2026-09-05 (issue #1252: the Agent Runner inventory named in §1
+  -- `runner/session.py`, `runner/executors.py`, and the rest of the
+  container-hosted cluster ADR 0009 describes -- was deleted for having no
+  live caller; its code stays reachable in Git history for reference and is
+  not to be revived) — step 1 carries the typed policy and the decider seam;
+  steps 2-6 are not implemented
 - Date: 2026-09-04
 - Decision authority: the operator ruling of 2026-09-04 on proposal
   [#1177](https://github.com/FlexOr2/atelier-2/issues/1177), which owns the
@@ -14,8 +18,8 @@
   containment, credential reference)
 - Amends: [ADR 0009](0009-runner-trust.md) — the process watchdog is no longer a
   predecessor retained only for deletion but the first implementation of this
-  record's session port, and the Agent Runner is frozen inventory rather than
-  the owner of live provider execution until a caller pulls it
+  record's session port, and the Agent Runner is deleted; the session port is
+  the sole owner of live provider execution
 - Feeds: [#1178](https://github.com/FlexOr2/atelier-2/issues/1178) (step 0),
   [#1174](https://github.com/FlexOr2/atelier-2/issues/1174) (output-seam schema
   discipline), [#943](https://github.com/FlexOr2/atelier-2/issues/943) and
@@ -65,12 +69,12 @@ mid-turn.
 Its owner is the path that runs the live attempts:
 `application/execute_agent_attempt.py`, with `AgentProcessSupervisor` — the
 watchdog-backed implementation every live attempt has gone through — as the
-first implementation of the port. The Agent Runner
-(`runner/session.py`, `runner/executors.py`) is frozen inventory under the
-2026-09-04 ruling, not the owner. When a caller for it exists — isolation for
-foreign repositories, or more than one user — the same port moves behind the
-Runner boundary of ADR 0009 unchanged. That is the designed seam, and it is why
-the freeze costs nothing: the port, not its host, is the contract.
+first implementation of the port. The Agent Runner (`runner/session.py`,
+`runner/executors.py`) was never the owner and is deleted for having had no
+live caller. When a caller for it exists — isolation for foreign repositories,
+or more than one user — the same port moves behind a Runner boundary built
+fresh for that caller. That is the designed seam, and it is why the deletion
+costs nothing: the port, not its host, is the contract.
 
 In either placement a provider implementation is a contained child process or an
 Atelier-owned bridge process, never code loaded into the driving process, and
@@ -186,8 +190,7 @@ execution.
 - Duplex is new surface in the session owner and each vendor channel is a pin
   that must be raised deliberately: permission and cancel can race, so that race
   is part of every adapter's proof.
-- The Runner keeps existing, frozen: it is not extended, hardened or migrated
-  while this record's port is built on the live path.
+- The Runner is deleted for having had no live caller.
 
 ## Named edges, not decided here
 
@@ -199,9 +202,9 @@ execution.
   per hosted model — is accepted, not abstracted away.
 - The human terminal seat (#1099) and a real PTY for a child process (#943) stay
   separate from this boundary.
-- Unfreezing the Runner has one trigger and no other: a named caller needing
-  isolation for foreign repositories or more than one user. Until then its code
-  is kept as it is, and moving the session port behind it is a slice of its own.
+- Reviving the Runner has one trigger and no other: a named caller needing
+  isolation for foreign repositories or more than one user; until then it
+  stays deleted, and rebuilding it is a slice of its own.
 
 ## Order
 
@@ -218,8 +221,8 @@ proof is one real `issue-to-pr` run reaching its review node with that builder.
 No ADR is superseded. This record **amends ADR 0009** in one place, dated
 2026-09-04 and noted there: the process watchdog is no longer a predecessor
 retained only for deletion but the first implementation of the session port, and
-the Agent Runner is frozen inventory rather than the owner of live provider
-execution until a caller pulls it. ADR 0009's trust boundary, its containment
+the Agent Runner is deleted; the session port is the owner of live provider
+execution. ADR 0009's trust boundary, its containment
 rules (§1) and its credential rules (§6, including the condition on a writable
 copy) stand unchanged as the target of that move, and ADR 0008's turn-limiter
 and money-absent rules stand unchanged.
@@ -238,5 +241,5 @@ if a transcript step is used as an authorisation, if a provider identifier
 reaches a durable record instead of an Atelier correlation id, if provider-side
 schema enforcement is treated as the authority, if a vector is armed without its
 conformance proof and pin, if a replaced print-mode path is left alive after its
-successor is proven, or if the frozen Runner is extended instead of the live
-path.
+successor is proven, or if the deleted Runner is revived instead of building
+the live path.

@@ -55,18 +55,13 @@ class AgentExecutorKey:
 class AgentExecutorCarrier(StrEnum):
     """Which authority starts one executor key's process (`#540` C-3.6).
 
-    A registration's own fact, not the factory's: the same executor could in
-    principle be offered either way, and it is the composition root -- never
-    the executor adapter itself -- that decides which authority a served key
-    answers under. `LOCAL_PROCESS` is Serve's own `AgentProcessSupervisor`,
-    the durable runtime's original and still-default carrier; `RUNNER_LEASE`
-    is a per-Attempt Runner container a host launcher establishes from a
-    published lease (`atelier2.ports.runner_leases`), and Serve never spawns
-    or supervises a process for it directly.
+    A registration's own fact, not the factory's: it is the composition root
+    -- never the executor adapter itself -- that decides which authority a
+    served key answers under. `LOCAL_PROCESS` is Serve's own
+    `AgentProcessSupervisor`, the durable runtime's only carrier.
     """
 
     LOCAL_PROCESS = "local_process"
-    RUNNER_LEASE = "runner_lease"
 
 
 class WorkspaceFileTools(StrEnum):

@@ -36,14 +36,6 @@ CI = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 
 SOURCE_COMMIT = "ATELIER2_SOURCE_COMMIT"
 SOURCE_TREE = "ATELIER2_SOURCE_TREE"
-RUNNER_LEASE_CARRIERS = {
-    "ATELIER2_RUNNER_LEASE_ROOT": "--runner-lease-root",
-    "ATELIER2_RUNNER_IMAGE": "--runner-image",
-    "ATELIER2_RUNNER_IMAGE_DIGEST": "--runner-image-digest",
-    "ATELIER2_RUNNER_CONSOLE_CONTAINER": "--runner-console-container",
-    "ATELIER2_RUNNER_CORE_IDENTITY_DIRECTORY": "--runner-core-identity-directory",
-    "ATELIER2_RUNNER_ACCEPT_TIMEOUT_SECONDS": "--runner-accept-timeout-seconds",
-}
 DIRTY_TREE_REFUSAL = "container snapshot: source tree must be clean"
 PROJECT_NAME = re.compile(r"^atelier2-[0-9a-f]{16}$")
 
@@ -785,46 +777,6 @@ def test_serve_has_no_provider_or_credential_vector() -> None:
     assert "--port 8422" in serve
     for forbidden in ("claude", "codex", "grok", "credential", "scratch"):
         assert forbidden not in serve.lower()
-
-
-def test_undeclared_runner_lease_deployment_serves_runner_free(tmp_path: Path) -> None:
-    arguments = packaged_serve_arguments(tmp_path)
-    assert arguments[0] == "serve"
-    assert not any(argument.startswith("--runner") for argument in arguments)
-
-
-def test_serve_carries_every_declared_runner_lease_value_unchanged(
-    tmp_path: Path,
-) -> None:
-    declared = {
-        "ATELIER2_RUNNER_LEASE_ROOT": "/srv/atelier2/runner lease root",
-        "ATELIER2_RUNNER_IMAGE": "atelier2-runner:candidate",
-        "ATELIER2_RUNNER_IMAGE_DIGEST": f"sha256:{'a' * 64}",
-        "ATELIER2_RUNNER_CONSOLE_CONTAINER": "atelier2-console",
-        "ATELIER2_RUNNER_CORE_IDENTITY_DIRECTORY": "/srv/atelier2/console-identity",
-        "ATELIER2_RUNNER_ACCEPT_TIMEOUT_SECONDS": "30.0",
-    }
-
-    baseline = packaged_serve_arguments(tmp_path)
-    carried = packaged_serve_arguments(tmp_path, declared)
-
-    assert carried == baseline + [
-        token
-        for name, flag in RUNNER_LEASE_CARRIERS.items()
-        for token in (flag, declared[name])
-    ]
-
-
-def test_serve_carries_a_partial_runner_lease_declaration_for_serve_to_refuse(
-    tmp_path: Path,
-) -> None:
-    baseline = packaged_serve_arguments(tmp_path)
-
-    carried = packaged_serve_arguments(
-        tmp_path, {"ATELIER2_RUNNER_IMAGE": "atelier2-runner:candidate"}
-    )
-
-    assert carried == baseline + ["--runner-image", "atelier2-runner:candidate"]
 
 
 def test_clean_tree_starts_one_random_project_and_prints_scoped_teardown(

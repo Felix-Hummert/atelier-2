@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Protocol
 
 from atelier2.contracts.agent_attempts import (
@@ -12,12 +11,6 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
     ProcessExitSignature,
-    RunnerGenerationBinding,
-    RunnerInvocationId,
-    RunnerTerminalEvidenceAckTombstone,
-    RunnerTerminalEvidenceEnvelope,
-    RunnerTerminalEvidenceHash,
-    RunnerTerminalEvidenceReadback,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agent_permissions import PermissionReceipt
@@ -29,11 +22,6 @@ from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.run_cancellations import CancelRunRequest
 from atelier2.contracts.run_projections import RunCancellationRefusal
-from atelier2.contracts.runner_terminal_evidence_codec import (
-    RunnerTerminalEvidenceRecordCorrupt,
-    RunnerTerminalEvidenceRecordMissing,
-    RunnerTerminalEvidenceRecordOversized,
-)
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.workflows import NodeCompletion
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -95,60 +83,6 @@ type AgentExecutorBindingRefusalResult = (
     AgentExecutorBindingRefusalWritten
     | AgentExecutorBindingRefusalNeedsPreparedCleanup
     | AgentExecutorBindingRefusalFenced
-)
-
-
-class RunnerTerminalEvidenceRefusal(StrEnum):
-    """Why Core retained no delivered Runner evidence."""
-
-    TOOL_GRANT_BOUND = "TOOL_GRANT_BOUND"
-
-
-@dataclass(frozen=True)
-class RunnerTerminalEvidenceCommitted:
-    attempt: AgentAttempt
-    evidence_hash: RunnerTerminalEvidenceHash
-    completion: NodeCompletion | None = None
-
-
-@dataclass(frozen=True)
-class RunnerTerminalEvidenceCommitRefused:
-    reason: RunnerTerminalEvidenceRefusal
-
-
-type RunnerTerminalEvidenceCommitResult = (
-    RunnerTerminalEvidenceCommitted | RunnerTerminalEvidenceCommitRefused
-)
-
-
-class RunnerTerminalEvidenceSource(Protocol):
-    """The external Runner operations needed to converge one terminal fact."""
-
-    def readback(
-        self, binding: RunnerGenerationBinding
-    ) -> RunnerTerminalEvidenceSourceReadback: ...
-
-    def acknowledge(
-        self,
-        envelope: RunnerTerminalEvidenceEnvelope,
-        accepted_hash: RunnerTerminalEvidenceHash,
-    ) -> RunnerTerminalEvidenceAcknowledgement: ...
-
-
-@dataclass(frozen=True)
-class RunnerTerminalEvidenceAcknowledgementUnavailable:
-    """Runner evidence remains retained because ACK could not complete."""
-
-
-type RunnerTerminalEvidenceSourceReadback = (
-    RunnerTerminalEvidenceReadback
-    | RunnerTerminalEvidenceRecordMissing
-    | RunnerTerminalEvidenceRecordCorrupt
-    | RunnerTerminalEvidenceRecordOversized
-)
-type RunnerTerminalEvidenceAcknowledgement = (
-    RunnerTerminalEvidenceAckTombstone
-    | RunnerTerminalEvidenceAcknowledgementUnavailable
 )
 
 
@@ -281,33 +215,6 @@ class AgentAttemptReader(Protocol):
     """Read one durable attempt back: all that workspace reconciliation needs."""
 
     def load(self, attempt_id: AgentAttemptId) -> AgentAttempt: ...
-
-
-class RunnerTerminalEvidenceStore(AgentAttemptReader, Protocol):
-    """Core's staged persistence boundary for one external Runner generation."""
-
-    def bind_runner_generation(
-        self, execution: AgentAttemptExecution, binding: RunnerGenerationBinding
-    ) -> AgentAttempt: ...
-
-    def arm_runner_invocation(
-        self,
-        execution: AgentAttemptExecution,
-        binding: RunnerGenerationBinding,
-        invocation_id: RunnerInvocationId,
-    ) -> AgentAttempt: ...
-
-    def commit_runner_terminal_evidence(
-        self,
-        execution: AgentAttemptExecution,
-        envelope: RunnerTerminalEvidenceEnvelope,
-    ) -> RunnerTerminalEvidenceCommitResult: ...
-
-    def mark_runner_evidence_acknowledged(
-        self,
-        execution: AgentAttemptExecution,
-        tombstone: RunnerTerminalEvidenceAckTombstone,
-    ) -> AgentAttempt: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,18 +443,6 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         process_owner_id: AgentProcessOwnerId | None,
         watchdog_generation_id: WatchdogGenerationId | None,
     ) -> AgentAttemptCancellationAccepted: ...
-
-    def commit_never_launched_cancellation(
-        self, request: CancelAgentAttemptRequest
-    ) -> AgentAttemptCancellationAccepted:
-        """End a runner-lease attempt leased but never launched, under cancel.
-
-        Called only once its caller has *won* the lease withdraw -- the sole
-        proof the attempt never launched. Preserves the runner binding, keeps
-        `runner_invocation_id` NULL, fabricates no evidence, and settles the
-        disposition `NEVER_LAUNCHED`. Idempotent on the durable terminal row.
-        """
-        ...
 
     def mark_cancellation_owner_not_local(
         self, request: CancelAgentAttemptRequest

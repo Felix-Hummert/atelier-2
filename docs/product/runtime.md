@@ -78,84 +78,17 @@ as much as grant -- becomes an append-only `permission_receipts` row bound to th
 attempt, the question's correlation id and that revision hash before the
 provider is told it, and an answer that cannot be kept is never given.
 
-Schema V27 stages the Core half of the external Runner handoff. A disposable
-#301-A witness candidate now exercises a real codec against it end to end
-outside any deployment; no deployed runtime composes or calls it. One attempt
-can instead bind one manifest and Runner
-generation, arm one invocation, and accept one of six typed terminal evidence
-variants under a semantic hash. The product result and that evidence hash commit
-in one transaction, retries of the same evidence are idempotent, and different
-evidence collides. Success keeps the exact provider bytes; a provider failure,
-an output-limit ending, and a supervision-boundary failure use the existing
-failed-attempt seam under their closed codes, which the V2/V3 API and cockpit
-decoders now carry. A lost invocation stays publicly `POSSIBLY_RAN` and writes no
-invented ending. Physical cancellation becomes `CANCELLED` only for the exact
-Core command; an in-hand completion for a no-replacement cancellation wins and
-keeps its bytes. `NEVER_LAUNCHED` is control evidence instead: the prepared
-attempt stays nonterminal until Core commits and acknowledges it, after which
-only that same attempt may bind a fresh Runner generation and clear the old
-handoff fields. A runner-bound replacement request and a tool-grant-bound result
-are refused before product or evidence mutation. Runner-bound attempts never
-enter the legacy driver-loss queue. A carrier-neutral Application handshake now
-reads terminal evidence, commits it, acknowledges it outside the Core
-transaction, and recovers Runner GC from the typed ACK tombstone. A canonical,
-bounded, self-checking V1 record now carries the envelope or its payload-free
-tombstone; missing, corrupt, oversized and unavailable-ACK outcomes remain
-distinct without inventing evidence. This is proven against a byte-backed test
-Fake and, for the #301-A disposable witness candidate (`src/atelier2/runner/`,
-its adapters, and `application/run_runner_session.py`), a real session codec,
-TLS-authenticated transport, journal, and Landlock-confined child. Its live
-restart leg also reaches `STARTED` under a pre-opened host fence. Core emits the
-cut event but does not write its cut record or exit until the host has read the
-Runner cgroup's complete `cgroup.procs` set, required exactly the Runner and one
-provider process, lowered `pids.max` to those two live tasks, recorded their
-container/PID/start-tick identity, and acknowledged the fence. Core embeds that
-identity in `core-started-cut.json`.
-The shell reads it back and requires both the post-exit observation and the
-observation after reconnect `STARTED` to match it exactly, with one child,
-`pids.current == pids.max`, and an unchanged `pids.events:max` counter. The
-record is bound to that attempt, generation and invocation; the restarted Core
-reopens the same V40 binding and invocation and requires one acknowledged
-terminal record. This is a live Docker witness, not a deterministic test; the
-local crash tests prove the state-machine contract deterministically without
-claiming to execute Docker. The live JSON records remain below the disposable
-witness root, outside product state and the Runner journal; the witness is not
-a packaged, deployed Runner, but Serve can compose the same real driver as an
-executor's dispatch carrier (`#540` C-3.6, below).
-
-Dispatch names which authority starts one executor key's process (`#540`
-C-3.6): a registration declares itself `LOCAL_PROCESS` or `RUNNER_LEASE`, and
-only a `LOCAL_PROCESS` key needs Serve's own process supervisor, cgroup and
-scratch root — a deployment serving nothing but `RUNNER_LEASE` keys starts
-without any of them. `RUNNER_LEASE` reuses the driver above rather than a
-second one: Serve publishes the lease a host launcher claims
-(`atelier2.adapters.file_runner_leases.FileRunnerLeasePublisher`), drives the
-accepted session to `RELEASED` over the same real transport, and never runs,
-mounts, or supervises a process itself. Exactly one such offer exists today —
-the fixed fake-free candidate — and reaching it names a lease root, Runner
-image, image digest, console container, core identity directory and accept
-deadline together, refused by name if only some are declared; the packaged
-`atelier2 serve` command line exposes all six as flags, and the shipped
-container entrypoint carries them from `ATELIER2_RUNNER_*` environment
-variables without validating them, so this carrier is reachable from the
-shipped container while an undeclared deployment stays runner-free — no
-runner value or identity file is baked into the image. At most one
-`RUNNER_LEASE` Attempt runs at a time per Serve process — its Core session listener binds one fixed port — and a second,
-concurrent one waits as a durable queue row, holding no worker, rather than
-failing. At every start
-Serve withdraws its own still-open leases and converges every `RUNNER_LEASE`
-Attempt no workflow still owes its next move: it reads the launcher's own
-retained terminal record back from the Attempt's handoff and commits it to the
-terminal the Runner reported, exactly once, rather than the invented
-`INTERRUPTED` a driverless sweep would write — an Attempt whose fact never
-reached the handoff is left armed and named, never forced (`#540` Kind #585).
-The launcher lays that record down out of the per-Attempt journal volume — the
-only place it lives — before the Attempt is removed, and only for an exited
-Runner, so a running one is never read mid-write. A `RUNNER_LEASE` Attempt that
-crashed between binding its generation and publishing its lease is
-manifest-bound with no lease document, so a later cancel fails loud with
-`RunnerLeaseUnknown` rather than lying; its never-launched durable close is a
-named gap with its own item (`#540` Kind #584).
+Schema V27 stages the Core half of an external Runner handoff: one attempt can
+bind one manifest and Runner generation, arm one invocation, and accept one of
+six typed terminal evidence variants under a semantic hash, with idempotent
+retries and colliding evidence refused. That schema, and the `LOCAL_PROCESS`
+carrier every live attempt actually runs under, remain; the application layer
+that would have driven a Runner-lease Attempt over it -- the `RUNNER_LEASE`
+carrier and its dispatch, the host launcher, the disposable #301-A witness
+candidate, and the packaged `--runner-*` flags and `ATELIER2_RUNNER_*`
+container variables that reached them -- was deleted 2026-09-05 (issue #1252)
+for having no live caller in 485 live attempts, and lives on in Git history
+for whoever names a caller next.
 
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a
@@ -253,12 +186,11 @@ nothing, which is the honest absence rather than an invented shape.
 Three guards make the address mean what it says: it must resolve to bytes this
 store holds, it may stand only on an ended attempt, and once written it can
 never be moved or cleared. Redaction is not a door a caller may walk past
-either — building a transcript at all is what makes its steps safe. What the
-boundary to a Runner cannot yet carry it refuses out loud instead of dropping:
-that record is bounded far below one transcript and its hash is part of Core's
-acceptance chain, so carrying one is its own decision rather than a silent
-truncation. Node detail serves the decoded, redacted events of a stored
-transcript; the node panel's Log tab is still not built.
+either — building a transcript at all is what makes its steps safe. The Runner
+that would have carried a bounded terminal-evidence record here was deleted
+2026-09-05 (issue #1252) and lives on in Git history. Node detail serves the
+decoded, redacted events of a stored transcript; the node panel's Log tab is
+still not built.
 
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one

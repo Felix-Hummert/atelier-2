@@ -29,10 +29,8 @@ SUBWORKFLOW_WORKFLOW_NAME = "atelier2_add_subworkflow"
 ACTION_CONTINUATION_WORKFLOW_NAME = "atelier2_action_continuation"
 CANCELLATION_WORKFLOW_NAME = "atelier2_agent_attempt_cancellation"
 REPLACEMENT_WORKFLOW_NAME = "atelier2_agent_attempt_replacement"
-RUNNER_LEASE_WORKFLOW_NAME = "atelier2_runner_lease_attempt"
 
 QUEUE_NAME = "atelier2-durable-runs"
-RUNNER_LEASE_QUEUE_NAME = "atelier2-runner-lease"
 
 BOOTSTRAP_STEP_NAME = "bootstrap-run-binding"
 NODE_BINDING_STEP_NAME = "node-binding/0"

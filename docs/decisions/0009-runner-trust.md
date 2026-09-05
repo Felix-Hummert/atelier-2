@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-26, 2026-09-04 (see [ADR 0020](0020-provider-boundary.md): the watchdog is the first session implementation and the Runner is frozen until a caller pulls it); disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-26, 2026-09-04, 2026-09-05 (see [ADR 0020](0020-provider-boundary.md): the watchdog is the first session implementation; the container-hosted Runner this record describes -- the candidate image, `atelier2-runner-launcher`, and the disposable #301-A harness -- was deleted 2026-09-05, issue #1252, for having no live caller in 485 live attempts, and lives on in Git history for whoever names a caller next); disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [#21](https://github.com/FlexOr2/atelier-2/issues/21) owns

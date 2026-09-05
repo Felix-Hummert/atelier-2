@@ -5,7 +5,7 @@ the engine and every operator tool key on is the whole string, and its shape is
 a durable fact: change the digest, the separator or the encoding and identical
 work becomes a second identity — silently, with nothing red.
 
-This table pins whole vectors rather than prefixes, for every one of the eleven
+This table pins whole vectors rather than prefixes, for every one of the ten
 derivations the engine has, for the round dimension a declared loop turns, and
 for the surrounding space and non-ASCII input that separate an exact identity
 from a normalised one. A prefix test stays green
@@ -14,7 +14,7 @@ the production owner and pasted, never hand-derived here: a test that recomputes
 the form it is checking would agree with any form at all. That is also what lets the table survive a
 move — an owner may change address, and the bytes may not.
 
-The eleven do not share one derivation, and this table deliberately does not
+The ten do not share one derivation, and this table deliberately does not
 make them: three schemas live here side by side (framed digest, bare digest,
 plain concatenation) because unifying them would restart every durable workflow
 under a new identity.
@@ -39,12 +39,9 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     reconcile_workflow_id_for,
     replacement_workflow_id_for,
-    runner_lease_workflow_id_for,
     subworkflow_workflow_id_for,
 )
 from atelier2.contracts.agent_attempts import (
-    AGENT_ATTEMPT_ORDINAL,
-    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptId,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
@@ -152,18 +149,6 @@ DURABLE_ID_VECTORS = (
         replacement_workflow_id_for(ATTEMPT),
         "atelier2-agent-replacement-" + "a" * 64,
         id="agent-replacement",
-    ),
-    pytest.param(
-        runner_lease_workflow_id_for(EXECUTION, AGENT_ATTEMPT_ORDINAL),
-        "atelier2-runner-lease-"
-        "9c832838c6eebb9676f161935551fef6c7163efb16329569b63b9573da7fd7b5",
-        id="runner-lease-slot-of-a-first-attempt",
-    ),
-    pytest.param(
-        runner_lease_workflow_id_for(EXECUTION, REPLACEMENT_AGENT_ATTEMPT_ORDINAL),
-        "atelier2-runner-lease-"
-        "e4f1e1ddb53eabbd449879d5224c03b501c7f0e81cdad346f772fa0f97bfc41b",
-        id="runner-lease-slot-of-a-replacement-attempt",
     ),
     pytest.param(
         executed_in_round(FIRST_ROUND_ORDINAL).value,

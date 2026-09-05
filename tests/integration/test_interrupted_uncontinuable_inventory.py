@@ -57,7 +57,6 @@ from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
-    runner_lease_workflow_id_for,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.converge_uncontinuable_runs import (
@@ -65,7 +64,6 @@ from atelier2.application.converge_uncontinuable_runs import (
 )
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agent_attempts import (
-    AGENT_ATTEMPT_ORDINAL,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     STOP_AFTER_DRIVER_LOSS,
     AgentAttemptCancellationDisposition,
@@ -1141,112 +1139,6 @@ def test_converge_ends_a_silent_successor_that_never_received_a_request(
     assert _attempt_state(runtime, run_id) == AgentAttemptState.SUCCEEDED.value
     assert _event_kinds(runtime, run_id) == before_events
     assert _current_receipt(runtime, run_id) is None
-
-
-@pytest.mark.parametrize(
-    ("slot_status", "slot_version", "ends"),
-    (
-        pytest.param("PENDING", None, False, id="slot-still-live"),
-        pytest.param(
-            "PENDING", "retired-deployment", True, id="slot-of-a-dead-version"
-        ),
-        pytest.param("SUCCESS", None, True, id="slot-already-finished"),
-    ),
-)
-def test_a_successor_carried_by_the_runner_slot_is_read_from_that_slots_own_row(
-    runtime: DbosRuntime,
-    slot_status: str,
-    slot_version: str | None,
-    ends: bool,
-) -> None:
-    """#636: a lease-carried node's driver is the Runner slot, not its node workflow.
-
-    A lease-carried Agent node hands its Attempt to the slot's queue and returns,
-    so its own node workflow reads SUCCESS while the run is perfectly alive --
-    the same shape `#645` found for an Action node's effect workflow. Reading
-    only node and replacement workflows names this living run dead and fails it.
-
-    And the slot's row has to be read the way recovery reads it: a `PENDING` row
-    a retired deployment left behind will never be resumed, so a run held only by
-    one is as dead as a run whose slot already finished without moving it.
-    """
-
-    run_id = RunId("inventory/lease-slot-successor")
-    silent_successor(runtime, run_id)
-    execution_id = _current_node_execution_id(runtime, run_id)
-    _record_node_workflow(
-        runtime,
-        node_workflow_id_for(execution_id),
-        status="SUCCESS",
-        application_version=runtime.settings.application_version,
-    )
-    _record_node_workflow(
-        runtime,
-        runner_lease_workflow_id_for(execution_id, AGENT_ATTEMPT_ORDINAL),
-        status=slot_status,
-        application_version=(
-            runtime.settings.application_version
-            if slot_version is None
-            else slot_version
-        ),
-    )
-
-    store = DbosUncontinuableRunStore(
-        runtime.engine, runtime.settings.application_version
-    )
-    assert store.uncontinuable_runs() == ((run_id,) if ends else ())
-    assert converge_uncontinuable_runs(store) == ((run_id,) if ends else ())
-    assert _run_state(runtime, run_id) == (
-        RunState.FAILED.value if ends else RunState.STARTED.value
-    )
-
-
-@pytest.mark.parametrize(
-    ("minted", "ends"),
-    (
-        pytest.param(True, True, id="a-slot-row-its-dead-version-left"),
-        pytest.param(False, False, id="nothing-was-ever-minted"),
-    ),
-)
-def test_a_first_node_with_no_attempt_is_judged_by_what_was_minted_for_it(
-    runtime: DbosRuntime, minted: bool, ends: bool
-) -> None:
-    """#636: a carrier can die before it prepares anything, leaving no attempt.
-
-    Demanding a succeeded attempt as proof a run got somewhere cannot see that:
-    a Runner slot workflow left behind by a version that will never run again has
-    no attempt to its name, and the run it holds would go unnamed forever. A
-    workflow genuinely minted for the run is the proof instead, and the run ends
-    over an empty fold -- its terminal hash says this revision and nothing after
-    it, which is exactly what happened.
-
-    The other case is the same rule's other edge, and the reason naming ids
-    speculatively is safe: with nothing minted, every id derived for this run
-    matches no row, and a run whose first workflow has simply not been picked up
-    yet must stay `STARTED`.
-    """
-
-    run_id = RunId("inventory/lease-slot-first-node")
-    execution_id = unprepared_first_node(runtime, run_id)
-    assert _event_kinds(runtime, run_id) == ()
-    if minted:
-        _record_node_workflow(
-            runtime,
-            runner_lease_workflow_id_for(execution_id, AGENT_ATTEMPT_ORDINAL),
-            status="PENDING",
-            application_version="retired-deployment",
-        )
-
-    store = DbosUncontinuableRunStore(
-        runtime.engine, runtime.settings.application_version
-    )
-    assert store.uncontinuable_runs() == ((run_id,) if ends else ())
-    assert converge_uncontinuable_runs(store) == ((run_id,) if ends else ())
-    assert _run_state(runtime, run_id) == (
-        RunState.FAILED.value if ends else RunState.STARTED.value
-    )
-    assert (_terminal_hash(runtime, run_id) is not None) is ends
-    assert _event_kinds(runtime, run_id) == ()
 
 
 def test_converge_does_not_end_a_run_whose_effect_workflow_is_still_driving(

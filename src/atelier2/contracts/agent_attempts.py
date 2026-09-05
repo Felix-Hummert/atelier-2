@@ -10,10 +10,7 @@ from atelier2.contracts.agent_transcripts import (
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
-    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
-    MAXIMUM_SIGNED_INT64,
     AgentExecutionRequestHash,
-    AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentReceiptHash,
 )
@@ -321,10 +318,6 @@ class AgentAttemptCancellationDisposition(StrEnum):
     OWNER_LOST_AFTER_PARENT_DEATH = "OWNER_LOST_AFTER_PARENT_DEATH"
 
 
-class RunnerBindingConflict(RuntimeError):
-    """A generation, invocation, or evidence delivery contradicts its binding."""
-
-
 class RunnerManifestId(Sha256Hash):
     """SHA-256 content identity of the exact Runner offer Core selected."""
 
@@ -369,168 +362,11 @@ class RunnerInvocationId:
         _require_runner_identity(self.value, "runner invocation id")
 
 
-@dataclass(frozen=True)
-class RunnerGenerationBinding:
-    """The immutable work and Runner offer bound to one Core generation."""
-
-    attempt_id: AgentAttemptId
-    request_hash: AgentExecutionRequestHash
-    generation_id: RunnerGenerationId
-    manifest_id: RunnerManifestId
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.attempt_id, AgentAttemptId):
-            raise TypeError("runner generation binding requires a typed attempt id")
-        if not isinstance(self.request_hash, AgentExecutionRequestHash):
-            raise TypeError("runner generation binding requires a typed request hash")
-        if not isinstance(self.generation_id, RunnerGenerationId):
-            raise TypeError("runner generation binding requires a typed generation id")
-        if not isinstance(self.manifest_id, RunnerManifestId):
-            raise TypeError("runner generation binding requires a typed manifest id")
-
-
-class RunnerOutputStream(StrEnum):
-    STANDARD_OUTPUT = "STANDARD_OUTPUT"
-    STANDARD_ERROR = "STANDARD_ERROR"
-
-
 class RunnerCancellationObservation(StrEnum):
     NEVER_LAUNCHED = "NEVER_LAUNCHED"
     EXITED_BEFORE_SIGNAL = "EXITED_BEFORE_SIGNAL"
     REAPED_AFTER_TERM = "REAPED_AFTER_TERM"
     REAPED_AFTER_KILL = "REAPED_AFTER_KILL"
-
-
-class RunnerEvidenceCannotCarryTranscript(ValueError):
-    """The deferred session integration cannot yet translate a failure transcript.
-
-    Exchange V2 carries transcripts. This refusal remains only for the old
-    session composition, whose integration is outside this contract slice.
-    """
-
-
-@dataclass(frozen=True)
-class RunnerProviderResult:
-    """One provider answer already decoded into the durable result contract."""
-
-    result: AgentExecutionResult
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.result, AgentExecutionResult):
-            raise TypeError(
-                "runner provider result requires a decoded agent execution result"
-            )
-        if type(self.result.output_bytes) is not bytes:
-            raise TypeError("runner provider result requires exact output bytes")
-        if len(self.result.output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
-            raise ValueError("runner provider result exceeds the durable output bound")
-        if self.result.transcript is not None and not isinstance(
-            self.result.transcript, AttemptTranscript
-        ):
-            raise TypeError("runner provider result requires a typed transcript")
-
-
-@dataclass(frozen=True)
-class RunnerProviderFailure:
-    """One admitted decoded failure with its physical process evidence."""
-
-    exit_signature: ProcessExitSignature
-    failure_code: AgentAttemptFailureCode = (
-        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-    )
-    transcript: AttemptTranscript | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.exit_signature, ProcessExitSignature):
-            raise TypeError("runner provider failure requires a process exit signature")
-        if not (
-            -MAXIMUM_SIGNED_INT64 - 1
-            <= self.exit_signature.return_code
-            <= MAXIMUM_SIGNED_INT64
-        ):
-            raise ValueError(
-                "runner provider failure return code must fit signed int64"
-            )
-        if (
-            len(self.exit_signature.standard_error)
-            > MAXIMUM_RUNNER_STANDARD_ERROR_BYTES
-        ):
-            raise ValueError(
-                "runner provider failure standard error evidence is too large"
-            )
-        if not isinstance(self.failure_code, AgentAttemptFailureCode):
-            raise TypeError("runner provider failure requires a typed failure code")
-        if self.failure_code not in {
-            AgentAttemptFailureCode.AGENT_REFUSED,
-            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
-        }:
-            raise ValueError(
-                "runner provider failure requires an admitted failure code"
-            )
-        if self.transcript is not None and not isinstance(
-            self.transcript, AttemptTranscript
-        ):
-            raise TypeError("runner provider failure requires a typed transcript")
-
-
-@dataclass(frozen=True)
-class RunnerOutputLimitExceeded:
-    """Which process streams crossed their separately enforced collection bounds."""
-
-    exceeded_streams: frozenset[RunnerOutputStream]
-
-    def __post_init__(self) -> None:
-        if type(self.exceeded_streams) is not frozenset:
-            raise TypeError("runner output-limit streams must be a frozen set")
-        if not self.exceeded_streams:
-            raise ValueError("runner output-limit streams must be nonempty")
-        if not all(
-            isinstance(stream, RunnerOutputStream) for stream in self.exceeded_streams
-        ):
-            raise TypeError(
-                "runner output-limit streams must use the closed stream type"
-            )
-
-
-@dataclass(frozen=True)
-class RunnerProcessBoundaryFailure:
-    """The process boundary failed without a provider ending to report."""
-
-
-@dataclass(frozen=True)
-class RunnerCancellation:
-    """The physical observation made while carrying out one cancellation command."""
-
-    command_id: str
-    observation: RunnerCancellationObservation
-
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.command_id, str)
-            or not 1 <= len(self.command_id) <= MAXIMUM_AGENT_FIELD_CHARACTERS
-        ):
-            raise ValueError(
-                "runner cancellation command id must contain "
-                f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
-            )
-        _require_runner_text(self.command_id, "runner cancellation command id")
-        if not isinstance(self.observation, RunnerCancellationObservation):
-            raise TypeError("runner cancellation requires a typed physical observation")
-
-
-@dataclass(frozen=True)
-class RunnerInvocationLost:
-    """Positive authoritative evidence that the exact invocation was lost."""
-
-
-type RunnerTerminalEvidence = (
-    RunnerProviderResult
-    | RunnerProviderFailure
-    | RunnerOutputLimitExceeded
-    | RunnerProcessBoundaryFailure
-    | RunnerCancellation
-    | RunnerInvocationLost
-)
 
 
 class RunnerEvidenceAcceptancePhase(StrEnum):
@@ -541,146 +377,9 @@ class RunnerEvidenceAcceptancePhase(StrEnum):
     ACKNOWLEDGED = "ACKNOWLEDGED"
 
 
-@dataclass(frozen=True)
-class RunnerTerminalEvidenceEnvelope:
-    """Terminal evidence bound to the exact generation and accepted invocation."""
-
-    binding: RunnerGenerationBinding
-    invocation_id: RunnerInvocationId | None
-    evidence: RunnerTerminalEvidence
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.binding, RunnerGenerationBinding):
-            raise TypeError("runner terminal evidence requires a typed binding")
-        if self.invocation_id is not None and not isinstance(
-            self.invocation_id, RunnerInvocationId
-        ):
-            raise TypeError("runner terminal evidence requires a typed invocation id")
-        if not isinstance(
-            self.evidence,
-            (
-                RunnerProviderResult,
-                RunnerProviderFailure,
-                RunnerOutputLimitExceeded,
-                RunnerProcessBoundaryFailure,
-                RunnerCancellation,
-                RunnerInvocationLost,
-            ),
-        ):
-            raise TypeError(
-                "runner terminal evidence requires a closed terminal evidence"
-            )
-        authoritative_no_launch = (
-            isinstance(self.evidence, RunnerCancellation)
-            and self.evidence.observation
-            is RunnerCancellationObservation.NEVER_LAUNCHED
-        )
-        if self.invocation_id is None and not authoritative_no_launch:
-            raise ValueError(
-                "runner terminal evidence without an invocation must prove never launched"
-            )
-
-
 class RunnerTerminalEvidenceHash(Sha256Hash):
-    """Semantic identity of one typed Runner evidence envelope.
-
-    The hash deliberately owns the domain envelope, not a Runner transport codec:
-    a later codec may change representation without changing whether Core has
-    already accepted the same fact.
-    """
-
-    @classmethod
-    def for_envelope(
-        cls, envelope: RunnerTerminalEvidenceEnvelope
-    ) -> RunnerTerminalEvidenceHash:
-        evidence = envelope.evidence
-        match evidence:
-            case RunnerProviderResult(result):
-                variant = "provider-result"
-                transcript_presence, transcript_document = _runner_transcript_payload(
-                    result.transcript
-                )
-                payload = (
-                    result.output_bytes,
-                    transcript_presence,
-                    transcript_document,
-                )
-            case RunnerProviderFailure(exit_signature, failure_code, transcript):
-                variant = "provider-failure"
-                transcript_presence, transcript_document = _runner_transcript_payload(
-                    transcript
-                )
-                payload = (
-                    failure_code.value.encode("ascii"),
-                    struct.pack(">q", exit_signature.return_code),
-                    exit_signature.standard_error,
-                    transcript_presence,
-                    transcript_document,
-                )
-            case RunnerOutputLimitExceeded(exceeded_streams):
-                variant = "output-limit-exceeded"
-                payload = tuple(
-                    stream.value.encode("ascii")
-                    for stream in sorted(exceeded_streams, key=lambda item: item.value)
-                )
-            case RunnerProcessBoundaryFailure():
-                variant = "process-boundary-failure"
-                payload = ()
-            case RunnerCancellation(command_id, observation):
-                variant = "cancellation"
-                payload = (
-                    command_id.encode("utf-8"),
-                    observation.value.encode("ascii"),
-                )
-            case RunnerInvocationLost():
-                variant = "invocation-lost"
-                payload = ()
-        binding = envelope.binding
-        invocation = envelope.invocation_id
-        return cls.of(
-            frame(
-                "runner-terminal-evidence/v2",
-                binding.attempt_id.value.encode("ascii"),
-                binding.request_hash.value.encode("ascii"),
-                binding.generation_id.value.encode("utf-8"),
-                binding.manifest_id.value.encode("ascii"),
-                b"" if invocation is None else invocation.value.encode("utf-8"),
-                variant.encode("ascii"),
-                *payload,
-            )
-        )
-
-
-def _runner_transcript_payload(
-    transcript: AttemptTranscript | None,
-) -> tuple[bytes, bytes]:
-    if transcript is None:
-        return b"absent", b""
-    return b"present", transcript.document
-
-
-@dataclass(frozen=True)
-class RunnerTerminalEvidenceAckTombstone:
-    """Runner proof that exact terminal evidence was acknowledged and collected."""
-
-    binding: RunnerGenerationBinding
-    invocation_id: RunnerInvocationId | None
-    evidence_hash: RunnerTerminalEvidenceHash
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.binding, RunnerGenerationBinding):
-            raise TypeError("runner evidence ACK requires a typed binding")
-        if self.invocation_id is not None and not isinstance(
-            self.invocation_id, RunnerInvocationId
-        ):
-            raise TypeError("runner evidence ACK requires a typed invocation id")
-        if not isinstance(self.evidence_hash, RunnerTerminalEvidenceHash):
-            raise TypeError("runner evidence ACK requires a typed evidence hash")
-
-
-type RunnerTerminalEvidenceReadback = (
-    RunnerTerminalEvidenceEnvelope | RunnerTerminalEvidenceAckTombstone
-)
+    """Semantic identity of one Runner evidence object, kept for the durable
+    `runner_terminal_evidence_hash` column an attempt may already carry."""
 
 
 class AgentAttemptProcessPhase(StrEnum):
