@@ -52,6 +52,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PrintModeExecutor,
 )
 
 _LOG = logging.getLogger("atelier2")
@@ -1214,7 +1215,7 @@ def _decoded_claude_answer(
 
 
 @dataclass(frozen=True)
-class ClaudeSubscriptionExecutor:
+class ClaudeSubscriptionExecutor(PrintModeExecutor):
     """One bare headless `claude --print` invocation and its JSON envelope.
 
     The invocation is as close to text-in/text-out as subscription
@@ -1658,7 +1659,7 @@ def attest_workspace_tool_invocation(
 
 
 @dataclass(frozen=True)
-class ClaudeWorkspaceToolExecutor:
+class ClaudeWorkspaceToolExecutor(PrintModeExecutor):
     """One headless `claude --print` call that may use tools where it stands.
 
     This is the tool-free executor's sibling and deliberately not its successor.
@@ -1979,7 +1980,7 @@ def attest_atelier_doors_invocation(
 
 
 @dataclass(frozen=True)
-class ClaudeAtelierDoorsExecutor:
+class ClaudeAtelierDoorsExecutor(PrintModeExecutor):
     """One headless `claude --print` call that may operate the atelier's doors.
 
     The third sibling of this module, and the first executor in this repository

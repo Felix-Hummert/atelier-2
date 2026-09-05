@@ -30,6 +30,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PrintModeExecutor,
 )
 
 
@@ -164,7 +165,7 @@ assert MAXIMUM_AGENT_OUTPUT_BYTES_V2 == MAXIMUM_RUNNER_STANDARD_ERROR_BYTES, (
 )
 
 
-class FreeRunnerCandidateExecutor:
+class FreeRunnerCandidateExecutor(PrintModeExecutor):
     """The one real runner-side executor for the fake-free candidate program.
 
     `_CoreRefusingFreeRunnerExecutor` below is the Serve-side fence: nothing
@@ -229,7 +230,7 @@ class FreeRunnerExecutorFactory:
         return _CoreRefusingFreeRunnerExecutor()
 
 
-class _CoreRefusingFreeRunnerExecutor:
+class _CoreRefusingFreeRunnerExecutor(PrintModeExecutor):
     """Protect the candidate fence if an in-Core process path reaches this key."""
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:

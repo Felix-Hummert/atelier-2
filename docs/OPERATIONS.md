@@ -1352,6 +1352,17 @@ admitting only non-failing pull requests) -- is an operator/head step done
 once, through `gh api`, after this change lands; the queue has no effect on
 pull requests opened before that step runs.
 
+The Python pipeline separates fast feedback from the coverage-instrumented
+suite: `Python: architecture, lint, types, tests` keeps the existing required
+check name and proves the architecture, dead-code, documentation,
+product-status, ANN401, Ruff, formatting, Pyright, and screenshot-review gates,
+while the independent `Python: tests` job proves non-crash behavior and
+publishes its JUnit and coverage reports. This lets static failures report
+without waiting roughly 17 minutes for pytest; `Static and behavior` still
+waits for both jobs, so every required-check name and its protection meaning
+stays unchanged. The operator may later add `Python: tests` as its own required
+context.
+
 ## Dead-code gates
 
 Two gates keep code that nothing reaches out of the tree, and they do not yet
@@ -1415,7 +1426,7 @@ value. An offender missing from the baseline, or one that grew past its listed
 value, turns the gate red; a listed entry that no longer offends is an orphan
 and is red too. Shrinking a listed offender, or leaving it exactly at its
 baseline value, is quiet and rewrites nothing. This script is not wired into
-`ci.yml` yet -- that follows the static-gate split in #917.
+`ci.yml` yet -- wiring it in is tracked by #1263.
 
 ## SonarCloud and CodeQL
 
@@ -1429,7 +1440,7 @@ measurement week described in #1203, which compares Sonar's findings against
 the duplicate ratchet above and the `C901` complexity count.
 
 Automatic Analysis cannot read coverage, so analysis runs from CI instead
-(ruling 05.09.2026, #1203): the `quality` job's pytest run writes
+(ruling 05.09.2026, #1203): the `tests` job's pytest run writes
 `reports/coverage.xml` (`pytest-cov`) and the `frontend` job's vitest run
 writes `reports/frontend-coverage/lcov.info` (`@vitest/coverage-v8`); the
 `sonar` job downloads both and runs `sonarqube-scan-action` with the
@@ -1446,12 +1457,12 @@ live list of what actually runs.
 
 Machine-checkable rules are gates there. Running today: the architecture check
 (`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
-above, and the dead-code gates above. Dispatched and not landed yet: `ruff
-check --select ANN401` over `contracts`, `ports`, `application` and `api`
-(#1196). The size and complexity ratchet above is built and green but not yet
-a CI gate -- its `ci.yml` step follows the static-gate split in #917. The
-narrative check is ruled but unbuilt, and the core-test-import ratchet starts
-only once the first adapter-bound test module has moved.
+above, the dead-code gates above, and `ruff check --select ANN401` over
+`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The size
+and complexity ratchet above is built and green but not yet a CI gate --
+wiring it in is tracked by #1263. The narrative check is ruled but unbuilt,
+and the core-test-import ratchet starts only once the first adapter-bound test
+module has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become
@@ -1459,6 +1470,10 @@ gates, because a check cannot judge a cut. Everything a machine cannot judge is
 ruled to run as a scheduled agent audit on the self-hosted runner, producing one
 distributor issue per run (operator ruling 04.09.2026); that workflow does not
 exist yet.
+
+After a route change, regenerate the frozen OpenAPI document with `uv run
+python scripts/write_openapi_frozen.py` before committing; its `--check` twin
+becomes a CI gate once #917 wires it into `ci.yml`.
 
 ## Verification
 

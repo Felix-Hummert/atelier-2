@@ -46,6 +46,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PrintModeExecutor,
 )
 from tests.scenarios.agents import (
     FakeAgentSession,
@@ -102,7 +103,7 @@ class _StoreThatCannotKeepAReceipt(_ClaimingStore):
         raise _TheReceiptCouldNotBeKept("durable state is unavailable")
 
 
-class _TranscriptExecutor:
+class _TranscriptExecutor(PrintModeExecutor):
     def prepare_process(self, request: object) -> AgentProcessCommand:
         del request
         return AgentProcessCommand(("/bin/true",), standard_output_frame_bytes=1)
