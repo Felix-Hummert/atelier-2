@@ -110,10 +110,6 @@ path = "src/atelier2/application/project_connections.py"
 lines = 1149
 
 [[file]]
-path = "src/atelier2/contracts/node_records_v3.py"
-lines = 800
-
-[[file]]
 path = "src/atelier2/contracts/schemas_v3.py"
 lines = 888
 
@@ -540,10 +536,6 @@ lines = 64
 [[function]]
 qualified_name = "atelier2.application.evaluate_executability.resolve_document_references"
 lines = 93
-
-[[function]]
-qualified_name = "atelier2.application.execute_agent_attempt._ended_after_the_provider"
-lines = 85
 
 [[function]]
 qualified_name = "atelier2.application.execute_agent_attempt.execute_agent_attempt"

@@ -49,7 +49,6 @@ from atelier2.application.project_node_rail import NodeRailAttempt, project_node
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
-    ProcessExitSignature,
 )
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
@@ -58,6 +57,7 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState

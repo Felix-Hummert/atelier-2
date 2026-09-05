@@ -23,11 +23,13 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.candidate_reports import ReadPatch
 from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
+from atelier2.contracts.secret_redaction import MAXIMUM_CREDENTIAL_SPAN_CHARACTERS
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 
 MAXIMUM_CANDIDATE_DIFF_BYTES = 65_536
-"""How much of an attempt's own patch a reader of a rejected attempt is given.
+"""How much of an attempt's own patch a reader is given, once it is safe to show.
 
 Sibling to `MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES`, and the same width for the
 same reason: a check that said no and a diff that says what was done are the two
@@ -36,10 +38,28 @@ the *start* of the patch, unlike a console tail: a patch read from its beginning
 is a patch, while a patch read from its end begins inside a hunk of whichever
 path happened to sort last.
 
-What it costs is one resident copy of the patch git printed, read whole and then
-cut -- the same way this port's owner already reads a whole index listing to
-refuse a nested repository. A tree large enough for that to matter is the same
-named gap the store already carries.
+This is the bound on what a *presenter* shows, and the cut belongs to whoever
+redacts, never to the store: a patch cut here and scrubbed afterwards would keep
+the first half of a credential that straddled the cut, because the shape the
+redactor recognises no longer stands whole in what it is handed.
+"""
+
+
+CANDIDATE_DIFF_READ_BYTES = (
+    MAXIMUM_CANDIDATE_DIFF_BYTES + MAXIMUM_CREDENTIAL_SPAN_CHARACTERS
+)
+"""How much of a patch this port reads at all, so nothing here grows unbounded.
+
+More than any reader is given, by exactly the look-ahead
+`MAXIMUM_CREDENTIAL_SPAN_CHARACTERS` names, spent here as bytes: a credential
+written in the ASCII its shapes are written in stands complete in what the
+redactor sees even when it begins just before the presenter's cut, so the
+marker lands where the token was and the patch around it is still shown. It is
+a look-ahead, not the safety bound -- a block padded wide enough closes past
+any read of it, and what the presenter does with an opening whose close is
+missing is what makes a cut patch safe. What is read past the look-ahead is
+dropped inside the store, so the process never holds a whole patch of an
+arbitrarily large tree.
 """
 
 
@@ -127,12 +147,16 @@ class CandidateTreeStore(Protocol):
         """
         ...
 
-    def changes(self, written: LeasedWorkingTree) -> bytes:
-        """The patch from the pinned tree to this one, bounded by this port.
+    def changes(self, written: LeasedWorkingTree) -> ReadPatch:
+        """The patch from the pinned tree to this one, read under this port's bound.
 
         Evidence, never a candidate: a rejected attempt's work must not survive
         as something a later run could take, but what it did has to be readable
         by whoever judges the rejection. An unchanged tree answers with nothing,
         because there is no patch to read.
+
+        What comes back is `CANDIDATE_DIFF_READ_BYTES` at most, says whether that
+        bound stopped the reading, and is not yet safe to show: the caller hands
+        it to `patch_safe_to_show`, which redacts before it cuts.
         """
         ...

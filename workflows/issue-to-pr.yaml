@@ -55,7 +55,7 @@ nodes:
       - name: candidate_report
         schema:
           ref: issue_to_pr_candidate_report
-          revision: "75404f58fedf7c46bf4b55a43f3840ce21b6710e4057a1863c904127de0f15ee"
+          revision: "94e46306f25f4cd1682fe843713ffd73359cb2d33ee6a4d196ad48571eb55171"
   - id: review
     type: agent
     role: reviewer
@@ -68,12 +68,18 @@ nodes:
     instruction: >-
       Judge the candidate carried under "candidate_report" against the work
       item carried under "context"; that item's body is the contract the
-      change owes. The builder's own summary and changed paths are your only
-      evidence: you cannot read files, run anything, or use tools in this
-      headless call, so where the report is too thin to judge, answer cannot-judge
-      with the reason instead of guessing. Approve when nothing you find
-      blocks the pull request; otherwise revise. Revise only with at least
-      one finding; cannot-judge must carry a reason.
+      change owes. That report carries the builder's own summary and changed
+      paths, and under "candidate_diff" the atelier's own patch of the tree
+      the builder left -- read that diff and judge what it actually does to
+      the code. You cannot read files, run anything, or use tools in this
+      headless call, and you are not asked to: the project's own verification
+      already passed on this tree before the candidate was kept, and the pull
+      request runs the project's checks in CI, so judge the change and not the
+      test result. Where the diff says it was cut, judge what you can see and
+      name what you could not. Answer cannot-judge only where the evidence is
+      genuinely too thin, with the reason instead of a guess. Approve when
+      nothing you find blocks the pull request; otherwise revise. Revise only
+      with at least one finding; cannot-judge must carry a reason.
     inputs:
       - name: context
         from:

@@ -12,10 +12,8 @@ story = "https://github.com/FlexOr2/atelier-2/issues/819"
 # the review and before the Wait. What the operator releases at the Wait is the
 # pull request, never the commit; the sentence is worded so that stays visible.
 #
-# WHAT IT DOES NOT CLAIM. The reviewer judges the builder's own structured
-# report, not a canonical diff derived from the kept candidate -- #819 names that
-# as the first follow-up slice, and until it lands the review's evidence is the
-# builder's statement about its work. `revise` and `cannot-judge` reach the
+# WHAT IT DOES NOT CLAIM. What the reviewer is given to judge is the second
+# sentence's subject, not this one's. `revise` and `cannot-judge` reach the
 # operator at the Wait rather than routing anywhere; the fix rounds of #819 are
 # not in this line at all. The pull request body is the candidate report's
 # JSON, not prose; rendering it into a readable body is #819's next slice.
@@ -27,3 +25,29 @@ story = "https://github.com/FlexOr2/atelier-2/issues/819"
 [[sentence]]
 id = "issue-to-pr-builds-reviews-waits-and-opens-the-pull-request"
 text = "Der Head nennt nur die Issue-Referenz; issue-to-pr baut, lässt reviewen, wartet auf die Freigabe und öffnet den PR mit dem Atelier-Receipt."
+
+# Slice: the review's own evidence (#1235). The follow-up the paragraph above
+# reserved has landed: the runtime reads the patch between the pinned tree and
+# the kept candidate and writes it into the build node's own value, under the
+# property that node's published output schema declares for it, so the reviewer
+# judges the change rather than the builder's account of it. The diff is the
+# atelier's word and never the provider's, credentials are replaced before it
+# leaves the attempt, and it is cut with a marker where it does not fit one node
+# value. What this still does not claim: the reviewer runs nothing -- the
+# project's own verification passed before the candidate was kept, and the pull
+# request's checks run in CI.
+
+[[sentence]]
+id = "issue-to-pr-shows-the-reviewer-the-candidates-own-diff"
+text = "Der Reviewer von issue-to-pr sieht den redigierten Diff des gehaltenen Kandidaten, nicht nur den Bericht des Builders."
+
+# Whose bytes failed is part of the answer. The patch beside a provider's answer
+# is the atelier's own text, so a node whose schema refuses the value composed
+# around it, or whose answer leaves no room even to say the patch was cut, ends
+# under a word of its own instead of under the provider's `OUTPUT_SCHEMA_REFUSED`
+# -- which would name an agent for text it never wrote and order it a repair
+# round about it. The provider's receipt keeps the provider's bytes either way.
+
+[[sentence]]
+id = "a-value-the-atelier-composed-is-refused-under-its-own-name"
+text = "Ein Knotenwert, den das Atelier aus der Antwort und seinem eigenen Diff zusammensetzt und den das Schema des Knotens ablehnt, endet FAILED unter `PRODUCED_VALUE_REFUSED` mit dem Beleg `produced-value-refused` -- nicht unter der Ablehnung des Anbieters, und ohne Reparaturrunde."

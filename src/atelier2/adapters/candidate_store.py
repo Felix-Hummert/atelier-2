@@ -41,14 +41,16 @@ from atelier2.adapters.leased_directory import (
 )
 from atelier2.adapters.project_source import (
     NO_GIT_TEMPLATE,
+    GitOutputUnderBound,
     GitRefused,
     LeasedIndex,
-    answered_git,
+    answered_git_under_bound,
     answered_in_lease,
     isolated_git_environment,
     object_format_of,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.candidate_reports import ReadPatch
 from atelier2.contracts.project_sources import (
     CandidateTree,
     GitObjectFormat,
@@ -56,7 +58,7 @@ from atelier2.contracts.project_sources import (
 )
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.candidate_store import (
-    MAXIMUM_CANDIDATE_DIFF_BYTES,
+    CANDIDATE_DIFF_READ_BYTES,
     CandidateCaptureConflict,
     CandidateNotKept,
     CandidateStoreUnavailable,
@@ -163,21 +165,29 @@ class GitCandidateTreeStore:
                 f"could not be kept: {failure}"
             ) from failure
 
-    def changes(self, written: LeasedWorkingTree) -> bytes:
+    def changes(self, written: LeasedWorkingTree) -> ReadPatch:
         """The patch between the two trees, read out of the store that holds both.
 
         Both are already there whenever this is asked: the pinned tree because a
         capture seeds it, and the written one because writing it put every blob
         it names into this same store. So no checkout is read and no workspace
         has to still exist -- this answers just as well after the lease is gone.
+
+        How large a patch is, is decided by the tree an attempt left rather than
+        by anything this repository declares, so it is the one answer here that
+        is read under a bound instead of whole. The bound is the port's, and it
+        is deliberately wider than what any reader is shown: the cut belongs to
+        whoever redacts what it hands on.
         """
 
         # `-p` and `-r` are what this plumbing command spells them; the long
         # `--patch` and `--recursive` belong to porcelain `git diff` and are
         # refused here.
-        return self._in_store(
-            ("diff-tree", "-p", "-r", written.pin.tree, written.tree)
-        )[:MAXIMUM_CANDIDATE_DIFF_BYTES]
+        read = self._read_in_store(
+            ("diff-tree", "-p", "-r", written.pin.tree, written.tree),
+            maximum_output_bytes=CANDIDATE_DIFF_READ_BYTES,
+        )
+        return ReadPatch(read.written, read.stopped_at_the_bound)
 
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         """The candidate this attempt captured, asked of the store and nothing else.
@@ -354,7 +364,7 @@ class GitCandidateTreeStore:
                         f"{self._project_checkout}"
                     ),
                     standard_input=fed,
-                )
+                ).written
             )
         return base.with_name(f"{base.name}-{named}.pack")
 
@@ -480,12 +490,24 @@ class GitCandidateTreeStore:
         arguments: tuple[str, ...],
         standard_input: int | IO[bytes] = subprocess.DEVNULL,
     ) -> bytes:
+        return self._read_in_store(
+            arguments, standard_input=standard_input, maximum_output_bytes=None
+        ).written
+
+    def _read_in_store(
+        self,
+        arguments: tuple[str, ...],
+        standard_input: int | IO[bytes] = subprocess.DEVNULL,
+        *,
+        maximum_output_bytes: int | None,
+    ) -> GitOutputUnderBound:
         return self._answered(
             arguments,
             working_directory=str(self._store.parent),
             environment=isolated_git_environment(GIT_DIR=str(self._store)),
             failure=f"the candidate store at {self._store} could not be reached",
             standard_input=standard_input,
+            maximum_output_bytes=maximum_output_bytes,
         )
 
     def _answered(
@@ -496,13 +518,15 @@ class GitCandidateTreeStore:
         environment: dict[str, str],
         failure: str,
         standard_input: int | IO[bytes] = subprocess.DEVNULL,
-    ) -> bytes:
+        maximum_output_bytes: int | None = None,
+    ) -> GitOutputUnderBound:
         try:
-            return answered_git(
+            return answered_git_under_bound(
                 arguments,
                 working_directory=working_directory,
                 environment=environment,
                 standard_input=standard_input,
+                maximum_output_bytes=maximum_output_bytes,
             )
         except GitRefused as error:
             raise CandidateStoreUnavailable(f"{failure}: {error}") from error

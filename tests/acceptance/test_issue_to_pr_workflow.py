@@ -128,11 +128,9 @@ sharing a provider, but it would still hold if a later document ever dropped
 
 CANDIDATE_FILE_NAME = "candidate.txt"
 CANDIDATE_FILE_BYTES = b"what the builder changed\n"
+BUILDER_SUMMARY = "Wrote the line the item asked for."
 CANDIDATE_REPORT = json.dumps(
-    {
-        "summary": "Wrote the line the item asked for.",
-        "changed_paths": [CANDIDATE_FILE_NAME],
-    }
+    {"summary": BUILDER_SUMMARY, "changed_paths": [CANDIDATE_FILE_NAME]}
 ).encode()
 REVIEW_RESULT = json.dumps({"findings": [], "verdict": "approve"}).encode()
 """The reviewer's own bytes, deliberately unlike the builder's.
@@ -178,7 +176,9 @@ def _project_and_remote(root: Path, verification_record: Path) -> tuple[Path, Pa
     return project, remote
 
 
-def _executors() -> tuple[RecordingAgentExecutorFactoryV2, ...]:
+def _executors() -> tuple[
+    RecordingAgentExecutorFactoryV2, RecordingAgentExecutorFactoryV2
+]:
     """One provider that edits its lease and reports it, one that only judges."""
     return (
         RecordingAgentExecutorFactoryV2(
@@ -208,14 +208,23 @@ def _executors() -> tuple[RecordingAgentExecutorFactoryV2, ...]:
 
 def _runtime(
     tmp_path: Path,
-) -> tuple[DbosRuntime, GitHubEffectAdapterFactory, Path, Path]:
+) -> tuple[
+    DbosRuntime,
+    GitHubEffectAdapterFactory,
+    Path,
+    Path,
+    RecordingAgentExecutorFactoryV2,
+]:
     """The runtime this workflow's tests share: real git, fake GitHub, fake agents.
 
     Returns the runtime, the recording GitHub adapter, the bare remote the push
-    reaches, and the file the declared verification writes the candidate into --
-    every one of them a caller may need to assert against once a run has moved.
+    reaches, the file the declared verification writes the candidate into, and
+    the reviewer's own executor -- which is where the job that reviewer was
+    actually handed can be read -- every one of them a caller may need to assert
+    against once a run has moved.
     """
     verification_record = tmp_path / "verification.txt"
+    builder, reviewer = _executors()
     project, remote = _project_and_remote(tmp_path, verification_record)
     github = GitHubEffectAdapterFactory(
         tmp_path / "github.sqlite",
@@ -245,10 +254,10 @@ def _runtime(
                 ),
             )
         ),
-        _executors(),
+        (builder, reviewer),
     )
     runtime.initialize_storage()
-    return runtime, github, remote, verification_record
+    return runtime, github, remote, verification_record, reviewer
 
 
 def _publish_workflow(
@@ -404,7 +413,32 @@ def _start(
     )
 
 
+def _assert_the_reviewer_read_the_candidate_diff(
+    built: bytes | None, reviewer: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The patch the atelier read is in the value, and in the reviewer's own job.
+
+    Read from the completion event rather than from the builder's answer,
+    because the builder never wrote it: the atelier read the tree the builder
+    left and put the patch into the value the node completed with. What proves
+    the reviewer actually got it is the job that executor was handed -- the same
+    text a real provider would have been given, carrying that whole value as a
+    produced value travels: JSON, its own newlines escaped.
+    """
+
+    assert built is not None
+    value = json.loads(built)
+    assert value["summary"] == BUILDER_SUMMARY
+    diff = value["candidate_diff"]
+    assert f"+++ b/{CANDIDATE_FILE_NAME}" in diff
+    assert f"+{CANDIDATE_FILE_BYTES.decode('utf-8')}" in diff
+    assert reviewer.opened is not None
+    (judged,) = reviewer.opened.requests
+    assert built.decode("utf-8") in judged.job_bytes.decode("utf-8")
+
+
 @pytest.mark.proves("issue-to-pr-builds-reviews-waits-and-opens-the-pull-request")
+@pytest.mark.proves("issue-to-pr-shows-the-reviewer-the-candidates-own-diff")
 def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
     tmp_path: Path,
 ) -> None:
@@ -416,7 +450,7 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
     builder attempt's own continuation; what the Wait releases is the pull
     request, and only the exact release opens it.
     """
-    runtime, github, remote, verification_record = _runtime(tmp_path)
+    runtime, github, remote, verification_record, reviewer = _runtime(tmp_path)
     try:
         workflow, bindings, (author, committer) = _publish_workflow(runtime)
         response = _start(runtime, workflow, bindings)
@@ -463,7 +497,15 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
                     run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
                 )
             )
+            built = connection.scalar(
+                sa.select(run_events.c.payload).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.node_id == BUILD_NODE,
+                    run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+                )
+            )
         assert bytes(reviewed) == REVIEW_RESULT
+        _assert_the_reviewer_read_the_candidate_diff(built, reviewer)
         assert waiting_node == WAIT_NODE
         assert github.recorded_pull_requests() == ()
         assert waiting_question is not None
@@ -536,7 +578,8 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
         assert body_carries_request_hash(
             recorded.body, intents[1].request.request_hash.value
         )
-        assert CANDIDATE_REPORT.decode("utf-8") in recorded.body
+        assert BUILDER_SUMMARY in recorded.body
+        assert CANDIDATE_FILE_NAME in recorded.body
         assert REVIEW_RESULT.decode("utf-8") not in recorded.body
     finally:
         runtime.close()
@@ -555,7 +598,7 @@ def test_a_start_refuses_the_same_configuration_bound_to_build_and_review(
     What this proves is the shipped document's actual behavior at the real
     door -- not which of its two independent guarantees answers.
     """
-    runtime, _, _, _ = _runtime(tmp_path)
+    runtime, _, _, _, _ = _runtime(tmp_path)
     try:
         workflow, bindings, _ = _publish_workflow(runtime)
         builder_binding = next(

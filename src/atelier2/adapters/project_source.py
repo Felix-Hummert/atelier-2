@@ -135,6 +135,31 @@ def isolated_git_environment(**declared: str) -> dict[str, str]:
     }
 
 
+MAXIMUM_REFUSAL_WORDS_BYTES = 8_192
+"""How much of a failed git child's own words one refusal quotes.
+
+What a child may write to its standard error is decided by the repository it
+reads, not by this product: a single `.gitattributes` line git dislikes is
+warned about once per path it touches. That stream is written to a file rather
+than to a pipe, so the child never blocks on it; what a refusal *carries* is
+bounded here, because a refusal is one sentence an operator reads.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class GitOutputUnderBound:
+    """What one git child wrote, and whether its caller's bound stopped it short.
+
+    The second half is a fact only this boundary holds: past the bound the child
+    is killed, so nothing downstream can tell a patch that ended there from one
+    that was cut, and a reader shown a prefix without being told so reads it as
+    the whole.
+    """
+
+    written: bytes
+    stopped_at_the_bound: bool
+
+
 def answered_git(
     arguments: Sequence[str],
     *,
@@ -145,6 +170,32 @@ def answered_git(
 ) -> bytes:
     """Run one git command where it was told to, and answer with what it wrote.
 
+    For every answer whose size this repository's own shape bounds -- a name, a
+    listing, an index. An answer the working tree decides the size of is read
+    through `answered_git_under_bound` instead.
+    """
+
+    return answered_git_under_bound(
+        arguments,
+        working_directory=working_directory,
+        environment=environment,
+        passed_descriptors=passed_descriptors,
+        standard_input=standard_input,
+        maximum_output_bytes=None,
+    ).written
+
+
+def answered_git_under_bound(
+    arguments: Sequence[str],
+    *,
+    working_directory: str,
+    environment: Mapping[str, str],
+    passed_descriptors: tuple[int, ...] = (),
+    standard_input: int | IO[bytes] = subprocess.DEVNULL,
+    maximum_output_bytes: int | None,
+) -> GitOutputUnderBound:
+    """Run one git command, reading no more of its answer than a caller declared.
+
     The working directory is entered by the child rather than named to git with
     `-C`, so a caller holding an open descriptor can pass `/proc/self/fd/<n>`
     together with that descriptor and have the child land in the very directory
@@ -153,33 +204,91 @@ def answered_git(
     What a caller feeds in is an open file rather than bytes, because one of the
     things fed to git here is a pack of a whole project tree, and holding that in
     this process's memory buys nothing.
+
+    `maximum_output_bytes` is what a caller says when the answer is a document
+    whose size the working tree decides -- a patch of an arbitrarily large tree.
+    Then exactly that many bytes are read and the child is stopped, so no answer
+    can grow this process past a bound its caller declared, and the caller reads
+    a prefix and is told that is what it is. No bound at all reads the answer
+    whole.
+
+    What git writes to its standard error goes to a temporary file, never to a
+    pipe: a bounded read stops reading standard output while the child is still
+    running, and a child filling a pipe nobody is draining blocks on that write
+    for as long as the parent waits for it.
     """
 
     argv = (_GIT_EXECUTABLE_NAME, *_HOOK_FREE_ARGUMENTS, *arguments)
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=working_directory,
-            env=dict(environment),
-            pass_fds=passed_descriptors,
-            stdin=standard_input,
-            capture_output=True,
-            check=False,
-        )
-    except OSError as error:
-        raise GitRefused(
-            f"git {' '.join(arguments)} could not be started in "
-            f"{working_directory}: {error}"
-        ) from error
-    if completed.returncode != 0:
-        # The whole argument list is named, not just the subcommand: what a
-        # refusal is about is the revision or path that was asked for.
-        raise GitRefused(
-            f"git {' '.join(arguments)} answered {completed.returncode} in "
-            f"{working_directory}: "
-            f"{completed.stderr.decode('utf-8', 'replace').strip()}"
-        )
-    return completed.stdout
+    with tempfile.TemporaryFile() as refused:
+        try:
+            started = subprocess.Popen(
+                argv,
+                cwd=working_directory,
+                env=dict(environment),
+                pass_fds=passed_descriptors,
+                stdin=standard_input,
+                stdout=subprocess.PIPE,
+                stderr=refused,
+            )
+        except OSError as error:
+            raise GitRefused(
+                f"git {' '.join(arguments)} could not be started in "
+                f"{working_directory}: {error}"
+            ) from error
+        with started as child:
+            return _what_git_wrote(
+                child, refused, arguments, working_directory, maximum_output_bytes
+            )
+
+
+def _what_git_wrote(
+    child: subprocess.Popen[bytes],
+    refused: IO[bytes],
+    arguments: Sequence[str],
+    working_directory: str,
+    maximum_output_bytes: int | None,
+) -> GitOutputUnderBound:
+    """Read one git child out, and let its exit speak only where it finished.
+
+    One byte past the caller's bound is read on purpose: reading exactly the
+    bound cannot tell a child that stopped there from one that had more to say,
+    and that difference is the whole reason the exit code is not consulted in
+    the second case. A child this call killed answers a code it did not choose,
+    and reading that as a refusal would turn every large patch into an error.
+    """
+
+    assert child.stdout is not None
+    if maximum_output_bytes is None:
+        written = child.stdout.read()
+    else:
+        written = child.stdout.read(maximum_output_bytes + 1)
+        if len(written) > maximum_output_bytes:
+            child.kill()
+            child.wait()
+            return GitOutputUnderBound(written[:maximum_output_bytes], True)
+    child.wait()
+    _refuse_a_failed_git(child, arguments, working_directory, refused)
+    return GitOutputUnderBound(written, False)
+
+
+def _refuse_a_failed_git(
+    child: subprocess.Popen[bytes],
+    arguments: Sequence[str],
+    working_directory: str,
+    refused: IO[bytes],
+) -> None:
+    """Say what a git call that ran to its own end refused, in its own words."""
+
+    if child.returncode == 0:
+        return
+    refused.seek(0)
+    words = refused.read(MAXIMUM_REFUSAL_WORDS_BYTES)
+    # The whole argument list is named, not just the subcommand: what a
+    # refusal is about is the revision or path that was asked for.
+    raise GitRefused(
+        f"git {' '.join(arguments)} answered {child.returncode} in "
+        f"{working_directory}: {words.decode('utf-8', 'replace').strip()}"
+    )
 
 
 @dataclass(frozen=True, slots=True)

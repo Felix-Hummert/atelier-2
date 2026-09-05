@@ -135,6 +135,52 @@ CREATE TABLE queue_proposal_revisions (
 
 """
 """The proposal table V44 introduced and every schema up to V51 published."""
+_V52_QUEUE_PROJECT_POLICY_REVISIONS = """
+CREATE TABLE queue_project_policy_revisions (
+	project_id TEXT NOT NULL,
+	revision_number INTEGER NOT NULL,
+	maximum_active_runs INTEGER NOT NULL,
+	automation_label TEXT,
+	default_workflow_lineage_id TEXT,
+	default_priority_rank INTEGER,
+	automation_disposition_default TEXT,
+	PRIMARY KEY (project_id, revision_number),
+	CHECK (length(project_id) BETWEEN 1 AND 1024),
+	CHECK (revision_number >= 1),
+	CHECK (maximum_active_runs BETWEEN 1 AND 1000),
+	CHECK (automation_label IS NULL OR length(automation_label) BETWEEN 1 AND 256),
+	CHECK (length(default_workflow_lineage_id) = 64 AND default_workflow_lineage_id NOT GLOB '*[^0-9a-f]*'),
+	CHECK (default_priority_rank >= 1),
+	CHECK (automation_disposition_default IN ('HUMAN_REQUIRED', 'AUTOMATION_AUTHORIZED')),
+	CHECK ((default_workflow_lineage_id IS NULL AND default_priority_rank IS NULL AND automation_disposition_default IS NULL) OR (default_workflow_lineage_id IS NOT NULL AND default_priority_rank IS NOT NULL AND automation_disposition_default IS NOT NULL))
+)
+
+"""
+"""The policy table with the defaults V52 gave it, which V53 does not move."""
+_V52_QUEUE_PROPOSAL_REVISIONS = """
+CREATE TABLE queue_proposal_revisions (
+	item_id TEXT NOT NULL,
+	proposal_revision INTEGER NOT NULL,
+	project_id TEXT NOT NULL,
+	priority_rank INTEGER NOT NULL,
+	workflow_lineage_id TEXT NOT NULL,
+	automation_disposition TEXT NOT NULL,
+	policy_revision INTEGER,
+	source TEXT NOT NULL,
+	PRIMARY KEY (item_id, proposal_revision),
+	UNIQUE (item_id, proposal_revision, project_id),
+	FOREIGN KEY(item_id, project_id) REFERENCES queue_items (item_id, project_id),
+	FOREIGN KEY(project_id, policy_revision) REFERENCES queue_project_policy_revisions (project_id, revision_number),
+	FOREIGN KEY(workflow_lineage_id) REFERENCES catalog_lineages (lineage_id),
+	CHECK (proposal_revision >= 1),
+	CHECK (priority_rank >= 1),
+	CHECK (automation_disposition IN ('HUMAN_REQUIRED', 'AUTOMATION_AUTHORIZED')),
+	CHECK (policy_revision IS NULL OR policy_revision >= 1),
+	CHECK (source IN ('OPERATOR', 'POLICY_DEFAULT'))
+)
+
+"""
+"""The proposal table with the source V52 gave it, which V53 does not move."""
 _V44_QUEUE_DEPENDENCY_EDGES = """
 CREATE TABLE queue_dependency_edges (
 	item_id TEXT NOT NULL,
@@ -204,4 +250,8 @@ PUBLISHED_QUEUE_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (44, "queue_launch_bindings"): _V44_QUEUE_LAUNCH_BINDINGS,
     (51, "queue_project_policy_revisions"): _V51_QUEUE_PROJECT_POLICY_REVISIONS,
     (51, "queue_proposal_revisions"): _V51_QUEUE_PROPOSAL_REVISIONS,
+    # V53 widens the attempt table's vocabulary and moves neither of these, so
+    # the shape V52 published is recorded here for the hop onto V52 to build.
+    (52, "queue_project_policy_revisions"): _V52_QUEUE_PROJECT_POLICY_REVISIONS,
+    (52, "queue_proposal_revisions"): _V52_QUEUE_PROPOSAL_REVISIONS,
 }

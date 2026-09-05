@@ -25,12 +25,14 @@ from atelier2.contracts.node_records_v3 import (
     ProjectedDeliveryStatus,
     ReceiptOutput,
     node_receipt_reason,
-    read_stored_node_receipt_reason,
-    store_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.stored_node_receipt_reasons import (
+    read_stored_node_receipt_reason,
+    store_node_receipt_reason,
+)
 
 WORKFLOW = WorkflowRevisionHash("aa" * 32)
 RUN_CONFIGURATION = RunConfigurationRevisionHash("bb" * 32)
