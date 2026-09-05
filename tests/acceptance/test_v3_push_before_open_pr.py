@@ -112,6 +112,7 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -422,6 +423,7 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         GitRemote("local-public-test", str(remote)),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        FakeHeadBranchPullRequests(),
     )
     registry = EffectAdapterRegistry(
         (
@@ -599,6 +601,7 @@ def test_release_resolve_after_a_push_crash_opens_one_pr_without_another_push(
         GitRemote("documentation-release", str(remote)),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        FakeHeadBranchPullRequests(),
         runner,
     )
     github = GitHubEffectAdapterFactory(
@@ -840,6 +843,7 @@ def test_the_real_release_entry_binds_approval_to_the_exact_candidate_before_eff
         GitRemote("documentation-release", str(remote)),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        FakeHeadBranchPullRequests(),
         runner,
     )
     github = GitHubEffectAdapterFactory(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import shlex
@@ -13,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, assert_never
 
 from atelier2.adapters.project_source import isolated_git_environment
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
@@ -44,9 +45,17 @@ from atelier2.contracts.effects import (
     UnknownOutcomeReason,
     destination_holds_nothing,
 )
+from atelier2.ports.effects import (
+    HeadBranchPullRequests,
+    HeadBranchPullRequestsUnreadable,
+    NoPullRequestOpenOnHeadBranch,
+    PullRequestOpenOnHeadBranch,
+)
 
 _HOOK_FREE_ARGUMENTS = ("-c", f"core.hooksPath={os.devnull}")
 _GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+_LOG = logging.getLogger("atelier2")
 
 
 class GitTransportRefused(RuntimeError):
@@ -152,6 +161,30 @@ def _unknown_reason(observation: _RemoteRefObservation) -> UnknownOutcomeReason 
     return None
 
 
+def _log_branch_head_replaced(
+    full_ref: str, replaced_oid: str, commit_oid: str
+) -> None:
+    """The one record of which oid a lease push replaced.
+
+    The replaced oid is evidence for an operator reading why a branch moved,
+    not identity: the receipt this push produces must be the same bytes a
+    later crash readback of the same accepted send reconstructs, and a
+    readback has no way to recover which oid a now-overwritten branch used to
+    carry.
+    """
+
+    _LOG.info(
+        "A lease push replaced a branch head nobody reviews any more: %s",
+        full_ref,
+        extra={
+            "event": "git_transport_push_replaced_branch_head",
+            "full_ref": full_ref,
+            "replaced_oid": replaced_oid,
+            "commit_oid": commit_oid,
+        },
+    )
+
+
 class GitCommandRunner(Protocol):
     def run(
         self,
@@ -193,6 +226,7 @@ class GitTransportEffectAdapterFactory:
     remote: GitRemote
     adapter_revision: AdapterRevision
     destination: EffectDestination
+    head_branch_pull_requests: HeadBranchPullRequests
     command_runner: GitCommandRunner = field(default_factory=SubprocessGitCommandRunner)
 
     @property
@@ -224,6 +258,7 @@ class GitTransportEffectAdapterFactory:
             store,
             GitRemote(self.remote.identity, self.remote.url, credential_file),
             self.binding,
+            self.head_branch_pull_requests,
             self.command_runner,
         )
 
@@ -234,11 +269,13 @@ class GitTransportEffectAdapter:
         candidate_store: Path,
         remote: GitRemote,
         binding: EffectAdapterBinding,
+        head_branch_pull_requests: HeadBranchPullRequests,
         command_runner: GitCommandRunner,
     ) -> None:
         self._candidate_store = candidate_store
         self._remote = remote
         self._binding = binding
+        self._head_branch_pull_requests = head_branch_pull_requests
         self._command_runner = command_runner
         self._closed = False
 
@@ -253,8 +290,16 @@ class GitTransportEffectAdapter:
             return destination_holds_nothing(
                 intent.reference, phase, _unknown_reason(observation)
             )
-        if not isinstance(observation, _RemoteRefFound) or observation.oid != expected:
+        if not isinstance(observation, _RemoteRefFound):
             return _unknown(intent, observation)
+        if observation.oid != expected:
+            if phase is ReadbackPhase.AFTER_SEND:
+                # A foreign commit read after a send is the divergence this
+                # operation never resolves for itself: from here, a branch
+                # someone else moved and one this send lost a race for look
+                # the same, and no answer about its pull requests changes that.
+                return _unknown(intent, observation)
+            return self._replaceable_branch(intent, request)
         performed = self._performed(request, expected)
         return EffectReceipt(
             intent,
@@ -275,7 +320,13 @@ class GitTransportEffectAdapter:
         observation = self._remote_ref(full_ref)
         if isinstance(observation, _RemoteRefFound) and observation.oid == expected:
             return self._performed(request, expected)
-        if not isinstance(observation, _RemoteRefAbsent):
+        replaced_oid: str | None = None
+        if isinstance(observation, _RemoteRefFound):
+            licensed = self._replaceable_branch(intent, request)
+            if isinstance(licensed, EffectUnknownOutcome):
+                return licensed
+            replaced_oid = observation.oid
+        elif not isinstance(observation, _RemoteRefAbsent):
             return _unknown(intent, observation)
         self._fetch_base(request.base_commit)
         written = self._store_commit(request, intent.request.request_hash.value)
@@ -283,13 +334,19 @@ class GitTransportEffectAdapter:
             raise GitTransportRefused(
                 "git did not preserve the deterministic commit object identity"
             )
-        zero_oid = "0" * len(expected)
+        # The lease names exactly what this attempt read: nothing where the ref
+        # was absent, and the replaced commit where it stood at one. A branch
+        # that moves between that read and this send fails the lease and stays
+        # as it is, so no send ever overwrites a value it did not observe.
+        leased = "0" * len(expected) if replaced_oid is None else replaced_oid
+        if replaced_oid is not None:
+            _log_branch_head_replaced(full_ref, replaced_oid, expected)
         self._remote_git(
             (
                 "push",
                 "--porcelain",
                 "--no-verify",
-                f"--force-with-lease={full_ref}:{zero_oid}",
+                f"--force-with-lease={full_ref}:{leased}",
                 "--",
                 self._remote.url,
                 f"{expected}:{full_ref}",
@@ -315,6 +372,40 @@ class GitTransportEffectAdapter:
 
     def close(self) -> None:
         self._closed = True
+
+    def _replaceable_branch(
+        self, intent: EffectIntent, request: PushAtelierCommit
+    ) -> EffectAbsence | EffectUnknownOutcome:
+        """Whether a branch standing at another commit may carry this push.
+
+        The commit under an Atelier item branch is an earlier attempt's own,
+        and what decides whether this attempt may replace it is not git: it is
+        whether anyone still reviews it. A branch whose pull requests are all
+        closed carries work nobody stands on, and this request holds nothing
+        there yet; an open pull request is a person's, and stays the operator's
+        reconciliation rather than this adapter's overwrite.
+        """
+
+        started = time.monotonic()
+        standing = self._head_branch_pull_requests.open_pull_requests_on(
+            request.head_branch
+        )
+        match standing:
+            case NoPullRequestOpenOnHeadBranch():
+                return EffectAbsence(intent.reference)
+            case PullRequestOpenOnHeadBranch(number):
+                return EffectUnknownOutcome(
+                    intent.reference,
+                    UnknownOutcomeReason(
+                        None,
+                        _elapsed_milliseconds(started),
+                        f"pull request #{number} on this branch is open",
+                    ),
+                )
+            case HeadBranchPullRequestsUnreadable(reason):
+                return EffectUnknownOutcome(intent.reference, reason)
+            case _ as unreachable:
+                assert_never(unreachable)
 
     def _authorized_request(self, intent: EffectIntent) -> PushAtelierCommit:
         if self._closed:
@@ -608,10 +699,7 @@ class GitTransportEffectAdapter:
         )
 
     def _readback_after_send(
-        self,
-        intent: EffectIntent,
-        request: PushAtelierCommit,
-        expected: str,
+        self, intent: EffectIntent, request: PushAtelierCommit, expected: str
     ) -> PerformedEffect | EffectUnknownOutcome:
         observation = self._remote_ref(request.head_branch.full_ref)
         if isinstance(observation, _RemoteRefFound) and observation.oid == expected:

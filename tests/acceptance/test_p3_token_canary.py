@@ -72,6 +72,7 @@ from tests.scenarios.agents import (
     launching,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 
 _STANDARD_LOG_RECORD_ATTRIBUTES = frozenset(logging.makeLogRecord({}).__dict__)
@@ -412,6 +413,7 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
             GitRemote("http-canary-test", http_remote.url, token_file),
             AdapterRevision("git-push-v1"),
             EffectDestination("git"),
+            FakeHeadBranchPullRequests(),
             runner,
         )
         registry = EffectAdapterRegistry(

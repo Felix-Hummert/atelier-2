@@ -80,6 +80,7 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.projects import run_git
 from tests.scenarios.run_waiting import wait_for_run_state
@@ -236,6 +237,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         GitRemote("local-workflow-test", str(remote)),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        FakeHeadBranchPullRequests(),
     )
     registry = EffectAdapterRegistry(
         (

@@ -27,6 +27,7 @@ from atelier2.adapters.github.live_effects import (
     GitHubRepository,
     GitHubTokenCredential,
     LiveGitHubEffectAdapterFactory,
+    LiveGitHubHeadBranchPullRequests,
 )
 from atelier2.adapters.github.observation import LiveGitHubIssueSource
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
@@ -108,6 +109,7 @@ def live_github_effect_registry(
             f"https://github.com/{repository.owner}/{repository.name}.git",
             connection.credential_directory / GITHUB_TOKEN_CREDENTIAL_ENTRY,
         ),
+        LiveGitHubHeadBranchPullRequests(repository, _token_credential(connection)),
     )
     open_pr = replace(
         live_github_effect_adapter_factory(connection, adapter_revision, destination),

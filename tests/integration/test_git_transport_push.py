@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from collections.abc import Mapping
@@ -41,9 +42,16 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
     PerformedEffect,
     ReadbackPhase,
+    UnknownOutcomeReason,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
+from atelier2.ports.effects import (
+    HeadBranchPullRequestState,
+    HeadBranchPullRequestsUnreadable,
+    PullRequestOpenOnHeadBranch,
+)
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 
 ATTEMPT_ID = "a1" * 32
 HEAD_BRANCH = HeadBranch("atelier2/work-item/" + "b2" * 32)
@@ -131,12 +139,14 @@ def _factory(
     store: Path,
     remote: Path,
     runner: GitCommandRunner | None = None,
+    pull_requests: FakeHeadBranchPullRequests | None = None,
 ) -> GitTransportEffectAdapterFactory:
     arguments = (
         store,
         GitRemote("local-test", str(remote)),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        pull_requests or FakeHeadBranchPullRequests(),
     )
     return (
         GitTransportEffectAdapterFactory(*arguments)
@@ -145,16 +155,27 @@ def _factory(
     )
 
 
+def _foreign_commit(
+    root: Path, base: str, tree: str, remote: Path, message: bytes
+) -> str:
+    """An earlier attempt's own commit, standing on the item's branch."""
+
+    commit = _git(root / "source", "commit-tree", tree, "-p", base, stdin=message)
+    _git(
+        root / "source",
+        "push",
+        "--quiet",
+        str(remote),
+        f"{commit}:{HEAD_BRANCH.full_ref}",
+    )
+    return commit
+
+
 def test_push_creates_the_declared_commit_and_replay_finds_no_twin(
     tmp_path: Path,
 ) -> None:
     store, remote, base, tree = _repositories(tmp_path)
-    factory = GitTransportEffectAdapterFactory(
-        store,
-        GitRemote("local-test", str(remote)),
-        AdapterRevision("git-push-v1"),
-        EffectDestination("git"),
-    )
+    factory = _factory(store, remote)
     intent, request = _intent(factory, base, tree)
     expected = request.expected_commit_oid(intent.request.request_hash.value)
     adapter = factory.open()
@@ -181,17 +202,108 @@ def test_push_creates_the_declared_commit_and_replay_finds_no_twin(
     assert marker_line(intent.request.request_hash.value) in commit.splitlines()
 
 
-def test_existing_different_branch_is_unknown_and_never_force_updated(
+def test_a_branch_no_open_pull_request_reviews_is_replaced_under_a_lease_on_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    foreign = _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
+    pull_requests = FakeHeadBranchPullRequests()
+    runner = _ScriptedRemoteReadRunner([])
+    factory = _factory(store, remote, runner, pull_requests)
+    intent, request = _intent(factory, base, tree)
+    expected = request.expected_commit_oid(intent.request.request_hash.value)
+    adapter = factory.open()
+    try:
+        observed = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+        with caplog.at_level(logging.INFO, logger="atelier2"):
+            performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(observed, EffectAbsence)
+    assert isinstance(performed, PerformedEffect)
+    assert performed.effect_id.value == expected
+    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == expected
+    assert pull_requests.asked == [HEAD_BRANCH, HEAD_BRANCH]
+    # ADR 0010's 2026-09-05 amendment: the replaced oid is evidence for an
+    # operator, not part of the receipt's identity, so it is logged at the
+    # send rather than carried in the result bytes a crash readback must
+    # reconstruct identically without ever observing it.
+    replaced_head_logs = [
+        record
+        for record in caplog.records
+        if record.__dict__.get("event") == "git_transport_push_replaced_branch_head"
+    ]
+    assert len(replaced_head_logs) == 1
+    assert replaced_head_logs[0].__dict__["replaced_oid"] == foreign
+    assert len(runner.push_arguments) == 1
+    assert (
+        f"--force-with-lease={HEAD_BRANCH.full_ref}:{foreign}"
+        in runner.push_arguments[0]
+    )
+    assert factory.binding.operational_identity == AdapterOperationalIdentity(
+        "local-test"
+    )
+
+
+@pytest.mark.parametrize(
+    ("standing", "detail"),
+    [
+        pytest.param(
+            PullRequestOpenOnHeadBranch(4711),
+            "pull request #4711 on this branch is open",
+            id="a-reviewer-still-stands-on-it",
+        ),
+        pytest.param(
+            HeadBranchPullRequestsUnreadable(
+                UnknownOutcomeReason(503, 12, "the tracker answered nothing readable")
+            ),
+            "the tracker answered nothing readable",
+            id="the-tracker-could-not-answer",
+        ),
+    ],
+)
+def test_a_branch_this_push_may_not_replace_sends_nothing_and_keeps_the_reason(
+    tmp_path: Path, standing: HeadBranchPullRequestState, detail: str
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    foreign = _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
+    runner = _ScriptedRemoteReadRunner([])
+    factory = _factory(store, remote, runner, FakeHeadBranchPullRequests(standing))
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        observed = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
+        result = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(observed, EffectUnknownOutcome)
+    assert isinstance(result, EffectUnknownOutcome)
+    for outcome in (observed, result):
+        assert outcome.reason is not None
+        assert outcome.reason.detail == detail
+    assert runner.push_arguments == []
+    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == foreign
+
+
+def test_a_branch_that_moves_after_the_read_fails_the_lease_and_is_not_overwritten(
     tmp_path: Path,
 ) -> None:
     store, remote, base, tree = _repositories(tmp_path)
-    _git(remote, "update-ref", HEAD_BRANCH.full_ref, base)
-    factory = GitTransportEffectAdapterFactory(
-        store,
-        GitRemote("local-test", str(remote)),
-        AdapterRevision("git-push-v1"),
-        EffectDestination("git"),
+    foreign = _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
+    racing = _git(
+        tmp_path / "source", "commit-tree", tree, "-p", base, stdin=b"a third writer\n"
     )
+    _git(
+        tmp_path / "source",
+        "push",
+        "--quiet",
+        str(remote),
+        f"{racing}:refs/heads/racing",
+    )
+    runner = _MovesTheBranchBeforeEachPush(remote, racing)
+    factory = _factory(store, remote, runner)
     intent, _request = _intent(factory, base, tree)
     adapter = factory.open()
     try:
@@ -200,10 +312,36 @@ def test_existing_different_branch_is_unknown_and_never_force_updated(
         adapter.close()
 
     assert isinstance(result, EffectUnknownOutcome)
-    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == base
-    assert factory.binding.operational_identity == AdapterOperationalIdentity(
-        "local-test"
-    )
+    assert runner.pushes == 1
+    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == racing
+    assert racing != foreign
+
+
+def test_a_foreign_oid_read_after_send_stays_unknown_without_asking_the_tracker(
+    tmp_path: Path,
+) -> None:
+    """A branch someone else moved and one this send lost a race for read alike.
+
+    The pre-send lease amendment only ever licenses a *pre-send* replacement:
+    a foreign commit read after a send already happened is still the
+    divergence the create-only fence never resolves for itself, so the
+    tracker is never asked and the branch is left exactly as read.
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    foreign = _foreign_commit(tmp_path, base, tree, remote, b"a foreign write\n")
+    pull_requests = FakeHeadBranchPullRequests()
+    factory = _factory(store, remote, pull_requests=pull_requests)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        observed = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        adapter.close()
+
+    assert isinstance(observed, EffectUnknownOutcome)
+    assert pull_requests.asked == []
+    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == foreign
 
 
 def test_concurrent_replay_publishes_one_commit_and_no_twin(tmp_path: Path) -> None:
@@ -251,7 +389,7 @@ class _ScriptedRemoteReadRunner:
     ) -> GitCommandResult:
         if "ls-remote" in arguments:
             self.remote_arguments.append(arguments)
-            scripted = self.remote_reads.pop(0)
+            scripted = self.remote_reads.pop(0) if self.remote_reads else None
             if scripted is not None:
                 return scripted
         elif "fetch" in arguments:
@@ -259,6 +397,33 @@ class _ScriptedRemoteReadRunner:
         if "push" in arguments:
             self.push_arguments.append(arguments)
         return self.delegate.run(
+            arguments,
+            working_directory=working_directory,
+            environment=environment,
+            standard_input=standard_input,
+        )
+
+
+class _MovesTheBranchBeforeEachPush(SubprocessGitCommandRunner):
+    """A second writer that takes the branch between this adapter's read and its send."""
+
+    def __init__(self, remote: Path, racing_commit: str) -> None:
+        self._remote = remote
+        self._racing_commit = racing_commit
+        self.pushes = 0
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None = None,
+    ) -> GitCommandResult:
+        if "push" in arguments:
+            self.pushes += 1
+            _git(self._remote, "update-ref", HEAD_BRANCH.full_ref, self._racing_commit)
+        return super().run(
             arguments,
             working_directory=working_directory,
             environment=environment,
