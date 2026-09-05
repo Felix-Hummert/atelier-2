@@ -144,6 +144,18 @@ or with "unrepresentable", never with a provider's own object; an unrepresentabl
 request that would have reached a file or a shell is refused closed. A second
 vector therefore brings a classifier and its pin, not a second parser.
 
+**The neutral ACP core is two adapter modules behind `ProviderConversation`.**
+`adapters/newline_json_rpc.py` owns the bounded codec: every complete frame and
+the exact unfinished remainder are measured against the port's own bounds
+before anything is decoded, and an outgoing message is measured against the
+caller's own bound before it is spelled. `adapters/agent_client_protocol.py`
+owns the standard ACP state machine built on that codec — handshake, session,
+permission and cancellation races, and the five terminal outcomes — translating
+frames into `ProviderConversationAction`s and back. Neither module knows a
+vendor's vocabulary; what a vendor spells outside ACP's standard fields reaches
+the state machine only through the classifier seam above, never as a raw
+provider dict.
+
 A new provider is not configuration alone. Executors are selected by an exact
 `(provider, executor revision)` key through the registry in
 `ports/agent_executions.py`; every new vector needs a registered executor
