@@ -40,23 +40,15 @@ from atelier2.adapters.dbos.workflow import (
     reconstruct_agent_attempt,
 )
 from atelier2.adapters.dbos.workflow_ids import (
-    cancellation_workflow_id_for,
     driving_workflow_ids,
-    runner_lease_workflow_id_for,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
-    AGENT_ATTEMPT_ORDINAL,
     AgentAttempt,
     AgentAttemptFailureCode,
     AgentAttemptId,
-    AgentAttemptReplacement,
     AgentAttemptState,
-    CancelAgentAttemptRequest,
-    RunnerGenerationBinding,
-    RunnerGenerationId,
-    stop_command_for,
 )
 from atelier2.contracts.agent_permissions import (
     GRANTS_NOTHING,
@@ -97,7 +89,6 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, PageLimit
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.runner_manifests import runner_manifest_id
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows import (
@@ -111,7 +102,6 @@ from atelier2.contracts.workflows_v3 import (
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_attempts import (
-    AgentAttemptCancellationAccepted,
     AgentAttemptClaimedByThisCall,
     AgentAttemptFailed,
     AgentAttemptPossiblyRan,
@@ -148,7 +138,6 @@ from tests.scenarios.agents import (
     runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_queries
-from tests.scenarios.runners import free_runner_candidate_manifest
 from tests.scenarios.runs import publish_pinned_revisions
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
@@ -254,12 +243,7 @@ def attempt_request(
 
 
 def _the_driving_workflow(attempt: AgentAttempt) -> str:
-    """The one workflow a local-process attempt ever holds a status under.
-
-    `driving_workflow_ids` also names the Runner slot, because a lease-carried
-    attempt's row cannot say whether the slot has taken it over. These attempts
-    are local-process, so no workflow is ever minted under that second id.
-    """
+    """The one workflow a local-process attempt ever holds a status under."""
 
     return driving_workflow_ids(attempt)[0]
 
@@ -1151,60 +1135,6 @@ def test_an_attempt_is_driverless_once_its_workflow_can_no_longer_move_it(
         runtime.close()
 
 
-def test_a_cancelled_runner_bound_attempt_is_still_owed_a_move_by_the_slot(
-    tmp_path: Path,
-) -> None:
-    """#584: cancelling a lease a launcher already claimed defers the ending.
-
-    The cancellation workflow does not finish such an Attempt itself; it hands it
-    back to the slot workflow that is driving the session, which ends it on the
-    Runner's own evidence. Naming only the cancellation would leave a restart's
-    sweep free to converge an Attempt the slot is about to end -- two writers for
-    one ending -- so both are named and the status read decides which is alive.
-    """
-
-    runtime = attempt_runtime(tmp_path)
-    runtime.initialize_storage()
-    try:
-        request = attempt_request(runtime)
-        store = _driverless_store(runtime)
-        execution = agent_attempt_execution(request)
-        prepared = store.prepare(execution)
-        armed = store.bind_runner_generation(
-            execution,
-            RunnerGenerationBinding(
-                prepared.attempt_id,
-                prepared.request_hash,
-                RunnerGenerationId("g" * 43),
-                runner_manifest_id(free_runner_candidate_manifest()),
-            ),
-        )
-        accepted = store.request_cancellation(
-            CancelAgentAttemptRequest(
-                armed.run_id,
-                armed.attempt_id,
-                "operator-cancel:lease",
-                armed.state_version,
-                AgentAttemptReplacement.NONE,
-            )
-        )
-        assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
-        cancelled = store.load(armed.attempt_id)
-        assert cancelled.cancellation is not None
-        assert cancelled.runner_manifest_id is not None
-
-        named = driving_workflow_ids(cancelled)
-        assert cancellation_workflow_id_for(stop_command_for(cancelled)) in named
-        assert (
-            runner_lease_workflow_id_for(
-                cancelled.node_execution_id, AGENT_ATTEMPT_ORDINAL
-            )
-            in named
-        )
-    finally:
-        runtime.close()
-
-
 def test_a_driving_row_of_a_retired_version_does_not_hide_a_driverless_attempt(
     tmp_path: Path,
 ) -> None:
@@ -1215,10 +1145,6 @@ def test_a_driving_row_of_a_retired_version_does_not_hide_a_driverless_attempt(
     status reads. Counting it as a live driver hides its attempt from every later
     sweep, and the attempt then stands non-terminal for as long as the store
     exists.
-
-    This is the sweep that owns attempts no Runner carries; the Runner-bound half
-    of the same rule is proven against the sweep that owns those, in
-    `tests/integration/test_workflow_lease_dispatch.py`.
     """
 
     runtime = attempt_runtime(tmp_path)
@@ -1436,11 +1362,10 @@ def test_driverless_iteration_bounds_ten_thousand_row_queries(
         assert discovered == 10_000
         assert len(attempt_reads) == 101
         assert len(workflow_reads) == 100
-        # One page of attempts, each naming the workflows that can still drive it
-        # -- its own, and the Runner slot its row cannot rule out -- plus the
-        # three driving statuses and the application version they must belong to.
-        # Bounded by the page, not by the store's size.
-        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS * 2 + 4
+        # One page of attempts, each naming the one workflow that can still drive
+        # it, plus the three driving statuses and the application version they
+        # must belong to. Bounded by the page, not by the store's size.
+        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS + 4
         assert len(observed_reads) == 201
     finally:
         runtime.close()

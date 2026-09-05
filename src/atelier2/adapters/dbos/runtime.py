@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import sqlite3
-import ssl
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, assert_never, cast
+from typing import Any, assert_never
 
 import sqlalchemy as sa
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
 from dbos import DBOS, DBOSConfig, SQLAlchemyDatasource, WorkflowStatusString
 from sqlalchemy import event
 from sqlalchemy.engine import Connection, Engine
@@ -30,10 +26,8 @@ from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
     project_root_for,
 )
-from atelier2.adapters.dbos.names import QUEUE_NAME, RUNNER_LEASE_QUEUE_NAME
+from atelier2.adapters.dbos.names import QUEUE_NAME
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
-from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
-from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_configuration_revisions,
@@ -45,39 +39,18 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.uncontinuable_runs import (
     DbosUncontinuableRunStore,
-    live_driver_workflow_ids,
     retag_stranded_continuations,
 )
 from atelier2.adapters.dbos.workflow import (
     AgentExecutorMap,
-    RunnerLeaseAttemptDriver,
-    reconstruct_agent_attempt,
     register_durable_run_workflow,
 )
 from atelier2.adapters.dbos.workflow_ids import (
-    driving_workflow_ids,
     effect_workflow_id_for,
     node_workflow_id_for,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
-from atelier2.adapters.file_runner_terminal_evidence import (
-    FileRunnerTerminalEvidenceSource,
-)
-from atelier2.adapters.free_runner_executor import free_runner_auth_reference
 from atelier2.adapters.project_verification import declared_project
-from atelier2.adapters.runner_child import REQUIRED_LANDLOCK_ABI
-from atelier2.adapters.runner_cli_pins import runner_executor_cli_pin
-from atelier2.adapters.runner_lease_session import RunnerLeaseSessionListener
-from atelier2.adapters.runner_tls import (
-    CORE_DNS_NAME,
-    CORE_SESSION_PORT,
-    CorePeerDocument,
-    SupportedPublicKey,
-    core_uri_for_certificate,
-    encode_core_peer_document,
-    pin_tls_13,
-)
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.advance_queue import (
     QueueAutomationLabelUnset,
@@ -90,34 +63,15 @@ from atelier2.application.advance_queue import (
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,
 )
-from atelier2.application.converge_driverless_runner_lease_attempts import (
-    RunnerLeaseConvergenceJob,
-    RunnerLeaseConvergenceReport,
-    converge_driverless_runner_lease_attempts,
-)
 from atelier2.application.converge_uncontinuable_runs import (
     converge_uncontinuable_runs,
 )
-from atelier2.application.execute_agent_attempt_on_runner import (
-    ExecuteAgentAttemptOnRunnerOutcome,
-    RunnerAttemptLeaseMaterial,
-    execute_agent_attempt_on_runner,
-)
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
-from atelier2.contracts.agent_attempts import (
-    TERMINAL_AGENT_ATTEMPT_STATES,
-    AgentAttempt,
-    AgentAttemptId,
-    RunnerBindingConflict,
-    RunnerGenerationBinding,
-)
 from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AgentExecutionCapability,
-    AgentExecutionRequestV2,
     AgentExecutorRevision,
-    AuthProfileRevision,
     ProviderId,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageDisplayName
@@ -131,7 +85,6 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import (
-    AgentAttemptExecution,
     NodeExecutionId,
     logical_effect_key_for,
 )
@@ -149,17 +102,6 @@ from atelier2.contracts.provider_probe_receipts import (
     read_provider_probe_receipt,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
-from atelier2.contracts.runner_leases import RunnerLeaseId
-from atelier2.contracts.runner_manifests import (
-    _COMMIT as RUNNER_SOURCE_COMMIT_FORMAT,
-)
-from atelier2.contracts.runner_manifests import (
-    _IMAGE_DIGEST as RUNNER_IMAGE_DIGEST_FORMAT,
-)
-from atelier2.contracts.runner_manifests import (
-    RunnerManifestV1,
-    candidate_runner_manifest,
-)
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
@@ -183,7 +125,6 @@ from atelier2.ports.effects import (
 from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.project_verification import DeclaredProject
 from atelier2.ports.published_revisions import CatalogNameFound
-from atelier2.ports.runner_leases import RunnerLeaseWithdrawn
 
 _LOG = logging.getLogger("atelier2")
 
@@ -246,23 +187,7 @@ class DbosRuntimeSettings:
     bootstrap_project_root: Path | None = None
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
-    # The Runner-lease deployment (`#540` C-3.6): declared together or not at
-    # all, because a `RUNNER_LEASE`-carried key served with only some of these
-    # would leave `atelier2.adapters.dbos.runtime._runner_lease_attempt_driver`
-    # guessing at the rest. `runner_lease_source_commit` is a second carrier of
-    # `atelier2.host.serving.HostSettings.source_commit` rather than that same
-    # field read twice, because a Runner manifest's `source_commit` is a
-    # distinct domain fact (what the served container was built from) that
-    # only happens to share a value with the deployment's own provenance today.
-    runner_lease_root: Path | None = None
-    runner_image: str | None = None
-    runner_image_digest: str | None = None
-    runner_console_container: str | None = None
-    runner_core_identity_directory: Path | None = None
-    runner_accept_timeout_seconds: float | None = None
-    runner_lease_source_commit: str | None = None
-    # The receipt gate (`#1013`): declared together or not at all, exactly
-    # like the Runner-lease group above and for the same reason -- a
+    # The receipt gate (`#1013`): declared together or not at all -- a
     # directory with no deployment identity to judge foreign evidence against
     # is a half-armed gate, not a safer one. `None` for both is what every
     # `DbosRuntimeSettings` outside `HostSettings.runtime_settings()` already
@@ -290,52 +215,6 @@ class DbosRuntimeSettings:
             )
         if self.project_id is not None and not isinstance(self.project_id, ProjectId):
             raise TypeError("project id must use its typed contract")
-        runner_lease_fields = (
-            self.runner_lease_root,
-            self.runner_image,
-            self.runner_image_digest,
-            self.runner_console_container,
-            self.runner_core_identity_directory,
-            self.runner_accept_timeout_seconds,
-            self.runner_lease_source_commit,
-        )
-        declared = tuple(field for field in runner_lease_fields if field is not None)
-        if declared and len(declared) != len(runner_lease_fields):
-            raise ValueError(
-                "a Runner-lease deployment needs its lease root, image, image "
-                "digest, console container, core identity directory, accept "
-                "deadline and source commit declared together, not in part"
-            )
-        if self.runner_accept_timeout_seconds is not None and (
-            self.runner_accept_timeout_seconds <= 0
-        ):
-            raise ValueError("the runner-lease accept deadline must be positive")
-        for name in (
-            "runner_image",
-            "runner_image_digest",
-            "runner_console_container",
-            "runner_lease_source_commit",
-        ):
-            value = getattr(self, name)
-            if value is not None and not value.strip():
-                raise ValueError(f"{name} must be nonempty")
-        # A Runner manifest rejects a malformed digest or source commit per
-        # attempt; validating the same formats here keeps a typo in the
-        # `atelier serve` flags a command-line refusal rather than a first-lease
-        # traceback. The manifest owns the format contract; we reuse it.
-        if self.runner_image_digest is not None and (
-            RUNNER_IMAGE_DIGEST_FORMAT.fullmatch(self.runner_image_digest) is None
-        ):
-            raise ValueError(
-                "runner_image_digest must be a sha256:<64 lowercase hex> digest"
-            )
-        if self.runner_lease_source_commit is not None and (
-            RUNNER_SOURCE_COMMIT_FORMAT.fullmatch(self.runner_lease_source_commit)
-            is None
-        ):
-            raise ValueError(
-                "runner_lease_source_commit must be a full 40-character commit SHA"
-            )
         receipt_gate_fields = (
             self.provider_probe_receipt_directory,
             self.provider_probe_receipt_provider_layer_digest,
@@ -358,10 +237,6 @@ class DbosRuntimeSettings:
                 "typed contract"
             )
 
-    @property
-    def runner_lease_declared(self) -> bool:
-        return self.runner_lease_root is not None
-
     def process_control_root(self) -> Path:
         root = self.agent_process_control_root
         return (
@@ -380,8 +255,7 @@ class DbosRuntimeSettings:
         effect_adapters: tuple[EffectAdapterBinding, ...],
     ) -> DbosRuntimeBinding:
         # Only a `LOCAL_PROCESS`-carried key needs Serve's own supervisor and
-        # scratch root (`#540` C-3.6): a deployment serving nothing but
-        # `RUNNER_LEASE` keys starts without either.
+        # scratch root (`#540` C-3.6).
         process_runner_required = any(
             entry.carrier is AgentExecutorCarrier.LOCAL_PROCESS
             for entry in agent_executors_v2
@@ -502,466 +376,6 @@ def _declared_project_for(
         raise ProjectUnknown(
             f"{PROJECT_UNKNOWN}: project {project_id.value!r} has no configured root"
         ) from missing
-
-
-class RunnerLeaseAuthReferenceUnowned(ValueError):
-    """No production owner resolves an auth reference for this provider yet.
-
-    Only `fake-free` is served as a `RUNNER_LEASE` carrier today (`#540`
-    C-3.6's fake-free-only slice); a real provider's auth reference is
-    `#540`'s own "not in this slice" boundary (real providers wait on `#15`
-    and B-3).
-    """
-
-
-def _runner_manifest_for(
-    request: AgentExecutionRequestV2, source_commit: str, image_digest: str
-) -> RunnerManifestV1:
-    """One Attempt's Runner manifest, built from its own durable request.
-
-    Every carrier fact but the two the deployment itself declares
-    (`source_commit`, `image_digest`) comes from the request's own resolved
-    binding, so a manifest can never name an executor, provider or capability
-    other than the one the durable Attempt was bound to.
-    """
-
-    configuration = request.resolved_binding.configuration
-    auth = request.resolved_binding.auth_profile
-    return candidate_runner_manifest(
-        source_commit=source_commit,
-        image_digest=image_digest,
-        required_landlock_abi=REQUIRED_LANDLOCK_ABI,
-        executor_revision=configuration.executor_revision.value,
-        executor_operational_identity=request.executor_operational_identity.value,
-        provider_id=auth.provider_id.value,
-        auth_mode=auth.auth_mode.value,
-        requested_capability=configuration.requested_capability.value,
-    )
-
-
-def _runner_auth_reference_for(profile: AuthProfileRevision) -> str:
-    if profile.provider_id.value == "fake-free":
-        return free_runner_auth_reference(profile).value
-    raise RunnerLeaseAuthReferenceUnowned(
-        f"no runner-lease auth reference owner for provider {profile.provider_id.value!r}"
-    )
-
-
-def runner_lease_cancellation_command_id(attempt_id: AgentAttemptId) -> str:
-    """The persisted `cancellation_command_id` a Runner-lease Attempt's session
-    core cancels under (`#540` C-3.6): one owner for the token the driver and
-    its tests must spell identically, so neither can drift from the other."""
-
-    return f"runner-lease-cancel:{attempt_id.value}"
-
-
-# One Core session listener binds one fixed port per Serve process
-# (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`), so a Runner-lease Attempt
-# opens exactly one connection in this fake-free-only slice: the normal
-# lifetime never reconnects, and a reconnect after a mid-session Serve crash is
-# Kind #585 (`#540`)'s job, not this driver's.
-_RUNNER_SESSION_CONNECTION_ATTEMPTS = 1
-
-
-@dataclass(frozen=True, slots=True)
-class DbosRunnerLeaseAttemptDriver:
-    """The production `RunnerLeaseAttemptDriver`: one Attempt's manifest and
-    lease material, freshly composed from the durable request, driven over
-    the real Runner-lease session (`#540` C-3.4's own
-    `execute_agent_attempt_on_runner`)."""
-
-    store: DbosAgentAttemptStore
-    engine: Engine
-    leases: FileRunnerLeasePublisher
-    transport: RunnerLeaseSessionListener
-    source_commit: str
-    image_digest: str
-    runner_image: str
-    serve_container: str
-    ca_certificate: bytes
-    core_certificate: bytes
-    core_peer_document: bytes
-    invocation_deadline_seconds: float
-
-    def drive(
-        self, execution: AgentAttemptExecution
-    ) -> ExecuteAgentAttemptOnRunnerOutcome:
-        manifest = _runner_manifest_for(
-            execution.request, self.source_commit, self.image_digest
-        )
-        material = RunnerAttemptLeaseMaterial(
-            manifest,
-            self.runner_image,
-            self.serve_container,
-            self.ca_certificate,
-            self.core_certificate,
-            self.core_peer_document,
-            _runner_auth_reference_for(execution.request.resolved_binding.auth_profile),
-            runner_executor_cli_pin(manifest),
-        )
-        core = DbosRunnerSessionCore(
-            execution,
-            self.store,
-            runner_lease_cancellation_command_id(execution.attempt_id),
-            engine=self.engine,
-        )
-        return execute_agent_attempt_on_runner(
-            execution,
-            self.store,
-            self.store,
-            core,
-            self.transport,
-            self.leases,
-            self.leases,
-            material,
-            self.invocation_deadline_seconds,
-        )
-
-
-def _withdraw_open_runner_leases(
-    leases: FileRunnerLeasePublisher, open_directory: Path
-) -> None:
-    """Serve's own open leases, pulled back at every start (`#540` C-3.6 D-8a).
-
-    A lease this exact process published and never saw claimed before its own
-    restart would otherwise sit `open` for as long as no launcher happens to
-    poll past it -- and a launcher that does, hours later, would start a
-    Runner container for an Attempt whose driving workflow this process no
-    longer owns. Withdrawing every open lease before this binding does anything
-    else closes that window.
-
-    Withdrawal is one-way in this slice: it moves the document to `withdrawn/`
-    and deletes the attempt material
-    (`atelier2.adapters.file_runner_leases.FileRunnerLeasePublisher.withdraw`).
-    A recovered workflow that replays `publish` finds its own document
-    byte-identical under `withdrawn/` and is answered `RunnerLeaseExisting`, so
-    no fresh open lease ever reappears -- there is no automatic republish and
-    retry in this phase. That Attempt is stranded non-terminal until Kind #585
-    (`#540`) converges it over the launcher's own retained journal; today it
-    still burns the full accept deadline polling the deleted paths before it
-    reports a timeout, and failing fast there is #585's job too. A lease a
-    launcher already claimed loses this race harmlessly -- it is reported
-    `RunnerLeaseAlreadyClaimed`, not an error, and is left exactly where it is
-    for the launcher that owns it.
-    """
-
-    withdrawn = 0
-    for path in sorted(open_directory.glob("*.json")):
-        result = leases.withdraw(RunnerLeaseId(path.stem))
-        if isinstance(result, RunnerLeaseWithdrawn):
-            withdrawn += 1
-    if withdrawn:
-        _LOG.info(
-            "Withdrew %d open Runner lease(s) from a previous run.",
-            withdrawn,
-            extra={"event": "runner_leases_withdrawn_at_start", "count": withdrawn},
-        )
-
-
-def _driverless_runner_lease_attempts(
-    engine: Engine, application_version: str
-) -> tuple[AgentAttempt, ...]:
-    """Every non-terminal, Runner-lease-bound Attempt no workflow still owes.
-
-    Read-only: `#540` Kind #585 owns converging these to a durable terminal
-    state, over the launcher's own retained journal -- the only source that
-    can prove what actually happened. Until it lands, this is a name, not a
-    fix: an Attempt this reports stays exactly as durable as it already was.
-    """
-
-    store = DbosAgentAttemptStore(engine, application_version)
-    with engine.connect() as connection:
-        terminal_states = tuple(state.value for state in TERMINAL_AGENT_ATTEMPT_STATES)
-        candidate_ids = tuple(
-            connection.scalars(
-                sa.select(agent_attempts.c.attempt_id).where(
-                    agent_attempts.c.state.not_in(terminal_states),
-                    agent_attempts.c.runner_manifest_id.is_not(None),
-                )
-            )
-        )
-    if not candidate_ids:
-        return ()
-    candidates = tuple(store.load(AgentAttemptId(value)) for value in candidate_ids)
-    with engine.connect() as connection:
-        driving = live_driver_workflow_ids(
-            connection,
-            (
-                workflow_id
-                for attempt in candidates
-                for workflow_id in driving_workflow_ids(attempt)
-            ),
-            application_version,
-        )
-    return tuple(
-        attempt
-        for attempt in candidates
-        if driving.isdisjoint(driving_workflow_ids(attempt))
-    )
-
-
-def _runner_generation_binding(attempt: AgentAttempt) -> RunnerGenerationBinding:
-    """The generation an armed Runner-lease Attempt durably bound.
-
-    Rebuilt from the attempt's own durable columns, so it names the exact
-    generation the launcher's retained evidence is stamped with. Only ever
-    called for an Attempt `_driverless_runner_lease_attempts` returned, which
-    filters on a bound `runner_manifest_id` -- so its generation is bound too
-    (`AgentAttempt` keeps the two together), and a missing one is a durable lie.
-    """
-    if attempt.runner_generation_id is None or attempt.runner_manifest_id is None:
-        raise DbosRuntimeBindingConflict(
-            "a runner-lease attempt without a bound generation cannot converge"
-        )
-    return RunnerGenerationBinding(
-        attempt.attempt_id,
-        attempt.request_hash,
-        attempt.runner_generation_id,
-        attempt.runner_manifest_id,
-    )
-
-
-def _agent_executor_map(
-    registry: AgentExecutorRegistry,
-    executors: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...],
-) -> AgentExecutorMap:
-    """Every registered executor key mapped to what a driver or converger needs.
-
-    One owner for the map the durable workflow binding is composed with and the
-    map a Serve-restart convergence reconstructs its attempts through -- the
-    opened executor where there is one, and the manifest facts either way.
-    """
-    opened = {manifest_entry.key: executor for manifest_entry, executor in executors}
-    return {
-        entry.key: (
-            opened.get(entry.key),
-            entry.manifest_entry.operational_identity,
-            entry.manifest_entry.declared_capabilities,
-            entry.manifest_entry.carrier,
-        )
-        for entry in registry.entries
-    }
-
-
-def _reconstructed_runner_lease_jobs(
-    bound: _BoundRuntime,
-    executors: AgentExecutorMap,
-    source: FileRunnerTerminalEvidenceSource,
-    driverless: tuple[AgentAttempt, ...],
-) -> tuple[list[RunnerLeaseConvergenceJob], list[tuple[AgentAttemptId, str]]]:
-    """Reconstruct each driverless Attempt into a convergence job, tolerating one.
-
-    One Attempt whose executor was removed from config between restarts
-    (`KeyError`), or whose durable binding no longer reconstructs to the request
-    it committed under (`RunTransitionConflict`/`RunnerBindingConflict`), or that
-    lost the generation it bound (`DbosRuntimeBindingConflict`), must not abort
-    the convergence of every other healthy Attempt and must not fail Serve start.
-    Such an Attempt is named and reported non-terminal -- left exactly as durable
-    as it already was, never forced -- while every reconstructable Attempt still
-    converges.
-    """
-    jobs: list[RunnerLeaseConvergenceJob] = []
-    left_nonterminal: list[tuple[AgentAttemptId, str]] = []
-    for attempt in driverless:
-        try:
-            execution = reconstruct_agent_attempt(
-                bound.datasource, executors, bound.declared_project, attempt
-            ).execution
-            binding = _runner_generation_binding(attempt)
-        except (
-            KeyError,
-            RunTransitionConflict,
-            RunnerBindingConflict,
-            DbosRuntimeBindingConflict,
-        ) as conflict:
-            left_nonterminal.append((attempt.attempt_id, type(conflict).__name__))
-            continue
-        jobs.append(RunnerLeaseConvergenceJob(execution, binding, source))
-    return jobs, left_nonterminal
-
-
-def _log_runner_lease_convergence(report: RunnerLeaseConvergenceReport) -> None:
-    """Say what a Serve-restart convergence moved, and what it could not.
-
-    A converged Attempt reached its real terminal; one left non-terminal stays
-    exactly as durable as it already was -- its retained fact was missing,
-    corrupt, or refused -- and is named for the operator to read, never forced.
-    """
-    for attempt_id in report.converged:
-        _LOG.info(
-            "Converged Runner-lease attempt %s to its retained terminal.",
-            attempt_id.value,
-            extra={
-                "event": "runner_lease_attempt_converged",
-                "attempt_id": attempt_id.value,
-            },
-        )
-    for attempt_id, reason in report.left_nonterminal:
-        _LOG.warning(
-            "Runner-lease attempt %s has no living driver and no committable "
-            "retained evidence (%s).",
-            attempt_id.value,
-            reason,
-            extra={
-                "event": "runner_lease_attempt_left_nonterminal",
-                "attempt_id": attempt_id.value,
-                "reason": reason,
-            },
-        )
-    if report.converged or report.left_nonterminal:
-        _LOG.info(
-            "Runner-lease convergence after start: %d converged, %d left non-terminal.",
-            len(report.converged),
-            len(report.left_nonterminal),
-            extra={
-                "event": "runner_lease_convergence_total",
-                "converged": len(report.converged),
-                "left_nonterminal": len(report.left_nonterminal),
-            },
-        )
-
-
-def _log_queue_label_admission(outcome: QueueLabelAdmissionOutcome) -> None:
-    """Say what the automation label admitted this sweep, and what it did not.
-
-    Both halves of this rule are soft by contract: an unreadable tracker admits
-    nothing and a declined item stays exactly as durable as it was, so neither
-    leaves a trace anywhere else. The sweep is therefore the only place that
-    can make them visible to the operator. A project whose policy names no
-    label says nothing here -- that is a steady state, not an event.
-    """
-
-    match outcome:
-        case QueueAutomationLabelUnset():
-            return
-        case QueueAutomationSourceUnreadable(detail):
-            _LOG.warning(
-                "The automation label admitted nothing: the tracker could not "
-                "be read (%s).",
-                detail,
-                extra={
-                    "event": "queue_label_admission_source_unreadable",
-                    "detail": detail,
-                },
-            )
-        case QueueLabelAdmissionsDecided(admitted, declined):
-            for decision in declined:
-                _LOG.info(
-                    "The automation label did not admit queue item %s (%s).",
-                    decision.item_id.value,
-                    type(decision.outcome).__name__,
-                    extra={
-                        "event": "queue_label_admission_declined",
-                        "item_id": decision.item_id.value,
-                        "outcome": type(decision.outcome).__name__,
-                    },
-                )
-            if admitted or declined:
-                _LOG.info(
-                    "Automation-label admission sweep: %d admitted, %d declined.",
-                    len(admitted),
-                    len(declined),
-                    extra={
-                        "event": "queue_label_admission_swept",
-                        "admitted": len(admitted),
-                        "declined": len(declined),
-                    },
-                )
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _open_runner_lease_publisher(
-    settings: DbosRuntimeSettings,
-) -> FileRunnerLeasePublisher:
-    """The one Runner-lease publisher this binding drives and withdraws through.
-
-    Composed once and shared: the attempt driver publishes leases through it,
-    and the cancellation workflow withdraws a never-launched attempt's lease
-    through the same directories (`#584`). Its own start-time cleanup -- pulling
-    back every lease this exact process left `open` before a restart -- runs
-    here, before either caller does anything else.
-    """
-
-    lease_root = settings.runner_lease_root
-    if lease_root is None:
-        raise DbosRuntimeBindingConflict(
-            "a runner-lease deployment requires the declared lease root"
-        )
-    leases = FileRunnerLeasePublisher(lease_root / "leases", lease_root / "attempts")
-    _withdraw_open_runner_leases(leases, lease_root / "leases" / "open")
-    return leases
-
-
-def _runner_lease_attempt_driver(
-    settings: DbosRuntimeSettings,
-    engine: Engine,
-    store: DbosAgentAttemptStore,
-    leases: FileRunnerLeasePublisher,
-) -> RunnerLeaseAttemptDriver:
-    """Compose the real Runner-lease driver from a fully declared deployment.
-
-    Its own module-level name, rather than an inline expression at its one
-    call site, is what lets a test compose `DbosRuntime` for its real binding
-    and carrier-dispatch behavior while replacing only this real TLS/socket
-    transport with a scripted one -- the same layering
-    `tests/integration/test_execute_agent_attempt_on_runner.py` already
-    established for `execute_agent_attempt_on_runner` itself.
-    """
-
-    identity = settings.runner_core_identity_directory
-    accept_timeout = settings.runner_accept_timeout_seconds
-    if (
-        identity is None
-        or accept_timeout is None
-        or settings.runner_image is None
-        or settings.runner_image_digest is None
-        or settings.runner_console_container is None
-        or settings.runner_lease_source_commit is None
-    ):
-        raise DbosRuntimeBindingConflict(
-            "a runner-lease driver requires the declared runner-lease deployment"
-        )
-    ca_certificate = (identity / "ca.crt").read_bytes()
-    core_certificate = (identity / "core.crt").read_bytes()
-    core_certificate_object = x509.load_pem_x509_certificate(core_certificate)
-    core_peer_document = encode_core_peer_document(
-        CorePeerDocument(
-            CORE_DNS_NAME,
-            core_uri_for_certificate(
-                cast(SupportedPublicKey, core_certificate_object.public_key())
-            ),
-            hashlib.sha256(
-                core_certificate_object.public_bytes(serialization.Encoding.DER)
-            ).hexdigest(),
-            CORE_SESSION_PORT,
-        )
-    )
-    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    pin_tls_13(context)
-    context.load_cert_chain(identity / "core.crt", identity / "core.key")
-    context.load_verify_locations(cafile=identity / "ca.crt")
-    context.verify_mode = ssl.CERT_REQUIRED
-    transport = RunnerLeaseSessionListener(
-        context,
-        ca_certificate,
-        accept_timeout,
-        _RUNNER_SESSION_CONNECTION_ATTEMPTS,
-    )
-    return DbosRunnerLeaseAttemptDriver(
-        store,
-        engine,
-        leases,
-        transport,
-        settings.runner_lease_source_commit,
-        settings.runner_image_digest,
-        settings.runner_image,
-        settings.runner_console_container,
-        ca_certificate,
-        core_certificate,
-        core_peer_document,
-        accept_timeout,
-    )
 
 
 # DBOS owns this table and these tokens; read only to decide whether an open
@@ -1225,19 +639,10 @@ def _open_binding(
         entry.manifest_entry.carrier is AgentExecutorCarrier.LOCAL_PROCESS
         for entry in agent_registry.entries
     )
-    runner_lease_keys = any(
-        entry.manifest_entry.carrier is AgentExecutorCarrier.RUNNER_LEASE
-        for entry in agent_registry.entries
-    )
     if local_process_keys and settings.agent_scratch_root is None:
         raise DbosRuntimeBindingConflict(
             "serving a provider executor requires an agent scratch root, because "
             "every attempt is started in a workspace of its own"
-        )
-    if runner_lease_keys and not settings.runner_lease_declared:
-        raise DbosRuntimeBindingConflict(
-            "serving a runner-lease executor requires the declared "
-            "runner-lease deployment"
         )
     engine = create_canonical_engine(
         settings.database_path, settings.sqlite_lock_timeout_seconds
@@ -1246,8 +651,6 @@ def _open_binding(
     adapters: OpenEffectAdapterRegistry | None = None
     agent_process_supervisor: AgentProcessSupervisor | None = None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None = None
-    runner_lease_driver: RunnerLeaseAttemptDriver | None = None
-    runner_lease_publisher: FileRunnerLeasePublisher | None = None
     try:
         initialize_schema(engine)
         if settings.bootstrap_project_root is not None:
@@ -1357,11 +760,6 @@ def _open_binding(
             # abandoned workspace from a live one, so it is where the workspaces
             # of attempts that ended before the restart are removed.
             agent_workspace_owner.reconcile(attempt_store)
-        if runner_lease_keys:
-            runner_lease_publisher = _open_runner_lease_publisher(settings)
-            runner_lease_driver = _runner_lease_attempt_driver(
-                settings, engine, attempt_store, runner_lease_publisher
-            )
         register_durable_run_workflow(
             datasource,
             _agent_executor_map(agent_registry, tuple(agent_executors_v2)),
@@ -1374,8 +772,6 @@ def _open_binding(
             adapters,
             effect_bindings,
             settings.project_id,
-            runner_lease_driver,
-            runner_lease_publisher,
         )
     except BaseException as original:
         cleanup_errors: list[BaseException] = []
@@ -1424,6 +820,77 @@ def _open_binding(
     )
 
 
+def _agent_executor_map(
+    registry: AgentExecutorRegistry,
+    executors: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...],
+) -> AgentExecutorMap:
+    """Every registered executor key mapped to what a driver needs.
+
+    One owner for the map the durable workflow binding is composed with -- the
+    opened executor where there is one, and the manifest facts either way.
+    """
+    opened = {manifest_entry.key: executor for manifest_entry, executor in executors}
+    return {
+        entry.key: (
+            opened.get(entry.key),
+            entry.manifest_entry.operational_identity,
+            entry.manifest_entry.declared_capabilities,
+            entry.manifest_entry.carrier,
+        )
+        for entry in registry.entries
+    }
+
+
+def _log_queue_label_admission(outcome: QueueLabelAdmissionOutcome) -> None:
+    """Say what the automation label admitted this sweep, and what it did not.
+
+    Both halves of this rule are soft by contract: an unreadable tracker admits
+    nothing and a declined item stays exactly as durable as it was, so neither
+    leaves a trace anywhere else. The sweep is therefore the only place that
+    can make them visible to the operator. A project whose policy names no
+    label says nothing here -- that is a steady state, not an event.
+    """
+
+    match outcome:
+        case QueueAutomationLabelUnset():
+            return
+        case QueueAutomationSourceUnreadable(detail):
+            _LOG.warning(
+                "The automation label admitted nothing: the tracker could not "
+                "be read (%s).",
+                detail,
+                extra={
+                    "event": "queue_label_admission_source_unreadable",
+                    "detail": detail,
+                },
+            )
+        case QueueLabelAdmissionsDecided(admitted, declined):
+            for decision in declined:
+                _LOG.info(
+                    "The automation label did not admit queue item %s (%s).",
+                    decision.item_id.value,
+                    type(decision.outcome).__name__,
+                    extra={
+                        "event": "queue_label_admission_declined",
+                        "item_id": decision.item_id.value,
+                        "outcome": type(decision.outcome).__name__,
+                    },
+                )
+            if admitted or declined:
+                _LOG.info(
+                    "Automation-label admission sweep: %d admitted, %d declined.",
+                    len(admitted),
+                    len(declined),
+                    extra={
+                        "event": "queue_label_admission_swept",
+                        "admitted": len(admitted),
+                        "declined": len(declined),
+                    },
+                )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
     return {
         "name": "atelier2",
@@ -1437,35 +904,19 @@ def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
 
 
 def _register_queues() -> None:
-    """The two queues a launched runtime polls, and what each admits at a time.
+    """The run queue this launched runtime polls, admitting as much as there
+    are workers.
 
-    The run queue admits as much as there are workers. The Runner-lease queue
-    admits one Attempt: `RUNNER_LEASE` sessions share one fixed Core listener
-    port (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`), so at most one
-    Runner Attempt may ever be in flight (`#540` C-3.6 D-8b, D1). That bound
-    serializes rather than fails a second arrival -- no run may end
-    unsuccessfully only because another Runner Attempt was already running --
-    and every run waiting for the slot is a queue row rather than a blocked DBOS
-    worker, so a second lease-carried run cannot starve the pool the whole
-    process shares (#636).
-
-    Both are polled rather than notified, because this deployment runs without
+    Polled rather than notified, because this deployment runs without
     LISTEN/NOTIFY, and polled often enough that a freed place is taken without an
     operator-visible pause. Registering on every launch is deliberate: the
     configuration lives in the system database, and this is the process that owns
     what it should say.
     """
 
-    polling_interval_sec = 0.05
     DBOS.register_queue(
         QUEUE_NAME,
-        polling_interval_sec=polling_interval_sec,
-        on_conflict="always_update",
-    )
-    DBOS.register_queue(
-        RUNNER_LEASE_QUEUE_NAME,
-        concurrency=1,
-        polling_interval_sec=polling_interval_sec,
+        polling_interval_sec=0.05,
         on_conflict="always_update",
     )
 
@@ -1579,63 +1030,8 @@ class _DbosProcessOwner:
             self._converge_driverless_effect_intents(bound)
             self._converge_uncontinuable_runs(bound)
             self._advance_queue(bound)
-            self._converge_driverless_runner_lease_attempts(bound)
 
     @staticmethod
-    def _converge_driverless_runner_lease_attempts(bound: _BoundRuntime) -> None:
-        """Converge every driverless Runner-lease Attempt to its real terminal.
-
-        `#540` Kind #585: after a Serve restart mid-session, a Runner-lease
-        Attempt whose driving workflow is gone stands armed (publicly
-        `POSSIBLY_RAN`) forever. The launcher lays that Attempt's own retained
-        terminal fact in its handoff directory; this reads it back over
-        `FileRunnerTerminalEvidenceSource` and commits it exactly once, so the
-        run reaches the terminal the Runner actually reported rather than the
-        `INTERRUPTED` the driverless sweep would invent.
-
-        After the launch, and last, same as the convergences above: only once
-        recovery has armed every workflow that is still going to run can a
-        workflow's absence from `workflow_status` mean it is truly gone. The
-        reconstruction reads durable truth through the same owner the
-        replacement workflow uses (`reconstruct_agent_attempt`), so the
-        `request_hash` it commits under is exactly the one the attempt bound.
-
-        Reconstruction is per-Attempt and tolerant: an Attempt whose executor
-        left config, or whose durable binding no longer reconstructs, is left
-        non-terminal and named rather than aborting the whole sweep -- one bad
-        Attempt never blocks the others, and Serve always starts.
-        """
-
-        if not any(
-            entry.manifest_entry.carrier is AgentExecutorCarrier.RUNNER_LEASE
-            for entry in bound.agent_executor_registry.entries
-        ):
-            return
-        lease_root = bound.settings.runner_lease_root
-        if lease_root is None:
-            return
-        driverless = _driverless_runner_lease_attempts(
-            bound.engine, bound.settings.application_version
-        )
-        if not driverless:
-            return
-        executors = _agent_executor_map(
-            bound.agent_executor_registry, bound.agent_executors_v2
-        )
-        source = FileRunnerTerminalEvidenceSource(lease_root / "attempts")
-        jobs, left_nonterminal = _reconstructed_runner_lease_jobs(
-            bound, executors, source, driverless
-        )
-        report = converge_driverless_runner_lease_attempts(
-            jobs,
-            DbosAgentAttemptStore(bound.engine, bound.settings.application_version),
-        )
-        _log_runner_lease_convergence(
-            RunnerLeaseConvergenceReport(
-                report.converged, (*left_nonterminal, *report.left_nonterminal)
-            )
-        )
-
     @staticmethod
     def _converge_driverless_attempts(bound: _BoundRuntime) -> None:
         """Answer for what the last process left armed, once recovery is armed.

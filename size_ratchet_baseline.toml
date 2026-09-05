@@ -82,10 +82,6 @@ path = "src/atelier2/adapters/dbos/workflow.py"
 lines = 1341
 
 [[file]]
-path = "src/atelier2/adapters/docker_carrier.py"
-lines = 1419
-
-[[file]]
 path = "src/atelier2/adapters/github/live_effects.py"
 lines = 802
 
@@ -114,10 +110,6 @@ path = "src/atelier2/application/project_connections.py"
 lines = 1149
 
 [[file]]
-path = "src/atelier2/contracts/agent_attempts.py"
-lines = 1026
-
-[[file]]
 path = "src/atelier2/contracts/node_records_v3.py"
 lines = 800
 
@@ -142,20 +134,12 @@ path = "src/atelier2/host/run_command.py"
 lines = 937
 
 [[file]]
-path = "src/atelier2/host/runner_launcher.py"
-lines = 1331
-
-[[file]]
 path = "src/atelier2/host/serving.py"
 lines = 1439
 
 [[file]]
 path = "src/atelier2/ports/agent_executions.py"
 lines = 1163
-
-[[file]]
-path = "src/atelier2/runner/session.py"
-lines = 1072
 
 [[function]]
 qualified_name = "atelier2.adapters.agent_process_watchdog.Watchdog._handle_launch"
@@ -210,10 +194,6 @@ qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptSto
 lines = 77
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._commit_runner_cancellation"
-lines = 65
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._commit_success"
 lines = 210
 
@@ -224,14 +204,6 @@ lines = 138
 [[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.claim"
 lines = 71
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.commit_never_launched_cancellation"
-lines = 91
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.commit_runner_terminal_evidence"
-lines = 193
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.refuse_unavailable_executor"
@@ -418,16 +390,8 @@ qualified_name = "atelier2.adapters.dbos.run_transitions.run_from_record_and_bin
 lines = 81
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.runtime.DbosRuntimeSettings.__post_init__"
-lines = 81
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
 lines = 228
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.runtime._runner_lease_attempt_driver"
-lines = 69
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.runtime._still_open_effect_intents"
@@ -484,10 +448,6 @@ lines = 730
 [[function]]
 qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.durable_node"
 lines = 84
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.durable_runner_lease_attempt"
-lines = 68
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.redeem_agent_node_effect"
@@ -590,10 +550,6 @@ qualified_name = "atelier2.application.execute_agent_attempt.execute_agent_attem
 lines = 159
 
 [[function]]
-qualified_name = "atelier2.application.execute_agent_attempt_on_runner.execute_agent_attempt_on_runner"
-lines = 79
-
-[[function]]
 qualified_name = "atelier2.application.model_configuration.get_project_model_resolution"
 lines = 78
 
@@ -650,10 +606,6 @@ qualified_name = "atelier2.application.resolve_start_bindings.resolve_start_bind
 lines = 98
 
 [[function]]
-qualified_name = "atelier2.application.run_runner_session.CoreRunnerSession._advance"
-lines = 63
-
-[[function]]
 qualified_name = "atelier2.application.start_published_run.start_published_run"
 lines = 101
 
@@ -698,14 +650,6 @@ qualified_name = "atelier2.contracts.run_configuration_v3._walk_node"
 lines = 72
 
 [[function]]
-qualified_name = "atelier2.contracts.runner_manifests.decode_runner_manifest"
-lines = 63
-
-[[function]]
-qualified_name = "atelier2.contracts.runner_terminal_evidence_codec._encode_evidence"
-lines = 60
-
-[[function]]
 qualified_name = "atelier2.contracts.tool_grants_v3.read_tool_grant_document"
 lines = 74
 
@@ -742,18 +686,6 @@ qualified_name = "atelier2.host.run_command._admit_published_v3"
 lines = 67
 
 [[function]]
-qualified_name = "atelier2.host.runner_identity.RunnerIdentityAuthority.issue_runner_identity"
-lines = 70
-
-[[function]]
-qualified_name = "atelier2.host.runner_launcher.RunnerLauncher._issue_identity"
-lines = 74
-
-[[function]]
-qualified_name = "atelier2.host.runner_launcher._parser"
-lines = 68
-
-[[function]]
 qualified_name = "atelier2.host.serving.HostProviderModelInspector.validate_model"
 lines = 93
 
@@ -776,22 +708,6 @@ lines = 115
 [[function]]
 qualified_name = "atelier2.ports.agent_executions.AgentExecutorRegistry.__init__"
 lines = 84
-
-[[function]]
-qualified_name = "atelier2.runner.__main__._run_candidate_session"
-lines = 90
-
-[[function]]
-qualified_name = "atelier2.runner.identity_receiver.load_published_identity"
-lines = 63
-
-[[function]]
-qualified_name = "atelier2.runner.session.run_candidate_session"
-lines = 75
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.commit_runner_terminal_evidence"
-complexity = 18
 
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._run_projections"

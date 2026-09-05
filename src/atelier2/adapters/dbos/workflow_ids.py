@@ -37,7 +37,6 @@ FORK_BOOTSTRAP_WORKFLOW_ID_PREFIX = "atelier2-run-fork-"
 EFFECT_WORKFLOW_ID_PREFIX = "atelier2-effect-"
 RECONCILE_WORKFLOW_ID_PREFIX = "atelier2-reconcile-"
 REPLACEMENT_WORKFLOW_ID_PREFIX = "atelier2-agent-replacement-"
-RUNNER_LEASE_WORKFLOW_ID_PREFIX = "atelier2-runner-lease-"
 
 
 def bootstrap_workflow_id_for(run_id: RunId) -> str:
@@ -127,55 +126,22 @@ def replacement_workflow_id_for(attempt_id: AgentAttemptId) -> str:
     return REPLACEMENT_WORKFLOW_ID_PREFIX + attempt_id.value
 
 
-def runner_lease_workflow_id_for(execution_id: NodeExecutionId, ordinal: int) -> str:
-    """The durable workflow that drives one attempt in the single Runner slot.
-
-    The attempt's ordinal takes part because a node's replacement attempt is a
-    second turn in that slot, not a repeat of the first that the idempotency key
-    would swallow -- the same reason a second round of a node is a second node
-    workflow.
-    """
-
-    digest = Sha256Hash.of(
-        frame(
-            "runner-lease-workflow-id/v1",
-            execution_id.value.encode("ascii"),
-            str(ordinal).encode("ascii"),
-        )
-    )
-    return RUNNER_LEASE_WORKFLOW_ID_PREFIX + digest.value
-
-
 def driving_workflow_ids(attempt: AgentAttempt) -> tuple[str, ...]:
     """Every durable workflow that can still owe this attempt its next move.
 
-    Which one it is follows from the attempt itself: a cancelled attempt is owed
-    its cleanup by the cancellation it carries, a Runner-bound one by the
-    lease-slot workflow that drives every Runner Attempt, a replacement by the
-    replacement workflow that was enqueued for it, and every other attempt by the
-    node workflow of its execution. Naming that here is what lets a restart ask
+    A carried cancellation always wins first: its cleanup workflow is the
+    answer regardless of anything else about the attempt. Absent one, a
+    runner-bound attempt names none, because nothing durable still drives it;
+    an attempt awaiting replacement names the replacement workflow already
+    enqueued for it; and every other attempt is owed its next move by the node
+    workflow of its execution. Naming that here is what lets a restart ask
     whether anything is still driving an attempt at all.
-
-    The Runner slot's own workflow is named beside every one of those, because no
-    column ever rules it out (#636). A lease-carried Attempt is durably prepared
-    before it binds its generation, so between those two commits the row still
-    reads local-process while the slot drives it; and cancelling a lease whose
-    launcher already claimed it defers the ending to that same slot workflow
-    (`#584`) instead of finishing it there. Naming the slot only where a column
-    happens to prove it leaves both of those Attempts looking abandoned to a
-    sweep that is about to stop them.
-
-    A wrong name costs nothing: no workflow was ever minted under it, so it
-    matches no row and the caller's own status read still decides.
     """
 
-    runner_slot = runner_lease_workflow_id_for(
-        attempt.node_execution_id, attempt.attempt_ordinal
-    )
     if attempt.cancellation is not None:
-        return (cancellation_workflow_id_for(stop_command_for(attempt)), runner_slot)
+        return (cancellation_workflow_id_for(stop_command_for(attempt)),)
     if attempt.runner_manifest_id is not None:
-        return (runner_slot,)
+        return ()
     if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
-        return (replacement_workflow_id_for(attempt.attempt_id), runner_slot)
-    return (node_workflow_id_for(attempt.node_execution_id), runner_slot)
+        return (replacement_workflow_id_for(attempt.attempt_id),)
+    return (node_workflow_id_for(attempt.node_execution_id),)

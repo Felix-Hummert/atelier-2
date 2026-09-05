@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, assert_never, cast
+from typing import Any, assert_never, cast
 
 import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
@@ -49,8 +49,6 @@ from atelier2.adapters.dbos.names import (
     RECONCILE_WORKFLOW_NAME,
     REPLACEMENT_WORKFLOW_NAME,
     RESOLVE_STEP_NAME,
-    RUNNER_LEASE_QUEUE_NAME,
-    RUNNER_LEASE_WORKFLOW_NAME,
     SUBWORKFLOW_COMMIT_STEP_NAME,
     SUBWORKFLOW_WORKFLOW_NAME,
     WAIT_COMMIT_STEP_NAME,
@@ -85,7 +83,6 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
-    runner_lease_workflow_id_for,
     subworkflow_workflow_id_for,
 )
 from atelier2.application.bind_node import (
@@ -97,11 +94,7 @@ from atelier2.application.bind_node import (
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
-from atelier2.application.cancel_runner_attempt import cancel_runner_attempt
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
-from atelier2.application.execute_agent_attempt_on_runner import (
-    ExecuteAgentAttemptOnRunnerOutcome,
-)
 from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
@@ -183,30 +176,10 @@ from atelier2.ports.effects import EffectAdapter, OpenEffectAdapterRegistry
 from atelier2.ports.project_verification import (
     DeclaredProject,
 )
-from atelier2.ports.runner_leases import RunnerInvocationTimedOut, RunnerLeasePublisher
 
 CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
 
 _LOG = logging.getLogger("atelier2")
-
-
-class RunnerLeaseAttemptDriver(Protocol):
-    """Drives one Attempt's Runner lease to a terminal outcome (`#540` C-3.6).
-
-    The one seam `register_durable_run_workflow` depends on for a
-    `RUNNER_LEASE`-carried key: a composition root supplies the concrete
-    driver (`atelier2.adapters.dbos.runtime` composes the production one,
-    over the real `atelier2.application.execute_agent_attempt_on_runner`
-    driver `#540` C-3.4 already proved), and a test supplies one wrapping the
-    same real driver over a scripted transport -- exactly the layering
-    `tests/integration/test_execute_agent_attempt_on_runner.py` already
-    established, so this dispatch seam never has to reimplement or refake the
-    session protocol itself.
-    """
-
-    def drive(
-        self, execution: AgentAttemptExecution
-    ) -> ExecuteAgentAttemptOnRunnerOutcome: ...
 
 
 def _declared_workspace_owner(
@@ -227,26 +200,6 @@ def _declared_agent_session(
             "an agent node requires the declared local agent session"
         )
     return session
-
-
-def _declared_runner_lease_driver(
-    driver: RunnerLeaseAttemptDriver | None,
-) -> RunnerLeaseAttemptDriver:
-    if driver is None:
-        raise RunBindingConflict(
-            "an agent node requires the declared runner-lease attempt driver"
-        )
-    return driver
-
-
-def _declared_runner_lease_publisher(
-    publisher: RunnerLeasePublisher | None,
-) -> RunnerLeasePublisher:
-    if publisher is None:
-        raise RunBindingConflict(
-            "cancelling a runner-lease attempt requires the declared lease publisher"
-        )
-    return publisher
 
 
 def bootstrap_run_binding(
@@ -389,11 +342,10 @@ class ReconstructedAgentAttempt:
     `AgentExecutionRequestV2` is re-derived from durable truth through the same
     `_node_binding`/`bind_node` composition that first minted it, so its
     `request_hash` is byte-identical to the one the durable attempt already
-    carries. A second, drifting derivation would let a Serve-restart
-    convergence commit evidence under a request the store answers with
-    `RunnerBindingConflict` -- a silent failure to converge. `binding`,
-    `executor` and `carrier` are the rest of what an executing caller (the
-    replacement workflow) needs, so it never decodes the same binding twice.
+    carries, so a replacement workflow never commits evidence under a
+    drifting, independently re-derived request. `binding`, `executor` and
+    `carrier` are the rest of what an executing caller (the replacement
+    workflow) needs, so it never decodes the same binding twice.
     """
 
     execution: AgentAttemptExecution
@@ -629,8 +581,6 @@ def register_durable_run_workflow(
     adapter: OpenEffectAdapterRegistry,
     effect_binding: tuple[EffectAdapterBinding, ...],
     project_id: ProjectId | None = None,
-    runner_lease_driver: RunnerLeaseAttemptDriver | None = None,
-    runner_lease_publisher: RunnerLeasePublisher | None = None,
 ) -> None:
     effect_bindings = effect_binding
 
@@ -647,24 +597,10 @@ def register_durable_run_workflow(
         return adapter_for_intent(intent)
 
     def execute_v2_attempt(
-        carrier: AgentExecutorCarrier,
         attempt_execution: AgentAttemptExecution,
         executor: AgentExecutorV2,
         binding: AgentNodeBindingV2,
-    ) -> (
-        AgentAttemptSucceeded
-        | AgentAttemptFailed
-        | AgentAttemptPossiblyRan
-        | RunnerInvocationTimedOut
-    ):
-        if carrier is AgentExecutorCarrier.RUNNER_LEASE:
-            if pinned_project(binding, project) is not None:
-                raise RunBindingConflict(
-                    "a runner-lease agent node does not support a pinned "
-                    "project source yet"
-                )
-            driver = _declared_runner_lease_driver(runner_lease_driver)
-            return driver.drive(attempt_execution)
+    ) -> AgentAttemptSucceeded | AgentAttemptFailed | AgentAttemptPossiblyRan:
         return execute_agent_attempt(
             attempt_execution,
             executor,
@@ -714,45 +650,8 @@ def register_durable_run_workflow(
             carrier,
         )
 
-    def take_the_runner_lease_slot(attempt: ReconstructedAgentAttempt) -> str:
-        """Hand one Attempt to the single Runner slot and let this workflow end.
-
-        The queue behind that slot admits one Attempt at a time
-        (`atelier2.adapters.dbos.runtime` registers it), so a run that arrives
-        while another Runner Attempt is in flight waits as a database row rather
-        than as a blocked DBOS worker held for the whole of the attempt ahead of
-        it (#636) -- the same handoff an Action node already makes to its own
-        effect workflow. The run stays STARTED; the lease workflow carries it on.
-        """
-
-        request = attempt.execution.request
-        _LOG.info(
-            "Agent attempt %s is queued for the runner slot.",
-            attempt.execution.attempt_id.value,
-            extra={
-                "event": "agent_attempt_queued_for_runner_slot",
-                "run_id": request.run_id.value,
-                "node_id": request.node_id,
-                "attempt_id": attempt.execution.attempt_id.value,
-            },
-        )
-        with SetWorkflowID(
-            runner_lease_workflow_id_for(
-                request.node_execution_id, attempt.execution.ordinal
-            )
-        ):
-            DBOS.enqueue_workflow(
-                RUNNER_LEASE_QUEUE_NAME,
-                durable_runner_lease_attempt,
-                request.run_id.value,
-                request.workflow_revision_hash.value,
-                request.node_id,
-                attempt.execution.ordinal,
-            )
-        return RunState.STARTED.value
-
     def continue_run_after(
-        outcome: AgentAttemptExecutionOutcome | RunnerInvocationTimedOut,
+        outcome: AgentAttemptExecutionOutcome,
         node_binding: AgentNodeBindingV2,
         run_id: RunId,
         revision_hash: WorkflowRevisionHash,
@@ -975,15 +874,10 @@ def register_durable_run_workflow(
             cancellation.replacement,
         )
         if attempt.runner_manifest_id is not None:
-            # A runner-lease-bound attempt converges over its lease, not a local
-            # process: winning the withdraw ends it NEVER_LAUNCHED, a claimed
-            # lease defers it to the launched path without a redrive loop (#584).
-            cancel_runner_attempt(
-                request,
-                agent_attempt_store,
-                _declared_runner_lease_publisher(runner_lease_publisher),
+            raise RunTransitionConflict(
+                "a runner-lease-bound attempt cannot cancel: the runner is "
+                "deleted (#1252)"
             )
-            return agent_attempt_store.load(attempt.attempt_id).state.value
         redrive_index = 0
         while (
             continue_agent_attempt_cancellation(
@@ -1002,76 +896,6 @@ def register_durable_run_workflow(
             redrive_index += 1
         return agent_attempt_store.load(attempt.attempt_id).state.value
 
-    @DBOS.workflow(name=RUNNER_LEASE_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_runner_lease_attempt(
-        run_id: str, revision_hash: str, node_id: str, attempt_ordinal: int
-    ) -> str:
-        """One Agent node's Runner Attempt, driven inside the single Runner slot.
-
-        Enqueued rather than called, and the only place a `RUNNER_LEASE` Attempt
-        is driven from: the queue's concurrency of one is what keeps at most one
-        Runner Attempt in flight, and its `ENQUEUED` rows are what let the rest
-        wait without holding a worker each (#636).
-
-        Its binding is read again here rather than carried from the workflow that
-        handed it over, because the attempt this drives is minted from that
-        binding -- one derivation, in the workflow that commits under it.
-        """
-
-        typed_run_id = RunId(run_id)
-        typed_revision = WorkflowRevisionHash(revision_hash)
-        binding = decode_node_binding(
-            _node_binding(datasource, typed_run_id, typed_revision, node_id, project)
-        )
-        if not isinstance(binding, AgentNodeBindingV2):
-            raise RunTransitionConflict(
-                "the runner-lease slot drives V2 agent nodes only"
-            )
-        if attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
-            attempt_id = datasource.run_tx_step(
-                {"name": "runner-repair-attempt"},
-                lambda: datasource.sql_session().scalar(
-                    sa.select(agent_attempts.c.attempt_id).where(
-                        agent_attempts.c.run_id == typed_run_id.value,
-                        agent_attempts.c.workflow_revision_hash == typed_revision.value,
-                        agent_attempts.c.node_id == node_id,
-                        agent_attempts.c.attempt_ordinal == attempt_ordinal,
-                    )
-                ),
-            )
-            if attempt_id is None:
-                raise RunTransitionConflict("runner repair attempt is absent")
-            attempt = reconstruct_agent_attempt(
-                datasource,
-                agent_executors_v2,
-                project,
-                agent_attempt_store.load(AgentAttemptId(str(attempt_id))),
-            )
-            binding = attempt.binding
-        else:
-            attempt = agent_node_attempt(
-                binding, typed_run_id, typed_revision, node_id, attempt_ordinal
-            )
-        if attempt.executor is None:
-            # The key left the registry while this Attempt waited its turn. A
-            # first turn refuses the node, exactly as `durable_node` would have;
-            # a replacement is left to the cancellation path that minted it,
-            # exactly as `durable_agent_attempt_replacement` would have.
-            if attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
-                return RunState.STARTED.value
-            return refuse_unavailable_executor(attempt.execution.request)
-        outcome = execute_v2_attempt(
-            attempt.carrier, attempt.execution, attempt.executor, binding
-        )
-        return continue_run_after(
-            outcome,
-            binding,
-            typed_run_id,
-            typed_revision,
-            node_id,
-            binding.round_ordinal,
-        )
-
     @DBOS.workflow(name=REPLACEMENT_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_agent_attempt_replacement(attempt_id: str) -> str:
         replacement = agent_attempt_store.load(AgentAttemptId(attempt_id))
@@ -1080,10 +904,7 @@ def register_durable_run_workflow(
         )
         if reconstructed.executor is None:
             return RunState.STARTED.value
-        if reconstructed.carrier is AgentExecutorCarrier.RUNNER_LEASE:
-            return take_the_runner_lease_slot(reconstructed)
         outcome = execute_v2_attempt(
-            reconstructed.carrier,
             reconstructed.execution,
             reconstructed.executor,
             reconstructed.binding,
@@ -1118,11 +939,7 @@ def register_durable_run_workflow(
             )
             if attempt.executor is None:
                 return refuse_unavailable_executor(attempt.execution.request)
-            if attempt.carrier is AgentExecutorCarrier.RUNNER_LEASE:
-                return take_the_runner_lease_slot(attempt)
-            outcome = execute_v2_attempt(
-                attempt.carrier, attempt.execution, attempt.executor, binding
-            )
+            outcome = execute_v2_attempt(attempt.execution, attempt.executor, binding)
             return continue_run_after(
                 outcome,
                 binding,

@@ -2,25 +2,9 @@ schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/301"
 
 [[sentence]]
-id = "runner-session-bounded"
-text = "A Runner session refuses an empty, truncated, or over-limit frame before it constructs a request."
-
-[[sentence]]
-id = "runner-journal-release"
-text = "A Runner journal retains only acknowledged tombstone evidence until the matching release."
-
-[[sentence]]
 id = "runner-child-landlock"
 text = "The free child receives a kernel denial when it directly reads Runner identity material."
 
 [[sentence]]
 id = "runner-cancel-none"
-text = "After STARTED, Core persists CancelAgentAttemptRequest with replacement NONE before the CANCEL frame, and Runner evidence copies that command id and one physical observation."
-
-[[sentence]]
-id = "runner-replacement-not-supported-a"
-text = "Replacement ONE is refused as runner-replacement-not-supported-a with no CANCEL frame, second attempt, or child effect."
-
-[[sentence]]
-id = "runner-evidence-v2-is-unambiguous"
-text = "Distinct terminal outcomes have distinct V2 evidence identity; Exchange V1 records are refused by name."
+text = "A cancelled child is reaped by exit, by TERM, or by KILL, in that order."

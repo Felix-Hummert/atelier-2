@@ -34,7 +34,7 @@ peers, and permits dependencies only toward the right of this derived view:
 ```text
 contracts: layers, root-facade, dbos-owner, githubkit-owner, wire-projection-split, route-vocabulary, schema-owner, yaml-owner, httpx-owner
 preflights: port-sentence-problems, api-port-record-problems, use-case-record-problems, route-port-problems, duplicate-problems
-layers: __main__ > host | runner > api | adapters > application > ports > contracts
+layers: __main__ > host > api | adapters > application > ports > contracts
 dbos-owner: atelier2.adapters.dbos
 yaml-owner: atelier2.adapters.yaml_workflows, atelier2.adapters.markdown_agent_definitions
 root-facade-forbids: __main__, host, api, adapters, application, ports

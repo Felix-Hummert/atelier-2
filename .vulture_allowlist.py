@@ -18,10 +18,13 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
         ),
     },
     {
-        "names": ("adapters/free_runner_executor.py:run_free_runner_job",),
+        "names": ("contracts/agents.py:API_KEY",),
         "why": (
-            "adapters/free_runner_executor.py builds the fixed candidate program "
-            "as text and calls this name inside that text."
+            "An AuthMode member; claude_subscription.py, codex_subscription.py "
+            "and grok_subscription.py each refuse a bound profile whose auth "
+            "mode `is not AuthMode.SUBSCRIPTION`, so the negative member is "
+            "selected by comparison, never named, and its own tests construct "
+            "it directly to prove that refusal."
         ),
     },
     {
@@ -29,16 +32,6 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
         "why": (
             "A CodexSandboxMode member; the adapter selects a sandbox by the "
             "value codex-cli documents, never by attribute."
-        ),
-    },
-    {
-        "names": (
-            "contracts/agent_attempts.py:STANDARD_OUTPUT",
-            "contracts/agent_attempts.py:STANDARD_ERROR",
-        ),
-        "why": (
-            "RunnerOutputStream members; the terminal-evidence codec reads a "
-            "stream back by its persisted value."
         ),
     },
     {
@@ -145,16 +138,6 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
         "why": (
             "A sa.Table that registers itself in adapters/dbos/schema.py's shared "
             "MetaData on construction; every table in that module keeps a name."
-        ),
-    },
-    {
-        "names": (
-            "runner/session.py:buffer_size",
-            "adapters/runner_core_transport.py:buffer_size",
-        ),
-        "why": (
-            "The positional-only parameter of the `recv` contract runner/session.py "
-            "and adapters/runner_core_transport.py state; an SSLSocket fills it."
         ),
     },
     {
