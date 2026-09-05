@@ -31,6 +31,7 @@ from atelier2.adapters.claude_subscription import (
     PERSONAL_SUBSCRIPTION_TYPES,
     REMOTE_MANAGED_POLICY_ENTRY,
     WORKSPACE_TOOLS,
+    ClaudeExecutable,
     ClaudeExecutableUnsupported,
     ClaudeManagedPolicyPresent,
     ClaudeProcessCommand,
@@ -944,6 +945,33 @@ def test_the_containment_flags_reach_the_seam_without_an_empty_argument(
             ("", "--tools"),
             standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
         )
+
+
+def test_the_executable_value_needs_no_credential_directory_or_bubblewrap(
+    tmp_path: Path,
+) -> None:
+    """A future seat (#1099) launches only the binary: no deployment machinery.
+
+    `ClaudeSubscriptionSettings` layers credential directory, search path, and
+    bubblewrap on top of this same path invariant, but the invariant itself
+    stands alone.
+    """
+
+    executable = tmp_path / "claude"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    assert ClaudeExecutable(executable).path == executable.resolve()
+
+    missing = tmp_path / "absent"
+    with pytest.raises(ValueError, match="executable file"):
+        ClaudeExecutable(missing)
+
+    not_executable = tmp_path / "not-executable"
+    not_executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    not_executable.chmod(0o644)
+    with pytest.raises(ValueError, match="executable file"):
+        ClaudeExecutable(not_executable)
 
 
 @pytest.mark.parametrize(
