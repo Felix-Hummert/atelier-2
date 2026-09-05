@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from collections.abc import Callable
+
+import pytest
+
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntime,
+    DbosRuntimeBindingConflict,
+    DbosRuntimeSettings,
+)
 from atelier2.ports.effects import EffectAdapterFactory
 from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
 from tests.scenarios.runs import (
@@ -33,3 +41,23 @@ def recording_exact_runtime(
             ),
         ),
     )
+
+
+def binding_refusal_of(
+    open_runtime: Callable[[], DbosRuntime],
+) -> DbosRuntimeBindingConflict:
+    """The binding refusal this open owes, holding nothing when it fails to come.
+
+    A process may own one runtime binding, so an open that is expected to be
+    refused and instead succeeds hands its runtime to nobody: every later open
+    in that process is then refused for a binding no test still names, and the
+    test that arranged the refusal is not the one that fails. Closing what
+    unexpectedly opened keeps the failure where its arrangement is.
+    """
+
+    try:
+        runtime = open_runtime()
+    except DbosRuntimeBindingConflict as refusal:
+        return refusal
+    runtime.close()
+    pytest.fail("opening this runtime was expected to be refused")
