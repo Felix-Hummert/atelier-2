@@ -26,8 +26,10 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
+    AgentProcessOwnerId,
     CancelAgentAttemptRequest,
     ProcessExitSignature,
+    WatchdogGenerationId,
 )
 from atelier2.contracts.agent_permissions import (
     MINIMUM_PERMISSION_CALL_ORDINAL,
@@ -52,10 +54,12 @@ from atelier2.ports.agent_executions import (
     PermissionDecider,
     ProviderCancellationCause,
     ProviderCancellationFrame,
+    ProviderCancellationRequest,
     ProviderConversationAction,
     ProviderConversationBinding,
     ProviderConversationBounds,
     ProviderConversationClosing,
+    ProviderConversationComplete,
     ProviderConversationEnding,
     ProviderFilesystemAnswer,
     ProviderFilesystemEffect,
@@ -111,6 +115,38 @@ os.write(1, b'{"read":"' + sys.argv[1].encode() + b'"}\n')
 os.write(1, b'{"heard":' + sys.stdin.readline().strip().encode() + b'}\n')
 """
 
+_PROVIDER_REPEATS_WHATEVER_OPENED_IT = r"""
+import os, sys
+os.write(1, b'{"heard":' + sys.stdin.readline().strip().encode() + b'}\n')
+"""
+
+# End of file is no answer, and no reason to leave either: it keeps standing
+# there, so only a stop of its own ends this child.
+_PROVIDER_ASKS_AND_RECORDS_WHATEVER_ANSWER_ARRIVES = r"""
+import os, sys, time
+os.write(1, b'{"ask":"' + sys.argv[2].encode() + b'"}\n')
+told = os.read(0, 4096)
+if told:
+    open(sys.argv[1], "wb").write(told)
+time.sleep(60)
+"""
+
+_PROVIDER_ASKS_WITHOUT_EVER_READING = r"""
+import os, sys, time
+for _ in range(int(sys.argv[1])):
+    os.write(1, b'{"ask":"' + sys.argv[2].encode() + b'"}\n')
+    time.sleep(0.05)
+time.sleep(60)
+"""
+
+_PROVIDER_SERVES_UNTIL_ITS_INPUT_ENDS = r"""
+import os, sys
+os.write(1, b'{"done":true}\n')
+while sys.stdin.readline():
+    pass
+os.write(1, b'{"say":"bye"}\n')
+"""
+
 _PROVIDER_STOPS_ITSELF = r"""
 import os, sys
 os.write(1, b'{"stop":"' + sys.argv[1].encode() + b'"}\n')
@@ -164,12 +200,32 @@ time.sleep(60)
 """
 
 
+# It names the cause its conversation will ask to be stopped for, ignores TERM
+# so that what it was told is written down before it is killed, and keeps
+# reading afterwards so a second stop frame would be written down too.
+_PROVIDER_ASKS_TO_BE_STOPPED_AND_RECORDS_WHAT_IT_IS_TOLD = r"""
+import os, select, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+os.write(1, b'{"cancel":"' + sys.argv[2].encode() + b'"}\n')
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    ready, _writable, _failed = select.select([0], [], [], 0.05)
+    if ready:
+        told = os.read(0, 4096)
+        if not told:
+            break
+        open(sys.argv[1], "ab").write(told)
+time.sleep(60)
+"""
+
+
 def _bounds(
     total: int = SCENARIO_PROVIDER_FRAME_BYTES,
     incomplete: int = 4_096,
     reply: int = 4_096,
+    pending: int = 8_192,
 ) -> ProviderConversationBounds:
-    return ProviderConversationBounds(total, incomplete, reply, 4_096, 8_192)
+    return ProviderConversationBounds(total, incomplete, reply, 4_096, pending)
 
 
 @dataclass
@@ -203,21 +259,42 @@ class _LineFramedConversation:
 
     `{"ask": scope}` is a permission question, `{"read": path}` and
     `{"write": path, "content": text}` are file requests, `{"stop": reason}` is
-    the provider ending itself, every other line is a step, and whatever stands
-    after the last newline is the half frame an ending has to account for.
+    the provider ending itself, `{"cancel": cause}` is this conversation asking
+    for its own stop, `{"done": true}` is it saying it will send nothing more,
+    every other line is a step, and whatever stands after the last newline is
+    the half frame an ending has to account for.
     """
 
     attempt_id: AgentAttemptId
     bounds: ProviderConversationBounds = field(default_factory=_bounds)
+    opening: bytes = b""
     cancellation_frame: bytes | None = None
     reply_padding: int = 0
+    announces_acknowledgements: bool = False
     chunks: list[bytes] = field(default_factory=list)
     endings: list[ProviderConversationEnding] = field(default_factory=list)
+    acknowledged: list[int] = field(default_factory=list)
+    queued_input_bytes: int = 0
     questions: int = 0
     file_requests: int = 0
     refused_a_permission: bool = False
     provider_stop_reason: str = ""
     incomplete: bytes = b""
+
+    def open(self) -> tuple[ProviderConversationAction, ...]:
+        if not self.opening:
+            return ()
+        return (self._queued(self.opening),)
+
+    def input_written(
+        self, written_bytes: int
+    ) -> tuple[ProviderConversationAction, ...]:
+        self.acknowledged.append(written_bytes)
+        if not self.announces_acknowledgements:
+            return ()
+        return (
+            ProviderSessionEvent(AssistantTurn(f'{{"acknowledged":{written_bytes}}}')),
+        )
 
     def receive_output(self, chunk: bytes) -> tuple[ProviderConversationAction, ...]:
         self.chunks.append(chunk)
@@ -258,7 +335,11 @@ class _LineFramedConversation:
 
     def _spelled(self, answer: dict[str, object]) -> ProviderStandardInput:
         spelled = json.dumps(answer, separators=(",", ":")).encode("utf-8")
-        return ProviderStandardInput(spelled + self.reply_padding * b" " + b"\n")
+        return self._queued(spelled + self.reply_padding * b" " + b"\n")
+
+    def _queued(self, data: bytes) -> ProviderStandardInput:
+        self.queued_input_bytes += len(data)
+        return ProviderStandardInput(data)
 
     def _outcome(self, ending: ProviderConversationEnding) -> ProviderTerminalOutcome:
         if self.provider_stop_reason:
@@ -302,6 +383,12 @@ class _LineFramedConversation:
                 ProviderFilesystemRequestId(self.file_requests),
                 b"" if reading else spoken["content"].encode("utf-8"),
             )
+        if "cancel" in spoken:
+            return ProviderCancellationRequest(
+                ProviderCancellationCause(spoken["cancel"])
+            )
+        if "done" in spoken:
+            return ProviderConversationComplete()
         if "stop" in spoken:
             self.provider_stop_reason = spoken["stop"]
         return ProviderSessionEvent(AssistantTurn(line))
@@ -381,9 +468,7 @@ class _ClaimedAttempt:
         )
         self.supervisor.finalize(self.execution)
 
-    def cancel_and_release(
-        self, cause: ProviderCancellationCause = ProviderCancellationCause.OPERATOR
-    ) -> AgentAttemptCancellationDisposition:
+    def request_cancellation(self) -> CancelAgentAttemptRequest:
         attempt = self.store.load(self.execution.attempt_id)
         command = CancelAgentAttemptRequest(
             attempt.run_id,
@@ -393,17 +478,41 @@ class _ClaimedAttempt:
             AgentAttemptReplacement.NONE,
         )
         self.store.request_cancellation(command)
+        return command
+
+    def stop(
+        self, cause: ProviderCancellationCause = ProviderCancellationCause.OPERATOR
+    ) -> _Stopped:
         disposition, owner, generation = self.supervisor.cancel(
             self.store.load(self.execution.attempt_id), cause
         )
-        assert self.supervisor.cancel(
-            self.store.load(self.execution.attempt_id), cause
-        ) == (disposition, owner, generation)
+        return _Stopped(disposition, owner, generation)
+
+    def attest_and_release(
+        self, command: CancelAgentAttemptRequest, stopped: _Stopped
+    ) -> None:
         terminal = self.store.attest_cancellation_cleanup(
-            command, disposition, owner, generation
+            command, stopped.disposition, stopped.owner, stopped.generation
         )
         self.supervisor.release(terminal.attempt)
-        return disposition
+
+    def cancel_and_release(
+        self, cause: ProviderCancellationCause = ProviderCancellationCause.OPERATOR
+    ) -> AgentAttemptCancellationDisposition:
+        command = self.request_cancellation()
+        stopped = self.stop(cause)
+        assert self.stop(cause) == stopped
+        self.attest_and_release(command, stopped)
+        return stopped.disposition
+
+
+@dataclass(frozen=True)
+class _Stopped:
+    """What a stop attested: how the child went out, under whose supervision."""
+
+    disposition: AgentAttemptCancellationDisposition
+    owner: AgentProcessOwnerId
+    generation: WatchdogGenerationId
 
 
 @dataclass
@@ -445,6 +554,44 @@ def _claimed_attempt(tmp_path: Path, name: str) -> Iterator[_ClaimedAttempt]:
         yield _ClaimedAttempt(execution, store, supervisor)
     finally:
         runtime.close()
+
+
+def _lose_the_first_acknowledged_exchange(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the watchdog answer one exchange, and lose that answer on the way back.
+
+    The exchange that first reports written input is the one worth losing: its
+    answer carried both what the child took and what it said, so a retry that
+    counted either again would be visible.
+    """
+
+    request = process_module.AgentProcessSupervisor._request
+    lost = threading.Event()
+
+    def losing_one(
+        endpoint: Path,
+        payload: dict[str, object],
+        *,
+        timeout_seconds: float | None = 30,
+        maximum_response_bytes: int,
+    ) -> dict[str, object]:
+        response = request(
+            endpoint,
+            payload,
+            timeout_seconds=timeout_seconds,
+            maximum_response_bytes=maximum_response_bytes,
+        )
+        if (
+            payload.get("operation") == "EXCHANGE"
+            and response.get("accepted_input_bytes")
+            and not lost.is_set()
+        ):
+            lost.set()
+            raise TimeoutError("the exchange answer never arrived")
+        return response
+
+    monkeypatch.setattr(
+        process_module.AgentProcessSupervisor, "_request", staticmethod(losing_one)
+    )
 
 
 def _wait_until(reached: Callable[[], bool], what: str) -> None:
@@ -603,9 +750,10 @@ def test_an_answer_past_the_declared_reply_bound_is_never_written(
         attempt.finalize_after_failure()
 
 
-def test_an_authority_that_refuses_to_answer_ends_the_attempt_without_an_answer(
+def test_an_authority_that_refuses_to_answer_stops_the_child_it_left_waiting(
     tmp_path: Path,
 ) -> None:
+    told = tmp_path / "what-the-child-was-told"
     with _claimed_attempt(tmp_path, "process/failing-receipt") as attempt:
         conversation = _LineFramedConversation(attempt.execution.attempt_id)
 
@@ -613,7 +761,8 @@ def test_an_authority_that_refuses_to_answer_ends_the_attempt_without_an_answer(
             raise RuntimeError("the permission receipt could not be kept")
 
         invocation = attempt.invocation(
-            _PROVIDER_ASKS_AND_LEAVES,
+            _PROVIDER_ASKS_AND_RECORDS_WHATEVER_ANSWER_ARRIVES,
+            str(told),
             _WORKSPACE_SCOPE.value,
             conversation=_binding(conversation),
         )
@@ -625,6 +774,200 @@ def test_an_authority_that_refuses_to_answer_ends_the_attempt_without_an_answer(
 
         assert isinstance(failure, RuntimeError)
         assert "receipt could not be kept" in str(failure)
+        assert not told.exists()
+        # The child was still waiting for the answer this failure means it
+        # will never get. Finalization is accepted only by a watchdog holding
+        # a reaped process, so this is where a child left alive would show.
+        attempt.finalize_after_failure()
+
+
+def test_input_a_child_never_reads_refuses_at_the_declared_pending_bound(
+    tmp_path: Path,
+) -> None:
+    with _claimed_attempt(tmp_path, "process/pending-bound") as attempt:
+        conversation = _LineFramedConversation(
+            attempt.execution.attempt_id,
+            bounds=_bounds(pending=8_192),
+            reply_padding=4_000,
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_ASKS_WITHOUT_EVER_READING,
+            "40",
+            _WORKSPACE_SCOPE.value,
+            conversation=_binding(conversation),
+        )
+
+        failure = attempt.launch(invocation, _RecordingAuthority()).failure
+
+        # Every answer is written into a pipe nobody drains: once it is full,
+        # what the watchdog still holds unwritten is what this conversation
+        # declared room for, not the far wider bound of the process seam.
+        assert isinstance(failure, RuntimeError)
+        assert "standard input exceeds its declared bound" in str(failure)
+        attempt.finalize_after_failure()
+
+
+def test_a_lost_exchange_answer_is_retried_without_delivering_a_byte_twice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _claimed_attempt(tmp_path, "process/lost-exchange") as attempt:
+        conversation = _LineFramedConversation(attempt.execution.attempt_id)
+        authority = _RecordingAuthority()
+        _lose_the_first_acknowledged_exchange(monkeypatch)
+        invocation = attempt.invocation(
+            _PROVIDER_ASKS_THEN_REPEATS_THE_ANSWER,
+            _WORKSPACE_SCOPE.value,
+            conversation=_binding(conversation),
+        )
+
+        completion = attempt.launch(invocation, authority).completion
+
+        assert completion.standard_output == (
+            b'{"ask":"/workspace"}\n{"heard":{"granted":true}}\n'
+        )
+        # The lost answer carried both directions: the retry must not ask the
+        # child twice, and must not read the same output into the conversation
+        # twice either.
+        assert len(authority.requests) == 1
+        assert b"".join(conversation.chunks) == completion.standard_output
+        attempt.finalize_after_failure()
+
+
+def test_a_cancellation_does_not_wait_for_the_receipt_a_relay_is_blocked_on(
+    tmp_path: Path,
+) -> None:
+    with _claimed_attempt(tmp_path, "process/blocked-receipt") as attempt:
+        conversation = _LineFramedConversation(attempt.execution.attempt_id)
+        asked = threading.Event()
+        may_keep_the_receipt = threading.Event()
+
+        def keep_the_receipt_when_allowed() -> None:
+            asked.set()
+            assert may_keep_the_receipt.wait(timeout=20)
+
+        invocation = attempt.invocation(
+            _PROVIDER_ASKS_THEN_REPEATS_THE_ANSWER,
+            _WORKSPACE_SCOPE.value,
+            conversation=_binding(conversation),
+        )
+        launch = attempt.launch(
+            invocation,
+            _RecordingAuthority(before_answering=keep_the_receipt_when_allowed),
+        )
+        assert asked.wait(timeout=10)
+        command = attempt.request_cancellation()
+
+        stopped = attempt.stop()
+
+        # The relay is still inside the receipt this stop did not wait for,
+        # and the child is already reaped.
+        assert launch.thread.is_alive()
+        assert stopped.disposition is (
+            AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
+        )
+        may_keep_the_receipt.set()
+        assert launch.completion.terminal_outcome == ProviderTerminalOutcome(
+            ProviderTerminalReason.CANCELLED_BY_OPERATOR
+        )
+        # The answer this receipt finally allowed was written into a child that
+        # was already gone, and nothing told the conversation otherwise.
+        assert conversation.acknowledged == []
+        assert conversation.endings == [
+            ProviderConversationEnding.CANCELLED_BY_OPERATOR
+        ]
+        attempt.attest_and_release(command, stopped)
+
+
+def test_the_conversation_speaks_first_and_its_own_bytes_open_the_child(
+    tmp_path: Path,
+) -> None:
+    with _claimed_attempt(tmp_path, "process/opening") as attempt:
+        conversation = _LineFramedConversation(
+            attempt.execution.attempt_id, opening=b'{"hello":"initialize"}\n'
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_REPEATS_WHATEVER_OPENED_IT,
+            conversation=_binding(conversation),
+        )
+
+        completion = attempt.launch(invocation, _RecordingAuthority()).completion
+
+        # The command carries no payload at all: the first bytes the child ever
+        # read are the ones the conversation itself spelled.
+        assert invocation.command.standard_input == b""
+        assert completion.standard_output == b'{"heard":{"hello":"initialize"}}\n'
+        attempt.finalize_after_failure()
+
+
+def test_the_conversation_learns_which_of_its_bytes_the_child_really_has(
+    tmp_path: Path,
+) -> None:
+    with _claimed_attempt(tmp_path, "process/acknowledged") as attempt:
+        conversation = _LineFramedConversation(
+            attempt.execution.attempt_id, announces_acknowledgements=True
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_ASKS_THEN_REPEATS_THE_ANSWER,
+            _WORKSPACE_SCOPE.value,
+            conversation=_binding(conversation),
+        )
+
+        completion = attempt.launch(invocation, _RecordingAuthority()).completion
+
+        assert conversation.acknowledged[-1] == conversation.queued_input_bytes
+        assert completion.session_events == (
+            AssistantTurn(f'{{"acknowledged":{conversation.queued_input_bytes}}}'),
+            AssistantTurn('{"heard":{"granted":true}}'),
+        )
+        attempt.finalize_after_failure()
+
+
+def test_a_conversation_that_asks_to_be_stopped_stops_the_child_with_its_cause(
+    tmp_path: Path,
+) -> None:
+    told = tmp_path / "what-the-child-was-told"
+    stop_frame = b'{"stop":true}\n'
+    with _claimed_attempt(tmp_path, "process/asked-to-stop") as attempt:
+        conversation = _LineFramedConversation(
+            attempt.execution.attempt_id, cancellation_frame=stop_frame
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_ASKS_TO_BE_STOPPED_AND_RECORDS_WHAT_IT_IS_TOLD,
+            str(told),
+            ProviderCancellationCause.BUDGET.value,
+            conversation=_binding(conversation),
+        )
+
+        completion = attempt.launch(invocation, _RecordingAuthority()).completion
+
+        # Nobody outside asked: the conversation reached its own ceiling, and
+        # the stop it asked for is the one an operator would have got.
+        assert told.read_bytes() == stop_frame
+        assert conversation.endings == [ProviderConversationEnding.CANCELLED_FOR_BUDGET]
+        assert completion.terminal_outcome == ProviderTerminalOutcome(
+            ProviderTerminalReason.BUDGET_EXHAUSTED
+        )
+        attempt.finalize_after_failure()
+
+
+def test_a_completed_conversation_lets_its_child_leave_on_end_of_file(
+    tmp_path: Path,
+) -> None:
+    with _claimed_attempt(tmp_path, "process/completed") as attempt:
+        conversation = _LineFramedConversation(attempt.execution.attempt_id)
+        invocation = attempt.invocation(
+            _PROVIDER_SERVES_UNTIL_ITS_INPUT_ENDS,
+            conversation=_binding(conversation),
+        )
+
+        completion = attempt.launch(invocation, _RecordingAuthority()).completion
+
+        # A server that waits for more input leaves without a signal only if
+        # somebody closes that input: nothing here was terminated.
+        assert completion.return_code == 0
+        assert completion.session_events == (AssistantTurn('{"say":"bye"}'),)
+        assert conversation.endings == [ProviderConversationEnding.OUTPUT_ENDED]
         attempt.finalize_after_failure()
 
 

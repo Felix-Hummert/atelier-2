@@ -419,6 +419,29 @@ def test_unclassified_busy_reply_survives_every_bounded_contender_exit(
             )
 
 
+def test_a_cancellation_is_admitted_while_another_connection_holds_the_slot(
+    running_wire_watchdog: tuple[Watchdog, Path],
+) -> None:
+    """A stop never waits out the connection a relay exchange is opening.
+
+    The duplex relay reconnects for every exchange, so a cancellation racing
+    one of those connections would meet the busy refusal and cost a retry --
+    a second in which nothing has been signalled.
+    """
+
+    watchdog, endpoint = running_wire_watchdog
+    with _connect_control(endpoint):
+        _wait_until(lambda: "UNCLASSIFIED" in watchdog._slots)
+
+        answer = _request_control_bytes(
+            endpoint, encode_control_frame({"operation": "CANCEL"})
+        )
+
+    assert answer == encode_control_frame(
+        {"disposition": "NEVER_LAUNCHED", "type": "CANCELLED"}
+    )
+
+
 @pytest.mark.parametrize("_startup", range(5))
 def test_repeated_wire_watchdog_start_returns_only_after_listener_readiness(
     tmp_path: Path,
@@ -867,7 +890,10 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
         lost_cancel.close()
         with blocked:
             assert _receive_control(blocked) == {"type": "CONTROL_FRAME_TIMEOUT"}
-        assert cancel_requests == process_module.MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS
+        # A peer holding the door with half a frame delays nobody's stop: the
+        # cancellation is admitted on its first try and the bad peer is still
+        # answered on its own bound.
+        assert cancel_requests == 1
         assert disposition is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
         terminal = store.attest_cancellation_cleanup(
             command, disposition, owner, generation

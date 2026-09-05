@@ -429,10 +429,17 @@ reads bytes and asks — and nothing of it reaches the watchdog, which keeps
 servicing pipes, deadlines and signals alone. A stop therefore still writes the
 conversation's prepared stop frame once and signals in the same breath, and it
 carries why it was asked for — an operator, a budget, a policy — because a
-signal cannot say that afterwards. The conversation ends by saying in its own
-typed terms how the attempt really finished, beside the bytes and the steps it
-leaves. An invocation that opens no conversation is the print-mode call above,
-unchanged in every byte.
+signal cannot say that afterwards. A stop is also the conversation's own to
+ask for, with the same causes, when it reaches a ceiling nobody outside can
+see. The conversation speaks first -- a protocol whose opening frame is the
+caller's spells it itself, so no command payload carries a lifecycle it cannot
+number -- it is told when its bytes physically reached the child, and it can
+declare itself finished, which closes that child's input once the last answer
+is written so a server that waits for more leaves on end of file rather than on
+a signal. The conversation ends by saying in its own typed terms how the
+attempt really finished, beside the bytes and the steps it leaves. An
+invocation that opens no conversation is the print-mode call above, unchanged
+in every byte.
 
 The call itself is deliberately the barest one its authentication allows: no
 tools, no hooks, no MCP servers, no plugins or skills, no project configuration

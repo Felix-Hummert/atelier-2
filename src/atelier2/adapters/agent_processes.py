@@ -46,8 +46,10 @@ from atelier2.ports.agent_executions import (
     PermissionDecider,
     ProviderCancellationCause,
     ProviderCancellationFrame,
+    ProviderCancellationRequest,
     ProviderConversationAction,
     ProviderConversationBinding,
+    ProviderConversationComplete,
     ProviderConversationEnding,
     ProviderFilesystemRequest,
     ProviderSessionEvent,
@@ -122,29 +124,38 @@ class _ConversationRelay:
         self._bounds = conversation.driver.bounds
         self._permissions = permissions
         self._pending_input = b""
-        self._accepted_input_bytes = 0
+        self._written_input_bytes = 0
         self._delivered_output_bytes = 0
         self._unanswered_output_bytes = 0
         self._unpublished_cancellation: bytes | None = None
+        self._requested_cancellation: ProviderCancellationCause | None = None
+        self._input_complete = False
         self._steps: list[TranscriptEvent] = []
+
+    def open(self) -> None:
+        """Let the conversation say the first thing, before anything is read."""
+
+        self._apply(self._driver.open())
 
     def exchange_request(self) -> dict[str, object]:
         """What this relay hands over next, addressed by cumulative byte counts.
 
-        Both directions are counted rather than acknowledged, so the exchange
-        the control channel had to retry delivers nothing twice: the watchdog
-        skips input it already took, and output it already sent simply arrives
-        again.
+        Both directions are counted, so the exchange the control channel had to
+        retry delivers nothing twice: the watchdog skips input it already took,
+        and output it already sent simply arrives again. Input counts as gone
+        only once the child's own pipe has it, which is what keeps everything
+        still buffered anywhere inside the bound this conversation declared.
         """
 
         return {
             "cancellation_frame": base64.b64encode(
                 self._unpublished_cancellation or b""
             ).decode("ascii"),
+            "close_input": self._input_complete,
             "delivered_output_bytes": self._delivered_output_bytes,
             "operation": "EXCHANGE",
             "standard_input": base64.b64encode(self._pending_input).decode("ascii"),
-            "standard_input_offset": self._accepted_input_bytes,
+            "standard_input_offset": self._written_input_bytes,
         }
 
     def exchanged(
@@ -152,27 +163,28 @@ class _ConversationRelay:
     ) -> ProviderConversationEnding | None:
         """Read one exchange, and say how the process ended if it has."""
 
-        accepted = response.get("accepted_input_bytes")
+        written_bytes = response.get("accepted_input_bytes")
         output_value = response.get("standard_output")
         ending = response.get("ending")
         if (
-            type(accepted) is not int
+            type(written_bytes) is not int
             or type(output_value) is not str
             or type(ending) is not str
-            or not self._accepted_input_bytes
-            <= accepted
-            <= self._accepted_input_bytes + len(self._pending_input)
+            or not self._written_input_bytes
+            <= written_bytes
+            <= self._written_input_bytes + len(self._pending_input)
         ):
             raise RuntimeError("watchdog conversation exchange is malformed")
         try:
             chunk = base64.b64decode(output_value, validate=True)
         except ValueError as error:
             raise RuntimeError("watchdog conversation exchange is malformed") from error
-        self._pending_input = self._pending_input[
-            accepted - self._accepted_input_bytes :
-        ]
-        self._accepted_input_bytes = accepted
+        newly_written = written_bytes - self._written_input_bytes
+        self._pending_input = self._pending_input[newly_written:]
+        self._written_input_bytes = written_bytes
         self._unpublished_cancellation = None
+        if newly_written:
+            self._apply(self._driver.input_written(written_bytes))
         if chunk:
             self._receive(chunk)
             return None
@@ -181,6 +193,21 @@ class _ConversationRelay:
         return _ENDING_OF_EXCHANGE_ARM.get(
             ending, ProviderConversationEnding.TERMINATED
         )
+
+    def cancellation_to_request(self) -> ProviderCancellationCause | None:
+        """The stop this conversation asked for, once its frame is over there.
+
+        Held back while a freshly published frame is still on this side: the
+        watchdog writes what it was given and signals in the same breath, so a
+        stop asked for before its own frame arrived would be a signal without
+        the sentence that was meant to precede it.
+        """
+
+        if self._unpublished_cancellation is not None:
+            return None
+        requested = self._requested_cancellation
+        self._requested_cancellation = None
+        return requested
 
     def ended(self, ending: ProviderConversationEnding) -> _ConversationEvidence:
         """Let the conversation close its own story, and hand back what it left."""
@@ -214,6 +241,10 @@ class _ConversationRelay:
                             "conversation cancellation frame exceeds its declared bound"
                         )
                     self._unpublished_cancellation = data
+                case ProviderCancellationRequest(cause):
+                    self._requested_cancellation = cause
+                case ProviderConversationComplete():
+                    self._input_complete = True
                 case PermissionRequest() as request:
                     decision = self._permissions.decide(request)
                     self._queue_input(self._driver.answer_permission(decision).data)
@@ -469,25 +500,11 @@ class AgentProcessSupervisor(AgentSession):
                 or attempt.watchdog_generation_id != owned.generation
             ):
                 raise AgentProcessOwnerNotLocal
-        response = self._request_with_retry(
-            owned,
-            {"cause": cause.value, "operation": "CANCEL"},
-            timeout_seconds=(self._grace_seconds * 2) + 2,
-            maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
+        return (
+            AgentAttemptCancellationDisposition(self._stop_and_reap(owned, cause)),
+            owned.owner,
+            owned.generation,
         )
-        if response.get("type") == "RECOVERY_HANDOFF":
-            raise AgentProcessOwnerNotLocal
-        if response.get("type") != "CANCELLED":
-            raise RuntimeError("watchdog did not acknowledge cancellation")
-        disposition_value = response.get("disposition")
-        if type(disposition_value) is not str:
-            raise RuntimeError("watchdog cancellation response is malformed")
-        disposition = AgentAttemptCancellationDisposition(disposition_value)
-        if owned.launched and not owned.wait_completed.wait(
-            timeout=max(1.0, self._grace_seconds + 1.0)
-        ):
-            raise RuntimeError("watchdog did not return the reaped process completion")
-        return disposition, owned.owner, owned.generation
 
     def recover(
         self, attempt: AgentAttempt
@@ -584,9 +601,54 @@ class AgentProcessSupervisor(AgentSession):
                 handle.condition.notify_all()
             self._detach_owned(handle)
 
+    def _stop_and_reap(
+        self, owned: _OwnedWatchdog, cause: ProviderCancellationCause | None
+    ) -> str:
+        """Stop this attempt's child now, and answer how it went out.
+
+        The watchdog answers a cancellation only once the process is really
+        gone -- the frame written, the signal sent, the group emptied, the
+        child reaped -- so its answer is the attestation this seam hands on.
+        Nothing here waits for the conversation: a relay is carrying frames
+        through an authority that writes durable receipts, and a stop that
+        waited for that would be a stop a slow disk could postpone. What the
+        relay still owes is evidence, and evidence is collected afterwards.
+
+        A stop with no cause is supervision's own: the relay broke and nobody
+        chose this ending, so there is no word to carry to the conversation.
+        """
+
+        request: dict[str, object] = {"operation": "CANCEL"}
+        if cause is not None:
+            request["cause"] = cause.value
+        response = self._request_with_retry(
+            owned,
+            request,
+            timeout_seconds=(self._grace_seconds * 2) + 2,
+            maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
+        )
+        if response.get("type") == "RECOVERY_HANDOFF":
+            raise AgentProcessOwnerNotLocal
+        if response.get("type") != "CANCELLED":
+            raise RuntimeError("watchdog did not acknowledge cancellation")
+        disposition_value = response.get("disposition")
+        if type(disposition_value) is not str:
+            raise RuntimeError("watchdog cancellation response is malformed")
+        # The watchdog's own word, because only a caller that records a
+        # disposition owes it the durable vocabulary; a fail-stop records none.
+        return disposition_value
+
     def _finalize_owned(
         self, attempt_id: AgentAttemptId, owned: _OwnedWatchdog
     ) -> None:
+        # Giving up the watchdog closes the endpoint the relay speaks through,
+        # so a launch that is still collecting its conversation's last frames
+        # is waited for here -- the one place where waiting for evidence costs
+        # nobody a signal.
+        if owned.launched and not owned.wait_completed.wait(
+            timeout=self._ready_timeout_seconds
+        ):
+            raise RuntimeError("watchdog did not return the reaped process completion")
         deadline = time.monotonic() + self._ready_timeout_seconds
         with owned.condition:
             while owned.finalizing and not owned.finalized:
@@ -637,18 +699,39 @@ class AgentProcessSupervisor(AgentSession):
         """
 
         relay = _ConversationRelay(conversation, permissions)
-        while True:
-            response = self._request_with_retry(
-                owned,
-                relay.exchange_request(),
-                timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS + EXCHANGE_HOLD_SECONDS,
-                maximum_response_bytes=MAXIMUM_AGENT_EXCHANGE_RESPONSE_BYTES,
-            )
-            if response.get("type") != "EXCHANGED":
-                raise RuntimeError("watchdog did not answer the conversation exchange")
-            ending = relay.exchanged(response)
-            if ending is not None:
-                return relay.ended(ending)
+        try:
+            relay.open()
+            while True:
+                response = self._request_with_retry(
+                    owned,
+                    relay.exchange_request(),
+                    timeout_seconds=(
+                        CONTROL_FRAME_TIMEOUT_SECONDS + EXCHANGE_HOLD_SECONDS
+                    ),
+                    maximum_response_bytes=MAXIMUM_AGENT_EXCHANGE_RESPONSE_BYTES,
+                )
+                if response.get("type") != "EXCHANGED":
+                    raise RuntimeError(
+                        "watchdog did not answer the conversation exchange"
+                    )
+                ending = relay.exchanged(response)
+                if ending is not None:
+                    return relay.ended(ending)
+                requested = relay.cancellation_to_request()
+                if requested is not None:
+                    self._stop_and_reap(owned, requested)
+        except AgentProcessOwnerNotLocal:
+            raise
+        except Exception:
+            # Whatever the relay broke on -- a frame past its bound, an
+            # authority that would not answer, a file access that refused to
+            # open -- the child is still standing there waiting for a reply
+            # nobody will send. It is stopped and reaped before this failure
+            # surfaces, because everything the caller does next -- taking the
+            # credential channel back, failing the attempt -- reads as though
+            # the process it started were gone.
+            self._stop_and_reap(owned, None)
+            raise
 
     def _attempt_lock(self, attempt_id: AgentAttemptId) -> threading.Lock:
         with self._registry_lock:

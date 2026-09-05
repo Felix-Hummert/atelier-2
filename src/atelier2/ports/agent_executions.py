@@ -369,16 +369,6 @@ class ProviderFilesystemAccess(Protocol):
         ...
 
 
-type ProviderConversationAction = (
-    ProviderStandardInput
-    | ProviderCancellationFrame
-    | PermissionRequest
-    | ProviderFilesystemRequest
-    | ProviderSessionEvent
-)
-"""Everything a conversation can ask of the side that owns the process."""
-
-
 class ProviderCancellationCause(StrEnum):
     """Why an attempt is being stopped, as the side that stops it knows.
 
@@ -390,6 +380,48 @@ class ProviderCancellationCause(StrEnum):
     OPERATOR = "operator"
     BUDGET = "budget"
     POLICY = "policy"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCancellationRequest:
+    """This conversation asking for its own process to be stopped, and why.
+
+    A stop the driver reaches on its own: a tool ceiling spent, a policy it
+    cannot answer under. It carries the cause because the ending it will be
+    told, and the outcome that ending composes, are the caller's reading of
+    why -- not something a signal could say afterwards. The stop itself is the
+    same one an operator asks for: the frame this conversation published is
+    written once and the signal follows in the same breath.
+    """
+
+    cause: ProviderCancellationCause
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.cause, ProviderCancellationCause):
+            raise TypeError("a cancellation request uses the closed cause vocabulary")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConversationComplete:
+    """This conversation has nothing further to send, so its input may close.
+
+    How a persistent stdio server is let go without a signal: end of file is
+    what it waits for, and only the conversation knows that its last frame was
+    the last one. Whatever it has already queued is written first; the child's
+    standard input closes once that is drained.
+    """
+
+
+type ProviderConversationAction = (
+    ProviderStandardInput
+    | ProviderCancellationFrame
+    | ProviderCancellationRequest
+    | ProviderConversationComplete
+    | PermissionRequest
+    | ProviderFilesystemRequest
+    | ProviderSessionEvent
+)
+"""Everything a conversation can ask of the side that owns the process."""
 
 
 class ProviderConversationEnding(StrEnum):
@@ -481,8 +513,32 @@ class ProviderConversation(Protocol):
     @property
     def bounds(self) -> ProviderConversationBounds: ...
 
+    def open(self) -> tuple[ProviderConversationAction, ...]:
+        """Say the first thing, before this process has said anything.
+
+        A protocol whose first frame is the caller's -- a handshake, a session
+        it opens -- spells that frame here, so the lifecycle and the request
+        ids it counts stay inside the conversation. A command's own standard
+        input would be the other place to put it, and there the conversation
+        could neither correlate the answer nor number what follows.
+        """
+        ...
+
     def receive_output(self, chunk: bytes) -> tuple[ProviderConversationAction, ...]:
         """Read exactly these output bytes and say what they ask for."""
+        ...
+
+    def input_written(
+        self, written_bytes: int
+    ) -> tuple[ProviderConversationAction, ...]:
+        """This many of the bytes it asked for have physically reached the child.
+
+        Counted cumulatively over everything this conversation queued, and said
+        only once the bytes left the parent for the child's own pipe. A
+        conversation that has to know what the provider really has -- which
+        permission answer it may still take back, what its prepared stop frame
+        should now say -- cannot learn that from a queue it does not own.
+        """
         ...
 
     def answer_permission(self, decision: PermissionDecision) -> ProviderStandardInput:
