@@ -388,7 +388,7 @@ async function requireJournalEntry(value: unknown): Promise<JournalEntry> {
   delete envelope.delivery;
   const typedEnvelope = envelope as unknown as MutationEnvelope;
   await requireEnvelope(typedEnvelope);
-  const expectedKeys = [...envelopeKeys(typedEnvelope), "delivery"].sort();
+  const expectedKeys = [...envelopeKeys(typedEnvelope), "delivery"].sort(compareKeys);
   requireExactKeys(value, expectedKeys);
   return value as unknown as JournalEntry;
 }
@@ -748,8 +748,18 @@ function envelopeKeys(envelope: MutationEnvelope): string[] {
   }
 }
 
+function compareKeys(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
+}
+
 function requireExactKeys(value: object, expected: string[]): void {
-  if (Object.keys(value).sort().join(",") !== [...expected].sort().join(",")) {
+  if (Object.keys(value).sort(compareKeys).join(",") !== [...expected].sort(compareKeys).join(",")) {
     throw new Error("mutation journal entry has unknown fields or missing fields");
   }
 }
