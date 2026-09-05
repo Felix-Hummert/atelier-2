@@ -72,12 +72,14 @@ def a_group(name: str, **stated: str) -> str:
     return f'{{"names": ("{name}",), {fields}}},'
 
 
-def allowed(name: str = A_LONELY_FUNCTION) -> str:
-    return a_group(name, why="a site builds the call as text")
+def allowed(name: str = A_LONELY_FUNCTION, module: str = A_MODULE) -> str:
+    return a_group(f"{module}:{name}", why="a site builds the call as text")
 
 
-def pending_until(day: str, name: str = A_LONELY_FUNCTION) -> str:
-    return a_group(name, why="#1 decides it", expires_on=day)
+def pending_until(
+    day: str, name: str = A_LONELY_FUNCTION, module: str = A_MODULE
+) -> str:
+    return a_group(f"{module}:{name}", why="#1 decides it", expires_on=day)
 
 
 def frozen(
@@ -87,11 +89,6 @@ def frozen(
 ) -> str:
     """A frozen entry names the module its symbol was built in."""
     return a_group(f"{module}:{name}", why=why, item="#1")
-
-
-def bare_frozen(name: str = A_LONELY_FUNCTION) -> str:
-    """A frozen entry that omits the module it was built in."""
-    return a_group(name, why="no caller is built yet", item="#1")
 
 
 @dataclass(frozen=True)
@@ -220,12 +217,27 @@ def test_a_frozen_name_stays_visible_without_failing(tmp_path: Path) -> None:
     assert A_LONELY_FUNCTION in result.stdout
 
 
-def test_a_frozen_name_excuses_only_the_module_it_was_built_in(tmp_path: Path) -> None:
-    """A frozen word vouches for its own symbol, never for a namesake elsewhere."""
+@pytest.mark.parametrize(
+    "lists",
+    [
+        pytest.param(Lists(allowlist=(allowed(),)), id="the allowlist"),
+        pytest.param(
+            Lists(pending=(pending_until("2999-01-01"),)), id="the pending list"
+        ),
+        pytest.param(Lists(frozen=(frozen(),)), id="the frozen list"),
+    ],
+)
+def test_an_excused_name_excuses_only_the_module_it_names(
+    tmp_path: Path, lists: Lists
+) -> None:
+    """The same bare name unreached in another module stays its own finding.
 
-    project = scratch_project(
-        tmp_path, Lists(frozen=(frozen(),)), elsewhere=A_SOURCE_MODULE
-    )
+    This is the exact confusion a bare-name match once allowed: a caller
+    reaching one module's symbol must never silently satisfy the entry for a
+    same-named symbol somewhere else.
+    """
+
+    project = scratch_project(tmp_path, lists, elsewhere=A_SOURCE_MODULE)
 
     result = run_gate(project)
 
@@ -233,10 +245,37 @@ def test_a_frozen_name_excuses_only_the_module_it_was_built_in(tmp_path: Path) -
     assert ANOTHER_MODULE in result.stderr
 
 
-def test_a_frozen_entry_without_its_module_is_refused(tmp_path: Path) -> None:
-    """A frozen entry must name where its symbol was built, not just its name."""
+@pytest.mark.parametrize(
+    "lists",
+    [
+        pytest.param(
+            Lists(allowlist=(a_group(A_LONELY_FUNCTION, why="reached by text"),)),
+            id="the allowlist",
+        ),
+        pytest.param(
+            Lists(
+                pending=(
+                    a_group(
+                        A_LONELY_FUNCTION, why="#1 decides it", expires_on="2999-01-01"
+                    ),
+                )
+            ),
+            id="the pending list",
+        ),
+        pytest.param(
+            Lists(
+                frozen=(
+                    a_group(A_LONELY_FUNCTION, why="no caller is built yet", item="#1"),
+                )
+            ),
+            id="the frozen list",
+        ),
+    ],
+)
+def test_an_entry_without_its_module_is_refused(tmp_path: Path, lists: Lists) -> None:
+    """Every list's entry must name where its symbol lives, not just its name."""
 
-    result = run_gate(scratch_project(tmp_path, Lists(frozen=(bare_frozen(),))))
+    result = run_gate(scratch_project(tmp_path, lists))
 
     assert result.returncode == 1
     assert A_LONELY_FUNCTION in result.stderr
@@ -251,13 +290,15 @@ def test_a_decision_past_its_expiry_turns_the_gate_red(tmp_path: Path) -> None:
     assert "2020-01-01" in result.stderr
 
 
-def test_an_entry_the_gate_no_longer_reports_turns_it_red(tmp_path: Path) -> None:
+def test_an_orphaned_entry_is_reported_with_its_module_and_name(
+    tmp_path: Path,
+) -> None:
     lists = Lists(allowlist=(allowed(), allowed("a_symbol_that_left")))
 
     result = run_gate(scratch_project(tmp_path, lists))
 
     assert result.returncode == 1
-    assert "a_symbol_that_left" in result.stderr
+    assert f"{A_MODULE}:a_symbol_that_left" in result.stderr
 
 
 def test_an_entry_without_a_stated_reason_is_refused(tmp_path: Path) -> None:
