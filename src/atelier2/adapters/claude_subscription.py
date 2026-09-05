@@ -17,6 +17,7 @@ from atelier2.adapters.bounded_processes import (
     bounded_process_answer,
     bounded_process_streams,
 )
+from atelier2.adapters.claude_executable import ClaudeExecutable
 from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
@@ -469,25 +470,6 @@ def attest_no_managed_policy(
             "which is after any policy scan can see them and still in time to "
             "run a hook for this invocation"
         )
-
-
-@dataclass(frozen=True)
-class ClaudeExecutable:
-    """The Claude Code binary, validated as an existing executable file.
-
-    This is the path invariant on its own, independent of the headless
-    deployment's credential directory, search path, and bubblewrap
-    requirements below: a seat that only launches the binary interactively
-    needs exactly this and nothing more (#1099).
-    """
-
-    path: Path
-
-    def __post_init__(self) -> None:
-        resolved = self.path.resolve()
-        object.__setattr__(self, "path", resolved)
-        if not resolved.is_file() or not os.access(resolved, os.X_OK):
-            raise ValueError("the Claude executable must be an executable file")
 
 
 @dataclass(frozen=True)

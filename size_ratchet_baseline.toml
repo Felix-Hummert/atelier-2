@@ -15,7 +15,7 @@ lines = 992
 
 [[file]]
 path = "src/atelier2/adapters/claude_subscription.py"
-lines = 2183
+lines = 2166
 
 [[file]]
 path = "src/atelier2/adapters/dbos/advancer.py"
