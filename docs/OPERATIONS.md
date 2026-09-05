@@ -1404,6 +1404,19 @@ gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
 two one owner *and* deleting its entry.
 
+## The size and complexity ratchet
+
+`uv run --locked python scripts/check_size_ratchet.py` holds three more debt
+shapes in `src/atelier2` from growing: files at 800 lines or more, functions
+and methods at 60 lines or more (measured with `ast`), and functions ruff's
+`C901` McCabe check reports over a complexity of 15. `size_ratchet_baseline.toml`
+names every path or qualified symbol this tree already carries at its current
+value. An offender missing from the baseline, or one that grew past its listed
+value, turns the gate red; a listed entry that no longer offends is an orphan
+and is red too. Shrinking a listed offender, or leaving it exactly at its
+baseline value, is quiet and rewrites nothing. This script is not wired into
+`ci.yml` yet -- that follows the static-gate split in #917.
+
 ## SonarCloud and CodeQL
 
 `sonar-project.properties` at the repository root configures SonarCloud's
@@ -1435,9 +1448,10 @@ Machine-checkable rules are gates there. Running today: the architecture check
 (`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
 above, and the dead-code gates above. Dispatched and not landed yet: `ruff
 check --select ANN401` over `contracts`, `ports`, `application` and `api`
-(#1196). The size, complexity and narrative checks are ruled but unbuilt, and
-the core-test-import ratchet starts only once the first adapter-bound test
-module has moved.
+(#1196). The size and complexity ratchet above is built and green but not yet
+a CI gate -- its `ci.yml` step follows the static-gate split in #917. The
+narrative check is ruled but unbuilt, and the core-test-import ratchet starts
+only once the first adapter-bound test module has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become
