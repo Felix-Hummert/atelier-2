@@ -1,9 +1,16 @@
+import { z } from "zod";
+
 import {
   decodeCanonicalBase64,
   decodePublicRunReference
 } from "../api/client";
 import { sha256Hex } from "./exactBytes";
 import { MUTATION_JOURNAL_STORAGE_KEY } from "./storageKeys";
+
+const digestPattern = /^[0-9a-f]{64}$/;
+const digestSchema = z.string().regex(digestPattern);
+
+const deliverySchema = z.enum(["prepared", "uncertain", "accepted"]);
 
 /**
  * How far a journaled mutation got on the wire.
@@ -15,29 +22,20 @@ import { MUTATION_JOURNAL_STORAGE_KEY } from "./storageKeys";
  * that third word so a reload can still say "Stopping this run" honestly for an
  * accepted cancel while offering Retry/Discard for one that was never confirmed.
  */
-export type MutationDelivery = "prepared" | "uncertain" | "accepted";
+export type MutationDelivery = z.infer<typeof deliverySchema>;
 
-interface MutationBase {
-  mutation_id: string;
-  target: string;
-  body_base64: string;
-}
+const publishEnvelopeShapeSchema = z
+  .object({
+    mutation_id: z.string(),
+    kind: z.literal("publish"),
+    target: z.literal("/atelier/api/v1/workflow-revisions"),
+    content_type: z.literal("application/yaml"),
+    body_base64: z.string(),
+    revision_hash: digestSchema
+  })
+  .strict();
 
-export interface PublishMutation extends MutationBase {
-  kind: "publish";
-  content_type: "application/yaml";
-  revision_hash: string;
-}
-
-export interface StartMutation extends MutationBase {
-  kind: "start";
-  content_type: "application/json";
-}
-
-export interface StartAgentBinding {
-  role: string;
-  agent_configuration_revision_hash: string;
-}
+export type PublishMutation = z.infer<typeof publishEnvelopeShapeSchema>;
 
 export async function publicationMutation(document: string): Promise<PublishMutation> {
   const bytes = new TextEncoder().encode(document);
@@ -52,10 +50,56 @@ export async function publicationMutation(document: string): Promise<PublishMuta
   };
 }
 
-export type StartOrder =
-  | { name: string; value: string }
-  | { name: string; work_item: string }
-  | { name: string; artifact_hash: string };
+const startAgentBindingSchema = z
+  .object({
+    role: z.string().min(1),
+    agent_configuration_revision_hash: digestSchema
+  })
+  .strict();
+
+export type StartAgentBinding = z.infer<typeof startAgentBindingSchema>;
+
+const startAgentBindingsSchema = z
+  .array(startAgentBindingSchema)
+  .refine(
+    (bindings) => new Set(bindings.map((binding) => binding.role)).size === bindings.length,
+    "invalid start mutation binding"
+  );
+
+const startOrderValueSchema = z.object({ name: z.string().min(1), value: z.string().min(1) }).strict();
+const startOrderWorkItemSchema = z
+  .object({ name: z.string().min(1), work_item: z.string().min(1) })
+  .strict();
+const startOrderArtifactHashSchema = z
+  .object({ name: z.string().min(1), artifact_hash: digestSchema })
+  .strict();
+
+const startOrderSchema = z.union([
+  startOrderValueSchema,
+  startOrderWorkItemSchema,
+  startOrderArtifactHashSchema
+]);
+
+export type StartOrder = z.infer<typeof startOrderSchema>;
+
+const startOrdersSchema = z
+  .array(startOrderSchema)
+  .refine(
+    (orders) => new Set(orders.map((order) => order.name)).size === orders.length,
+    "invalid start mutation order"
+  );
+
+const startEnvelopeShapeSchema = z
+  .object({
+    mutation_id: z.string(),
+    kind: z.literal("start"),
+    target: z.literal("/atelier/api/v1/runs"),
+    content_type: z.literal("application/json"),
+    body_base64: z.string()
+  })
+  .strict();
+
+export type StartMutation = z.infer<typeof startEnvelopeShapeSchema>;
 
 export function startMutation(
   runId: string,
@@ -85,17 +129,24 @@ export function createRunId(): string {
   return `run-${globalThis.crypto.randomUUID()}`;
 }
 
-export interface WaitMutation extends MutationBase {
-  kind: "wait";
-  content_type: "application/json";
-  public_run_reference: string;
-  workflow_revision_hash: string;
-  node_id: string;
-  expected_node_execution_id: string;
-  actor: "operator";
-  answer_base64: string;
-  answer_hash: string;
-}
+const waitEnvelopeShapeSchema = z
+  .object({
+    mutation_id: z.string(),
+    kind: z.literal("wait"),
+    target: z.string(),
+    content_type: z.literal("application/json"),
+    body_base64: z.string(),
+    public_run_reference: z.string(),
+    workflow_revision_hash: digestSchema,
+    node_id: z.string(),
+    expected_node_execution_id: digestSchema,
+    actor: z.literal("operator"),
+    answer_base64: z.string(),
+    answer_hash: digestSchema
+  })
+  .strict();
+
+export type WaitMutation = z.infer<typeof waitEnvelopeShapeSchema>;
 
 export function waitMutationId(publicRunReference: string, nodeExecutionId: string): string {
   return `wait:${publicRunReference}:${nodeExecutionId}`;
@@ -147,6 +198,19 @@ export function waitAnswerText(mutation: WaitMutation): string {
   return answer;
 }
 
+const cancelEnvelopeShapeSchema = z
+  .object({
+    mutation_id: z.string(),
+    kind: z.literal("cancel"),
+    target: z.string(),
+    content_type: z.literal("application/json"),
+    body_base64: z.string(),
+    public_run_reference: z.string(),
+    expected_node_execution_id: digestSchema,
+    idempotency_key: z.string()
+  })
+  .strict();
+
 /**
  * One operator's confirmed V3 run-cancel, journaled before it reaches the wire.
  *
@@ -159,13 +223,7 @@ export function waitAnswerText(mutation: WaitMutation): string {
  * journal identity keys on that target, so a run that moved to a new round
  * offers a fresh cancel rather than replaying the stale one.
  */
-export interface CancelMutation extends MutationBase {
-  kind: "cancel";
-  content_type: "application/json";
-  public_run_reference: string;
-  expected_node_execution_id: string;
-  idempotency_key: string;
-}
+export type CancelMutation = z.infer<typeof cancelEnvelopeShapeSchema>;
 
 export function createCancelIdempotencyKey(): string {
   return `cancel-${globalThis.crypto.randomUUID()}`;
@@ -208,13 +266,23 @@ export function cancelMutation(
   };
 }
 
-export type MutationEnvelope =
-  | PublishMutation
-  | StartMutation
-  | WaitMutation
-  | CancelMutation;
+const mutationEnvelopeShapeSchema = z.discriminatedUnion("kind", [
+  publishEnvelopeShapeSchema,
+  startEnvelopeShapeSchema,
+  waitEnvelopeShapeSchema,
+  cancelEnvelopeShapeSchema
+]);
 
-export type JournalEntry = MutationEnvelope & { delivery: MutationDelivery };
+export type MutationEnvelope = PublishMutation | StartMutation | WaitMutation | CancelMutation;
+
+const journalEntryShapeSchema = z.discriminatedUnion("kind", [
+  publishEnvelopeShapeSchema.extend({ delivery: deliverySchema }),
+  startEnvelopeShapeSchema.extend({ delivery: deliverySchema }),
+  waitEnvelopeShapeSchema.extend({ delivery: deliverySchema }),
+  cancelEnvelopeShapeSchema.extend({ delivery: deliverySchema })
+]);
+
+export type JournalEntry = z.infer<typeof journalEntryShapeSchema>;
 
 interface RequestBoundEvidence {
   status: number;
@@ -245,8 +313,6 @@ export type MutationEvidence =
       answer: string;
       answer_hash: string;
     };
-
-const digestPattern = /^[0-9a-f]{64}$/;
 
 export class MutationJournal {
   constructor(private readonly storage: Storage) {}
@@ -376,53 +442,41 @@ export class MutationJournal {
 }
 
 async function requireJournalEntry(value: unknown): Promise<JournalEntry> {
-  if (
-    !isRecord(value) ||
-    (value.delivery !== "prepared" &&
-      value.delivery !== "uncertain" &&
-      value.delivery !== "accepted")
-  ) {
-    throw new Error("mutation journal entry has an unknown delivery state");
+  const parsed = journalEntryShapeSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("mutation journal entry has unknown fields or missing fields");
   }
-  const envelope = { ...value };
-  delete envelope.delivery;
-  const typedEnvelope = envelope as unknown as MutationEnvelope;
-  await requireEnvelope(typedEnvelope);
-  const expectedKeys = [...envelopeKeys(typedEnvelope), "delivery"].sort(compareKeys);
-  requireExactKeys(value, expectedKeys);
-  return value as unknown as JournalEntry;
+  await requireEnvelopeSemantics(parsed.data);
+  return parsed.data;
 }
 
 async function requireEnvelope(envelope: MutationEnvelope): Promise<void> {
-  if (!isRecord(envelope) || typeof envelope.kind !== "string") {
+  const parsed = mutationEnvelopeShapeSchema.safeParse(envelope);
+  if (!parsed.success) {
     throw new Error("invalid mutation journal envelope");
   }
+  await requireEnvelopeSemantics(parsed.data);
+}
+
+async function requireEnvelopeSemantics(envelope: MutationEnvelope): Promise<void> {
   switch (envelope.kind) {
     case "publish":
-      await requirePublish(envelope as PublishMutation);
+      await requirePublish(envelope);
       return;
     case "start":
-      requireStart(envelope as StartMutation);
+      requireStart(envelope);
       return;
     case "wait":
-      await requireWait(envelope as WaitMutation);
+      await requireWait(envelope);
       return;
     case "cancel":
-      requireCancel(envelope as CancelMutation);
+      requireCancel(envelope);
       return;
-    default:
-      throw new Error("invalid mutation journal envelope");
   }
 }
 
 async function requirePublish(envelope: PublishMutation): Promise<void> {
-  requireExactKeys(envelope, envelopeKeys(envelope));
-  if (
-    envelope.target !== "/atelier/api/v1/workflow-revisions" ||
-    envelope.content_type !== "application/yaml" ||
-    !digestPattern.test(envelope.revision_hash) ||
-    envelope.mutation_id !== `publish:${envelope.revision_hash}`
-  ) {
+  if (envelope.mutation_id !== `publish:${envelope.revision_hash}`) {
     throw new Error("invalid publish mutation envelope");
   }
   const document = decodeCanonicalBase64(envelope.body_base64);
@@ -432,16 +486,21 @@ async function requirePublish(envelope: PublishMutation): Promise<void> {
 }
 
 function requireStart(envelope: StartMutation): void {
-  requireExactKeys(envelope, envelopeKeys(envelope));
   const body = requireStartBody(envelope.body_base64);
-  if (
-    envelope.target !== "/atelier/api/v1/runs" ||
-    envelope.content_type !== "application/json" ||
-    envelope.mutation_id !== `start:${body.run_id}`
-  ) {
+  if (envelope.mutation_id !== `start:${body.run_id}`) {
     throw new Error("invalid start mutation envelope");
   }
 }
+
+const startBodyShapeSchema = z
+  .object({
+    workflow_format_version: z.literal(3),
+    run_id: z.string().min(1),
+    workflow_revision_hash: digestSchema,
+    agent_bindings: z.array(z.unknown()),
+    orders: z.array(z.unknown())
+  })
+  .strict();
 
 function requireStartBody(bodyBase64: string): {
   workflow_format_version: 3;
@@ -450,135 +509,62 @@ function requireStartBody(bodyBase64: string): {
   agent_bindings: StartAgentBinding[];
   orders: StartOrder[];
 } {
-  const body = requireJsonBody(bodyBase64);
-  requireExactKeys(body, [
-    "workflow_format_version",
-    "run_id",
-    "workflow_revision_hash",
-    "agent_bindings",
-    "orders"
-  ]);
-  if (
-    body.workflow_format_version !== 3 ||
-    typeof body.run_id !== "string" ||
-    body.run_id.length === 0 ||
-    typeof body.workflow_revision_hash !== "string" ||
-    !digestPattern.test(body.workflow_revision_hash)
-  ) throw new Error("invalid start mutation body");
+  const parsed = startBodyShapeSchema.safeParse(requireJsonBody(bodyBase64));
+  if (!parsed.success) {
+    throw new Error("invalid start mutation body");
+  }
   return {
-    workflow_format_version: 3,
-    run_id: body.run_id,
-    workflow_revision_hash: body.workflow_revision_hash,
-    agent_bindings: requireStartAgentBindings(body.agent_bindings),
-    orders: requireStartOrders(body.orders)
+    ...parsed.data,
+    agent_bindings: requireStartAgentBindings(parsed.data.agent_bindings),
+    orders: requireStartOrders(parsed.data.orders)
   };
 }
 
 function requireStartAgentBindings(value: unknown): StartAgentBinding[] {
-  if (!Array.isArray(value)) throw new Error("invalid start mutation bindings");
-  const roles = new Set<string>();
-  const bindings: StartAgentBinding[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) throw new Error("invalid start mutation binding");
-    requireExactKeys(entry, ["role", "agent_configuration_revision_hash"]);
-    if (
-      typeof entry.role !== "string" ||
-      entry.role.length === 0 ||
-      roles.has(entry.role) ||
-      typeof entry.agent_configuration_revision_hash !== "string" ||
-      !digestPattern.test(entry.agent_configuration_revision_hash)
-    ) {
-      throw new Error("invalid start mutation binding");
-    }
-    roles.add(entry.role);
-    bindings.push({
-      role: entry.role,
-      agent_configuration_revision_hash: entry.agent_configuration_revision_hash
-    });
+  const parsed = startAgentBindingsSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("invalid start mutation binding");
   }
-  return bindings;
+  return parsed.data;
 }
 
 function requireStartOrders(value: unknown): StartOrder[] {
-  if (!Array.isArray(value)) throw new Error("invalid start mutation orders");
-  const names = new Set<string>();
-  const orders: StartOrder[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) throw new Error("invalid start mutation order");
-    const order = requireStartOrder(entry);
-    if (names.has(order.name)) throw new Error("invalid start mutation order");
-    names.add(order.name);
-    orders.push(order);
+  const parsed = startOrdersSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("invalid start mutation order");
   }
-  return orders;
+  return parsed.data;
 }
 
-function requireStartOrder(entry: Record<string, unknown>): StartOrder {
-  if ("work_item" in entry) {
-    requireExactKeys(entry, ["name", "work_item"]);
-    if (
-      typeof entry.name !== "string" ||
-      entry.name.length === 0 ||
-      typeof entry.work_item !== "string" ||
-      entry.work_item.length === 0
-    ) throw new Error("invalid start mutation order");
-    return { name: entry.name, work_item: entry.work_item };
-  }
-  if ("artifact_hash" in entry) {
-    requireExactKeys(entry, ["name", "artifact_hash"]);
-    if (
-      typeof entry.name !== "string" ||
-      entry.name.length === 0 ||
-      typeof entry.artifact_hash !== "string" ||
-      !digestPattern.test(entry.artifact_hash)
-    ) throw new Error("invalid start mutation order");
-    return { name: entry.name, artifact_hash: entry.artifact_hash };
-  }
-  requireExactKeys(entry, ["name", "value"]);
-  if (
-    typeof entry.name !== "string" ||
-    entry.name.length === 0 ||
-    typeof entry.value !== "string" ||
-    entry.value.length === 0
-  ) throw new Error("invalid start mutation order");
-  return { name: entry.name, value: entry.value };
-}
+const waitBodyShapeSchema = z
+  .object({
+    workflow_revision_hash: digestSchema,
+    node_id: z.string().min(1),
+    expected_node_execution_id: digestSchema,
+    actor: z.literal("operator"),
+    answer_base64: z.string()
+  })
+  .strict();
 
 async function requireWait(envelope: WaitMutation): Promise<void> {
-  requireExactKeys(envelope, envelopeKeys(envelope));
   const route = /^\/atelier\/api\/v1\/runs\/(run1\.[A-Za-z0-9_-]+)\/answers$/.exec(
     envelope.target
   );
   const publicReference = route?.[1];
-  const body = requireJsonBody(envelope.body_base64);
-  requireExactKeys(body, [
-    "workflow_revision_hash",
-    "node_id",
-    "expected_node_execution_id",
-    "actor",
-    "answer_base64"
-  ]);
-  const answerBytes =
-    typeof body.answer_base64 === "string"
-      ? decodeCanonicalBase64(body.answer_base64)
-      : null;
+  const parsedBody = waitBodyShapeSchema.safeParse(requireJsonBody(envelope.body_base64));
+  if (!parsedBody.success) {
+    throw new Error("invalid wait mutation envelope");
+  }
+  const body = parsedBody.data;
+  const answerBytes = decodeCanonicalBase64(body.answer_base64);
   const answer = answerBytes === null ? null : decodeUtf8(answerBytes);
   if (
-    envelope.content_type !== "application/json" ||
     publicReference === undefined ||
     decodePublicRunReference(publicReference) === null ||
     envelope.public_run_reference !== publicReference ||
-    typeof body.workflow_revision_hash !== "string" ||
-    !digestPattern.test(body.workflow_revision_hash) ||
     envelope.workflow_revision_hash !== body.workflow_revision_hash ||
-    typeof body.node_id !== "string" ||
-    body.node_id.length === 0 ||
     envelope.node_id !== body.node_id ||
-    typeof body.expected_node_execution_id !== "string" ||
-    !digestPattern.test(body.expected_node_execution_id) ||
     envelope.expected_node_execution_id !== body.expected_node_execution_id ||
-    body.actor !== "operator" ||
-    envelope.actor !== body.actor ||
     envelope.answer_base64 !== body.answer_base64 ||
     answer === null ||
     answer.length === 0 ||
@@ -591,24 +577,28 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
   }
 }
 
+const cancelBodyShapeSchema = z
+  .object({
+    idempotency_key: z.string().min(1),
+    expected_node_execution_id: digestSchema
+  })
+  .strict();
+
 function requireCancel(envelope: CancelMutation): void {
-  requireExactKeys(envelope, envelopeKeys(envelope));
   const route = /^\/atelier\/api\/v1\/runs\/(run1\.[A-Za-z0-9_-]+)\/cancellations$/.exec(
     envelope.target
   );
   const publicReference = route?.[1];
-  const body = requireJsonBody(envelope.body_base64);
-  requireExactKeys(body, ["idempotency_key", "expected_node_execution_id"]);
+  const parsedBody = cancelBodyShapeSchema.safeParse(requireJsonBody(envelope.body_base64));
+  if (!parsedBody.success) {
+    throw new Error("invalid cancel mutation envelope");
+  }
+  const body = parsedBody.data;
   if (
-    envelope.content_type !== "application/json" ||
     publicReference === undefined ||
     decodePublicRunReference(publicReference) === null ||
     envelope.public_run_reference !== publicReference ||
-    typeof body.idempotency_key !== "string" ||
-    body.idempotency_key.length === 0 ||
     envelope.idempotency_key !== body.idempotency_key ||
-    typeof body.expected_node_execution_id !== "string" ||
-    !digestPattern.test(body.expected_node_execution_id) ||
     envelope.expected_node_execution_id !== body.expected_node_execution_id ||
     envelope.mutation_id !== cancelMutationId(publicReference, body.expected_node_execution_id)
   ) {
@@ -720,50 +710,6 @@ function publicReferenceFromTarget(target: string, operation: string): string {
   return target.slice("/atelier/api/v1/runs/".length, -suffix.length);
 }
 
-function envelopeKeys(envelope: MutationEnvelope): string[] {
-  const common = ["mutation_id", "kind", "target", "content_type", "body_base64"];
-  switch (envelope.kind) {
-    case "publish":
-      return [...common, "revision_hash"];
-    case "start":
-      return common;
-    case "wait":
-      return [
-        ...common,
-        "public_run_reference",
-        "workflow_revision_hash",
-        "node_id",
-        "expected_node_execution_id",
-        "actor",
-        "answer_base64",
-        "answer_hash"
-      ];
-    case "cancel":
-      return [
-        ...common,
-        "public_run_reference",
-        "expected_node_execution_id",
-        "idempotency_key"
-      ];
-  }
-}
-
-function compareKeys(left: string, right: string): number {
-  if (left < right) {
-    return -1;
-  }
-  if (left > right) {
-    return 1;
-  }
-  return 0;
-}
-
-function requireExactKeys(value: object, expected: string[]): void {
-  if (Object.keys(value).sort(compareKeys).join(",") !== [...expected].sort(compareKeys).join(",")) {
-    throw new Error("mutation journal entry has unknown fields or missing fields");
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -772,12 +718,9 @@ function sameEnvelope(left: MutationEnvelope, right: MutationEnvelope): boolean 
   if (left.kind !== right.kind) {
     return false;
   }
-  const keys = envelopeKeys(left);
-  return keys.every(
-    (key) =>
-      (left as unknown as Record<string, unknown>)[key] ===
-      (right as unknown as Record<string, unknown>)[key]
-  );
+  const leftFields = left as unknown as Record<string, unknown>;
+  const rightFields = right as unknown as Record<string, unknown>;
+  return Object.keys(rightFields).every((key) => leftFields[key] === rightFields[key]);
 }
 
 function encodeBase64(bytes: Uint8Array): string {
