@@ -942,10 +942,10 @@ published `CONNECTED`; the command prints both revision numbers, and nothing
 is deleted. The running serve read the connection once at startup, so it
 needs one restart to pick up the move; the auto-redeploy performs that
 restart on its next deploy, and there is no reason to force one sooner. That
-restart needs every effect intent of a run that has not ended reconciled, or
-that run finished, first — history under the old address never blocks the
-restart once the run it belongs to has completed, whatever that intent's own
-recorded state.
+restart blocks on an effect intent under the old address only while the DBOS
+workflow that owns it is still open: an open workflow must finish or be
+reconciled first, but once it has ended, history under the old address never
+blocks the restart, whatever that intent's own recorded state.
 
 ### Publish the issue-to-pr catalog
 
