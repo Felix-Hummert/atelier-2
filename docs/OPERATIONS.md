@@ -1446,6 +1446,10 @@ ruled to run as a scheduled agent audit on the self-hosted runner, producing one
 distributor issue per run (operator ruling 04.09.2026); that workflow does not
 exist yet.
 
+After a route change, regenerate the frozen OpenAPI document with `uv run
+python scripts/write_openapi_frozen.py` before committing; its `--check` twin
+becomes a CI gate once #917 wires it into `ci.yml`.
+
 ## Verification
 
 Container recipes:
