@@ -373,9 +373,13 @@ class AgentClientProtocolConversation:
         The first id one claims is kept and held against the answer.
         """
 
-        claimed = params.get("sessionId")
-        if not self._claimed_session and isinstance(claimed, str) and claimed:
-            self._claimed_session = claimed
+        claimed_session_id = params.get("sessionId")
+        if (
+            not self._claimed_session
+            and isinstance(claimed_session_id, str)
+            and claimed_session_id
+        ):
+            self._claimed_session = claimed_session_id
         return ()
 
     def _updated(self, update: JsonObject) -> Actions:
