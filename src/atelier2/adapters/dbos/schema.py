@@ -5,7 +5,6 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from enum import StrEnum
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -18,6 +17,19 @@ from atelier2.adapters.dbos.published_schema_shapes import (
     PUBLISHED_TABLE_INDEXES,
     PUBLISHED_TABLE_SHAPES,
     PUBLISHED_WAIT_ANSWER_TRIGGERS,
+)
+from atelier2.adapters.dbos.queue_tables import (
+    queue_dependency_edges,
+    queue_items,
+    queue_launch_bindings,
+    queue_project_policy_revisions,
+    queue_proposal_revisions,
+)
+from atelier2.adapters.dbos.table_vocabulary import (
+    closed_vocabulary_sql,
+    metadata,
+    rfc3339_utc,
+    rfc3339_utc_or_null,
 )
 from atelier2.adapters.github.composition import migrate_v44_github_source_location
 from atelier2.contracts.agent_permissions import (
@@ -66,40 +78,11 @@ from atelier2.contracts.host_configuration import (
     SourceReference,
 )
 from atelier2.contracts.queue_projection import (
-    MAXIMUM_QUEUE_ACTIVE_RUNS,
-    MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
-    MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
-    MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
-    MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
-    QueueAutomationDisposition,
-    QueueDecisionAuthority,
+    QueueProposalSource,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
-
-
-def _rfc3339_utc(column: str) -> str:
-    """RFC 3339 UTC at second precision."""
-
-    return f"(length({column}) = 20 AND {column} LIKE '____-__-__T__:__:__Z')"
-
-
-def _closed_vocabulary_sql(column: str, vocabulary: type[StrEnum]) -> str:
-    """One contract's closed vocabulary, asserted of one named column.
-
-    Spelled from the enum rather than beside it, because a vocabulary written
-    by hand is how a column quietly stops admitting a word its contract owns.
-    """
-
-    admitted = ", ".join(f"'{member.value}'" for member in vocabulary)
-    return f"{column} IN ({admitted})"
-
-
-def _rfc3339_utc_or_null(column: str) -> str:
-    """A recording instant is absent, or RFC 3339 UTC at second precision."""
-
-    return f"({column} IS NULL OR {_rfc3339_utc(column)})"
 
 
 @dataclass(frozen=True)
@@ -108,10 +91,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 50 adds the authorisation ledger `permission_receipts`, so every provider
-# permission question this product answers is durable before its answer is given
-# out (ADR 0020 §2, #1216).
-_HOP_PREDECESSOR_VERSION = 50
+# Hop 51 gives the queue policy the workflow, priority and disposition a label
+# alone is proposed under, and every proposal the decision that wrote it
+# (REQ-QUEUE-01).
+_HOP_PREDECESSOR_VERSION = 51
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -156,6 +139,7 @@ _VERSION_FORTY_EIGHT = 48
 _VERSION_FORTY_NINE = 49
 _VERSION_FIFTY = 50
 _VERSION_FIFTY_ONE = 51
+_VERSION_FIFTY_TWO = 52
 # docs/PRODUCT.md "Stage: prototype": no store compatibility is owed.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -328,6 +312,11 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # append-only row per provider permission question, keyed by the attempt and the
 # correlation id the question was minted with, bound to the policy revision its
 # answer stands on.
+# V52 gives a project policy the optional workflow lineage, priority rank and
+# automation disposition a labelled item with no proposal is proposed under,
+# and every proposal revision the source that wrote it. A stored proposal
+# crosses as OPERATOR: the operator's own door is the only writer that existed
+# before this hop.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -376,6 +365,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     49: "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2",
     50: "bb34288b35fbf4fe059960323b7a92ee4e5473b5a945e697c0f4b9fe29c6d8a9",
     51: "2b0be085b59e160db8b9d925bbb889205b32a2bbd45fcad673277b2b229fd622",
+    52: "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -545,9 +535,6 @@ PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[SCHEMA_VERSION],
 )
-
-metadata = sa.MetaData()
-
 atelier_schema_versions = sa.Table(
     "atelier_schema_versions",
     metadata,
@@ -1421,8 +1408,8 @@ permission_receipts = sa.Table(
     sa.CheckConstraint(
         "length(correlation_id) = 64 AND correlation_id NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(_closed_vocabulary_sql("effect", PermissionEffect)),
-    sa.CheckConstraint(_closed_vocabulary_sql("scope_kind", PermissionScopeKind)),
+    sa.CheckConstraint(closed_vocabulary_sql("effect", PermissionEffect)),
+    sa.CheckConstraint(closed_vocabulary_sql("scope_kind", PermissionScopeKind)),
     sa.CheckConstraint(
         f"length(scope_value) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
@@ -1431,8 +1418,8 @@ permission_receipts = sa.Table(
         "length(policy_revision_hash) = 64 "
         "AND policy_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(_closed_vocabulary_sql("authority", PermissionAuthority)),
-    sa.CheckConstraint(_rfc3339_utc("decided_at")),
+    sa.CheckConstraint(closed_vocabulary_sql("authority", PermissionAuthority)),
+    sa.CheckConstraint(rfc3339_utc("decided_at")),
     sa.CheckConstraint(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -1578,8 +1565,8 @@ run_instants = sa.Table(
     sa.Column("started_at", sa.Text, nullable=False),
     sa.Column("ended_at", sa.Text, nullable=True),
     sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(_rfc3339_utc("started_at")),
-    sa.CheckConstraint(_rfc3339_utc_or_null("ended_at")),
+    sa.CheckConstraint(rfc3339_utc("started_at")),
+    sa.CheckConstraint(rfc3339_utc_or_null("ended_at")),
 )
 attempt_instants = sa.Table(
     "attempt_instants",
@@ -1588,8 +1575,8 @@ attempt_instants = sa.Table(
     sa.Column("started_at", sa.Text, nullable=False),
     sa.Column("ended_at", sa.Text, nullable=True),
     sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
-    sa.CheckConstraint(_rfc3339_utc("started_at")),
-    sa.CheckConstraint(_rfc3339_utc_or_null("ended_at")),
+    sa.CheckConstraint(rfc3339_utc("started_at")),
+    sa.CheckConstraint(rfc3339_utc_or_null("ended_at")),
 )
 event_instants = sa.Table(
     "event_instants",
@@ -1600,7 +1587,7 @@ event_instants = sa.Table(
     sa.PrimaryKeyConstraint("run_id", "event_sequence"),
     sa.CheckConstraint("length(run_id) > 0"),
     sa.CheckConstraint("event_sequence > 0"),
-    sa.CheckConstraint(_rfc3339_utc("recorded_at")),
+    sa.CheckConstraint(rfc3339_utc("recorded_at")),
 )
 wait_answers = sa.Table(
     "wait_answers",
@@ -1649,7 +1636,7 @@ wait_answers = sa.Table(
 def _revision_kind_sql(column: str) -> str:
     """The closed published-kind vocabulary, asserted of one named column."""
 
-    return _closed_vocabulary_sql(column, RevisionKind)
+    return closed_vocabulary_sql(column, RevisionKind)
 
 
 _PUBLISHED_REVISION_KIND_SQL = _revision_kind_sql("kind")
@@ -2290,192 +2277,6 @@ host_project_model_defaults = sa.Table(
         "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
-queue_items = sa.Table(
-    "queue_items",
-    metadata,
-    sa.Column("item_id", sa.Text, primary_key=True),
-    sa.Column("project_id", sa.Text, nullable=False),
-    sa.Column("tracker_item_reference", sa.Text, nullable=False),
-    sa.Column("state", sa.Text, nullable=False),
-    sa.Column("state_version", sa.Integer, nullable=False),
-    sa.Column(
-        "workflow_lineage_id",
-        sa.Text,
-        sa.ForeignKey("catalog_lineages.lineage_id"),
-        nullable=True,
-    ),
-    sa.Column("admission_rationale", sa.Text, nullable=True),
-    sa.Column("current_proposal_revision", sa.Integer, nullable=True),
-    sa.Column("decision_authority", sa.Text, nullable=True),
-    # Dated observations of a tracker-owned fact, never core truth (ADR 0016,
-    # 2026-09-01 amendment): `observed_title` is the title as the tracker last
-    # served it and `title_observed_at` is when that read happened, so a reader
-    # can tell a fresh title from a stale one instead of taking either as
-    # current. `retired_at` is not an observed fact either -- closedness is
-    # derived by set difference at import (ADR 0016 line 120) -- but the marker
-    # of when import derived that retirement is durable state the import
-    # records (ADR 0016 line 121). None of the three enters the proposal or
-    # admission state machine below.
-    sa.Column("observed_title", sa.Text, nullable=True),
-    sa.Column("title_observed_at", sa.Text, nullable=True),
-    sa.Column("retired_at", sa.Text, nullable=True),
-    sa.UniqueConstraint("project_id", "tracker_item_reference"),
-    sa.UniqueConstraint("item_id", "project_id"),
-    sa.ForeignKeyConstraint(
-        ("item_id", "current_proposal_revision"),
-        (
-            "queue_proposal_revisions.item_id",
-            "queue_proposal_revisions.proposal_revision",
-        ),
-    ),
-    sa.CheckConstraint("length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'"),
-    sa.CheckConstraint(
-        f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
-    ),
-    sa.CheckConstraint(
-        "length(tracker_item_reference) BETWEEN 1 AND "
-        f"{MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS}"
-    ),
-    sa.CheckConstraint("state IN ('OBSERVED', 'PROPOSED', 'ADMITTED')"),
-    sa.CheckConstraint("state_version >= 0"),
-    sa.CheckConstraint(
-        "(state = 'ADMITTED' "
-        "AND workflow_lineage_id IS NOT NULL "
-        "AND length(workflow_lineage_id) = 64 "
-        "AND workflow_lineage_id NOT GLOB '*[^0-9a-f]*' "
-        "AND admission_rationale IS NOT NULL "
-        f"AND length(admission_rationale) BETWEEN 1 AND "
-        f"{MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS} "
-        "AND ((current_proposal_revision IS NULL AND decision_authority IS NULL) "
-        "OR (current_proposal_revision IS NOT NULL "
-        "AND current_proposal_revision >= 1 "
-        "AND state_version = current_proposal_revision + 1 "
-        "AND decision_authority IS NOT NULL "
-        f"AND decision_authority IN ('{QueueDecisionAuthority.OPERATOR.value}', "
-        f"'{QueueDecisionAuthority.AUTOMATION_RULE.value}')))) "
-        "OR (state = 'PROPOSED' "
-        "AND current_proposal_revision IS NOT NULL "
-        "AND current_proposal_revision >= 1 "
-        "AND state_version = current_proposal_revision "
-        "AND workflow_lineage_id IS NULL "
-        "AND admission_rationale IS NULL "
-        "AND decision_authority IS NULL) "
-        "OR (state = 'OBSERVED' "
-        "AND state_version = 0 "
-        "AND workflow_lineage_id IS NULL "
-        "AND admission_rationale IS NULL "
-        "AND current_proposal_revision IS NULL "
-        "AND decision_authority IS NULL)"
-    ),
-    sa.CheckConstraint(
-        "observed_title IS NULL OR length(observed_title) BETWEEN 1 AND "
-        f"{MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS}"
-    ),
-    sa.CheckConstraint("(observed_title IS NULL) = (title_observed_at IS NULL)"),
-    sa.CheckConstraint(_rfc3339_utc_or_null("title_observed_at")),
-    sa.CheckConstraint(_rfc3339_utc_or_null("retired_at")),
-)
-queue_project_policy_revisions = sa.Table(
-    "queue_project_policy_revisions",
-    metadata,
-    sa.Column("project_id", sa.Text, nullable=False),
-    sa.Column("revision_number", sa.Integer, nullable=False),
-    sa.Column("maximum_active_runs", sa.Integer, nullable=False),
-    sa.Column("automation_label", sa.Text, nullable=True),
-    sa.PrimaryKeyConstraint("project_id", "revision_number"),
-    sa.CheckConstraint(
-        f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
-    ),
-    sa.CheckConstraint("revision_number >= 1"),
-    sa.CheckConstraint(
-        f"maximum_active_runs BETWEEN 1 AND {MAXIMUM_QUEUE_ACTIVE_RUNS}"
-    ),
-    sa.CheckConstraint(
-        "automation_label IS NULL OR length(automation_label) BETWEEN 1 AND "
-        f"{MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS}"
-    ),
-)
-queue_proposal_revisions = sa.Table(
-    "queue_proposal_revisions",
-    metadata,
-    sa.Column("item_id", sa.Text, nullable=False),
-    sa.Column("proposal_revision", sa.Integer, nullable=False),
-    sa.Column("project_id", sa.Text, nullable=False),
-    sa.Column("priority_rank", sa.Integer, nullable=False),
-    sa.Column("workflow_lineage_id", sa.Text, nullable=False),
-    sa.Column("automation_disposition", sa.Text, nullable=False),
-    sa.Column("policy_revision", sa.Integer, nullable=True),
-    sa.PrimaryKeyConstraint("item_id", "proposal_revision"),
-    sa.UniqueConstraint("item_id", "proposal_revision", "project_id"),
-    sa.ForeignKeyConstraint(
-        ("item_id", "project_id"),
-        ("queue_items.item_id", "queue_items.project_id"),
-    ),
-    sa.ForeignKeyConstraint(
-        ("project_id", "policy_revision"),
-        (
-            "queue_project_policy_revisions.project_id",
-            "queue_project_policy_revisions.revision_number",
-        ),
-    ),
-    sa.ForeignKeyConstraint(("workflow_lineage_id",), ("catalog_lineages.lineage_id",)),
-    sa.CheckConstraint("proposal_revision >= 1"),
-    sa.CheckConstraint("priority_rank >= 1"),
-    sa.CheckConstraint(
-        "automation_disposition IN "
-        f"('{QueueAutomationDisposition.HUMAN_REQUIRED.value}', "
-        f"'{QueueAutomationDisposition.AUTOMATION_AUTHORIZED.value}')"
-    ),
-    sa.CheckConstraint("policy_revision IS NULL OR policy_revision >= 1"),
-)
-queue_dependency_edges = sa.Table(
-    "queue_dependency_edges",
-    metadata,
-    sa.Column("item_id", sa.Text, nullable=False),
-    sa.Column("proposal_revision", sa.Integer, nullable=False),
-    sa.Column("project_id", sa.Text, nullable=False),
-    sa.Column("prerequisite_item_id", sa.Text, nullable=False),
-    sa.PrimaryKeyConstraint("item_id", "proposal_revision", "prerequisite_item_id"),
-    sa.ForeignKeyConstraint(
-        ("item_id", "proposal_revision", "project_id"),
-        (
-            "queue_proposal_revisions.item_id",
-            "queue_proposal_revisions.proposal_revision",
-            "queue_proposal_revisions.project_id",
-        ),
-    ),
-    sa.ForeignKeyConstraint(
-        ("prerequisite_item_id", "project_id"),
-        ("queue_items.item_id", "queue_items.project_id"),
-    ),
-    sa.CheckConstraint("item_id <> prerequisite_item_id"),
-)
-queue_launch_bindings = sa.Table(
-    "queue_launch_bindings",
-    metadata,
-    sa.Column("item_id", sa.Text, primary_key=True),
-    sa.Column("proposal_revision", sa.Integer, nullable=False),
-    sa.Column("project_id", sa.Text, nullable=False),
-    sa.Column("run_id", sa.Text, nullable=False, unique=True),
-    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
-    sa.ForeignKeyConstraint(
-        ("item_id", "proposal_revision", "project_id"),
-        (
-            "queue_proposal_revisions.item_id",
-            "queue_proposal_revisions.proposal_revision",
-            "queue_proposal_revisions.project_id",
-        ),
-    ),
-    sa.ForeignKeyConstraint(
-        ("workflow_revision_hash",), ("workflow_revisions.revision_hash",)
-    ),
-    sa.CheckConstraint("proposal_revision >= 1"),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-)
 webhook_delivery_cursor = sa.Table(
     "webhook_delivery_cursor",
     metadata,
@@ -2552,7 +2353,7 @@ host_project_source_connection_revisions = sa.Table(
         f"length(connected_by) BETWEEN 1 AND {MAXIMUM_CONNECTION_ACTOR_CHARACTERS}"
     ),
     sa.CheckConstraint("lifecycle IN ('CONNECTED', 'DISCONNECTED')"),
-    sa.CheckConstraint(_rfc3339_utc_or_null("connected_at")),
+    sa.CheckConstraint(rfc3339_utc_or_null("connected_at")),
 )
 
 host_definition_source_revisions = sa.Table(
@@ -2644,7 +2445,7 @@ catalog_source_intakes = sa.Table(
     sa.CheckConstraint(
         f"length(intaken_by) BETWEEN 1 AND {MAXIMUM_DEFINITION_SOURCE_ACTOR_CHARACTERS}"
     ),
-    sa.CheckConstraint(_rfc3339_utc("intaken_at")),
+    sa.CheckConstraint(rfc3339_utc("intaken_at")),
 )
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
@@ -3883,11 +3684,12 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    if version == SCHEMA_VERSION:
+    # V52 widened two queue tables and added none, so V51 holds exactly today's
+    # set. V51 adds the authorisation ledger; V50 widened one table's
+    # failure-code vocabulary and added no table, so V49 and V50 hold the same
+    # set: today's without that ledger.
+    if version in {SCHEMA_VERSION, _VERSION_FIFTY_ONE}:
         return PRODUCT_TABLE_NAMES
-    # V51 adds the authorisation ledger. V50 widened one table's failure-code
-    # vocabulary and added no table, so V49 and V50 hold the same set: today's
-    # without that ledger.
     if version in {_VERSION_FIFTY, _VERSION_FORTY_NINE}:
         return before_permission_receipts
     if version in {_VERSION_FORTY_EIGHT, _VERSION_FORTY_SEVEN}:
@@ -3896,9 +3698,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         return predecessor_product_tables
     if version == _VERSION_FORTY_THREE:
         return before_phase_d
-    if version == _VERSION_FORTY_TWO:
-        return before_phase_d - attempt_receipt_tables
-    if version == _VERSION_FORTY_ONE:
+    if version in {_VERSION_FORTY_TWO, _VERSION_FORTY_ONE}:
         return before_phase_d - attempt_receipt_tables
     if version == _VERSION_FORTY:
         return before_forks
@@ -5948,9 +5748,7 @@ def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
                 f"schema version 43 already has {table.name}; "
                 "this command will not alter it"
             )
-        connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-        )
+        connection.execute(_table_shape_at(_VERSION_FORTY_FOUR, table))
     for trigger_name in _PHASE_D_QUEUE_IMMUTABILITY_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger_name])
     _rebuild_product_table(
@@ -6345,6 +6143,49 @@ def _apply_v50_to_v51(connection: sqlite3.Connection) -> None:
     )(connection)
 
 
+_QUEUE_POLICY_TRIGGERS = (
+    "queue_project_policy_revisions_no_update",
+    "queue_project_policy_revisions_no_delete",
+)
+_QUEUE_PROPOSAL_TRIGGERS = (
+    "queue_proposal_revisions_no_update",
+    "queue_proposal_revisions_no_delete",
+)
+_V51_QUEUE_PROJECT_POLICY_REVISIONS = "queue_project_policy_revisions_v51"
+_V51_QUEUE_PROPOSAL_REVISIONS = "queue_proposal_revisions_v51"
+
+
+def _apply_v51_to_v52(connection: sqlite3.Connection) -> None:
+    """Give the policy its proposal defaults, and every proposal its source.
+
+    Both tables keep every stored row. The policy's three default columns are
+    nullable and stay empty: a policy published before this hop named no
+    defaults, and filling them would put a workflow choice into the record
+    that no operator made. A proposal's source is not nullable and every
+    carried row takes `OPERATOR`, which is what the record says -- the
+    operator's own `PUT /queue-proposals` was the only writer that existed.
+    """
+
+    _rebuild_product_table(
+        connection,
+        queue_project_policy_revisions,
+        _V51_QUEUE_PROJECT_POLICY_REVISIONS,
+        _QUEUE_POLICY_TRIGGERS,
+        _VERSION_FIFTY_ONE,
+        _VERSION_FIFTY_TWO,
+    )
+    _rebuild_product_table(
+        connection,
+        queue_proposal_revisions,
+        _V51_QUEUE_PROPOSAL_REVISIONS,
+        _QUEUE_PROPOSAL_TRIGGERS,
+        _VERSION_FIFTY_ONE,
+        _VERSION_FIFTY_TWO,
+        filled_columns={"source": f"'{QueueProposalSource.OPERATOR.value}'"},
+    )
+    _raise_declared_version(connection, _VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6523,6 +6364,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FORTY_EIGHT, _VERSION_FORTY_NINE, _apply_v48_to_v49),
     _SchemaMigrationStep(_VERSION_FORTY_NINE, _VERSION_FIFTY, _apply_v49_to_v50),
     _SchemaMigrationStep(_VERSION_FIFTY, _VERSION_FIFTY_ONE, _apply_v50_to_v51),
+    _SchemaMigrationStep(_VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO, _apply_v51_to_v52),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

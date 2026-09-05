@@ -8103,7 +8103,23 @@
       },
       "PutQueueProjectPolicyRequestResource": {
         "additionalProperties": false,
+        "description": "The filter, the ceiling, and what a labelled item alone is proposed under.\n\nThe three default fields are stated together or not at all; a policy\nwithout them admits only items an operator has already proposed.",
         "properties": {
+          "automation_disposition_default": {
+            "anyOf": [
+              {
+                "enum": [
+                  "HUMAN_REQUIRED",
+                  "AUTOMATION_AUTHORIZED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Automation Disposition Default"
+          },
           "automation_label": {
             "anyOf": [
               {
@@ -8116,6 +8132,31 @@
               }
             ],
             "title": "Automation Label"
+          },
+          "default_priority_rank": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Priority Rank"
+          },
+          "default_workflow_lineage_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Workflow Lineage Id"
           },
           "expected_revision": {
             "maximum": 9.223372036854776e+18,
@@ -8551,6 +8592,16 @@
       "QueueProjectPolicyResource": {
         "additionalProperties": false,
         "properties": {
+          "automation_disposition_default": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueueAutomationDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "automation_label": {
             "anyOf": [
               {
@@ -8563,6 +8614,31 @@
               }
             ],
             "title": "Automation Label"
+          },
+          "default_priority_rank": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Priority Rank"
+          },
+          "default_workflow_lineage_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Workflow Lineage Id"
           },
           "maximum_active_runs": {
             "maximum": 1000.0,
@@ -8658,6 +8734,9 @@
             "title": "Revision",
             "type": "integer"
           },
+          "source": {
+            "$ref": "#/components/schemas/QueueProposalSource"
+          },
           "workflow_lineage_id": {
             "pattern": "^[0-9a-f]{64}$",
             "title": "Workflow Lineage Id",
@@ -8669,10 +8748,20 @@
           "priority",
           "workflow_lineage_id",
           "prerequisite_item_ids",
-          "automation_disposition"
+          "automation_disposition",
+          "source"
         ],
         "title": "QueueProposalResource",
         "type": "object"
+      },
+      "QueueProposalSource": {
+        "description": "Which decision wrote this proposal: the operator's door, or the policy.",
+        "enum": [
+          "OPERATOR",
+          "POLICY_DEFAULT"
+        ],
+        "title": "QueueProposalSource",
+        "type": "string"
       },
       "RecognizedAgentDefinitionResource": {
         "additionalProperties": false,

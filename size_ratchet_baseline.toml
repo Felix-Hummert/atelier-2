@@ -326,14 +326,6 @@ qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
 lines = 223
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.queue_projection_store.DbosQueueProjectionStore._proposal_refusal"
-lines = 84
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.queue_projection_store.DbosQueueProjectionStore.plan"
-lines = 65
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.queue_projection_store.DbosQueueProjectionStore.reserve_launch"
 lines = 72
 

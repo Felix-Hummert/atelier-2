@@ -24,14 +24,7 @@ from atelier2.api.openapi import (
     QUEUE_PROPOSALS_PATH,
 )
 from atelier2.api.problems import ApiProblem
-from atelier2.api.wire.requests import (
-    ConfirmQueueProposalRequestResource,
-    PutQueueProjectPolicyRequestResource,
-    PutQueueProposalRequestResource,
-)
-from atelier2.api.wire.resources import (
-    InvalidFieldResource,
-    ProjectSourceImportResource,
+from atelier2.api.wire.queue import (
     QueueAdmissionDecisionResource,
     QueueAdmissionResource,
     QueueItemPageResource,
@@ -41,6 +34,15 @@ from atelier2.api.wire.resources import (
     QueueProjectPolicyResource,
     QueueProposalDecisionResource,
     QueueProposalResource,
+)
+from atelier2.api.wire.requests import (
+    ConfirmQueueProposalRequestResource,
+    PutQueueProjectPolicyRequestResource,
+    PutQueueProposalRequestResource,
+)
+from atelier2.api.wire.resources import (
+    InvalidFieldResource,
+    ProjectSourceImportResource,
 )
 from atelier2.application.admit_queue_item import QueueItemsListed
 from atelier2.application.import_project_source_issues import (
@@ -78,6 +80,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemState,
     QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyDefaults,
     QueueProjectPolicyRevision,
     QueueProposal,
     QueueProposalAlreadyCurrent,
@@ -112,6 +115,7 @@ async def put_queue_project_policy_route(
             body.revision_number,
             body.maximum_active_runs,
             body.automation_label,
+            _policy_defaults(body),
         )
     except (TypeError, ValueError) as error:
         raise ApiProblem("invalid-request") from error
@@ -317,12 +321,51 @@ def _parse_after(value: str) -> QueueItemId:
         ) from error
 
 
+def _policy_defaults(
+    body: PutQueueProjectPolicyRequestResource,
+) -> QueueProjectPolicyDefaults | None:
+    """What a labelled item with no proposal is proposed under, or nothing.
+
+    Workflow and rank are stated together or not at all, and a disposition
+    without them states nothing: each of those halves would leave the sweep
+    inventing the rest of a proposal. Unstated, the disposition is whatever
+    the contract reserves for a human.
+    """
+
+    lineage_id = body.default_workflow_lineage_id
+    priority_rank = body.default_priority_rank
+    disposition = body.automation_disposition_default
+    if lineage_id is None and priority_rank is None:
+        if disposition is not None:
+            raise ValueError(
+                "a queue automation disposition needs the defaults it applies to"
+            )
+        return None
+    if lineage_id is None or priority_rank is None:
+        raise ValueError("a queue policy default names a workflow and a priority")
+    priority = QueuePriorityRank(priority_rank)
+    lineage = CatalogLineageId(lineage_id)
+    if disposition is None:
+        return QueueProjectPolicyDefaults(lineage, priority)
+    return QueueProjectPolicyDefaults(
+        lineage, priority, QueueAutomationDisposition(disposition)
+    )
+
+
 def _policy_resource(policy: QueueProjectPolicyRevision) -> QueueProjectPolicyResource:
+    defaults = policy.defaults
     return QueueProjectPolicyResource(
         project_id=policy.project_id.value,
         revision_number=policy.revision_number,
         maximum_active_runs=policy.maximum_active_runs,
         automation_label=policy.automation_label,
+        default_workflow_lineage_id=(
+            None if defaults is None else defaults.workflow_lineage_id.value
+        ),
+        default_priority_rank=None if defaults is None else defaults.priority.rank,
+        automation_disposition_default=(
+            None if defaults is None else defaults.automation_disposition
+        ),
     )
 
 
@@ -338,6 +381,7 @@ def _proposal_resource(
         ),
         automation_disposition=proposal.automation_disposition,
         policy_revision=proposal.policy_revision,
+        source=proposal.source,
     )
 
 

@@ -165,9 +165,17 @@ class QueueAutomationDisposition(StrEnum):
     AUTOMATION_AUTHORIZED = "AUTOMATION_AUTHORIZED"
 
 
+class QueueProposalSource(StrEnum):
+    """Which decision wrote this proposal: the operator's door, or the policy."""
+
+    OPERATOR = "OPERATOR"
+    POLICY_DEFAULT = "POLICY_DEFAULT"
+
+
 class QueueProposalRefusal(StrEnum):
     SELF_DEPENDENCY = "SELF_DEPENDENCY"
     POLICY_REVISION_MISSING = "POLICY_REVISION_MISSING"
+    WORKFLOW_LINEAGE_MISSING = "WORKFLOW_LINEAGE_MISSING"
     PREREQUISITE_NOT_IN_PROJECT = "PREREQUISITE_NOT_IN_PROJECT"
     DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
 
@@ -185,6 +193,36 @@ class QueueBlockerKind(StrEnum):
 
 
 @dataclass(frozen=True)
+class QueueProjectPolicyDefaults:
+    """What the label sweep proposes for an item the operator has only labelled.
+
+    Workflow and priority travel together because a proposal carries both: a
+    policy naming one of them would leave the sweep to guess the other. The
+    disposition stays HUMAN_REQUIRED unless the operator states otherwise, so
+    a default never releases work by itself (REQ-QUEUE-05).
+    """
+
+    workflow_lineage_id: CatalogLineageId
+    priority: QueuePriorityRank
+    automation_disposition: QueueAutomationDisposition = (
+        QueueAutomationDisposition.HUMAN_REQUIRED
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workflow_lineage_id, CatalogLineageId):
+            raise TypeError(
+                "a queue policy default names its workflow through the catalog "
+                "lineage id"
+            )
+        if not isinstance(self.priority, QueuePriorityRank):
+            raise TypeError(
+                "a queue policy default priority must use QueuePriorityRank"
+            )
+        if not isinstance(self.automation_disposition, QueueAutomationDisposition):
+            raise TypeError("a queue policy default disposition must be typed")
+
+
+@dataclass(frozen=True)
 class QueueProjectPolicyRevision:
     """One immutable project's automation filter and active-run ceiling."""
 
@@ -192,6 +230,7 @@ class QueueProjectPolicyRevision:
     revision_number: int
     maximum_active_runs: int
     automation_label: str | None
+    defaults: QueueProjectPolicyDefaults | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_id, ProjectId):
@@ -221,6 +260,10 @@ class QueueProjectPolicyRevision:
                 "a queue automation label names one label; admitting every "
                 "observed item is not a ruled policy value"
             )
+        if self.defaults is not None and not isinstance(
+            self.defaults, QueueProjectPolicyDefaults
+        ):
+            raise TypeError("a queue policy carries its defaults through the contract")
 
 
 @dataclass(frozen=True)
@@ -232,6 +275,7 @@ class QueueProposal:
     prerequisite_item_ids: tuple[QueueItemId, ...]
     automation_disposition: QueueAutomationDisposition
     policy_revision: int | None = None
+    source: QueueProposalSource = QueueProposalSource.OPERATOR
 
     def __post_init__(self) -> None:
         if not isinstance(self.priority, QueuePriorityRank):
@@ -253,6 +297,8 @@ class QueueProposal:
             type(self.policy_revision) is not int or self.policy_revision < 1
         ):
             raise ValueError("a proposal policy revision must be positive when present")
+        if not isinstance(self.source, QueueProposalSource):
+            raise TypeError("a queue proposal names the decision that wrote it")
 
 
 @dataclass(frozen=True)
