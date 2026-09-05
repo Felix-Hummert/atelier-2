@@ -7,11 +7,15 @@
 
 [[file]]
 path = "src/atelier2/adapters/agent_process_watchdog.py"
-lines = 868
+lines = 1196
+
+[[file]]
+path = "src/atelier2/adapters/agent_processes.py"
+lines = 992
 
 [[file]]
 path = "src/atelier2/adapters/claude_subscription.py"
-lines = 2165
+lines = 2166
 
 [[file]]
 path = "src/atelier2/adapters/dbos/advancer.py"
@@ -87,7 +91,7 @@ lines = 802
 
 [[file]]
 path = "src/atelier2/adapters/grok_subscription.py"
-lines = 1782
+lines = 1783
 
 [[file]]
 path = "src/atelier2/api/openapi.py"
@@ -146,20 +150,24 @@ path = "src/atelier2/host/serving.py"
 lines = 1439
 
 [[file]]
+path = "src/atelier2/ports/agent_executions.py"
+lines = 1163
+
+[[file]]
 path = "src/atelier2/runner/session.py"
 lines = 1072
 
 [[function]]
 qualified_name = "atelier2.adapters.agent_process_watchdog.Watchdog._handle_launch"
-lines = 96
+lines = 98
 
 [[function]]
 qualified_name = "atelier2.adapters.agent_process_watchdog._decode_launch_request"
-lines = 70
+lines = 77
 
 [[function]]
 qualified_name = "atelier2.adapters.agent_processes.AgentProcessSupervisor.launch_and_wait"
-lines = 80
+lines = 91
 
 [[function]]
 qualified_name = "atelier2.adapters.agent_processes.AgentProcessSupervisor.prepare"
@@ -587,7 +595,7 @@ lines = 85
 
 [[function]]
 qualified_name = "atelier2.application.execute_agent_attempt.execute_agent_attempt"
-lines = 155
+lines = 159
 
 [[function]]
 qualified_name = "atelier2.application.execute_agent_attempt_on_runner.execute_agent_attempt_on_runner"
