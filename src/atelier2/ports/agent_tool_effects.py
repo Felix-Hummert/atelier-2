@@ -36,6 +36,7 @@ from atelier2.contracts.effects import (
     EffectIntent,
     EffectReceipt,
     EffectUnknownOutcome,
+    ReadbackPhase,
 )
 from atelier2.ports.effects import EffectAdapter
 
@@ -87,10 +88,13 @@ def redeem_prepared_tool_effect(
     its destination is recognized rather than repeated: only an authoritative
     absence licenses this call's own execute, and an unknown readback is
     handed back rather than guessed at, exactly as an effect adapter itself is
-    never asked to create against an UNKNOWN it did not resolve.
+    never asked to create against an UNKNOWN it did not resolve. The readback
+    is the redemption's pre-send read: it precedes this call's own execute, and
+    a redemption whose execute already reached its destination is recognized by
+    what that destination then holds, not by an absence.
     """
-    readback = adapter.readback(prepared_intent)
-    prepared_intent.authorize_adapter_readback(readback)
+    readback = adapter.readback(prepared_intent, ReadbackPhase.BEFORE_SEND)
+    prepared_intent.authorize_adapter_readback(readback, ReadbackPhase.BEFORE_SEND)
     if isinstance(readback, EffectReceipt):
         return AgentToolEffectDelivered(readback)
     if isinstance(readback, EffectUnknownOutcome):

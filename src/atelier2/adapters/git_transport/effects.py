@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -27,6 +28,7 @@ from atelier2.contracts.effects import (
     AdapterRevision,
     CanonicalRequest,
     ConfirmationSource,
+    EffectAbsence,
     EffectAdapterBinding,
     EffectBinding,
     EffectDestination,
@@ -38,6 +40,9 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     LogicalEffectKey,
     PerformedEffect,
+    ReadbackPhase,
+    UnknownOutcomeReason,
+    destination_holds_nothing,
 )
 
 _HOOK_FREE_ARGUMENTS = ("-c", f"core.hooksPath={os.devnull}")
@@ -69,9 +74,82 @@ class GitCommandResult:
 
 
 @dataclass(frozen=True, slots=True)
-class _RemoteRefObservation:
-    oid: str | None = None
-    absence_proven: bool = False
+class _RemoteRefFound:
+    """The remote advertises exactly this object at the exact ref that was read."""
+
+    oid: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteRefAbsent:
+    """The remote answered, and it holds no such ref.
+
+    What that proves depends on when it was read, so the observation keeps what
+    a reader after a send needs to report: the status the read exited with, and
+    how long it took.
+    """
+
+    exit_status: int
+    duration_milliseconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteRefUnreadable:
+    """The read itself failed, or answered something this adapter cannot read."""
+
+    reason: UnknownOutcomeReason
+
+
+type _RemoteRefObservation = _RemoteRefFound | _RemoteRefAbsent | _RemoteRefUnreadable
+
+
+def _elapsed_milliseconds(started: float) -> int:
+    return round((time.monotonic() - started) * 1_000)
+
+
+def _unreadable(
+    result: GitCommandResult, elapsed_milliseconds: int
+) -> _RemoteRefUnreadable:
+    """Why a remote read resolved nothing, in git's own words.
+
+    A read that failed says so on standard error. A read that exits zero and
+    advertises something this adapter cannot parse says nothing there, and then
+    the unparsable answer itself is the only account of it there is.
+    """
+
+    said = result.stderr.decode("utf-8", errors="replace").strip()
+    return _RemoteRefUnreadable(
+        UnknownOutcomeReason(
+            result.returncode,
+            elapsed_milliseconds,
+            said or result.stdout.decode("utf-8", errors="replace").strip(),
+        )
+    )
+
+
+def _unknown(
+    intent: EffectIntent, observation: _RemoteRefObservation
+) -> EffectUnknownOutcome:
+    return EffectUnknownOutcome(intent.reference, _unknown_reason(observation))
+
+
+def _unknown_reason(observation: _RemoteRefObservation) -> UnknownOutcomeReason | None:
+    """What to report about a read whose answer resolved nothing.
+
+    A ref the remote does not advertise is an answer, not a failure, so after a
+    send it reports the read's own successful status rather than pretending git
+    refused anything.
+    """
+
+    if isinstance(observation, _RemoteRefUnreadable):
+        return observation.reason
+    if isinstance(observation, _RemoteRefAbsent):
+        return UnknownOutcomeReason(
+            observation.exit_status,
+            observation.duration_milliseconds,
+            "the remote advertises no such ref, and a send was already attempted",
+        )
+    return None
 
 
 class GitCommandRunner(Protocol):
@@ -128,7 +206,10 @@ class GitTransportEffectAdapterFactory:
 
     @property
     def proves_absence(self) -> bool:
-        return False
+        # An `ls-remote` for one exact ref that succeeds and advertises nothing
+        # is the remote's own answer that it holds no such ref (#1210). Only a
+        # read that failed leaves the outcome unknown.
+        return True
 
     def open(self) -> GitTransportEffectAdapter:
         store = self.candidate_store.resolve()
@@ -161,13 +242,19 @@ class GitTransportEffectAdapter:
         self._command_runner = command_runner
         self._closed = False
 
-    def readback(self, intent: EffectIntent) -> EffectReceipt | EffectUnknownOutcome:
+    def readback(
+        self, intent: EffectIntent, phase: ReadbackPhase
+    ) -> EffectReceipt | EffectAbsence | EffectUnknownOutcome:
         request = self._authorized_request(intent)
         self._verify_candidate(request)
         expected = request.expected_commit_oid(intent.request.request_hash.value)
         observation = self._remote_ref(request.head_branch.full_ref)
-        if observation.oid != expected:
-            return EffectUnknownOutcome(intent.reference)
+        if isinstance(observation, _RemoteRefAbsent):
+            return destination_holds_nothing(
+                intent.reference, phase, _unknown_reason(observation)
+            )
+        if not isinstance(observation, _RemoteRefFound) or observation.oid != expected:
+            return _unknown(intent, observation)
         performed = self._performed(request, expected)
         return EffectReceipt(
             intent,
@@ -181,11 +268,15 @@ class GitTransportEffectAdapter:
         self._verify_candidate(request)
         expected = request.expected_commit_oid(intent.request.request_hash.value)
         full_ref = request.head_branch.full_ref
+        # This read only re-reads a send the caller already holds a pre-send
+        # absence or an operator's determination for; the create-only lease
+        # below is what fences the send itself. The read taken after it is
+        # `_receipt_after_send`, which never reads a missing ref as an absence.
         observation = self._remote_ref(full_ref)
-        if observation.oid == expected:
+        if isinstance(observation, _RemoteRefFound) and observation.oid == expected:
             return self._performed(request, expected)
-        if not observation.absence_proven:
-            return EffectUnknownOutcome(intent.reference)
+        if not isinstance(observation, _RemoteRefAbsent):
+            return _unknown(intent, observation)
         self._fetch_base(request.base_commit)
         written = self._store_commit(request, intent.request.request_hash.value)
         if written != expected:
@@ -213,7 +304,7 @@ class GitTransportEffectAdapter:
         """Publish one reviewed replacement tree through the existing push fence."""
 
         push_intent = self._reviewed_documentation_push_intent(intent, request)
-        observed = self.readback(push_intent)
+        observed = self.readback(push_intent, ReadbackPhase.BEFORE_SEND)
         if isinstance(observed, EffectReceipt):
             return
         performed = self.execute(push_intent)
@@ -454,34 +545,26 @@ class GitTransportEffectAdapter:
         return author, committer, completed_at
 
     def _remote_ref(self, full_ref: str) -> _RemoteRefObservation:
+        started = time.monotonic()
         result = self._remote_git(
-            (
-                "ls-remote",
-                "--refs",
-                "--exit-code",
-                "--",
-                self._remote.url,
-                full_ref,
-            )
+            ("ls-remote", "--refs", "--", self._remote.url, full_ref)
         )
-        if result.returncode == 2 and not result.stdout and not result.stderr:
-            return _RemoteRefObservation(absence_proven=True)
+        elapsed = _elapsed_milliseconds(started)
         if result.returncode != 0:
-            return _RemoteRefObservation()
-        try:
-            lines = result.stdout.decode("ascii", errors="strict").splitlines()
-        except UnicodeDecodeError:
-            return _RemoteRefObservation()
+            return _unreadable(result, elapsed)
+        lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+        if not lines:
+            return _RemoteRefAbsent(result.returncode, elapsed)
         if len(lines) != 1:
-            return _RemoteRefObservation()
+            return _unreadable(result, elapsed)
         oid, separator, name = lines[0].partition("\t")
         if (
             separator != "\t"
             or name != full_ref
             or _GIT_OBJECT_ID.fullmatch(oid) is None
         ):
-            return _RemoteRefObservation()
-        return _RemoteRefObservation(oid=oid)
+            return _unreadable(result, elapsed)
+        return _RemoteRefFound(oid)
 
     def _fetch_base(self, oid: str) -> None:
         result = self._remote_git(
@@ -531,9 +614,9 @@ class GitTransportEffectAdapter:
         expected: str,
     ) -> PerformedEffect | EffectUnknownOutcome:
         observation = self._remote_ref(request.head_branch.full_ref)
-        if observation.oid == expected:
+        if isinstance(observation, _RemoteRefFound) and observation.oid == expected:
             return self._performed(request, expected)
-        return EffectUnknownOutcome(intent.reference)
+        return _unknown(intent, observation)
 
     def _credential_arguments(self) -> tuple[str, ...]:
         credential_file = self._remote.credential_file

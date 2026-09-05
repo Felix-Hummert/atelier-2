@@ -57,7 +57,6 @@ from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
     CanonicalRequest,
-    EffectAbsence,
     EffectAdapterBinding,
     EffectBinding,
     EffectDestination,
@@ -71,6 +70,7 @@ from atelier2.contracts.effects import (
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
     PerformedEffect,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -122,13 +122,13 @@ CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 
 
 class _UnknownOpenPrAdapter:
+    """An adapter shaped like the live one: it never proves an absence itself."""
+
     def __init__(self) -> None:
         self.execute_calls = 0
-        self.authoritative_absence = False
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
-        if self.authoritative_absence:
-            return EffectAbsence(intent.reference)
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
+        del phase
         return EffectUnknownOutcome(intent.reference)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect:
@@ -668,7 +668,6 @@ def test_a_persisted_round_two_agent_reconciliation_preserves_its_round(
                 )
             )
         else:
-            adapter_factory.adapter.authoritative_absence = True
             determination = OperatorAuthoritativeAbsence()
         runtime.launch()
         _submit_reconciliation(runtime, intent, determination)

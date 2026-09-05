@@ -10,7 +10,12 @@
   in the change that adds this record's second reading operation (issue #712);
   decision 5's commit-identity rationale amended 2026-08-30 (operator ruling on
   issue #883, superseding the ruling on issue #32) — what the declared identity
-  says, the rule that it is declared unchanged
+  says, the rule that it is declared unchanged; decision 5's authoritative-negative
+  rule amended 2026-09-05 (head ruling, usage evidence pass 9, issue #1210) — an
+  `ls-remote` and a `pulls?head=…` search with nothing to read for the exact
+  expected ref/head are authoritative absence before send; the post-send
+  readback rule is unchanged, and which of the two a read is the intent's
+  durable owner names (`ReadbackPhase`), never the adapter
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -512,6 +517,42 @@ or force-updated", so readback never returns `AUTHORITATIVE_NOT_FOUND` for it an
 "Create a content-bearing object" row of the table below rather than opening a
 second one.
 
+**2026-09-05 amendment (head ruling, usage evidence pass 9, issue #1210):
+overturned for the pre-send check that decides whether to send at all.** Live
+pass 9 produced two `WAITING_RECONCILIATION` results in one run where the
+remote held nothing at all — not the divergence this decision's `UNKNOWN`
+rule protects against, but an ordinary first attempt reading its own read as
+unresolved. A `git ls-remote` that exits 0 with no line for exactly the
+expected ref, taken *before* any send, is now authoritative absence: the
+operation proceeds to send rather than routing to reconciliation. This does
+not touch the paragraph above, which still governs the *readback taken after a
+send* — a rejected push's ref is still read as `UNKNOWN`, never as this
+pre-send absence, because only the pre-send read has nothing else it could
+mean. The zero-OID lease on the push itself, unchanged, remains the protection
+against a double send: an authoritative pre-send absence only clears the
+operation to attempt its one create-only, compare-and-swapped send.
+**Named residual gap, accepted for this slice (head ruling, issue #1210):**
+DBOS may replay `durable_effect`'s resolving step after a crash using the
+`OBSERVE` step's already-memoized pre-send absence, and if the ref was removed
+between the crash and the replay, the replayed `execute` finds absence again
+and pushes once more — fenced only by the zero-OID lease admitting solely the
+same deterministic commit (proven at the workflow level by
+`tests/crash/test_git_transport_effect_recovery.py::test_a_replayed_resolve_after_ref_removal_pushes_the_same_commit_once_more`),
+never a durable "send attempted" claim; closing it needs a schema hop on
+`effect_intents` and is its own slice, serial after #1216.
+
+Which of the two a read is, the adapter cannot know and does not decide: a
+process that died between its push and its receipt leaves the remote looking
+exactly like one that was never asked. The durable owner of the intent names
+it, as `ReadbackPhase` on the port's `readback`, and the effect contract
+refuses an absence answered for `AFTER_SEND` outright. So the amendment holds
+only where the phase says it may: the observing step of `durable_effect`,
+which runs before that workflow's resolving step ever reaches an `execute` and
+is replayed rather than read again after a recovery. The reconciliation path
+reads `AFTER_SEND`, because an intent reaches that door only behind an unknown
+outcome and an ambiguous send is one of the two ways to get one; there the
+operator's own determination, never the read, licenses the execution.
+
 **The credential handoff is normative, not left to whatever a subprocess call
 happens to do.** The credential — the token in the PAT method — never reaches
 the git subprocess as a literal value in its argument vector, per decision 3's
@@ -567,6 +608,29 @@ bytes — tree OID, base commit, branch, identity — do not exist without it.
   (`platform-absence-unprovable`), and an empty search never becomes an absence.
   This is where the third outcome earns its keep: `UNKNOWN` routes to the operator
   reconciliation command `contracts.effects` already owns.
+
+  **2026-09-05 amendment (head ruling, usage evidence pass 9, issue #1210):
+  overturned for the pre-send check that decides whether to send at all, for
+  `open-pr`.** The same live pass 9 that overturned decision 5's push paragraph
+  above hit its twin on this operation: a first attempt whose PR search found
+  nothing read that as `UNKNOWN` and routed to reconciliation before ever
+  sending. A `GET /repos/{owner}/{repo}/pulls?head=owner:branch&state=all`
+  answering 200 with an empty list, taken *before* any send, is now
+  authoritative absence for that exact head — the operation proceeds to open
+  the pull request rather than routing to reconciliation. The row above is
+  unchanged for readback taken *after* a send: an unmatched scan there is still
+  `UNKNOWN`, because only the pre-send search has nothing else it could mean.
+  GitHub's own head+base uniqueness constraint (422 on a second `POST`) remains
+  the protection against a double send; an authoritative pre-send absence only
+  clears the operation to attempt its one create, and a create that constraint
+  refuses whose winner the listing still does not name reports `UNKNOWN` with
+  what GitHub said rather than raising over a request that was sent.
+  Authoritative here means exactly the answer the ruling names: HTTP `200`
+  with an empty list, read across every page of the listing, with the marker
+  deciding which of a branch's pull requests is this request's. Any other
+  status, an unreadable body, or a branch naming only foreign pull requests is
+  `UNKNOWN`. As for the push above, the phase is named by the intent's durable
+  owner (`ReadbackPhase`), never decided by the adapter.
 - **The ambiguous retry needs no new state, because a durable one already precedes
   the send.** `EffectIntentState.PREPARED` is written durably before any request
   leaves the adapter, so a crash between send and receipt always leaves a prepared
