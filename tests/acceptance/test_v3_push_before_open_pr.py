@@ -74,11 +74,6 @@ from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
     EffectIntent,
-    EffectIntentStateVersion,
-    OperatorAuthoritativeAbsence,
-    ReconcileActor,
-    ReconcileCommand,
-    ReconcileCommandId,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
@@ -119,7 +114,6 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
-from tests.scenarios.runs import submit_reconcile_command
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 PROJECT = ProjectId("p3-public")
@@ -497,31 +491,6 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         )
         assert response.status_code == 201, response.text
         runtime.launch()
-        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_RECONCILIATION)
-
-        with runtime.engine.connect() as connection:
-            push_intent = intent_snapshot_from_record(
-                connection.execute(
-                    sa.select(effect_intents).where(
-                        effect_intents.c.operation_name
-                        == AdapterOperationName.PUSH_ATELIER_COMMIT.value
-                    )
-                )
-                .mappings()
-                .one()
-            ).intent
-        submit_reconcile_command(
-            runtime.engine,
-            runtime.settings,
-            ReconcileCommand(
-                ReconcileCommandId("authorize-public-p3-push"),
-                push_intent.reference,
-                EffectIntentStateVersion(1),
-                ReconcileActor("operator"),
-                "confirmed the derived branch is absent on the connected remote",
-                OperatorAuthoritativeAbsence(),
-            ),
-        )
         wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
 
         branch = head_branch_for_queue_item(

@@ -55,11 +55,6 @@ from atelier2.contracts.effect_requests import (
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
-    EffectIntentStateVersion,
-    OperatorAuthoritativeAbsence,
-    ReconcileActor,
-    ReconcileCommand,
-    ReconcileCommandId,
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -101,7 +96,7 @@ from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.projects import declaring_verification, git_project, run_git
 from tests.scenarios.run_waiting import wait_for_run_state
-from tests.scenarios.runs import submit_reconcile_command, submit_wait_answer
+from tests.scenarios.runs import submit_wait_answer
 
 WORKFLOW_PATH = Path("workflows/issue-to-pr.yaml")
 BUDGET_PATH = Path("workflows/budgets/push-implement.json")
@@ -426,18 +421,14 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
         assert response.status_code == 201, response.text
         runtime.launch()
 
-        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_RECONCILIATION)
+        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
         with runtime.engine.connect() as connection:
             push_intent = intent_snapshot_from_record(
                 connection.execute(sa.select(effect_intents)).mappings().one()
             ).intent
-            current_node = connection.scalar(
-                sa.select(runs.c.current_node_id).where(runs.c.run_id == RUN.value)
-            )
             redemption = (
                 connection.execute(sa.select(tool_redemptions)).mappings().one()
             )
-        assert current_node == BUILD_NODE
         assert push_intent.binding.operation_name is (
             AdapterOperationName.PUSH_ATELIER_COMMIT
         )
@@ -448,20 +439,6 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
         assert int(redemption["exit_code"]) == 0
         assert verification_record.read_bytes() == CANDIDATE_FILE_BYTES
         assert github.recorded_pull_requests() == ()
-
-        submit_reconcile_command(
-            runtime.engine,
-            runtime.settings,
-            ReconcileCommand(
-                ReconcileCommandId("authorize-issue-to-pr-push"),
-                push_intent.reference,
-                EffectIntentStateVersion(1),
-                ReconcileActor("operator"),
-                "confirmed the derived branch is absent on the connected remote",
-                OperatorAuthoritativeAbsence(),
-            ),
-        )
-        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
 
         with runtime.engine.connect() as connection:
             reviewed = (

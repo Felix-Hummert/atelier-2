@@ -18,7 +18,10 @@ from atelier2.contracts.effects import (
     EffectIntentMismatch,
     EffectReceipt,
     EffectResult,
+    EffectUnknownOutcome,
     PerformedEffect,
+    ReadbackPhase,
+    destination_holds_nothing,
 )
 
 _SCHEMA = """
@@ -54,7 +57,8 @@ class LoopbackEffectAdapterFactory:
     @property
     def proves_absence(self) -> bool:
         # The loopback store holds every effect it performed under its logical
-        # key, so a row that is absent is an authoritative absence.
+        # key, so a row that is absent before a send is an authoritative
+        # absence. After one, no destination's silence proves anything (#1210).
         return True
 
     def open(self) -> LoopbackEffectAdapter:
@@ -72,7 +76,9 @@ class LoopbackEffectAdapter:
         self._binding = binding
         self._closed = False
 
-    def readback(self, intent: EffectIntent) -> EffectReceipt | EffectAbsence:
+    def readback(
+        self, intent: EffectIntent, phase: ReadbackPhase
+    ) -> EffectReceipt | EffectAbsence | EffectUnknownOutcome:
         self._authorize_binding(intent)
         with (
             closing(sqlite3.connect(self._database_path, timeout=30.0)) as connection,
@@ -84,7 +90,9 @@ class LoopbackEffectAdapter:
                 (intent.binding.logical_key.value,),
             ).fetchone()
         if record is None:
-            return EffectAbsence(intent.reference)
+            # Nothing failed and nothing was measured here, so the phase alone
+            # decides, and there is nothing this store could quote as a reason.
+            return destination_holds_nothing(intent.reference, phase, None)
         self._verify_request(intent, bytes(record[0]), str(record[1]))
         result = EffectResult.from_durable_record(
             bytes(record[3]), EffectResult.payload_hash_type(str(record[4]))

@@ -23,6 +23,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     OperatorAuthoritativeAbsence,
     PerformedEffect,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -55,10 +56,10 @@ class HarnessEffectAdapter:
         self._force_unknown_marker = force_unknown_marker
         self._after_execute_crash_marker = after_execute_crash_marker
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         if self._force_unknown_marker.exists():
             return EffectUnknownOutcome(intent.reference)
-        return self._delegate.readback(intent)
+        return self._delegate.readback(intent, phase)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         performed = self._delegate.execute(intent)

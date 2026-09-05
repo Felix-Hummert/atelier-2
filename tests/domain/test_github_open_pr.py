@@ -24,6 +24,7 @@ from atelier2.contracts.effects import (
     EffectIntent,
     EffectReceipt,
     LogicalEffectKey,
+    ReadbackPhase,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 
@@ -68,7 +69,9 @@ def test_execute_records_one_pull_request_with_the_request_hash_in_its_body(
     intent = effect_intent(factory)
     adapter = factory.open()
     try:
-        assert isinstance(adapter.readback(intent), EffectAbsence)
+        assert isinstance(
+            adapter.readback(intent, ReadbackPhase.BEFORE_SEND), EffectAbsence
+        )
         performed = adapter.execute(intent)
     finally:
         adapter.close()
@@ -100,7 +103,7 @@ def test_a_second_execute_finds_the_same_pull_request_and_does_not_create_a_twin
     try:
         first = adapter.execute(intent)
         second = adapter.execute(intent)
-        read = adapter.readback(intent)
+        read = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
     finally:
         adapter.close()
 
@@ -122,9 +125,13 @@ def test_a_malformed_open_pr_payload_is_refused_before_the_recorded_adapter_writ
     original = effect_intent(factory)
     intent = EffectIntent(original.binding, CanonicalRequest(malformed_open_pr_payload))
     adapter = factory.open()
+    reaching_the_destination = {
+        "readback": lambda: adapter.readback(intent, ReadbackPhase.BEFORE_SEND),
+        "execute": lambda: adapter.execute(intent),
+    }
     try:
         with pytest.raises(GitHubEffectRefused, match="canonical open-pr request"):
-            getattr(adapter, operation)(intent)
+            reaching_the_destination[operation]()
     finally:
         adapter.close()
 

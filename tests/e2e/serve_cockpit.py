@@ -83,6 +83,7 @@ from atelier2.contracts.effects import (
     EffectReadback,
     EffectUnknownOutcome,
     PerformedEffect,
+    ReadbackPhase,
 )
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
@@ -465,7 +466,7 @@ class UnknownReadbackAdapter:
     def __init__(self, delegate: EffectAdapter) -> None:
         self._delegate = delegate
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         return EffectUnknownOutcome(intent.reference)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:

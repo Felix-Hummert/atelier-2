@@ -49,11 +49,6 @@ from atelier2.contracts.effect_requests import (
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
-    EffectIntentStateVersion,
-    OperatorAuthoritativeAbsence,
-    ReconcileActor,
-    ReconcileCommand,
-    ReconcileCommandId,
 )
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import TrackerItemReference
@@ -88,7 +83,6 @@ from tests.scenarios.api import durable_api_client
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.projects import run_git
 from tests.scenarios.run_waiting import wait_for_run_state
-from tests.scenarios.runs import submit_reconcile_command
 
 WORKFLOW_PATH = Path("workflows/push-before-open-pr.yaml")
 BUDGET_PATH = Path("workflows/budgets/push-implement.json")
@@ -312,45 +306,11 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         )
         assert response.status_code == 201, response.text
         runtime.launch()
-        wait_for_run_state(runtime.engine, RUN, RunState.WAITING_RECONCILIATION)
+        wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
 
-        with runtime.engine.connect() as connection:
-            waiting_intents = connection.execute(
-                sa.select(effect_intents).order_by(sa.literal_column("rowid"))
-            ).mappings()
-            intents = tuple(
-                intent_snapshot_from_record(row).intent for row in waiting_intents
-            )
-            receipt_count = connection.scalar(
-                sa.select(sa.func.count()).select_from(effect_receipts)
-            )
-            current_node = connection.scalar(
-                sa.select(runs.c.current_node_id).where(runs.c.run_id == RUN.value)
-            )
-        assert [intent.binding.operation_name for intent in intents] == [
-            AdapterOperationName.PUSH_ATELIER_COMMIT
-        ]
-        assert receipt_count == 0
-        assert current_node == "implement"
-        assert github.recorded_pull_requests() == ()
         assert executor.opened is not None
         (implement_request,) = executor.opened.requests
         assert implement_request.maximum_assistant_turns == _pinned_turn_bound()
-
-        push_intent = intents[0]
-        submit_reconcile_command(
-            runtime.engine,
-            runtime.settings,
-            ReconcileCommand(
-                ReconcileCommandId("authorize-workflow-push"),
-                push_intent.reference,
-                EffectIntentStateVersion(1),
-                ReconcileActor("operator"),
-                "confirmed the derived branch is absent on the connected remote",
-                OperatorAuthoritativeAbsence(),
-            ),
-        )
-        wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
 
         with runtime.engine.connect() as connection:
             final_intents = tuple(

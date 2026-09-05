@@ -7,6 +7,7 @@ from typing import ClassVar, Final, Self
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.secret_redaction import redact_credentials
 
 
 class EffectHashCollision(RuntimeError):
@@ -274,8 +275,13 @@ class EffectReceiptReference:
 class EffectAbsence:
     """The destination itself reports it never performed the referenced request.
 
-    Only a readback can establish this. An operator who finds nothing authorizes
-    an execution instead; that authorization is not an authoritative absence.
+    Only a readback taken before the first send can establish this, because
+    only there does a destination holding nothing have a single meaning (ADR
+    0010 decision 5, as amended 2026-09-05). Once a send was attempted, that
+    same empty answer may equally be a ref someone removed or a listing that
+    has not caught up, so `ReadbackPhase.AFTER_SEND` reads it as
+    `EffectUnknownOutcome`. An operator who finds nothing authorizes an
+    execution instead; that authorization is not an authoritative absence.
     """
 
     outcome: ClassVar[EffectOutcome] = EffectOutcome.AUTHORITATIVE_NOT_FOUND
@@ -286,16 +292,88 @@ class EffectAbsence:
     intent_reference: EffectIntentReference
 
 
+MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS: Final = 2048
+"""How much of what a destination said an unknown outcome keeps.
+
+Its last characters, not its first: a failed call explains itself at the end of
+its output, under whatever banner, progress, or advice it printed before.
+"""
+
+
+@dataclass(frozen=True)
+class UnknownOutcomeReason:
+    """What the destination itself said when the outcome stayed unknown.
+
+    `failure_code` is the destination's own numeric answer -- a git exit status,
+    an HTTP status -- and is `None` where the call never reached one, as a
+    timeout does not. `detail` is whatever it printed, credential-scrubbed and
+    cut to its last characters here rather than at each call site, because an
+    adapter that forgot either would write a token into durable state.
+    """
+
+    failure_code: int | None
+    duration_milliseconds: int
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.duration_milliseconds < 0:
+            raise ValueError("an unknown outcome took a nonnegative duration")
+        object.__setattr__(
+            self,
+            "detail",
+            redact_credentials(self.detail).text[
+                -MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS:
+            ],
+        )
+
+
 @dataclass(frozen=True)
 class EffectUnknownOutcome:
-    """No source can yet say whether the referenced prepared request was performed."""
+    """No source can yet say whether the referenced prepared request was performed.
+
+    `reason` is what the destination answered when an adapter's own read failed.
+    It is absent where nothing failed: a read that succeeded and found some
+    other state has no failure to report.
+    """
 
     outcome: ClassVar[EffectOutcome] = EffectOutcome.UNKNOWN
 
     intent_reference: EffectIntentReference
+    reason: UnknownOutcomeReason | None = None
 
 
 type EffectReadback = EffectReceipt | EffectAbsence | EffectUnknownOutcome
+
+
+class ReadbackPhase(StrEnum):
+    """Whether anything can already have been sent for the intent being read.
+
+    The adapter cannot answer this about itself: a process that died between
+    its send and its receipt leaves the destination looking exactly like one
+    that was never asked. Only the durable owner of the intent knows which of
+    the two it is asking about, so it names the phase, and the phase decides
+    what an empty answer is allowed to mean.
+    """
+
+    BEFORE_SEND = "BEFORE_SEND"
+    AFTER_SEND = "AFTER_SEND"
+
+
+def destination_holds_nothing(
+    intent_reference: EffectIntentReference,
+    phase: ReadbackPhase,
+    reason: UnknownOutcomeReason | None,
+) -> EffectAbsence | EffectUnknownOutcome:
+    """What a destination that answered and holds nothing means in this phase.
+
+    Every adapter asks here rather than deciding for itself, because the
+    difference is not about the destination at all: before a send there is
+    nothing an empty answer could hide, and after one there always is.
+    """
+
+    if phase is ReadbackPhase.AFTER_SEND:
+        return EffectUnknownOutcome(intent_reference, reason)
+    return EffectAbsence(intent_reference)
 
 
 @dataclass(frozen=True)
@@ -386,7 +464,9 @@ class EffectIntent:
                 "a determination must present the prepared intent and its request"
             )
 
-    def authorize_adapter_readback(self, readback: EffectReadback) -> None:
+    def authorize_adapter_readback(
+        self, readback: EffectReadback, phase: ReadbackPhase
+    ) -> None:
         self.authorize_readback(readback)
         if (
             isinstance(readback, EffectReceipt)
@@ -394,6 +474,10 @@ class EffectIntent:
         ):
             raise EffectAdapterResponseConflict(
                 "an effect adapter may establish only ADAPTER_READBACK provenance"
+            )
+        if isinstance(readback, EffectAbsence) and phase is ReadbackPhase.AFTER_SEND:
+            raise EffectAdapterResponseConflict(
+                "an absence read after a send attempt proves nothing and is refused"
             )
 
     def resolve_reconciliation(
