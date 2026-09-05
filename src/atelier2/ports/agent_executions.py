@@ -452,13 +452,20 @@ _ENDING_OF_CANCELLATION_CAUSE = {
 
 
 class ProviderTerminalReason(StrEnum):
-    """Why this conversation is over, in its own reading of what happened."""
+    """Why this conversation is over, in its own reading of what happened.
+
+    `PROTOCOL_FAULT` is the exchange having stopped being one -- framing lost,
+    an answer nobody asked for, a promised message never sent. A provider that
+    broke never decided to stop, so it is never `CANCELLED_BY_PROVIDER`, the
+    one arm that carries a provider's own word.
+    """
 
     ENDED = "ended"
     POLICY_REFUSED = "policy-refused"
     BUDGET_EXHAUSTED = "budget-exhausted"
     CANCELLED_BY_OPERATOR = "cancelled-by-operator"
     CANCELLED_BY_PROVIDER = "cancelled-by-provider"
+    PROTOCOL_FAULT = "protocol-fault"
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +519,17 @@ class ProviderConversation(Protocol):
 
     @property
     def bounds(self) -> ProviderConversationBounds: ...
+
+    @property
+    def incomplete_frame_bytes(self) -> int:
+        """How much of an unfinished frame this conversation is still holding.
+
+        Supervision holds that buffer to `maximum_incomplete_frame_bytes`, and
+        only the conversation knows which of the bytes it read are still an
+        unfinished sentence: output it consumed and answered nothing to is not
+        a frame that never ends.
+        """
+        ...
 
     def open(self) -> tuple[ProviderConversationAction, ...]:
         """Say the first thing, before this process has said anything.

@@ -164,6 +164,11 @@ import os, sys
 os.write(1, int(sys.argv[1]) * b'{"say":"line"}\n')
 """
 
+_PROVIDER_WRITES_FRAMES_NOBODY_ANSWERS = r"""
+import os, sys
+os.write(1, int(sys.argv[1]) * b'{"ignore":"line"}\n')
+"""
+
 _PROVIDER_NEVER_ENDS_ITS_FRAME = r"""
 import os, sys
 os.write(1, b'{"say":"' + int(sys.argv[1]) * b'x')
@@ -261,8 +266,9 @@ class _LineFramedConversation:
     `{"write": path, "content": text}` are file requests, `{"stop": reason}` is
     the provider ending itself, `{"cancel": cause}` is this conversation asking
     for its own stop, `{"done": true}` is it saying it will send nothing more,
-    every other line is a step, and whatever stands after the last newline is
-    the half frame an ending has to account for.
+    `{"ignore": anything}` is a whole frame it has nothing to say about, every
+    other line is a step, and whatever stands after the last newline is the
+    half frame an ending has to account for.
     """
 
     attempt_id: AgentAttemptId
@@ -280,6 +286,10 @@ class _LineFramedConversation:
     refused_a_permission: bool = False
     provider_stop_reason: str = ""
     incomplete: bytes = b""
+
+    @property
+    def incomplete_frame_bytes(self) -> int:
+        return len(self.incomplete)
 
     def open(self) -> tuple[ProviderConversationAction, ...]:
         if not self.opening:
@@ -305,7 +315,9 @@ class _LineFramedConversation:
             self.cancellation_frame = None
         while b"\n" in self.incomplete:
             line, _newline, self.incomplete = self.incomplete.partition(b"\n")
-            actions.append(self._read(line.decode("utf-8")))
+            read = self._read(line.decode("utf-8"))
+            if read is not None:
+                actions.append(read)
         return tuple(actions)
 
     def answer_permission(self, decision: PermissionDecision) -> ProviderStandardInput:
@@ -360,8 +372,10 @@ class _LineFramedConversation:
         # such an attempt has no completion to carry an outcome on.
         return ProviderTerminalOutcome(ProviderTerminalReason.ENDED)
 
-    def _read(self, line: str) -> ProviderConversationAction:
+    def _read(self, line: str) -> ProviderConversationAction | None:
         spoken = json.loads(line)
+        if "ignore" in spoken:
+            return None
         if "ask" in spoken:
             self.questions += 1
             return PermissionRequest(
@@ -725,6 +739,30 @@ def test_a_frame_that_never_ends_refuses_at_the_declared_incomplete_bound(
 
         assert isinstance(failure, RuntimeError)
         assert "frame exceeds its declared bound" in str(failure)
+        attempt.finalize_after_failure()
+
+
+def test_whole_frames_this_conversation_answers_nothing_to_end_no_attempt(
+    tmp_path: Path,
+) -> None:
+    """The incomplete-frame bound refuses a sentence that never ends, never a
+    stream of finished ones the conversation had nothing to say about."""
+    with _claimed_attempt(tmp_path, "process/consumed-frames") as attempt:
+        conversation = _LineFramedConversation(
+            attempt.execution.attempt_id, bounds=_bounds(incomplete=64)
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_WRITES_FRAMES_NOBODY_ANSWERS,
+            "64",
+            conversation=_binding(conversation),
+        )
+
+        launch = attempt.launch(invocation, _RecordingAuthority())
+
+        assert launch.completion.terminal_outcome == ProviderTerminalOutcome(
+            ProviderTerminalReason.ENDED
+        )
+        assert launch.completion.session_events == ()
         attempt.finalize_after_failure()
 
 

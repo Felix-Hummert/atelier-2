@@ -18,8 +18,9 @@ extension cannot widen what a provider may do by being unreadable.
 process, where a raised exception is a state nobody can answer for. Every
 refused frame has an answer instead: a JSON-RPC error where one is owed,
 bounded transcript evidence, a latched terminal reading, or an orderly close.
-`ProviderTerminalReason.CANCELLED_BY_PROVIDER` carries the word for what the
-provider itself made unusable, the one arm the seam lets carry a word.
+An exchange that stopped being one ends as `ProviderTerminalReason.PROTOCOL_FAULT`
+and never in a provider's own word: only a `stopReason` the agent itself spelled
+reaches `CANCELLED_BY_PROVIDER`, and which promise broke is kept as evidence.
 """
 
 from __future__ import annotations
@@ -173,13 +174,15 @@ class AcpSessionUpdate(StrEnum):
 
 
 class AcpConversationFault(StrEnum):
-    """Why a conversation the provider made unusable ended where it did."""
+    """Which of the protocol's promises broke, where one did."""
 
     HANDSHAKE_REFUSED = "handshake-refused"
     NO_SESSION = "no-session"
     NO_STOP_REASON = "no-stop-reason"
     NO_TERMINAL_ANSWER = "no-terminal-answer"
     UNSENDABLE_FRAME = "unsendable-frame"
+    LOST_FRAMING = "lost-framing"
+    UNEXPECTED_ANSWER = "unexpected-answer"
 
 
 _ANSWERED_FRAME_FAULTS = {
@@ -187,6 +190,12 @@ _ANSWERED_FRAME_FAULTS = {
     JsonRpcFault.NOT_A_MESSAGE: INVALID_REQUEST_CODE,
 }
 """A frame that is still framed is answered where the protocol owes an answer."""
+
+_FATAL_FRAME_FAULTS = {
+    JsonRpcFault.OVERSIZE_FRAME: AcpConversationFault.LOST_FRAMING,
+    JsonRpcFault.UNEXPECTED_RESPONSE: AcpConversationFault.UNEXPECTED_ANSWER,
+}
+"""A frame nobody can answer is the exchange itself having stopped being one."""
 
 _EFFECT_OF_TOOL_KIND = {
     AcpToolKind.READ: PermissionEffect.WORKSPACE_READ,
@@ -231,6 +240,8 @@ _UNKNOWN_METHOD_MESSAGE = "this client does not serve that method"
 _UNREADABLE_FRAME_MESSAGE = "this client could not read that frame"
 _UNREADABLE_PARAMS_MESSAGE = "this client could not read that request"
 _WRITE_ACKNOWLEDGED: JsonObject = {}
+PROTOCOL_FAULT_EVIDENCE = "acp protocol fault: "
+"""How a broken promise is named in the one step that keeps it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,6 +457,7 @@ class AgentClientProtocolConversation:
     _asked_files: int = field(default=0, init=False)
     _unrecognised: int = field(default=0, init=False)
     _local_cause: ProviderTerminalReason | None = field(default=None, init=False)
+    _fault: AcpConversationFault | None = field(default=None, init=False)
     _stop_reason: str = field(default="", init=False)
     _answered_prompt: bool = field(default=False, init=False)
     _ended: bool = field(default=False, init=False)
@@ -503,7 +515,8 @@ class AgentClientProtocolConversation:
         if not self._answered_prompt:
             self._stop_talking(AcpConversationFault.NO_TERMINAL_ANSWER)
         return ProviderConversationClosing(
-            self._outcome(ending), self._flushed() + self._half_frame()
+            self._outcome(ending),
+            self._flushed() + self._broken_promise() + self._half_frame(),
         )
 
     def _read(self, frame: IncomingFrame) -> Actions:
@@ -522,8 +535,7 @@ class AgentClientProtocolConversation:
     def _refused_frame(self, fault: JsonRpcFault) -> Actions:
         code = _ANSWERED_FRAME_FAULTS.get(fault)
         if code is None:
-            self._stop_talking(fault)
-            return self._flushed() + (ProviderConversationComplete(),)
+            return self._faulted(_FATAL_FRAME_FAULTS[fault])
         return self._sending(JsonRpcError(None, code, _UNREADABLE_FRAME_MESSAGE))
 
     def _notified(self, method: str, params: JsonObject) -> Actions:
@@ -595,8 +607,10 @@ class AgentClientProtocolConversation:
         self._ended = True
         stopped = result.get("stopReason")
         spoken = stopped if isinstance(stopped, str) else ""
-        if spoken not in _STOP_REASONS_THAT_ONLY_END_A_TURN:
-            self._stop_talking(_cut(spoken) or AcpConversationFault.NO_STOP_REASON)
+        if not spoken:
+            self._stop_talking(AcpConversationFault.NO_STOP_REASON)
+        elif spoken not in _STOP_REASONS_THAT_ONLY_END_A_TURN:
+            self._stop_reason = _cut(spoken)
         return self._flushed() + (ProviderConversationComplete(),)
 
     def _permission_asked(self, asked: JsonRpcRequest) -> Actions:
@@ -687,9 +701,9 @@ class AgentClientProtocolConversation:
         self._stop_talking(fault)
         return self._flushed() + (ProviderConversationComplete(),)
 
-    def _stop_talking(self, reason: str) -> None:
+    def _stop_talking(self, fault: AcpConversationFault) -> None:
         self._ended = True
-        self._stop_reason = self._stop_reason or str(reason)
+        self._fault = self._fault or fault
 
     def _latch(self, reason: ProviderTerminalReason) -> None:
         if self._local_cause is None:
@@ -741,6 +755,18 @@ class AgentClientProtocolConversation:
         self._unrecognised += 1
         return _kept(text)
 
+    def _broken_promise(self) -> Steps:
+        """Which of the protocol's promises broke, where one did.
+
+        The reading itself is `PROTOCOL_FAULT`, and the seam's one word belongs
+        to a provider that stopped itself -- so what broke is evidence, kept in
+        the transcript that owns its width.
+        """
+
+        if self._fault is None:
+            return ()
+        return _kept(PROTOCOL_FAULT_EVIDENCE + self._fault.value)
+
     def _half_frame(self) -> Steps:
         rest = self._codec.incomplete_frame()
         return _kept(rest.decode("utf-8", "replace")) if rest else ()
@@ -751,6 +777,8 @@ class AgentClientProtocolConversation:
         cancelled = _REASON_OF_ENDING.get(ending)
         if cancelled is not None:
             return ProviderTerminalOutcome(cancelled)
+        if self._fault is not None:
+            return ProviderTerminalOutcome(ProviderTerminalReason.PROTOCOL_FAULT)
         if self._stop_reason:
             return ProviderTerminalOutcome(
                 ProviderTerminalReason.CANCELLED_BY_PROVIDER, self._stop_reason

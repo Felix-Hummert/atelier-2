@@ -19,6 +19,7 @@ import pytest
 from atelier2.adapters.agent_client_protocol import (
     ACP_PROTOCOL_VERSION,
     MAXIMUM_UNRECOGNISED_UPDATE_STEPS,
+    PROTOCOL_FAULT_EVIDENCE,
     AcpConversationFault,
     AcpMethod,
     Actions,
@@ -179,6 +180,28 @@ def _decision(request: PermissionRequest, granted: bool) -> PermissionDecision:
     return decide(policy, request)
 
 
+def _broke(
+    conversation: AgentClientProtocolConversation,
+    fault: AcpConversationFault,
+    ending: ProviderConversationEnding = ProviderConversationEnding.OUTPUT_ENDED,
+) -> None:
+    """A conversation that stopped being one ends as a protocol fault.
+
+    The reading carries no provider word, because nothing the provider decided
+    is what ended it; which of the protocol's promises broke is evidence.
+    """
+
+    closing = conversation.finish(ending)
+    assert closing.outcome == ProviderTerminalOutcome(
+        ProviderTerminalReason.PROTOCOL_FAULT
+    )
+    assert closing.steps == (
+        ProviderSessionEvent(
+            UnrecognisedProviderOutput(f"{PROTOCOL_FAULT_EVIDENCE}{fault.value}")
+        ),
+    )
+
+
 def _only_request(actions: Actions) -> PermissionRequest:
     asked = [action for action in actions if isinstance(action, PermissionRequest)]
     assert len(asked) == 1
@@ -263,17 +286,10 @@ def test_a_session_the_agent_never_named_ends_the_conversation() -> None:
     opened = conversation.receive_output(_answer(SESSION_NEW_ID, {"session": None}))
 
     assert opened == (ProviderConversationComplete(),)
-    assert conversation.finish(ProviderConversationEnding.OUTPUT_ENDED).outcome == (
-        ProviderTerminalOutcome(
-            ProviderTerminalReason.CANCELLED_BY_PROVIDER,
-            AcpConversationFault.NO_SESSION.value,
-        )
-    )
+    _broke(conversation, AcpConversationFault.NO_SESSION)
 
 
-def test_a_refused_handshake_ends_the_conversation_with_the_provider_as_its_cause() -> (
-    None
-):
+def test_a_refused_handshake_ends_the_conversation_as_a_protocol_fault() -> None:
     conversation = _conversation()
     conversation.open()
 
@@ -282,12 +298,7 @@ def test_a_refused_handshake_ends_the_conversation_with_the_provider_as_its_caus
     )
 
     assert refused == (ProviderConversationComplete(),)
-    assert conversation.finish(ProviderConversationEnding.OUTPUT_ENDED).outcome == (
-        ProviderTerminalOutcome(
-            ProviderTerminalReason.CANCELLED_BY_PROVIDER,
-            AcpConversationFault.HANDSHAKE_REFUSED.value,
-        )
-    )
+    _broke(conversation, AcpConversationFault.HANDSHAKE_REFUSED)
 
 
 def test_what_the_agent_says_becomes_one_turn_rather_than_one_step_per_chunk() -> None:
@@ -789,16 +800,24 @@ def test_the_ending_a_conversation_reads_is_its_own_cause_before_the_agents_word
     assert conversation.finish(ending).outcome == outcome
 
 
+def test_a_turn_that_ended_without_saying_why_is_a_protocol_fault() -> None:
+    """A `stopReason` is what a terminal answer is: an answer without one says
+    the turn is over and refuses to say how, which is a broken promise rather
+    than a provider stopping itself."""
+    conversation = _conversation()
+    _prompting(conversation)
+
+    ended = conversation.receive_output(_answer(PROMPT_ID, {}))
+
+    assert ended == (ProviderConversationComplete(),)
+    _broke(conversation, AcpConversationFault.NO_STOP_REASON)
+
+
 def test_a_prompt_that_was_never_answered_is_not_a_turn_that_ended() -> None:
     conversation = _conversation()
     _prompting(conversation)
 
-    closing = conversation.finish(ProviderConversationEnding.OUTPUT_ENDED)
-
-    assert closing.outcome == ProviderTerminalOutcome(
-        ProviderTerminalReason.CANCELLED_BY_PROVIDER,
-        AcpConversationFault.NO_TERMINAL_ANSWER.value,
-    )
+    _broke(conversation, AcpConversationFault.NO_TERMINAL_ANSWER)
 
 
 def test_a_second_terminal_answer_changes_nothing_the_first_one_settled() -> None:
@@ -829,6 +848,12 @@ def test_what_stood_after_the_last_newline_is_kept_when_the_output_runs_out() ->
 
     assert unfinished.finish(ProviderConversationEnding.TERMINATED).steps == (
         ProviderSessionEvent(
+            UnrecognisedProviderOutput(
+                f"{PROTOCOL_FAULT_EVIDENCE}"
+                f"{AcpConversationFault.NO_TERMINAL_ANSWER.value}"
+            )
+        ),
+        ProviderSessionEvent(
             UnrecognisedProviderOutput('{"jsonrpc":"2.0","method":"session/up')
         ),
     )
@@ -841,11 +866,7 @@ def test_an_answer_to_a_question_nobody_asked_ends_the_conversation() -> None:
     unexpected = conversation.receive_output(_answer(99, {"stopReason": "end_turn"}))
 
     assert unexpected == (ProviderConversationComplete(),)
-    assert conversation.finish(ProviderConversationEnding.OUTPUT_ENDED).outcome == (
-        ProviderTerminalOutcome(
-            ProviderTerminalReason.CANCELLED_BY_PROVIDER, "unexpected-response"
-        )
-    )
+    _broke(conversation, AcpConversationFault.UNEXPECTED_ANSWER)
 
 
 def test_a_line_wider_than_this_conversation_may_hold_ends_it() -> None:
@@ -855,11 +876,7 @@ def test_a_line_wider_than_this_conversation_may_hold_ends_it() -> None:
     flooded = conversation.receive_output(b"x" * 512 + b"\n")
 
     assert flooded == (ProviderConversationComplete(),)
-    assert conversation.finish(ProviderConversationEnding.OUTPUT_ENDED).outcome == (
-        ProviderTerminalOutcome(
-            ProviderTerminalReason.CANCELLED_BY_PROVIDER, "oversize-frame"
-        )
-    )
+    _broke(conversation, AcpConversationFault.LOST_FRAMING)
 
 
 def test_a_prompt_this_client_cannot_spell_inside_its_reply_bound_ends_it() -> None:
@@ -875,12 +892,7 @@ def test_a_prompt_this_client_cannot_spell_inside_its_reply_bound_ends_it() -> N
 
     assert _written(unsendable) == ()
     assert unsendable[-1] == ProviderConversationComplete()
-    assert conversation.finish(ProviderConversationEnding.OUTPUT_ENDED).outcome == (
-        ProviderTerminalOutcome(
-            ProviderTerminalReason.CANCELLED_BY_PROVIDER,
-            AcpConversationFault.UNSENDABLE_FRAME.value,
-        )
-    )
+    _broke(conversation, AcpConversationFault.UNSENDABLE_FRAME)
 
 
 def test_a_stop_frame_this_client_cannot_spell_inside_its_cancel_bound_ends_it() -> (
