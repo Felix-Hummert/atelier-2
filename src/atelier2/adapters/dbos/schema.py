@@ -111,7 +111,7 @@ class ProductSchemaHandoff:
 
 # Hop 51 gives the queue policy the workflow, priority and disposition a label
 # alone is proposed under, and every proposal the decision that wrote it
-# (#79 ruling 04.09.2026, #1236).
+# (REQ-QUEUE-01).
 _HOP_PREDECESSOR_VERSION = 51
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9

@@ -53,6 +53,7 @@ from atelier2.contracts.queue_projection import (
     QueueProjectionRevision,
     QueueProjectPolicyRevision,
     QueueProposal,
+    QueueProposalAlreadyCurrent,
     QueueProposalSource,
     WorkItemReference,
     queue_start_order_key,
@@ -203,8 +204,8 @@ def admit_queue_items_by_label(
 
     A labelled item that carries no proposal is proposed first when the policy
     states its defaults, so the label alone is the operator's whole handgrip
-    (#79 ruling, 04.09.2026); without them the item stays observed and the
-    admission says so, exactly as before.
+    and what it writes is still only a proposal (REQ-QUEUE-01); without them
+    the item stays observed and the admission says so, exactly as before.
     """
 
     policy = _active_policy(queue, project)
@@ -272,11 +273,12 @@ def _proposed_from_policy_defaults(
 ) -> QueueProjectionRevision:
     """Fill a labelled item's missing proposal from the policy's own defaults.
 
-    Answers the revision the admission must now confirm: the planned one where
-    this call wrote a proposal, and the item's own otherwise. A policy without
-    defaults, an item that already carries a decision, and a proposal the
-    projection refuses all leave the item exactly as it was, and the admission
-    that follows reports in its own words why it was not admitted.
+    Answers the revision the admission must now confirm: the proposal's own,
+    whether this call wrote it or a concurrent sweep already wrote exactly it,
+    and the item's own revision otherwise. A policy without defaults, an item
+    that already carries a decision, and a proposal the projection refuses all
+    leave the item exactly as it was, and the admission that follows reports in
+    its own words why it was not admitted.
     """
 
     defaults = policy.defaults
@@ -301,7 +303,7 @@ def _proposed_from_policy_defaults(
         raise QueueAdvanceUnavailable("a proposal from the policy could not commit")
     if isinstance(outcome, DurableStateCorrupt):
         raise QueueAdvanceCorrupt("a proposal from the policy found corrupt state")
-    if isinstance(outcome, QueueItemProposed):
+    if isinstance(outcome, QueueItemProposed | QueueProposalAlreadyCurrent):
         return outcome.revision
     return item.revision
 
