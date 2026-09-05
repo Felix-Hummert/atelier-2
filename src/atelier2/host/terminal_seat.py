@@ -1,12 +1,16 @@
-"""The terminal seat's lifecycle: one tmux session per project, outside serve.
+"""The terminal seat's lifecycle: one tmux server per seat, outside the serve.
 
-A seat is a tmux session running the agent CLI, held by a transient systemd
-user scope so that stopping the serve unit cannot take it down, and reached
-through a ttyd child that the serve owns. Both halves live here because they
-are one lifecycle: `ensure_session` and `stop_session` decide about the session
-that outlives the serve, `ttyd_command` builds the child the serve starts and
-stops with itself. The tmux socket is the truth about a seat; the unit name
-only holds its process tree.
+A seat is a tmux server of its own, running the agent CLI in one session,
+held by a transient systemd user scope so that stopping the serve unit cannot
+take it down, and reached through a ttyd child that the serve owns. Both
+halves live here because they are one lifecycle: `ensure_session` and
+`stop_session` decide about the session that outlives the serve, `ttyd_command`
+builds the child the serve starts and stops with itself.
+
+Socket, session, and scope carry one and the same digest, taken over this
+deployment's database path and the project id together: a tmux server belongs
+to exactly one socket, so a seat sharing its socket with another seat would
+lose its session whenever that other seat's scope was stopped.
 
 Nothing here reads, forwards, or stores terminal content: no `pipe-pane`, no
 `capture-pane`, no seat bytes into journal, events, or receipts. The commands
@@ -16,18 +20,17 @@ error channel are read.
 
 from __future__ import annotations
 
-import json
+import os
 import secrets
 import shlex
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Protocol, Self
+from typing import Protocol
 
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.host.mcp_tools import MCP_SERVER_NAME
 
 # The seat binds loopback unconditionally, unlike the API's configurable host:
 # a pty is a shell, and the machine itself is the whole trust boundary.
@@ -35,13 +38,31 @@ SEAT_BIND_ADDRESS = "127.0.0.1"
 DEFAULT_SEAT_PORT = 7681
 SEAT_PATH_TOKEN_BYTES = 24
 HIGHEST_PORT = 65535
+SEAT_DOCUMENT_MODE = 0o600
+SEAT_DIGEST_SEPARATOR = b"\0"
 SYSTEMD_RUN_PROGRAM = "systemd-run"
 SYSTEMCTL_PROGRAM = "systemctl"
 SCOPE_UNIT_SUFFIX = ".scope"
 
+# What tmux answers when the seat is simply not there. Every other failing
+# probe is an unread answer, never an absence: an unreachable socket would
+# otherwise read as "gone" and cost a living session its scope.
+TMUX_ABSENT_ANSWERS = ("no server running", "can't find session", "session not found")
+# `systemctl is-active` answers 3 for a unit that is not active and 4 for one it
+# does not know; an unreachable bus answers otherwise.
+SYSTEMCTL_ABSENT_EXIT_CODES = frozenset({3, 4})
+
 
 class TerminalSeatCommandFailed(RuntimeError):
     """A management command the seat issued did not succeed."""
+
+
+class SeatPresence(Enum):
+    """What a probe established about one part of the seat."""
+
+    ALIVE = "alive"
+    MISSING = "missing"
+    FAILED = "failed"
 
 
 class TerminalSeatOutcome(Enum):
@@ -65,6 +86,25 @@ class SeatCommandResult:
     stderr: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class SeatMcpDocument:
+    """The MCP configuration the composition serialized for this seat.
+
+    The seat neither composes nor reads that grammar: whoever owns the agent
+    CLI's configuration writes it, and the seat only puts it where the CLI is
+    told to look.
+    """
+
+    file_name: str
+    content: str
+
+    def __post_init__(self) -> None:
+        if not self.file_name or Path(self.file_name).name != self.file_name:
+            raise ValueError(f"{self.file_name!r} is not a single file name")
+        if not self.content:
+            raise ValueError("a seat's MCP document must not be empty")
+
+
 class TerminalSeatHost(Protocol):
     """The machine a seat lives on, as narrowly as the seat needs it."""
 
@@ -86,32 +126,41 @@ class TerminalSeatSettings:
     tmux_executable: Path
     ttyd_executable: Path
     claude_executable: Path
-    mcp_door_command: tuple[str, ...]
+    mcp_document: SeatMcpDocument
     port: int = DEFAULT_SEAT_PORT
 
     def __post_init__(self) -> None:
         if not 1 <= self.port <= HIGHEST_PORT:
             raise ValueError(f"a seat port must be 1..{HIGHEST_PORT}, not {self.port}")
-        if not self.mcp_door_command:
-            raise ValueError("a seat needs the command its MCP door is spawned with")
 
     @property
-    def session_name(self) -> str:
-        """The tmux session of this project, under the full project digest."""
+    def seat_digest(self) -> str:
+        """The one identity of this seat: this deployment, this project."""
 
-        return f"seat-{Sha256Hash.of(self.project_id.value.encode('utf-8')).value}"
+        return Sha256Hash.of(
+            SEAT_DIGEST_SEPARATOR.join(
+                (
+                    self.database_path.encode("utf-8"),
+                    self.project_id.value.encode("utf-8"),
+                )
+            )
+        ).value
 
     @property
     def socket_name(self) -> str:
-        """The tmux socket of this deployment, so two serves never share a seat."""
+        """The tmux server of this seat, shared with no other seat."""
 
-        return f"atelier-seat-{Sha256Hash.of(self.database_path.encode('utf-8')).value}"
+        return f"atelier-seat-{self.seat_digest}"
+
+    @property
+    def session_name(self) -> str:
+        return f"seat-{self.seat_digest}"
 
     @property
     def unit_name(self) -> str:
         """The transient systemd user unit holding this seat's process tree."""
 
-        return f"atelier2-{self.session_name}"
+        return f"atelier2-seat-{self.seat_digest}"
 
     @property
     def scope_unit(self) -> str:
@@ -120,20 +169,19 @@ class TerminalSeatSettings:
 
 @dataclass(frozen=True, slots=True)
 class TerminalSeat:
-    """One project's seat, addressed under a base path this serve drew."""
+    """One project's seat, addressed under a base path drawn for this seat."""
 
     settings: TerminalSeatSettings
     host: TerminalSeatHost
-    path_token: str
-
-    @classmethod
-    def for_serve(cls, settings: TerminalSeatSettings, host: TerminalSeatHost) -> Self:
-        """A seat under a fresh base path, unguessable to a page that was not told it."""
-
-        return cls(settings, host, secrets.token_urlsafe(SEAT_PATH_TOKEN_BYTES))
+    path_token: str = field(
+        init=False,
+        default_factory=lambda: secrets.token_urlsafe(SEAT_PATH_TOKEN_BYTES),
+    )
 
     @property
     def base_path(self) -> str:
+        """Unreachable for a page that was never told it."""
+
         return f"/seat-{self.path_token}"
 
     @property
@@ -153,12 +201,14 @@ class TerminalSeat:
             return TerminalSeatOutcome.REFUSED_SYSTEMD_MISSING
         if not self.host.loopback_port_is_free(self.settings.port):
             return TerminalSeatOutcome.REFUSED_PORT_BUSY
-        if self._session_is_alive():
+        if self._established(self._session_presence()) is SeatPresence.ALIVE:
             return TerminalSeatOutcome.ALREADY_RUNNING
-        orphaned_scope = self._scope_is_active(systemctl)
+        orphaned_scope = (
+            self._established(self._scope_presence(systemctl)) is SeatPresence.ALIVE
+        )
         if orphaned_scope:
             self._stop_scope(systemctl)
-        self._create_session(systemd_run)
+        self._create_session(systemd_run, systemctl)
         return (
             TerminalSeatOutcome.RECREATED_AFTER_ORPHANED_SCOPE
             if orphaned_scope
@@ -175,12 +225,14 @@ class TerminalSeat:
         systemctl = self.host.locate_executable(SYSTEMCTL_PROGRAM)
         if systemctl is None:
             return TerminalSeatOutcome.REFUSED_SYSTEMD_MISSING
-        alive = self._session_is_alive()
+        alive = self._established(self._session_presence()) is SeatPresence.ALIVE
         if alive:
             self._run_checked(
                 self._tmux_command("kill-session", "-t", self._session_target)
             )
-        active_scope = self._scope_is_active(systemctl)
+        active_scope = (
+            self._established(self._scope_presence(systemctl)) is SeatPresence.ALIVE
+        )
         if active_scope:
             self._stop_scope(systemctl)
         if alive or active_scope:
@@ -223,23 +275,44 @@ class TerminalSeat:
             *arguments,
         )
 
-    def _session_is_alive(self) -> bool:
+    def _session_presence(self) -> SeatPresence:
         answer = self.host.run(
             self._tmux_command("has-session", "-t", self._session_target)
         )
-        return answer.exit_code == 0
+        if answer.exit_code == 0:
+            return SeatPresence.ALIVE
+        if any(absent in answer.stderr for absent in TMUX_ABSENT_ANSWERS):
+            return SeatPresence.MISSING
+        return SeatPresence.FAILED
+
+    def _scope_presence(self, systemctl: Path) -> SeatPresence:
+        answer = self.host.run(
+            (str(systemctl), "--user", "is-active", self.settings.scope_unit)
+        )
+        if answer.exit_code == 0:
+            return SeatPresence.ALIVE
+        if answer.exit_code in SYSTEMCTL_ABSENT_EXIT_CODES:
+            return SeatPresence.MISSING
+        return SeatPresence.FAILED
+
+    def _established(self, presence: SeatPresence) -> SeatPresence:
+        """Only an established answer decides; an unread probe ends the call.
+
+        Nothing is stopped, killed, or created on a probe that did not answer:
+        an absence the seat could not confirm is not an absence.
+        """
+
+        if presence is SeatPresence.FAILED:
+            raise TerminalSeatCommandFailed(
+                f"the seat {self.settings.seat_digest} could not be probed"
+            )
+        return presence
 
     def _stop_scope(self, systemctl: Path) -> None:
         self._run_checked((str(systemctl), "--user", "stop", self.settings.scope_unit))
 
-    def _scope_is_active(self, systemctl: Path) -> bool:
-        answer = self.host.run(
-            (str(systemctl), "--user", "is-active", self.settings.scope_unit)
-        )
-        return answer.exit_code == 0
-
-    def _create_session(self, systemd_run: Path) -> None:
-        configuration = self._write_mcp_configuration()
+    def _create_session(self, systemd_run: Path, systemctl: Path) -> None:
+        configuration = self._persist_mcp_document()
         self._run_checked(
             (
                 str(systemd_run),
@@ -257,13 +330,27 @@ class TerminalSeat:
                 ),
             )
         )
-        self._type_into_login_shell(
-            (
-                str(self.settings.claude_executable),
-                "--mcp-config",
-                str(configuration),
+        try:
+            self._type_into_login_shell(
+                (
+                    str(self.settings.claude_executable),
+                    "--mcp-config",
+                    str(configuration),
+                )
             )
-        )
+        except TerminalSeatCommandFailed:
+            self._discard_half_created_seat(systemctl)
+            raise
+
+    def _discard_half_created_seat(self, systemctl: Path) -> None:
+        """Leave no seat without its agent, and keep the first failure.
+
+        Exit codes are ignored here on purpose: what went wrong is the failure
+        being re-raised, and a teardown raising its own would hide it.
+        """
+
+        self.host.run(self._tmux_command("kill-session", "-t", self._session_target))
+        self.host.run((str(systemctl), "--user", "stop", self.settings.scope_unit))
 
     def _type_into_login_shell(self, argv: Sequence[str]) -> None:
         """Type the agent CLI where the operator would type it.
@@ -272,35 +359,30 @@ class TerminalSeat:
         standing with its prompt, and nothing restarts it.
         """
 
-        typed = self._tmux_command(
-            "send-keys", "-t", self._session_target, "-l", shlex.join(argv)
+        self._run_checked(
+            self._tmux_command(
+                "send-keys", "-t", self._session_target, "-l", shlex.join(argv)
+            )
         )
-        self._run_checked(typed)
         self._run_checked(
             self._tmux_command("send-keys", "-t", self._session_target, "Enter")
         )
 
-    def _write_mcp_configuration(self) -> Path:
-        """Write the seat's MCP document where the serve keeps its state.
+    def _persist_mcp_document(self) -> Path:
+        """Put the composed MCP document where the serve keeps its state.
 
-        Never into the operator's project tree, and naming exactly one server:
-        this deployment's own loopback door, with no other key to carry.
+        Never into the operator's project tree, and readable only by the user
+        whose agent is about to be told to read it.
         """
 
-        document = self.settings.state_directory / f"{self.settings.session_name}.json"
+        document = self.settings.state_directory / self.settings.mcp_document.file_name
         document.parent.mkdir(parents=True, exist_ok=True)
-        command, *arguments = self.settings.mcp_door_command
-        document.write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        MCP_SERVER_NAME: {"command": command, "args": arguments}
-                    }
-                },
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
+        descriptor = os.open(
+            document, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SEAT_DOCUMENT_MODE
         )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as opened:
+            opened.write(self.settings.mcp_document.content)
+        document.chmod(SEAT_DOCUMENT_MODE)
         return document
 
     def _run_checked(self, argv: Sequence[str]) -> None:

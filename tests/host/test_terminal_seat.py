@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import re
 import shlex
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.host.mcp_tools import MCP_SERVER_NAME
 from atelier2.host.terminal_seat import (
     SeatCommandResult,
+    SeatMcpDocument,
     TerminalSeat,
     TerminalSeatCommandFailed,
     TerminalSeatOutcome,
@@ -21,14 +21,22 @@ from atelier2.host.terminal_seat import (
 
 PROJECT_ID = ProjectId("atelier zwei")
 DATABASE_PATH = "/var/lib/atelier2/atelier.db"
-DOOR_COMMAND = ("/usr/bin/python3", "-m", "atelier2", "mcp", "--service")
-SERVICE_URL = "http://127.0.0.1:8422"
-PATH_TOKEN = "eeGh2Fp0Q"
+MCP_DOCUMENT = SeatMcpDocument(
+    "seat-mcp.json",
+    '{"mcpServers":{"atelier2":{"command":"/usr/bin/python3",'
+    '"args":["-m","atelier2","mcp","--service","http://127.0.0.1:8422"]}}}',
+)
 SEAT_PORT = 7681
+TMUX_WITHOUT_SERVER = "no server running on /tmp/tmux-1000/atelier-seat"
+TMUX_UNREADABLE = "error connecting to /tmp/tmux-1000/atelier-seat (Permission denied)"
+SYSTEMCTL_INACTIVE_EXIT_CODE = 3
+SYSTEMCTL_BUS_UNREACHABLE = SeatCommandResult(1, "Failed to connect to bus")
 
 
-def digest_of(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def digest_of(database_path: str, project_id: str) -> str:
+    return hashlib.sha256(
+        b"\0".join((database_path.encode("utf-8"), project_id.encode("utf-8")))
+    ).hexdigest()
 
 
 @dataclass
@@ -44,21 +52,31 @@ class FakeSeatHost:
     session_alive: bool = False
     scope_active: bool = False
     free_port: bool = True
+    tmux_probe_unreadable: bool = False
+    scope_probe_unreadable: bool = False
     exit_codes: dict[str, int] = field(default_factory=dict)
     commands: list[tuple[str, ...]] = field(default_factory=list)
 
     def run(self, argv: Sequence[str]) -> SeatCommandResult:
         command = tuple(argv)
         self.commands.append(command)
-        failure = next(
+        if "has-session" in command:
+            if self.tmux_probe_unreadable:
+                return SeatCommandResult(1, TMUX_UNREADABLE)
+            if self.session_alive:
+                return SeatCommandResult(0)
+            return SeatCommandResult(1, TMUX_WITHOUT_SERVER)
+        if "is-active" in command:
+            if self.scope_probe_unreadable:
+                return SYSTEMCTL_BUS_UNREACHABLE
+            if self.scope_active:
+                return SeatCommandResult(0)
+            return SeatCommandResult(SYSTEMCTL_INACTIVE_EXIT_CODE)
+        refused = next(
             (code for word, code in self.exit_codes.items() if word in command), 0
         )
-        if failure != 0:
-            return SeatCommandResult(failure, "refused by the fake host")
-        if "has-session" in command:
-            return SeatCommandResult(0 if self.session_alive else 1)
-        if "is-active" in command:
-            return SeatCommandResult(0 if self.scope_active else 3)
+        if refused != 0:
+            return SeatCommandResult(refused, "refused by the fake host")
         if "new-session" in command:
             self.session_alive = True
             self.scope_active = True
@@ -81,44 +99,50 @@ class FakeSeatHost:
 def settings_for(
     tmp_path: Path,
     *,
+    project_id: ProjectId = PROJECT_ID,
     database_path: str = DATABASE_PATH,
     project_root: Path | None = None,
     claude_executable: Path = Path("/opt/bin/claude"),
+    mcp_document: SeatMcpDocument = MCP_DOCUMENT,
     port: int = SEAT_PORT,
 ) -> TerminalSeatSettings:
     root = project_root if project_root is not None else tmp_path / "project"
     root.mkdir(parents=True, exist_ok=True)
     return TerminalSeatSettings(
-        project_id=PROJECT_ID,
+        project_id=project_id,
         project_root=root,
         database_path=database_path,
         state_directory=tmp_path / "state",
         tmux_executable=Path("/usr/bin/tmux"),
         ttyd_executable=Path("/usr/bin/ttyd"),
         claude_executable=claude_executable,
-        mcp_door_command=(*DOOR_COMMAND, SERVICE_URL),
+        mcp_document=mcp_document,
         port=port,
     )
 
 
-def seat_on(host: FakeSeatHost, settings: TerminalSeatSettings) -> TerminalSeat:
-    return TerminalSeat(settings, host, PATH_TOKEN)
-
-
-def test_names_carry_the_full_project_and_instance_digests(tmp_path: Path) -> None:
+def test_socket_session_and_scope_carry_one_seat_digest(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
+    digest = digest_of(DATABASE_PATH, PROJECT_ID.value)
 
-    assert settings.session_name == f"seat-{digest_of(PROJECT_ID.value)}"
-    assert settings.socket_name == f"atelier-seat-{digest_of(DATABASE_PATH)}"
-    assert settings.scope_unit == f"atelier2-seat-{digest_of(PROJECT_ID.value)}.scope"
+    assert settings.socket_name == f"atelier-seat-{digest}"
+    assert settings.session_name == f"seat-{digest}"
+    assert settings.scope_unit == f"atelier2-seat-{digest}.scope"
 
 
-def test_two_deployments_of_one_project_never_share_a_socket(tmp_path: Path) -> None:
-    live = settings_for(tmp_path, database_path="/var/lib/atelier2/atelier.db")
-    harness = settings_for(tmp_path, database_path="/tmp/e2e/atelier.db")
+def test_no_two_seats_share_a_tmux_server(tmp_path: Path) -> None:
+    seat = settings_for(tmp_path)
+    other_project = settings_for(tmp_path, project_id=ProjectId("anderes projekt"))
+    other_deployment = settings_for(tmp_path, database_path="/tmp/e2e/atelier.db")
 
-    assert live.session_name == harness.session_name
-    assert live.socket_name != harness.socket_name
+    sockets = {
+        seat.socket_name,
+        other_project.socket_name,
+        other_deployment.socket_name,
+    }
+    assert len(sockets) == 3
+    assert seat.scope_unit != other_project.scope_unit
+    assert seat.session_name != other_deployment.session_name
 
 
 def test_a_seat_port_outside_the_port_range_is_refused(tmp_path: Path) -> None:
@@ -130,7 +154,7 @@ def test_creating_a_seat_starts_tmux_inside_a_transient_scope(tmp_path: Path) ->
     host = FakeSeatHost()
     settings = settings_for(tmp_path)
 
-    outcome = seat_on(host, settings).ensure_session()
+    outcome = TerminalSeat(settings, host).ensure_session()
 
     assert outcome is TerminalSeatOutcome.CREATED
     assert host.commands_containing("new-session") == [
@@ -139,7 +163,7 @@ def test_creating_a_seat_starts_tmux_inside_a_transient_scope(tmp_path: Path) ->
             "--user",
             "--scope",
             "--collect",
-            f"--unit=atelier2-{settings.session_name}",
+            f"--unit={settings.unit_name}",
             "/usr/bin/tmux",
             "-L",
             settings.socket_name,
@@ -157,7 +181,7 @@ def test_the_agent_is_typed_into_the_login_shell(tmp_path: Path) -> None:
     host = FakeSeatHost()
     settings = settings_for(tmp_path)
 
-    seat_on(host, settings).ensure_session()
+    TerminalSeat(settings, host).ensure_session()
 
     typed, entered = host.commands_containing("send-keys")
     assert typed[:-1] == (
@@ -172,7 +196,7 @@ def test_the_agent_is_typed_into_the_login_shell(tmp_path: Path) -> None:
     assert shlex.split(typed[-1]) == [
         "/opt/bin/claude",
         "--mcp-config",
-        str(settings.state_directory / f"{settings.session_name}.json"),
+        str(settings.state_directory / MCP_DOCUMENT.file_name),
     ]
     assert entered[-1] == "Enter"
 
@@ -184,7 +208,7 @@ def test_a_path_with_spaces_and_metacharacters_survives_the_hand_over(
     claude = tmp_path / "agent tools" / "cl$aude;rm -rf /"
     settings = settings_for(tmp_path, claude_executable=claude)
 
-    seat_on(host, settings).ensure_session()
+    TerminalSeat(settings, host).ensure_session()
 
     typed = host.commands_containing("-l")[0]
     assert shlex.split(typed[-1])[0] == str(claude)
@@ -192,8 +216,7 @@ def test_a_path_with_spaces_and_metacharacters_survives_the_hand_over(
 
 def test_a_running_seat_is_found_rather_than_created_again(tmp_path: Path) -> None:
     host = FakeSeatHost()
-    settings = settings_for(tmp_path)
-    seat = seat_on(host, settings)
+    seat = TerminalSeat(settings_for(tmp_path), host)
     seat.ensure_session()
 
     outcome = seat.ensure_session()
@@ -209,7 +232,7 @@ def test_an_orphaned_scope_is_stopped_before_the_seat_is_recreated(
     host = FakeSeatHost(session_alive=False, scope_active=True)
     settings = settings_for(tmp_path)
 
-    outcome = seat_on(host, settings).ensure_session()
+    outcome = TerminalSeat(settings, host).ensure_session()
 
     assert outcome is TerminalSeatOutcome.RECREATED_AFTER_ORPHANED_SCOPE
     stopped = host.commands_containing("stop")
@@ -219,6 +242,35 @@ def test_an_orphaned_scope_is_stopped_before_the_seat_is_recreated(
     )
 
 
+@pytest.mark.parametrize(
+    "host_with_unreadable_probe",
+    [
+        pytest.param(lambda: FakeSeatHost(tmux_probe_unreadable=True), id="tmux"),
+        pytest.param(lambda: FakeSeatHost(scope_probe_unreadable=True), id="systemd"),
+    ],
+)
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(TerminalSeat.ensure_session, id="ensure"),
+        pytest.param(TerminalSeat.stop_session, id="stop"),
+    ],
+)
+def test_a_probe_that_did_not_answer_ends_the_call_without_touching_anything(
+    tmp_path: Path,
+    host_with_unreadable_probe: Callable[[], FakeSeatHost],
+    call: Callable[[TerminalSeat], TerminalSeatOutcome],
+) -> None:
+    host = host_with_unreadable_probe()
+
+    with pytest.raises(TerminalSeatCommandFailed, match="could not be probed"):
+        call(TerminalSeat(settings_for(tmp_path), host))
+
+    assert host.commands_containing("stop") == []
+    assert host.commands_containing("kill-session") == []
+    assert host.commands_containing("new-session") == []
+
+
 def test_a_seat_whose_project_root_is_gone_is_reported_without_being_killed(
     tmp_path: Path,
 ) -> None:
@@ -226,7 +278,7 @@ def test_a_seat_whose_project_root_is_gone_is_reported_without_being_killed(
     settings = settings_for(tmp_path, project_root=tmp_path / "gone")
     settings.project_root.rmdir()
 
-    outcome = seat_on(host, settings).ensure_session()
+    outcome = TerminalSeat(settings, host).ensure_session()
 
     assert outcome is TerminalSeatOutcome.UNUSABLE_PROJECT_ROOT_MISSING
     assert host.commands == []
@@ -237,7 +289,7 @@ def test_a_machine_without_systemd_run_is_refused_without_a_fallback_child(
 ) -> None:
     host = FakeSeatHost(programs={"systemctl": Path("/usr/bin/systemctl")})
 
-    outcome = seat_on(host, settings_for(tmp_path)).ensure_session()
+    outcome = TerminalSeat(settings_for(tmp_path), host).ensure_session()
 
     assert outcome is TerminalSeatOutcome.REFUSED_SYSTEMD_MISSING
     assert host.commands == []
@@ -246,7 +298,7 @@ def test_a_machine_without_systemd_run_is_refused_without_a_fallback_child(
 def test_a_busy_seat_port_is_refused_rather_than_moved(tmp_path: Path) -> None:
     host = FakeSeatHost(free_port=False)
 
-    outcome = seat_on(host, settings_for(tmp_path)).ensure_session()
+    outcome = TerminalSeat(settings_for(tmp_path), host).ensure_session()
 
     assert outcome is TerminalSeatOutcome.REFUSED_PORT_BUSY
     assert host.commands == []
@@ -256,7 +308,34 @@ def test_a_failing_management_command_is_not_swallowed(tmp_path: Path) -> None:
     host = FakeSeatHost(exit_codes={"new-session": 1})
 
     with pytest.raises(TerminalSeatCommandFailed, match="exited 1"):
-        seat_on(host, settings_for(tmp_path)).ensure_session()
+        TerminalSeat(settings_for(tmp_path), host).ensure_session()
+
+
+def test_a_seat_whose_agent_could_not_be_handed_over_is_discarded(
+    tmp_path: Path,
+) -> None:
+    host = FakeSeatHost(exit_codes={"-l": 1})
+    settings = settings_for(tmp_path)
+    seat = TerminalSeat(settings, host)
+
+    with pytest.raises(TerminalSeatCommandFailed, match="exited 1"):
+        seat.ensure_session()
+
+    assert host.commands_containing("kill-session") == [
+        (
+            "/usr/bin/tmux",
+            "-L",
+            settings.socket_name,
+            "kill-session",
+            "-t",
+            f"={settings.session_name}",
+        )
+    ]
+    assert host.commands_containing("stop") == [
+        ("/usr/bin/systemctl", "--user", "stop", settings.scope_unit)
+    ]
+    host.exit_codes.clear()
+    assert seat.ensure_session() is TerminalSeatOutcome.CREATED
 
 
 def test_stopping_the_seat_kills_the_session_and_stops_its_scope(
@@ -264,7 +343,7 @@ def test_stopping_the_seat_kills_the_session_and_stops_its_scope(
 ) -> None:
     host = FakeSeatHost()
     settings = settings_for(tmp_path)
-    seat = seat_on(host, settings)
+    seat = TerminalSeat(settings, host)
     seat.ensure_session()
     host.commands.clear()
 
@@ -289,7 +368,7 @@ def test_stopping_the_seat_kills_the_session_and_stops_its_scope(
 def test_stopping_a_seat_that_is_not_running_ends_nothing(tmp_path: Path) -> None:
     host = FakeSeatHost()
 
-    outcome = seat_on(host, settings_for(tmp_path)).stop_session()
+    outcome = TerminalSeat(settings_for(tmp_path), host).stop_session()
 
     assert outcome is TerminalSeatOutcome.NOT_RUNNING
     assert host.commands_containing("kill-session") == []
@@ -300,10 +379,9 @@ def test_the_ttyd_child_serves_loopback_writable_and_origin_checked(
     tmp_path: Path,
 ) -> None:
     settings = settings_for(tmp_path)
+    seat = TerminalSeat(settings, FakeSeatHost())
 
-    command = seat_on(FakeSeatHost(), settings).ttyd_command()
-
-    assert command == (
+    assert seat.ttyd_command() == (
         "/usr/bin/ttyd",
         "-i",
         "127.0.0.1",
@@ -312,7 +390,7 @@ def test_the_ttyd_child_serves_loopback_writable_and_origin_checked(
         "-W",
         "-O",
         "-b",
-        f"/seat-{PATH_TOKEN}",
+        seat.base_path,
         "/usr/bin/tmux",
         "-L",
         settings.socket_name,
@@ -323,52 +401,55 @@ def test_the_ttyd_child_serves_loopback_writable_and_origin_checked(
 
 
 def test_the_ttyd_child_asks_for_no_credential(tmp_path: Path) -> None:
-    command = seat_on(FakeSeatHost(), settings_for(tmp_path)).ttyd_command()
+    command = TerminalSeat(settings_for(tmp_path), FakeSeatHost()).ttyd_command()
 
     assert "-c" not in command
     assert "-H" not in command
 
 
-def test_the_seat_url_names_the_drawn_base_path_on_loopback(tmp_path: Path) -> None:
-    seat = seat_on(FakeSeatHost(), settings_for(tmp_path))
-
-    assert seat.url == f"http://127.0.0.1:{SEAT_PORT}/seat-{PATH_TOKEN}/"
-
-
-def test_each_serve_draws_its_own_base_path(tmp_path: Path) -> None:
+def test_every_seat_draws_its_own_unguessable_base_path(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    host = FakeSeatHost()
 
-    first = TerminalSeat.for_serve(settings, host)
-    second = TerminalSeat.for_serve(settings, host)
+    first = TerminalSeat(settings, FakeSeatHost())
+    second = TerminalSeat(settings, FakeSeatHost())
 
     assert first.base_path != second.base_path
-    assert first.base_path.startswith("/seat-")
+    assert re.fullmatch(r"/seat-[A-Za-z0-9_-]{24,}", first.base_path)
+    assert first.url == f"http://127.0.0.1:{SEAT_PORT}{first.base_path}/"
 
 
-def test_the_generated_mcp_document_names_only_the_loopback_door(
+def test_the_seat_persists_the_document_it_was_given_and_composes_nothing(
     tmp_path: Path,
 ) -> None:
-    host = FakeSeatHost()
-    settings = settings_for(tmp_path)
+    given = SeatMcpDocument("seat-mcp.json", "not the json grammar of any agent")
+    settings = settings_for(tmp_path, mcp_document=given)
 
-    seat_on(host, settings).ensure_session()
+    TerminalSeat(settings, FakeSeatHost()).ensure_session()
 
-    document = settings.state_directory / f"{settings.session_name}.json"
-    assert json.loads(document.read_text(encoding="utf-8")) == {
-        "mcpServers": {
-            MCP_SERVER_NAME: {
-                "command": DOOR_COMMAND[0],
-                "args": [*DOOR_COMMAND[1:], SERVICE_URL],
-            }
-        }
-    }
-    assert not list(settings.project_root.iterdir())
+    document = settings.state_directory / given.file_name
+    assert document.read_text(encoding="utf-8") == given.content
+    assert document.stat().st_mode & 0o777 == 0o600
+    assert list(settings.project_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("file_name", "content", "refusal"),
+    [
+        pytest.param("../escape.json", "{}", "single file name", id="escaping-name"),
+        pytest.param("", "{}", "single file name", id="empty-name"),
+        pytest.param("seat.json", "", "must not be empty", id="empty-content"),
+    ],
+)
+def test_an_mcp_document_that_could_not_be_placed_safely_is_refused(
+    file_name: str, content: str, refusal: str
+) -> None:
+    with pytest.raises(ValueError, match=refusal):
+        SeatMcpDocument(file_name, content)
 
 
 def test_no_seat_command_ever_reads_the_terminal(tmp_path: Path) -> None:
     host = FakeSeatHost()
-    seat = seat_on(host, settings_for(tmp_path))
+    seat = TerminalSeat(settings_for(tmp_path), host)
     seat.ensure_session()
     seat.stop_session()
 
