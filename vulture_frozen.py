@@ -119,18 +119,16 @@ WAITING_FOR_A_CALLER = (
             "contracts/agent_permissions.py:COMMAND_NAME",
             "contracts/agent_permissions.py:HOST",
             "contracts/agent_permissions.py:for_call",
-            "contracts/agent_permissions.py:granted",
-            "contracts/agent_permissions.py:policy_revision_hash",
         ),
         "why": (
             "The asking half of the permission boundary "
             "(contracts/agent_permissions.py): the effect and scope vocabulary a "
-            "provider question is expressed in, the correlation id minted for one "
-            "call of one attempt, and the two fields of a decision only a reader "
-            "of the answer needs. Production binds the policy and hands the "
-            "decider to every session today; nothing asks yet, so the grant "
-            "branch and the words a question is spelled in wait for the first "
-            "provider channel that can put one (ADR 0020 step 2)."
+            "provider question is expressed in, and the correlation id minted "
+            "for one call of one attempt. Production binds the policy, hands the "
+            "decider to every session, and writes what each decision answered "
+            "into the permission ledger; nothing asks yet, so the grant branch "
+            "and the words a question is spelled in wait for the first provider "
+            "channel that can put one (ADR 0020 step 2)."
         ),
         "item": "#1177 Schritt 2 (erster fragender Provider-Kanal)",
     },

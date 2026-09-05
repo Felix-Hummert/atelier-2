@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +21,7 @@ from atelier2.contracts.agent_permissions import (
     PermissionDecision,
     PermissionEffect,
     PermissionPolicyRevision,
+    PermissionReceipt,
     PermissionScope,
     PermissionScopeKind,
 )
@@ -59,6 +60,10 @@ from tests.scenarios.agents import (
 class _ClaimingStore:
     attempt: AgentAttempt | None = None
     completed_result: AgentExecutionResult | None = None
+    receipts: list[PermissionReceipt] = field(default_factory=list)
+
+    def record_permission_decision(self, receipt: PermissionReceipt) -> None:
+        self.receipts.append(receipt)
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         self.attempt = prepared_agent_attempt(execution)
@@ -84,6 +89,17 @@ class _ClaimingStore:
         self.completed_result = result
         assert self.attempt is not None
         return AgentAttemptSucceeded(self.attempt, RunCompletes())
+
+
+class _TheReceiptCouldNotBeKept(RuntimeError):
+    """What a store raises when durable state will not take the decision."""
+
+
+@dataclass
+class _StoreThatCannotKeepAReceipt(_ClaimingStore):
+    def record_permission_decision(self, receipt: PermissionReceipt) -> None:
+        del receipt
+        raise _TheReceiptCouldNotBeKept("durable state is unavailable")
 
 
 class _TranscriptExecutor:
@@ -217,3 +233,44 @@ def test_a_question_the_dispatched_policy_never_granted_is_refused(
             PermissionAuthority.POLICY,
         )
     ]
+
+
+def test_a_decision_that_cannot_be_kept_is_never_given_to_the_provider(
+    tmp_path: Path,
+) -> None:
+    """No receipt, no decision, no effect -- and the attempt is left armed.
+
+    ADR 0020 §3 makes the receipt the authorisation, so a store that cannot keep
+    one leaves nothing to answer with. The error rises loudly through the
+    session; this attempt is not ended here under some invented failure, because
+    nothing about the provider's work is known. It stays `LAUNCH_ARMED` for the
+    convergence that owns every attempt whose driver is gone -- which is what
+    stops and reaps the process.
+    """
+
+    execution = agent_attempt_execution(agent_execution_request_v2())
+    store = _StoreThatCannotKeepAReceipt()
+    session = FakeAgentSession(
+        AgentProcessCompletion(0, b'"done"', b""),
+        asks=(
+            (
+                PermissionEffect.NETWORK,
+                PermissionScope(PermissionScopeKind.HOST, "unnamed.invalid"),
+            ),
+        ),
+    )
+
+    with pytest.raises(_TheReceiptCouldNotBeKept):
+        execute_agent_attempt(
+            execution,
+            _TranscriptExecutor(),
+            cast(AgentAttemptStore, store),
+            session,
+            _Workspaces(tmp_path / "workspace"),
+            permissions=GRANTS_NOTHING,
+        )
+
+    assert session.answers == []
+    assert store.completed_result is None
+    assert store.attempt is not None
+    assert store.attempt.state is AgentAttemptState.LAUNCH_ARMED

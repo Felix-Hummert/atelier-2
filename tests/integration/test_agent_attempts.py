@@ -13,7 +13,13 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 
 import atelier2.adapters.dbos.agent_attempt_store as agent_attempt_store_module
 import atelier2.adapters.dbos.run_transitions as run_transitions_module
-from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.agent_attempt_store import (
+    DbosAgentAttemptStore,
+    DurableStateCorrupt,
+    PermissionReceiptConflict,
+    _permission_receipt_from_record,
+    _permission_receipt_values,
+)
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -21,6 +27,7 @@ from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
     artifacts,
+    permission_receipts,
     run_events,
     runs,
 )
@@ -43,6 +50,7 @@ from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
     AgentAttempt,
     AgentAttemptFailureCode,
+    AgentAttemptId,
     AgentAttemptReplacement,
     AgentAttemptState,
     CancelAgentAttemptRequest,
@@ -52,10 +60,14 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agent_permissions import (
     GRANTS_NOTHING,
+    PermissionCorrelationId,
     PermissionEffect,
     PermissionPolicyRevision,
+    PermissionReceipt,
+    PermissionRequest,
     PermissionScope,
     PermissionScopeKind,
+    decide,
 )
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
@@ -120,6 +132,7 @@ from atelier2.ports.run_queries import RunFound
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
     AgentCompletionDecoder,
+    FakeAgentSession,
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
     agent_attempt_execution,
@@ -1492,5 +1505,239 @@ def test_a_changed_permission_policy_leaves_a_live_attempt_recoverable(
         durable = store.load(execution.attempt_id)
         assert durable.request_hash == request.request_hash
         assert durable.attempt_ordinal == execution.ordinal
+    finally:
+        runtime.close()
+
+
+_THE_UNNAMED_HOST = PermissionScope(PermissionScopeKind.HOST, "unnamed.invalid")
+_WHEN_IT_WAS_DECIDED = RecordedAt("2026-09-05T08:00:00Z")
+
+
+def _refused_network_question(
+    attempt_id: AgentAttemptId,
+    call_ordinal: int = 1,
+    scope: PermissionScope = _THE_UNNAMED_HOST,
+) -> PermissionReceipt:
+    """What the deployment's closed policy answers one attempt asking to dial out."""
+
+    question = PermissionRequest(
+        PermissionEffect.NETWORK,
+        scope,
+        PermissionCorrelationId.for_call(attempt_id, call_ordinal),
+    )
+    return PermissionReceipt.of(
+        attempt_id, question, decide(GRANTS_NOTHING, question), _WHEN_IT_WAS_DECIDED
+    )
+
+
+def _kept_receipts(runtime: DbosRuntime) -> tuple[PermissionReceipt, ...]:
+    with runtime.engine.connect() as connection:
+        return tuple(
+            _permission_receipt_from_record(record)
+            for record in connection.execute(
+                sa.select(permission_receipts).order_by(
+                    permission_receipts.c.correlation_id
+                )
+            ).mappings()
+        )
+
+
+def test_each_question_a_provider_asks_leaves_its_own_receipt(tmp_path: Path) -> None:
+    """Two questions are two rows, addressed by what was asked, not by order.
+
+    The correlation id is minted from the attempt and the call, so the ledger
+    can be read back question by question rather than by the sequence a row
+    happened to be written in -- which is exactly what name matching lost.
+    Both answers here are refusals under the deployment's closed policy, and
+    each is a row: what a run refused is a fact about that run.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/two-questions")
+        )
+        store = DbosAgentAttemptStore(runtime.engine)
+        session = FakeAgentSession(
+            AgentProcessCompletion(0, b'"done"', b""),
+            asks=(
+                (PermissionEffect.NETWORK, _THE_UNNAMED_HOST),
+                (
+                    PermissionEffect.WORKSPACE_WRITE,
+                    PermissionScope(PermissionScopeKind.PATH_PREFIX, "/etc/"),
+                ),
+            ),
+        )
+
+        outcome = execute_agent_attempt(
+            execution,
+            RecordingAgentExecutorV2(command=emitting(b'"done"')),
+            store,
+            session,
+            runtime_workspace_owner(runtime),
+            clock=lambda: _WHEN_IT_WAS_DECIDED,
+            permissions=GRANTS_NOTHING,
+        )
+
+        assert isinstance(outcome, AgentAttemptSucceeded)
+        kept = {receipt.correlation_id: receipt for receipt in _kept_receipts(runtime)}
+        assert set(kept) == {
+            PermissionCorrelationId.for_call(execution.attempt_id, ordinal)
+            for ordinal in (1, 2)
+        }
+        assert [answer.granted for answer in session.answers] == [False, False]
+        assert all(
+            receipt.granted is False
+            and receipt.policy_revision_hash == GRANTS_NOTHING.revision_hash
+            for receipt in kept.values()
+        )
+    finally:
+        runtime.close()
+
+
+def test_asking_the_same_question_again_keeps_the_receipt_it_already_has(
+    tmp_path: Path,
+) -> None:
+    """A recovered attempt re-asks and is re-answered; the ledger holds one row."""
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(attempt_request(runtime, "attempt/again"))
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(execution)
+        receipt = _refused_network_question(execution.attempt_id)
+
+        store.record_permission_decision(receipt)
+        store.record_permission_decision(receipt)
+
+        assert _kept_receipts(runtime) == (receipt,)
+    finally:
+        runtime.close()
+
+
+def test_a_second_answer_to_one_question_is_refused_loudly(tmp_path: Path) -> None:
+    """One question, one answer: a second one is a contradiction, not a row.
+
+    The correlation id addresses the question, so reusing it for something else
+    asked -- another host here -- would overwrite what the provider was actually
+    told. The ledger keeps the first answer and says so.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/contradiction")
+        )
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(execution)
+        answered = _refused_network_question(execution.attempt_id)
+        store.record_permission_decision(answered)
+
+        with pytest.raises(
+            PermissionReceiptConflict, match="differs from the decision"
+        ):
+            store.record_permission_decision(
+                _refused_network_question(
+                    execution.attempt_id,
+                    scope=PermissionScope(PermissionScopeKind.HOST, "other.invalid"),
+                )
+            )
+
+        assert _kept_receipts(runtime) == (answered,)
+    finally:
+        runtime.close()
+
+
+def test_a_receipt_of_an_attempt_the_store_never_had_is_refused(
+    tmp_path: Path,
+) -> None:
+    """An authorisation nobody can trace to an execution authorises nothing."""
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        store = DbosAgentAttemptStore(runtime.engine)
+        never_prepared = agent_attempt_execution(
+            agent_execution_request_v2()
+        ).attempt_id
+
+        with pytest.raises(IntegrityError, match="FOREIGN KEY"):
+            store.record_permission_decision(_refused_network_question(never_prepared))
+
+        assert _kept_receipts(runtime) == ()
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        pytest.param(
+            "UPDATE permission_receipts SET granted = 1", id="answering-it-differently"
+        ),
+        pytest.param("DELETE FROM permission_receipts", id="taking-it-back"),
+    ],
+)
+def test_a_written_permission_receipt_can_be_neither_changed_nor_removed(
+    tmp_path: Path, statement: str
+) -> None:
+    """The ledger is append-only: an authorisation that can be edited is none."""
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/append-only")
+        )
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(execution)
+        receipt = _refused_network_question(execution.attempt_id)
+        store.record_permission_decision(receipt)
+
+        with (
+            runtime.engine.begin() as connection,
+            pytest.raises(DatabaseError, match="permission receipts are immutable"),
+        ):
+            connection.exec_driver_sql(statement)
+
+        assert _kept_receipts(runtime) == (receipt,)
+    finally:
+        runtime.close()
+
+
+def test_a_stored_receipt_hash_that_disagrees_with_its_own_row_is_corrupt(
+    tmp_path: Path,
+) -> None:
+    """A schema-valid row is not proof its hash column was never altered.
+
+    The read-back re-derives the hash from every other column; a row whose
+    stored hash disagrees with that re-derivation could only have been written
+    by something other than this store, and the ledger refuses to treat it as
+    an answer rather than silently accepting it.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/tampered-hash")
+        )
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(execution)
+        receipt = _refused_network_question(execution.attempt_id)
+        tampered_values = _permission_receipt_values(receipt) | {
+            "receipt_hash": "0" * 64
+        }
+
+        with runtime.engine.begin() as connection:
+            connection.execute(permission_receipts.insert().values(**tampered_values))
+
+        with pytest.raises(
+            DurableStateCorrupt, match="does not hash to its stored column"
+        ):
+            store.record_permission_decision(receipt)
     finally:
         runtime.close()

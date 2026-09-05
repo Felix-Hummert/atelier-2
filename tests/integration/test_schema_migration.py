@@ -543,11 +543,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[49]
         == "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 50
+    # V50 published no handoff of its own: the ledger above is alive only here
+    # (#1168 finding 8), so its fingerprint is pinned without adding to it.
+    assert (
+        _PRODUCT_SCHEMA_FINGERPRINT_SHA256[50]
+        == "bb34288b35fbf4fe059960323b7a92ee4e5473b5a945e697c0f4b9fe29c6d8a9"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 51
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
-        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[50]
-        == "bb34288b35fbf4fe059960323b7a92ee4e5473b5a945e697c0f4b9fe29c6d8a9"
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[51]
+        == "2b0be085b59e160db8b9d925bbb889205b32a2bbd45fcad673277b2b229fd622"
     )
 
 
@@ -664,7 +670,12 @@ def _rows_beside_the_version_owner(connection: sqlite3.Connection) -> frozenset[
 def test_a_v48_store_gains_the_definition_source_tables_and_keeps_its_rows(
     tmp_path: Path,
 ) -> None:
-    """The additive hop adds three empty tables and touches nothing else."""
+    """The additive hop adds its empty tables and touches nothing else.
+
+    A V48 store crosses every remaining hop, so the permission ledger V51 adds
+    arrives here too -- also empty, and also without a row invented for the
+    history it predates.
+    """
 
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
@@ -698,6 +709,9 @@ def test_a_v48_store_gains_the_definition_source_tables_and_keeps_its_rows(
                 "catalog_source_intakes",
                 "catalog_source_intakes_no_update",
                 "catalog_source_intakes_no_delete",
+                "permission_receipts",
+                "permission_receipts_no_update",
+                "permission_receipts_no_delete",
             }
         )
         assert all(
@@ -706,6 +720,7 @@ def test_a_v48_store_gains_the_definition_source_tables_and_keeps_its_rows(
                 "host_definition_source_revisions",
                 "host_definition_source_selections",
                 "catalog_source_intakes",
+                "permission_receipts",
             )
         )
         _require_product_shape(connection, SCHEMA_VERSION)

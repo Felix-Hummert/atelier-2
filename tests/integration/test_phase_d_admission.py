@@ -1348,13 +1348,19 @@ def _restore_v43(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("BEGIN IMMEDIATE")
+        # V51 added the permission ledger; a V43 store predates it.
+        for trigger in schema_module._PERMISSION_RECEIPT_TRIGGERS:
+            connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        connection.execute(
+            f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}"
+        )
         # V50 widened the attempt failure vocabulary; a V43 store predates it.
         schema_module._rebuild_product_table(
             connection,
             schema_module.agent_attempts,
             "agent_attempts_v50",
             schema_module._AGENT_ATTEMPTS_TRIGGERS,
-            schema_module.SCHEMA_VERSION,
+            50,
             49,
             trigger_source=schema_module._V49_AGENT_ATTEMPT_TRIGGERS,
         )
@@ -1440,7 +1446,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 50
+    assert report.target_version == SCHEMA_VERSION == 51
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:

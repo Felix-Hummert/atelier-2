@@ -5,6 +5,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -19,6 +20,11 @@ from atelier2.adapters.dbos.published_schema_shapes import (
     PUBLISHED_WAIT_ANSWER_TRIGGERS,
 )
 from atelier2.adapters.github.composition import migrate_v44_github_source_location
+from atelier2.contracts.agent_permissions import (
+    PermissionAuthority,
+    PermissionEffect,
+    PermissionScopeKind,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -79,6 +85,17 @@ def _rfc3339_utc(column: str) -> str:
     return f"(length({column}) = 20 AND {column} LIKE '____-__-__T__:__:__Z')"
 
 
+def _closed_vocabulary_sql(column: str, vocabulary: type[StrEnum]) -> str:
+    """One contract's closed vocabulary, asserted of one named column.
+
+    Spelled from the enum rather than beside it, because a vocabulary written
+    by hand is how a column quietly stops admitting a word its contract owns.
+    """
+
+    admitted = ", ".join(f"'{member.value}'" for member in vocabulary)
+    return f"{column} IN ({admitted})"
+
+
 def _rfc3339_utc_or_null(column: str) -> str:
     """A recording instant is absent, or RFC 3339 UTC at second precision."""
 
@@ -91,10 +108,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 49 admits CANDIDATE_UNCHANGED as an attempt failure code, so an attempt
-# that left the tree its pin named untouched ends under its own word instead of
-# under a verification that was never run (#1156).
-_HOP_PREDECESSOR_VERSION = 49
+# Hop 50 adds the authorisation ledger `permission_receipts`, so every provider
+# permission question this product answers is durable before its answer is given
+# out (ADR 0020 §2, #1216).
+_HOP_PREDECESSOR_VERSION = 50
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -138,6 +155,7 @@ _VERSION_FORTY_SEVEN = 47
 _VERSION_FORTY_EIGHT = 48
 _VERSION_FORTY_NINE = 49
 _VERSION_FIFTY = 50
+_VERSION_FIFTY_ONE = 51
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -306,6 +324,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # source has delivered. `catalog_source_intakes` carries the revision kind
 # beside the hash because the published revision hash deliberately excludes the
 # kind, so only the pair names a publication.
+# V51 adds `permission_receipts`, the authorisation ledger of ADR 0020 §2: one
+# append-only row per provider permission question, keyed by the attempt and the
+# correlation id the question was minted with, bound to the policy revision its
+# answer stands on.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -353,6 +375,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     48: "ecf4b2aba21f7225f121a3afc128d76e9ce10801c83121a93712f39320704653",
     49: "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2",
     50: "bb34288b35fbf4fe059960323b7a92ee4e5473b5a945e697c0f4b9fe29c6d8a9",
+    51: "2b0be085b59e160db8b9d925bbb889205b32a2bbd45fcad673277b2b229fd622",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -1369,6 +1392,51 @@ agent_attempt_receipts_v3 = sa.Table(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+permission_receipts = sa.Table(
+    "permission_receipts",
+    metadata,
+    # The authorisation ledger of ADR 0020 §2, keyed by the question rather than
+    # by the attempt: one attempt answers many, and the correlation id is minted
+    # from the attempt and the call ordinal, so the pair is the question's own
+    # identity and a second answer to one question is a key collision rather
+    # than a second row. The foreign key is what makes an answer inseparable
+    # from the execution it authorised -- a receipt without its attempt would be
+    # an authorisation nobody can trace to what it permitted.
+    sa.Column(
+        "attempt_id",
+        sa.Text,
+        sa.ForeignKey("agent_attempts.attempt_id"),
+        primary_key=True,
+    ),
+    sa.Column("correlation_id", sa.Text, primary_key=True),
+    sa.Column("effect", sa.Text, nullable=False),
+    sa.Column("scope_kind", sa.Text, nullable=False),
+    sa.Column("scope_value", sa.Text, nullable=False),
+    sa.Column("granted", sa.Integer, nullable=False),
+    sa.Column("policy_revision_hash", sa.Text, nullable=False),
+    sa.Column("authority", sa.Text, nullable=False),
+    sa.Column("decided_at", sa.Text, nullable=False),
+    sa.Column("receipt_hash", sa.Text, nullable=False, unique=True),
+    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        "length(correlation_id) = 64 AND correlation_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(_closed_vocabulary_sql("effect", PermissionEffect)),
+    sa.CheckConstraint(_closed_vocabulary_sql("scope_kind", PermissionScopeKind)),
+    sa.CheckConstraint(
+        f"length(scope_value) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint("granted IN (0, 1)"),
+    sa.CheckConstraint(
+        "length(policy_revision_hash) = 64 "
+        "AND policy_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(_closed_vocabulary_sql("authority", PermissionAuthority)),
+    sa.CheckConstraint(_rfc3339_utc("decided_at")),
+    sa.CheckConstraint(
+        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 run_events = sa.Table(
     "run_events",
     metadata,
@@ -1579,15 +1647,9 @@ wait_answers = sa.Table(
 
 
 def _revision_kind_sql(column: str) -> str:
-    """The closed published-kind vocabulary, asserted of one named column.
+    """The closed published-kind vocabulary, asserted of one named column."""
 
-    Spelled from `RevisionKind` rather than beside it, because three tables now
-    constrain a kind column and a fourth vocabulary written by hand is how one
-    of them quietly stops admitting a kind the contract owns.
-    """
-
-    admitted = ", ".join(f"'{kind.value}'" for kind in RevisionKind)
-    return f"{column} IN ({admitted})"
+    return _closed_vocabulary_sql(column, RevisionKind)
 
 
 _PUBLISHED_REVISION_KIND_SQL = _revision_kind_sql("kind")
@@ -2834,6 +2896,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'tool redemptions are immutable');
         END
     """,
+    "permission_receipts_no_update": """
+        CREATE TRIGGER permission_receipts_no_update
+        BEFORE UPDATE ON permission_receipts BEGIN
+          SELECT RAISE(ABORT, 'permission receipts are immutable');
+        END
+    """,
+    "permission_receipts_no_delete": """
+        CREATE TRIGGER permission_receipts_no_delete
+        BEFORE DELETE ON permission_receipts BEGIN
+          SELECT RAISE(ABORT, 'permission receipts are immutable');
+        END
+    """,
     "reconcile_commands_payload_no_update": """
         CREATE TRIGGER reconcile_commands_payload_no_update
         BEFORE UPDATE OF command_id, logical_key, expected_intent_version,
@@ -3776,7 +3850,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         host_definition_source_selections.name,
         catalog_source_intakes.name,
     }
-    before_definition_sources = PRODUCT_TABLE_NAMES - definition_source_tables
+    before_permission_receipts = PRODUCT_TABLE_NAMES - {permission_receipts.name}
+    before_definition_sources = before_permission_receipts - definition_source_tables
     predecessor_product_tables = before_definition_sources - {catalog_intakes.name}
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
@@ -3810,10 +3885,11 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
-    # V50 widened one table's failure-code vocabulary and added no table, so V49
-    # holds exactly today's set.
-    if version == _VERSION_FORTY_NINE:
-        return PRODUCT_TABLE_NAMES
+    # V51 adds the authorisation ledger. V50 widened one table's failure-code
+    # vocabulary and added no table, so V49 and V50 hold the same set: today's
+    # without that ledger.
+    if version in {_VERSION_FIFTY, _VERSION_FORTY_NINE}:
+        return before_permission_receipts
     if version in {_VERSION_FORTY_EIGHT, _VERSION_FORTY_SEVEN}:
         return before_definition_sources
     if version in {_VERSION_FORTY_SIX, _VERSION_FORTY_FIVE, _VERSION_FORTY_FOUR}:
@@ -6245,6 +6321,30 @@ def _apply_v49_to_v50(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FORTY_NINE, _VERSION_FIFTY)
 
 
+_PERMISSION_RECEIPT_TRIGGERS = (
+    "permission_receipts_no_update",
+    "permission_receipts_no_delete",
+)
+
+
+def _apply_v50_to_v51(connection: sqlite3.Connection) -> None:
+    """Give the store the ledger every answered permission question is kept in.
+
+    Purely additive: one immutable table and its triggers arrive, and not one
+    stored row or existing table is touched. Nothing is backfilled -- an attempt
+    that ran before this ledger existed answered its questions under a policy
+    whose decisions nobody wrote down, and inventing rows for them would put
+    authorisations into the record that never authorised anything.
+    """
+
+    _added_table_step(
+        permission_receipts,
+        _PERMISSION_RECEIPT_TRIGGERS,
+        _VERSION_FIFTY,
+        _VERSION_FIFTY_ONE,
+    )(connection)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6422,6 +6522,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FORTY_SEVEN, _VERSION_FORTY_EIGHT, _apply_v47_to_v48),
     _SchemaMigrationStep(_VERSION_FORTY_EIGHT, _VERSION_FORTY_NINE, _apply_v48_to_v49),
     _SchemaMigrationStep(_VERSION_FORTY_NINE, _VERSION_FIFTY, _apply_v49_to_v50),
+    _SchemaMigrationStep(_VERSION_FIFTY, _VERSION_FIFTY_ONE, _apply_v50_to_v51),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
