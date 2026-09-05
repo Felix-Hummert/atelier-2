@@ -21,8 +21,8 @@ from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
-    ProviderCancellationCause,
 )
+from atelier2.ports.provider_conversations import ProviderCancellationCause
 
 # The launch frame carries the process's whole standard input base64-encoded --
 # four characters per three bytes -- beside its argv, environment and working

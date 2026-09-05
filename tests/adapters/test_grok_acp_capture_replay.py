@@ -30,7 +30,7 @@ from atelier2.contracts.agent_transcripts import (
     ToolReturned,
     UnrecognisedProviderOutput,
 )
-from atelier2.ports.agent_executions import (
+from atelier2.ports.provider_conversations import (
     ProviderConversationBounds,
     ProviderConversationEnding,
     ProviderFilesystemAnswer,

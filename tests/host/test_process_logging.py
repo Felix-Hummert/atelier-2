@@ -52,8 +52,8 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     PermissionDecider,
     PrintModeExecutor,
-    ProviderCancellationCause,
 )
+from atelier2.ports.provider_conversations import ProviderCancellationCause
 from tests.scenarios.agents import (
     agent_attempt_execution,
     agent_execution_request_v2,

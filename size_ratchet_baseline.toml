@@ -151,7 +151,7 @@ lines = 1439
 
 [[file]]
 path = "src/atelier2/ports/agent_executions.py"
-lines = 1181
+lines = 1163
 
 [[file]]
 path = "src/atelier2/runner/session.py"

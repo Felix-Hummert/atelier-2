@@ -44,11 +44,13 @@ from atelier2.ports.agent_executions import (
     AgentProcessOwnerNotLocal,
     AgentSession,
     PermissionDecider,
+    ProviderConversationBinding,
+)
+from atelier2.ports.provider_conversations import (
     ProviderCancellationCause,
     ProviderCancellationFrame,
     ProviderCancellationRequest,
     ProviderConversationAction,
-    ProviderConversationBinding,
     ProviderConversationComplete,
     ProviderConversationEnding,
     ProviderFilesystemRequest,

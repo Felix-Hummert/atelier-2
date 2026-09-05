@@ -56,7 +56,7 @@ from atelier2.contracts.agent_transcripts import (
     UnrecognisedProviderOutput,
 )
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
-from atelier2.ports.agent_executions import (
+from atelier2.ports.provider_conversations import (
     ProviderCancellationCause,
     ProviderCancellationFrame,
     ProviderCancellationRequest,
