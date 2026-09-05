@@ -941,7 +941,11 @@ the old address continues as `DISCONNECTED`, and the given address is
 published `CONNECTED`; the command prints both revision numbers, and nothing
 is deleted. The running serve read the connection once at startup, so it
 needs one restart to pick up the move; the auto-redeploy performs that
-restart on its next deploy, and there is no reason to force one sooner.
+restart on its next deploy, and there is no reason to force one sooner. That
+restart blocks on an effect intent under the old address only while the DBOS
+workflow that owns it is still open: an open workflow must finish or be
+reconciled first, but once it has ended, history under the old address never
+blocks the restart, whatever that intent's own recorded state.
 
 ### Publish the issue-to-pr catalog
 

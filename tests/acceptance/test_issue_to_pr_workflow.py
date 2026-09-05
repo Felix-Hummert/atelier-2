@@ -93,6 +93,7 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.projects import declaring_verification, git_project, run_git
 from tests.scenarios.run_waiting import wait_for_run_state
@@ -226,6 +227,7 @@ def _runtime(
         GitRemote("local-issue-to-pr-test", str(remote)),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        FakeHeadBranchPullRequests(),
     )
     runtime = DbosRuntime(
         DbosRuntimeSettings(

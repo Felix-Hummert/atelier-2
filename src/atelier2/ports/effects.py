@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
+from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
     EffectIntent,
@@ -14,6 +15,7 @@ from atelier2.contracts.effects import (
     ReadbackPhase,
     ReconcileCommand,
     ReconcileCommandSnapshot,
+    UnknownOutcomeReason,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -52,6 +54,46 @@ type DurableReconciliationResult = (
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestOpenOnHeadBranch:
+    """A pull request on this head branch is still open, and this one names it."""
+
+    number: int
+
+
+@dataclass(frozen=True, slots=True)
+class NoPullRequestOpenOnHeadBranch:
+    """The tracker answered about this branch, and none of its pull requests is open."""
+
+
+@dataclass(frozen=True, slots=True)
+class HeadBranchPullRequestsUnreadable:
+    """The tracker resolved nothing about this branch, and said why."""
+
+    reason: UnknownOutcomeReason
+
+
+type HeadBranchPullRequestState = (
+    PullRequestOpenOnHeadBranch
+    | NoPullRequestOpenOnHeadBranch
+    | HeadBranchPullRequestsUnreadable
+)
+
+
+class HeadBranchPullRequests(Protocol):
+    """Which pull requests still stand open on one head branch.
+
+    A publishing adapter asks this about a branch it finds carrying a commit
+    that is not the one it was asked to publish: work nobody reviews any more
+    may be replaced, work someone is reviewing may not, and a tracker that
+    cannot answer licenses nothing.
+    """
+
+    def open_pull_requests_on(
+        self, head_branch: HeadBranch
+    ) -> HeadBranchPullRequestState: ...
 
 
 class EffectAdapter(Protocol):

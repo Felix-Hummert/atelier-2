@@ -38,6 +38,7 @@ from atelier2.contracts.effects import (
     EffectReceipt,
     EffectUnknownOutcome,
     OperatorAuthoritativeAbsence,
+    PerformedEffect,
     ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
@@ -70,6 +71,7 @@ from tests.scenarios.agents import (
     launching,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
@@ -220,6 +222,7 @@ def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
         GitRemote("local-crash-test", str(root / "remote.git")),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        FakeHeadBranchPullRequests(),
         runner,
     )
     registry = EffectAdapterRegistry(
@@ -582,6 +585,113 @@ def test_restart_reads_the_exact_commit_without_pushing_a_twin(tmp_path: Path) -
     assert receipt.effect_id.value == request.expected_commit_oid(
         intent.request.request_hash.value
     )
+
+
+def test_a_replay_after_a_lease_push_reads_the_same_commit_and_sends_nothing(
+    tmp_path: Path,
+) -> None:
+    """The replaced branch was accepted, the answer was lost, the retry replays.
+
+    A push that replaced an earlier attempt's commit under a lease leaves the
+    branch naming this request's own deterministic commit, so the read after
+    the crash resolves to that commit's receipt rather than to a second send --
+    the same convergence a create-only push already has, now for the branch
+    this operation replaced.
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    from tests.integration.test_git_transport_push import (
+        HEAD_BRANCH,
+        _factory,
+        _foreign_commit,
+    )
+
+    _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
+    factory = _factory(store, remote, CrashAfterAcceptedPush())
+    intent, request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        with pytest.raises(RuntimeError, match="injected crash"):
+            adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    push_attempts = tmp_path / "push-attempts"
+    recovered = _factory(
+        store, remote, PushAttemptRecordingRunner(push_attempts)
+    ).open()
+    try:
+        receipt = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        recovered.close()
+
+    expected = request.expected_commit_oid(intent.request.request_hash.value)
+    assert isinstance(receipt, EffectReceipt)
+    assert receipt.effect_id.value == expected
+    assert not push_attempts.exists()
+    assert (
+        subprocess.run(
+            ("git", "-C", str(remote), "rev-parse", HEAD_BRANCH.full_ref),
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        == expected
+    )
+
+
+def test_a_lease_push_receipt_is_the_same_bytes_read_directly_or_after_a_crash(
+    tmp_path: Path,
+) -> None:
+    """Which oid a lease replaced is evidence for an operator, not the effect's identity.
+
+    A push that replaces a foreign commit under a lease and one that a crash
+    interrupts right after the remote accepted it must agree on what the
+    accepted send produced: the same request against the same store and
+    remote is read back as the identical receipt bytes whether that receipt
+    comes straight from the accepting `execute` or is reconstructed later by
+    a readback that never itself observed the oid the branch stood at before.
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    from tests.integration.test_git_transport_push import (
+        HEAD_BRANCH,
+        _factory,
+        _foreign_commit,
+    )
+
+    foreign = _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
+    factory = _factory(store, remote)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+    assert isinstance(performed, PerformedEffect)
+
+    # Put the branch back where this attempt observed it, so a second send
+    # against the same store and remote replays the identical lease push --
+    # this time interrupted by a crash right after the remote accepts it.
+    subprocess.run(
+        ("git", "-C", str(remote), "update-ref", HEAD_BRANCH.full_ref, foreign),
+        check=True,
+    )
+    crashing = _factory(store, remote, CrashAfterAcceptedPush()).open()
+    try:
+        with pytest.raises(RuntimeError, match="injected crash"):
+            crashing.execute(intent)
+    finally:
+        crashing.close()
+
+    recovered = _factory(store, remote).open()
+    try:
+        receipt = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        recovered.close()
+
+    assert isinstance(receipt, EffectReceipt)
+    assert receipt.result.payload == performed.result.payload
 
 
 def test_a_ref_removed_after_an_accepted_push_stays_unknown_and_pushes_nothing(

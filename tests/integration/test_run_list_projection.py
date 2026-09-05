@@ -312,11 +312,13 @@ def test_a_corrupt_run_becomes_a_defective_row_beside_its_healthy_neighbours(
     row_log = next(
         record
         for record in logged
-        if record["event"] == "run_list_projection_corrupt"
+        if record.get("event") == "run_list_projection_corrupt"
         and record.get("run_id") == poison_id.value
     )
     inspected_log = next(
-        record for record in logged if record["event"] == "run_get_projection_corrupt"
+        record
+        for record in logged
+        if record.get("event") == "run_get_projection_corrupt"
     )
     assert row_log["level"] == "error"
     assert "absent" in str(row_log["exception"]).lower()

@@ -541,6 +541,33 @@ same deterministic commit (proven at the workflow level by
 never a durable "send attempted" claim; closing it needs a schema hop on
 `effect_intents` and is its own slice, serial after #1216.
 
+**2026-09-05 amendment (head ruling, usage evidence pass 10, issue #1224): a
+branch nobody reviews any more is replaced under a lease on what was read.**
+This overturns "never an update" above for exactly one pre-send case, and
+leaves it standing everywhere else. Every second `issue-to-pr` run on the same
+work item found its item branch carrying the first run's commit, whose pull
+request was closed, and read that foreign commit as the divergence above — so
+each second run cost the operator a hand determination and a branch deletion.
+The pre-send read now asks the tracker what stands on that branch
+(`ports.effects.HeadBranchPullRequests`, answered for GitHub by the same
+head-branch listing the amendment above already reads): with **no pull request
+open** on it — every one closed or merged, or none at all — the branch carries
+work nobody reviews, this request holds nothing there, and the send proceeds as
+`--force-with-lease=<ref>:<the commit that was read>`; with **one open**, the
+outcome stays `UNKNOWN` naming that pull request's number, and reconciliation
+is unchanged. The lease is the whole fence: it names the exact value this
+attempt observed, so a branch that moves between the read and the send is
+refused by the remote rather than overwritten. The replaced oid is evidence for
+an operator, not part of the receipt's identity — a structured log line records
+it at the send, the same convention
+`effect_unknown_outcome_entered_reconciliation` uses, so the same accepted push
+produces byte-identical result bytes whether read from the send itself or
+reconstructed by a crash readback that never observed what the branch stood at
+before. A tracker that cannot answer licenses nothing. This changes only the
+*pre-send* decision, exactly as the amendment above did: a foreign commit read
+*after* a send is still the divergence this decision keeps `UNKNOWN`, because
+there a branch someone else moved and one this send lost a race for read alike.
+
 Which of the two a read is, the adapter cannot know and does not decide: a
 process that died between its push and its receipt leaves the remote looking
 exactly like one that was never asked. The durable owner of the intent names
