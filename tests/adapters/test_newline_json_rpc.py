@@ -35,12 +35,14 @@ from atelier2.adapters.newline_json_rpc import (
 
 ROOM_FOR_ANY_FRAME_HERE = 4_096
 _LARGE_ESCAPING_BOUND_BYTES = 200_000
-_TINY_ESCAPING_BOUND_BYTES = 64
+_TINY_ESCAPING_BOUND_BYTES = 43
 """Smallest bound that still reaches the string leaf itself.
 
-The envelope around it -- `{"jsonrpc":"2.0","id":7,"result":{"line":` and its
-close -- already costs over forty bytes on its own, so anything smaller is
-refused by the envelope alone, never touching the string this test is about.
+`{"jsonrpc":"2.0","id":7,"result":{"line":"` -- the opening through the
+value's own quote -- is forty-two bytes on its own, plus the one reserved for
+the frame separator: forty-three is the least that ever asks for a single
+byte of the string this test is about, and anything smaller is refused by
+the envelope alone.
 """
 _SLICE_BOUNDARY_BOUND_BYTES = 2_000
 _SLICE_BOUNDARY_CHARACTERS = (
@@ -75,7 +77,12 @@ def _peak_bytes_encoding(
     single-character string cache, notably -- that a cold process would
     otherwise charge to this measurement once and never again: what this
     returns is the codec's own steady-state cost, not a one-time runtime
-    artifact that would make the peak depend on which test ran first.
+    artifact that would make the peak depend on which test ran first. It
+    proves the recurring cost of every call after the process is warm, which
+    is what a long-lived conversation actually pays over and over; it cannot
+    mask a defect that recurs on every call, such as a fixed-width slice or a
+    whole-string escape, since warming up the defective path warms it up
+    exactly as it recurs.
     """
 
     _codec().encode(message, maximum_bytes)
@@ -88,16 +95,18 @@ def _peak_bytes_encoding(
 
 
 def _maximum_transient_bytes(maximum_bytes: int) -> int:
-    """This bound's own ceiling, plus the fixed cost of an empty frame.
+    """This bound's own ceiling, plus the fixed cost of an empty string leaf.
 
-    The fixed part is measured rather than guessed, because interpreter and
-    container overhead unrelated to string escaping -- the envelope dict, the
-    tracemalloc harness itself -- is real and belongs in the ceiling, not in
-    the proportional factor this codec's contract actually bounds.
+    The fixed part is measured against the same shape of message -- a
+    `"line"` key present but empty -- rather than guessed or measured against
+    a message with no string leaf at all: the generator and iterator
+    machinery this codec sets up to escape a string leaf is real, constant
+    overhead independent of the bound, and belongs in the ceiling, not in the
+    proportional factor this codec's contract actually bounds.
     """
 
     _empty_result, fixed_overhead = _peak_bytes_encoding(
-        JsonRpcResponse(1, {}), maximum_bytes
+        JsonRpcResponse(1, {"line": ""}), maximum_bytes
     )
     return _MAXIMUM_TRANSIENT_FACTOR_OF_BOUND * maximum_bytes + fixed_overhead
 

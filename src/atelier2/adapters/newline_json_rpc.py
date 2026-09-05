@@ -13,10 +13,11 @@ than this conversation may hold, must be refused while it is still a length --
 decoding first is exactly the buffer this bound exists to refuse. Both the
 completed frame and the exact unfinished remainder are held to it. Spelling
 an outgoing frame is measured the same way: a string leaf is escaped in
-slices of at most `maximum_bytes // 12` code points, so this codec's peak
-memory while spelling one frame never passes
-`_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times the caller's own bound, whatever
-the string's real length is.
+slices of at most `maximum_bytes // 12` code points and folded straight into
+one growing buffer, so this codec's peak memory while spelling one frame
+never passes `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times the caller's own
+bound, whatever the string's real length is (below the escape width, a fixed
+amount plus the bound instead -- see that constant).
 
 **Why a broken frame is a value, not an exception.** Everything a provider can
 get wrong -- unparseable bytes, a batch, an id that is not an id, an answer to
@@ -61,29 +62,35 @@ escaped -- is bounded by this same width.
 """
 
 _TRANSIENT_BUFFERS_PER_SLICE = 4
-"""Simultaneous buffers one escaping slice holds at once, in `_spelled_string_pieces`.
+"""Buffers one escaping slice can hold at once, in `_spelled_string_pieces`.
 
 The raw slice itself, `json.dumps`'s quoted escape of it, that escape's
-`[1:-1]` copy without its quotes, and that copy's own encoded bytes: four
-buffers, none wider than `_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` bytes per code
-point, so together they never pass `_TRANSIENT_BUFFERS_PER_SLICE *
-_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES * slice_characters` bytes.
+`[1:-1]` copy without its quotes, and that copy's own encoded bytes -- none
+wider than `_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` bytes per code point. The
+quoted escape is freed before the encoded bytes are built, so at most three
+of the four are ever alive together; four is the safe, conservative count
+this codec's contract is stated against.
 """
 
 _MAXIMUM_TRANSIENT_FACTOR_OF_BOUND = _TRANSIENT_BUFFERS_PER_SLICE + 1
 """How many multiples of `maximum_bytes` this codec's peak memory ever reaches.
 
-With `slice_characters = maximum_bytes // _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES`,
-the `_TRANSIENT_BUFFERS_PER_SLICE` buffers of one escaping slice are together
-at most `_TRANSIENT_BUFFERS_PER_SLICE * maximum_bytes`, and everything
-already spelled and retained for this same frame is a fifth quantity, held to
-`maximum_bytes` on its own by the `remaining` bookkeeping in
-`_spelled_within`. Their sum is this factor of `maximum_bytes`. Below
-`_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` bytes this factor does not hold: one code
-point is always the whole slice regardless of how small `maximum_bytes` is,
-so the transient is instead the fixed `_TRANSIENT_BUFFERS_PER_SLICE *
-_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` bytes of one code point's worst-case
-escape.
+`_spelled_within` accumulates every already-spelled piece into one `bytearray`
+that never grows past `maximum_bytes`, refusing before an append would cross
+it: that buffer, together with its own bounded growth slack, is one
+payload-width quantity, alongside the `_TRANSIENT_BUFFERS_PER_SLICE` buffers
+of whichever slice is being escaped into it -- five in total, this factor.
+The one-time final `bytes(buffer)` copy at the end coexists only with that
+same buffer, a strictly smaller peak the figure above already covers.
+
+This factor is not a universal claim: below `_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES`
+bytes, `_string_slice_characters` clamps to one code point rather than a
+bound-proportional count, so the `_TRANSIENT_BUFFERS_PER_SLICE` escaping
+buffers are a fixed `_TRANSIENT_BUFFERS_PER_SLICE *
+_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` (48) bytes -- but the accumulating buffer is
+still bounded by `maximum_bytes` on its own, so the peak there is that fixed
+48 bytes plus `maximum_bytes`, never this factor times it. Every sentence
+elsewhere naming this factor carries this same exception.
 """
 
 
@@ -302,32 +309,36 @@ def _spelled_pieces(value: JsonValue, slice_characters: int) -> Iterator[str]:
 
 
 def _spelled_within(payload: JsonObject, maximum_bytes: int) -> bytes | None:
-    """This payload's own bytes, or nothing once they would pass the bound.
+    """This payload's own bytes plus its frame separator, or nothing once they
+    would pass the bound.
 
     Counted as each bounded piece is spelled rather than after: escaping can
     multiply a text several times over, so a payload measured before it is
     spelled is not measured at all -- and spelling it whole to find out is
     exactly the buffer the bound exists to refuse. A piece with more
-    characters than there are bytes left cannot fit however it encodes, so it
-    is refused unencoded. Each string leaf is sliced to `maximum_bytes //
-    _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` code points first, so even a string this
-    payload never gets to spell in full is never held past
-    `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times `maximum_bytes` -- see that
-    constant for the buffers counted into it.
+    characters than there is room left cannot fit however it encodes, so it is
+    refused unencoded, before it would ever be appended. Every already-spelled
+    piece is folded into one `bytearray` as soon as it is measured, rather
+    than kept apart in a list: a list's own per-piece pointer and object
+    overhead is not bounded by this frame's own byte bound the way one
+    buffer's contents are, and JSON fragmented into many small pieces could
+    otherwise cost far more than `maximum_bytes` in bookkeeping alone. Each
+    string leaf is sliced to `maximum_bytes // _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES`
+    code points first, so even a string this payload never gets to spell in
+    full is never held past `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times
+    `maximum_bytes` (below the escape width, a fixed amount plus this buffer
+    instead) -- see that constant for the buffers counted into it.
     """
 
-    remaining = maximum_bytes - len(_FRAME_SEPARATOR)
+    frame_bytes = maximum_bytes - len(_FRAME_SEPARATOR)
     slice_characters = _string_slice_characters(maximum_bytes)
-    spelled: list[bytes] = []
+    buffer = bytearray()
     for piece in _spelled_pieces(payload, slice_characters):
-        if len(piece) > remaining:
+        if len(buffer) + len(piece) > frame_bytes:
             return None
-        encoded = piece.encode()
-        remaining -= len(encoded)
-        if remaining < 0:
-            return None
-        spelled.append(encoded)
-    return b"".join(spelled)
+        buffer += piece.encode()
+    buffer += _FRAME_SEPARATOR
+    return bytes(buffer)
 
 
 @dataclass
@@ -389,13 +400,14 @@ class NewlineJsonRpc:
         A caller carrying a payload of unknown width refuses it against the
         same bound before it composes the message, because the encoder never
         holds more than `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times this same
-        bound however long that string is.
+        bound however long that string is (below the escape width, a fixed
+        amount plus the bound instead -- see that constant).
         """
 
         data = _spelled_within(_payload(message), maximum_bytes)
         if data is None:
             return UnsendableFrame()
-        return EncodedFrame(data + _FRAME_SEPARATOR)
+        return EncodedFrame(data)
 
     def _framing_is_lost(
         self, frames: list[IncomingFrame]
