@@ -14,8 +14,6 @@ from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     AgentAttemptId,
-    ProcessExitSignature,
-    receipted_agent_answer,
 )
 from atelier2.contracts.agent_permissions import (
     PermissionDecision,
@@ -25,8 +23,17 @@ from atelier2.contracts.agent_permissions import (
     PolicyPermissionDecider,
 )
 from atelier2.contracts.agents import AgentExecutionResult
+from atelier2.contracts.candidate_reports import patch_safe_to_show
 from atelier2.contracts.executions import AgentAttemptExecution
-from atelier2.contracts.secret_redaction import redact_credentials
+from atelier2.contracts.process_endings import (
+    ProcessExitSignature,
+    receipted_agent_answer,
+)
+from atelier2.contracts.secret_redaction import (
+    RedactedText,
+    redact_an_unopened_credential,
+    redact_credentials,
+)
 from atelier2.contracts.tool_grants_v3 import (
     ToolGrantCapability,
     ToolGrantCapabilityNotRedeemed,
@@ -53,7 +60,11 @@ from atelier2.ports.agent_executions import (
     AgentSession,
 )
 from atelier2.ports.artifacts import ArtifactPublisher
-from atelier2.ports.candidate_store import CandidateNotKept, LeasedWorkingTree
+from atelier2.ports.candidate_store import (
+    MAXIMUM_CANDIDATE_DIFF_BYTES,
+    CandidateNotKept,
+    LeasedWorkingTree,
+)
 from atelier2.ports.project_verification import (
     PinnedProjectSource,
     ProjectVerificationOutcome,
@@ -273,20 +284,15 @@ def _ended_after_the_provider(
     `LAUNCH_ARMED`, which no operator and no replay can resolve.
     """
 
-    unnamed_work: KeptEvidence | None = None
     try:
         written = _the_tree_the_attempt_left(lease, project)
-    except CandidateNotKept as refusal:
+    except CandidateNotKept:
         # Reading the tree only ever saves work, so a store that cannot answer
-        # costs the saving and not the attempt: everything below runs exactly
-        # as it did before this reading existed. The refusal is not swallowed --
-        # the capture asks the same store again and ends the attempt on it, and
-        # a red check that ends the attempt before any capture carries it into
-        # the words that say why no patch is kept.
-        written, unnamed_work = (
-            None,
-            KeptEvidence(None, retention_failure=str(refusal)),
-        )
+        # costs the saving and not the attempt: everything below runs exactly as
+        # it did before this reading existed. The refusal is not swallowed --
+        # every ending below reads the tree again, after the check, and says
+        # what the same store answered then.
+        written = None
     if written is not None and not written.changed_the_pinned_tree:
         return store.complete_candidate_unchanged(
             execution, _unchanged_verdict(written, result), result.transcript
@@ -300,33 +306,82 @@ def _ended_after_the_provider(
         return store.complete_project_verification_failure(
             execution, _verification_unavailable_verdict(error), result.transcript
         )
-    redemption = redeemed.receipt if redeemed is not None else None
-    # A check that said no has already decided this attempt, so nothing is
-    # captured and nothing else may rename the ending. Capturing first would
-    # keep work the project rejected and, worse, let the loss of that work
-    # overwrite the verdict: the attempt would read CANDIDATE_CAPTURE_FAILED and
-    # carry a redemption saying the check failed. The store owns what a nonzero
-    # redemption means; this only refuses to reach past it. What the attempt did
-    # is still kept -- as a bounded patch an operator can read, never as a
-    # candidate a later run could take.
-    #
-    # Past that, `redemption` here is a value this branch is *known* to have and
-    # known to be a pass, so its evidence travels into whichever ending follows.
     if redeemed is not None and not redeemed.receipt.satisfied_the_project:
-        rejected_patch = (
-            unnamed_work
-            if unnamed_work is not None
-            else _kept_candidate_diff(project, written, artifacts)
+        return _ended_under_a_red_check(
+            execution, result, lease, project, store, artifacts, redeemed
         )
-        return store.complete_success(
-            execution,
-            result,
-            redeemed.receipt,
-            _published_verification_failure_evidence(
-                redeemed.outcome, rejected_patch, artifacts
-            ),
-        )
+    return _ended_under_a_passed_check(
+        execution,
+        result,
+        lease,
+        project,
+        store,
+        redeemed.receipt if redeemed is not None else None,
+    )
+
+
+def _ended_under_a_red_check(
+    execution: AgentAttemptExecution,
+    result: AgentExecutionResult,
+    lease: AgentAttemptWorkspaceLease,
+    project: PinnedProjectSource | None,
+    store: AgentAttemptStore,
+    artifacts: ArtifactPublisher | None,
+    redeemed: _RedeemedGrant,
+) -> AgentAttemptExecutionOutcome:
+    """How an attempt whose granted check said no ends, with what it did beside it.
+
+    A check that said no has already decided this attempt, so nothing is
+    captured and nothing else may rename the ending. Capturing first would keep
+    work the project rejected and, worse, let the loss of that work overwrite
+    the verdict: the attempt would read `CANDIDATE_CAPTURE_FAILED` and carry a
+    redemption saying the check failed. The store owns what a nonzero redemption
+    means; this only refuses to reach past it. What the attempt did is still
+    kept -- as a bounded patch an operator can read, never as a candidate a
+    later run could take.
+    """
+
+    return store.complete_success(
+        execution,
+        result,
+        redeemed.receipt,
+        _published_verification_failure_evidence(
+            redeemed.outcome,
+            _kept_candidate_diff(lease, project, artifacts),
+            artifacts,
+        ),
+    )
+
+
+def _ended_under_a_passed_check(
+    execution: AgentAttemptExecution,
+    result: AgentExecutionResult,
+    lease: AgentAttemptWorkspaceLease,
+    project: PinnedProjectSource | None,
+    store: AgentAttemptStore,
+    redemption: ToolRedemptionReceipt | None,
+) -> AgentAttemptExecutionOutcome:
+    """How an attempt the project accepted ends, once its work is really kept.
+
+    The tree is read again here, after the check rather than before it: a
+    verification command runs in the same workspace and may write into it, so
+    the tree that is kept and the patch a reviewer judges are both this reading
+    and not the one taken before the check. A check that reverted every change
+    leaves an attempt that changed nothing after all, and it ends under that
+    word instead of succeeding with no patch to show.
+
+    Keeping is anchored last, so a store that cannot print the patch has kept
+    nothing either -- which is what makes `CANDIDATE_CAPTURE_FAILED` the true
+    word for that ending.
+    """
+
     try:
+        verified = _the_tree_the_attempt_left(lease, project)
+        if verified is not None and not verified.changed_the_pinned_tree:
+            return store.complete_candidate_unchanged(
+                execution, _unchanged_verdict(verified, result), result.transcript
+            )
+        candidate_diff = _candidate_diff_the_next_node_reads(project, verified)
         _keep_what_the_attempt_made(lease, project)
     except CandidateNotKept as refusal:
         # The work is gone either way, but a named failure is a fact an operator
@@ -335,7 +390,9 @@ def _ended_after_the_provider(
         return store.complete_candidate_capture_failure(
             execution, str(refusal), result.transcript, redemption
         )
-    return store.complete_success(execution, result, redemption)
+    return store.complete_success(
+        execution, result, redemption, candidate_diff=candidate_diff
+    )
 
 
 def _log_named_failure(
@@ -369,6 +426,11 @@ def _log_named_failure(
             detail = (
                 "did the work and none of it could be kept; the loss is durably named."
             )
+        case AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED:
+            event = "agent_attempt_produced_value_refused"
+            detail = (
+                "produced a value its own schema refuses; the refusal is durably named."
+            )
         case AgentAttemptFailureCode.CANDIDATE_UNCHANGED:
             event = "agent_attempt_candidate_unchanged"
             detail = (
@@ -397,16 +459,22 @@ def _the_tree_the_attempt_left(
 ) -> LeasedWorkingTree | None:
     """What stands in the lease now, named against the pin it started from.
 
-    Nothing is anchored under the attempt: this is the question "did this
-    attempt change anything", and asking it must not by itself keep work no
-    ending has decided to keep.
+    Nothing is anchored under the attempt: this reads the lease and must not by
+    itself keep work no ending has decided to keep.
 
-    Asked only of an attempt that is about to redeem a grant, because that is
-    the only attempt for which "changed nothing" is a failure. A node that
-    pinned no grant may honestly answer without touching a file -- a reviewer
-    reading a candidate and judging it is exactly that -- and there is no
-    verification cost to save there either. A runtime pointed at no project has
-    no pin the work would be a change to and no store to name a tree in.
+    Asked twice on one attempt, at the two moments its answer can differ.
+    Before the granted check, because "changed nothing" is what saves paying
+    for one at all. After it, because the check runs in the same workspace and
+    a command that writes there leaves a tree the earlier reading never saw --
+    and the patch handed to whoever judges the candidate has to be the tree
+    that is kept, not the one that stood before the check.
+
+    Asked only of an attempt that redeems a grant, because that is the only
+    attempt for which "changed nothing" is a failure. A node that pinned no
+    grant may honestly answer without touching a file -- a reviewer reading a
+    candidate and judging it is exactly that -- and there is no verification
+    cost to save there either. A runtime pointed at no project has no pin the
+    work would be a change to and no store to name a tree in.
     """
 
     if project is None or project.grant is None:
@@ -484,17 +552,37 @@ def _published_verification_failure_evidence(
     return ProjectVerificationFailureEvidence(
         outcome.summary_line,
         outcome.duration_seconds,
-        _published_evidence(outcome.output_tail, artifacts),
+        _published_evidence(_tail_safe_to_show(outcome.output_tail), artifacts),
         candidate_diff,
     )
 
 
+def _tail_safe_to_show(output_tail: bytes) -> RedactedText:
+    """What a check printed last, made safe although its own beginning is cut off.
+
+    An outcome retains the last bytes of both streams, so an armoured block a
+    check printed can stand in it with its opening marker on the far side of
+    that cut: key material and the closing marker that would have named it, and
+    no shape recognising either. What stands ahead of such a close is key
+    material, and goes with it.
+    """
+
+    printed = redact_credentials(output_tail.decode("utf-8", "replace"))
+    kept = redact_an_unopened_credential(printed.text)
+    return RedactedText(kept.text, printed.redacted or kept.redacted)
+
+
 def _kept_candidate_diff(
+    lease: AgentAttemptWorkspaceLease,
     project: PinnedProjectSource | None,
-    written: LeasedWorkingTree | None,
     artifacts: ArtifactPublisher | None,
 ) -> KeptEvidence:
     """The patch this attempt is, kept beside the check that rejected it.
+
+    Read from the tree the check itself left, like the patch a passed check
+    hands on: a command that writes into the workspace before it exits nonzero
+    leaves a tree the reading before it never saw, and an operator asking what
+    the check said no to is asking about that tree.
 
     A store that cannot answer degrades these words rather than ending the
     attempt: the check has already spoken, and losing the patch does not make
@@ -502,17 +590,46 @@ def _kept_candidate_diff(
     would be a patch against, so it keeps nothing.
     """
 
-    if project is None or written is None:
-        return NOTHING_TO_KEEP
     try:
+        written = _the_tree_the_attempt_left(lease, project)
+        if project is None or written is None:
+            return NOTHING_TO_KEEP
         patch = project.candidates.changes(written)
     except CandidateNotKept as refusal:
         return KeptEvidence(None, retention_failure=str(refusal))
-    return _published_evidence(patch, artifacts)
+    return _published_evidence(
+        patch_safe_to_show(patch, MAXIMUM_CANDIDATE_DIFF_BYTES), artifacts
+    )
+
+
+def _candidate_diff_the_next_node_reads(
+    project: PinnedProjectSource | None, written: LeasedWorkingTree | None
+) -> str | None:
+    """The same patch, read as text by whoever judges this candidate next (#1235).
+
+    A reviewer in a headless call reaches no file and runs nothing, so the
+    builder's own prose was its whole evidence and it answered `cannot-judge`.
+    The patch is what turns that into a judgement, and it is the atelier's
+    reading of the tree rather than the provider's account of it.
+
+    A store that cannot print the patch is not answered around here: the
+    refusal travels to the caller, which has not anchored anything yet and ends
+    the attempt on it, because an attempt that hands a reviewer a report with
+    the patch silently missing tells that reviewer the change was empty. A
+    runtime pointed at no project, or an attempt whose tree was never named, has
+    no patch to read.
+    """
+
+    if project is None or written is None:
+        return None
+    patch = patch_safe_to_show(
+        project.candidates.changes(written), MAXIMUM_CANDIDATE_DIFF_BYTES
+    )
+    return patch.text or None
 
 
 def _published_evidence(
-    material: bytes, artifacts: ArtifactPublisher | None
+    material: RedactedText, artifacts: ArtifactPublisher | None
 ) -> KeptEvidence:
     """Keep one bounded piece of a red ending where its refusal can point to it.
 
@@ -520,10 +637,11 @@ def _published_evidence(
     refuses empty content by its own rule, and evidence naming no artifact is
     exactly as honest as one naming an empty one. Publication is idempotent by
     content, so a replay of this same attempt lands on the same address rather
-    than growing a second copy. Any credential shape `redact_credentials`
-    recognises is replaced before the material ever reaches the publisher,
-    because this artifact is HTTP-readable durable material, not a transcript
-    already behind its own boundary.
+    than growing a second copy. What arrives is already past its caller's
+    redactor, and it says so, because this artifact is HTTP-readable durable
+    material rather than a transcript already behind its own boundary -- and
+    only the caller knows where it cut, which is the one order a credential
+    straddling that cut survives.
 
     A publisher this runtime was never wired with is refused by preflight,
     before any provider work; `artifacts` is `None` here only if that invariant
@@ -535,7 +653,7 @@ def _published_evidence(
     naming why this piece is not kept beside them.
     """
 
-    if not material:
+    if not material.text:
         return NOTHING_TO_KEEP
     if artifacts is None:
         raise AssertionError(
@@ -543,16 +661,15 @@ def _published_evidence(
             "before any provider work; reaching publication without one is a "
             "defect in this runtime, not a condition this attempt can name"
         )
-    redacted = redact_credentials(material.decode("utf-8", "replace"))
-    published = publish_artifact(redacted.text.encode("utf-8"), artifacts)
+    published = publish_artifact(material.text.encode("utf-8"), artifacts)
     match published:
         case ArtifactPublicationCreated(artifact) | ArtifactPublicationExisting(
             artifact
         ):
-            return KeptEvidence(artifact.artifact_hash, redacted.redacted)
+            return KeptEvidence(artifact.artifact_hash, material.redacted)
         case ArtifactPublicationInvalid() | WriteUnavailable() | DurableStateCorrupt():
             return KeptEvidence(
-                None, redacted.redacted, _publication_failure_reason(published)
+                None, material.redacted, _publication_failure_reason(published)
             )
 
 

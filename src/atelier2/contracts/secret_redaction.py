@@ -33,10 +33,54 @@ REDACTION_MARKER = "[redacted]"
 # in, the field it is assigned to -- only this group is replaced, so the reader
 # still sees *which* secret was taken out.
 _MATCHED_VALUE_GROUP = "value"
-# What a shape may span. A credential is a token, not a document, and an
-# unbounded span is what turns a linear scan of one large tool result into a
-# quadratic one.
-_MAXIMUM_SPAN = 8_192
+MAXIMUM_PRIVATE_KEY_INTERIOR_CHARACTERS = 8_192
+"""How much key material the armoured-block shape reads between its markers.
+
+A credential is a token, not a document, and an unbounded span is what turns a
+linear scan of one large tool result into a quadratic one.
+"""
+
+_PRIVATE_KEY_LABEL_CHARACTERS = 32
+"""What may stand between `BEGIN` and `PRIVATE KEY`, as `RSA ` or `OPENSSH ` do."""
+
+_PRIVATE_KEY_BEGIN = "-----BEGIN "
+_PRIVATE_KEY_END = "-----END "
+_PRIVATE_KEY_MARKER_TAIL = "PRIVATE KEY-----"
+_PRIVATE_KEY_LABEL = rf"[A-Z ]{{0,{_PRIVATE_KEY_LABEL_CHARACTERS}}}"
+_PRIVATE_KEY_OPENING_PATTERN = (
+    rf"{_PRIVATE_KEY_BEGIN}{_PRIVATE_KEY_LABEL}{_PRIVATE_KEY_MARKER_TAIL}"
+)
+_PRIVATE_KEY_CLOSING_PATTERN = (
+    rf"{_PRIVATE_KEY_END}{_PRIVATE_KEY_LABEL}{_PRIVATE_KEY_MARKER_TAIL}"
+)
+_PRIVATE_KEY_OPENING = re.compile(_PRIVATE_KEY_OPENING_PATTERN)
+_PRIVATE_KEY_CLOSING = re.compile(_PRIVATE_KEY_CLOSING_PATTERN)
+
+MAXIMUM_CREDENTIAL_SPAN_CHARACTERS = (
+    MAXIMUM_PRIVATE_KEY_INTERIOR_CHARACTERS
+    + len(_PRIVATE_KEY_BEGIN)
+    + len(_PRIVATE_KEY_END)
+    + 2 * (_PRIVATE_KEY_LABEL_CHARACTERS + len(_PRIVATE_KEY_MARKER_TAIL))
+)
+"""How far past a cut a caller has to read for this owner to see whole tokens.
+
+The longest text any shape here has to see *whole* to recognise it at all: the
+armoured block, whose closing marker is what names it, markers included. Every
+other shape is recognised by its own opening -- an issuer prefix, a header, a
+field name -- so a prefix of it still matches and is still replaced.
+
+A caller that means to show only the first part of some text therefore reads
+that part plus this span, redacts what came back, and cuts the result. Cutting
+first and replacing afterwards leaves the half before the cut standing as the
+token it is.
+
+This counts characters, which is what a regex counts, while a caller bounding a
+read counts bytes. Spending it as bytes covers every block written in the ASCII
+these shapes are written in, and no unit makes it cover a block padded with
+wider characters -- a block whose close fell past a read is a block this owner
+never sees at all, and `redact_an_unclosed_credential` is what keeps such a
+reading safe to show rather than any width of look-ahead.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,13 +110,16 @@ CREDENTIAL_SHAPES = (
         # between the markers is key material.
         "private-key-block",
         re.compile(
-            r"-----BEGIN [A-Z ]{0,32}PRIVATE KEY-----"
-            rf".{{0,{_MAXIMUM_SPAN}}}?"
-            r"-----END [A-Z ]{0,32}PRIVATE KEY-----",
+            _PRIVATE_KEY_OPENING_PATTERN
+            + rf".{{0,{MAXIMUM_PRIVATE_KEY_INTERIOR_CHARACTERS}}}?"
+            + _PRIVATE_KEY_CLOSING_PATTERN,
             re.DOTALL,
         ),
-        # "-----BEGIN " + "PRIVATE KEY-----" + "-----END " + "PRIVATE KEY-----"
-        minimum_replaced_characters=11 + 16 + 9 + 16,
+        minimum_replaced_characters=(
+            len(_PRIVATE_KEY_BEGIN)
+            + len(_PRIVATE_KEY_END)
+            + 2 * len(_PRIVATE_KEY_MARKER_TAIL)
+        ),
     ),
     CredentialShape(
         # AWS's own published key-id form: a fixed prefix and a fixed width.
@@ -161,6 +208,47 @@ def redact_credentials(text: str) -> RedactedText:
     for shape in CREDENTIAL_SHAPES:
         redacted = shape.pattern.sub(_replacement, redacted)
     return RedactedText(redacted, redacted != text)
+
+
+def redact_an_unclosed_credential(text: str) -> RedactedText:
+    """Replace what stands behind an opening whose close this text does not carry.
+
+    Run over text `redact_credentials` has already been over, and only where
+    that text is a reading someone cut: every armoured opening still standing
+    there is one whose closing marker -- the marker that names the block at all
+    -- fell outside what was read or outside what a pattern spans. The opening
+    alone already says what follows it is key material, so everything from it to
+    the end is replaced. Over-broad on purpose: what lies past a cut is unknown
+    by definition, and prose after an unclosed opening is a cheaper loss than a
+    key's first half handed to a reader.
+    """
+
+    opening = _PRIVATE_KEY_OPENING.search(text)
+    if opening is None:
+        return RedactedText(text, False)
+    return RedactedText(text[: opening.start()] + REDACTION_MARKER, True)
+
+
+def redact_an_unopened_credential(text: str) -> RedactedText:
+    """Replace what stands in front of a close this text carries no opening for.
+
+    The mirror of `redact_an_unclosed_credential`, for text cut the other way:
+    a reading that kept the last bytes of something longer. A closing marker
+    with no opening ahead of it is a block whose opening fell outside what was
+    kept, so no shape names it and the material between them stands as the key
+    it is. Everything up to and including that close is replaced. Over-broad on
+    purpose, on the same terms: what stood before the cut is unknown, and prose
+    ahead of an unopened close is a cheaper loss than key material handed to a
+    reader.
+    """
+
+    closing = _PRIVATE_KEY_CLOSING.search(text)
+    if closing is None:
+        return RedactedText(text, False)
+    opening = _PRIVATE_KEY_OPENING.search(text)
+    if opening is not None and opening.start() < closing.start():
+        return RedactedText(text, False)
+    return RedactedText(REDACTION_MARKER + text[closing.end() :], True)
 
 
 def maximum_redacted_length(original_length: int) -> int:

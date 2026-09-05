@@ -1243,7 +1243,8 @@
               "AGENT_REFUSED",
               "PROJECT_VERIFICATION_FAILED",
               "CANDIDATE_CAPTURE_FAILED",
-              "CANDIDATE_UNCHANGED"
+              "CANDIDATE_UNCHANGED",
+              "PRODUCED_VALUE_REFUSED"
             ],
             "title": "Failure Code",
             "type": "string"
@@ -3281,7 +3282,7 @@
       },
       "NodeProvenanceResource": {
         "additionalProperties": false,
-        "description": "Which agent produced a node's answer, as its receipt recorded it.\n\nUsage is absent because no receipt holds it: this answer can prove what ran\nand what came out, and cannot say what it cost. How long it took is recorded\nbeside the attempt, not on this receipt.",
+        "description": "Which agent answered for a node, as its own receipt recorded it.\n\nWho answered, not who wrote every byte of the value beside it. Usage is\nabsent because no receipt holds it: this proves what ran and what came out,\nnever what it cost, and how long it took is recorded beside the attempt.",
         "properties": {
           "agent_configuration_revision_hash": {
             "pattern": "^[0-9a-f]{64}$",

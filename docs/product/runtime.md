@@ -136,6 +136,11 @@ rather than paying a project's whole verification to learn that the pinned tree
 still passes -- with the pinned tree and the agent's own bounded, redacted answer
 in the receipt, because an answer describing work that is not there is the fact
 worth keeping. That reading anchors nothing: naming a tree is not keeping one.
+The same reading is taken again after a passing check, because a verification
+command runs in that same workspace and what it writes belongs to the candidate;
+that second reading, and the patch derived from it, both happen before anything
+is anchored, so a store that cannot answer either of them leaves the attempt
+under `CANDIDATE_CAPTURE_FAILED` with nothing kept.
 
 An Agent whose exact grant pins `push-atelier-commit` now publishes that kept
 candidate before the following open-PR Action. From the run's single issue order,

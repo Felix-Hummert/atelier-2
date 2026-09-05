@@ -85,8 +85,9 @@ class _ClaimingStore:
         execution: AgentAttemptExecution,
         result: AgentExecutionResult,
         redemption: object,
+        candidate_diff: str | None = None,
     ) -> AgentAttemptSucceeded:
-        del execution, redemption
+        del execution, redemption, candidate_diff
         self.completed_result = result
         assert self.attempt is not None
         return AgentAttemptSucceeded(self.attempt, RunCompletes())

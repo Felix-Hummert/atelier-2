@@ -509,9 +509,11 @@ def _restore_v51_queue_defaults_predecessor(connection: sqlite3.Connection) -> N
 
     Rebuilding both tables in the shape V51 published is the hop run the other
     way: every stored row keeps its remaining columns, and the columns V52
-    introduced simply stop being.
+    introduced simply stop being. Past the vocabulary V53 widened, which a V51
+    store predates just as a V52 one does.
     """
 
+    _restore_v52_attempt_failure_vocabulary(connection)
     schema_module._rebuild_product_table(
         connection,
         schema_module.queue_proposal_revisions,
@@ -545,6 +547,26 @@ def _restore_v50_permission_ledger_predecessor(
     for trigger in schema_module._PERMISSION_RECEIPT_TRIGGERS:
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     connection.execute(f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}")
+
+
+def _restore_v52_attempt_failure_vocabulary(connection: sqlite3.Connection) -> None:
+    """Take back the failure code V53 added, keeping every stored attempt.
+
+    A store at V52 or earlier admits eight attempt failure codes where today's
+    declaration admits nine, in the table's own CHECK and in its transition
+    trigger alike. Rebuilding it in the shape V52 published is the same rebuild
+    the hop performs, run the other way.
+    """
+
+    schema_module._rebuild_product_table(
+        connection,
+        agent_attempts,
+        "agent_attempts_after_produced_value_refused",
+        schema_module._AGENT_ATTEMPTS_TRIGGERS,
+        53,
+        52,
+        trigger_source=schema_module._V52_AGENT_ATTEMPT_TRIGGERS,
+    )
 
 
 def _restore_v49_attempt_failure_vocabulary(connection: sqlite3.Connection) -> None:
@@ -6439,6 +6461,79 @@ def test_every_failed_transition_admits_the_unchanged_tree_only_after_the_v50_ho
         )
 
 
+def _populated_v52_store_with(
+    database_path: Path, binding: Mapping[str, object]
+) -> None:
+    """A published V52 store holding one armed attempt of the named carrier."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v52_attempt_failure_vocabulary(connection)
+        _write_armed_attempt(connection, binding)
+        connection.execute("UPDATE atelier_schema_versions SET version = 52")
+        connection.commit()
+        _require_product_shape(connection, 52)
+
+
+@pytest.mark.parametrize(
+    ("binding", "statement", "arguments"),
+    [
+        pytest.param(
+            {},
+            _FAIL_THE_LOCAL_ATTEMPT,
+            (AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED.value,),
+            id="the-attempt-this-host-ran-itself",
+        ),
+        pytest.param(
+            _RUNNER_BINDING,
+            _FAIL_THE_RUNNER_ATTEMPT,
+            (
+                AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED.value,
+                _RUNNER_EVIDENCE_HASH,
+            ),
+            id="the-attempt-a-runner-returned-evidence-for",
+        ),
+    ],
+)
+def test_every_failed_transition_admits_the_refused_value_only_after_the_v53_hop(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    binding: Mapping[str, object],
+    statement: str,
+    arguments: tuple[str, ...],
+) -> None:
+    """The vocabulary is one set, so both FAILED transitions gain the word at once.
+
+    A store that admitted the code in the table's CHECK but not in the
+    transition trigger of one carrier would hold two answers to "which failure
+    codes exist", and the newer of the two would be the quieter one.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _populated_v52_store_with(database_path, binding)
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        connection.execute(statement, arguments)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(statement, arguments)
+        connection.commit()
+        assert connection.execute(
+            "SELECT state, failure_code FROM agent_attempts"
+        ).fetchone() == (
+            "FAILED",
+            AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED.value,
+        )
+
+
 def _populated_v50_store_with(database_path: Path) -> None:
     """A published V50 store holding one started run standing at an armed attempt."""
 
@@ -6453,18 +6548,21 @@ def _populated_v50_store_with(database_path: Path) -> None:
         _require_product_shape(connection, 50)
 
 
-def _dumped_rows(connection: sqlite3.Connection) -> frozenset[str]:
-    """Every dumped row except the version the hop is expected to raise.
+_DUMPED_ROW = "INSERT INTO"
 
-    Rows only: the statements around them carry table shapes, and a hop that
-    widens a table is expected to change those while leaving what is stored
-    exactly as it was.
+
+def _dumped_rows(connection: sqlite3.Connection) -> frozenset[str]:
+    """Every stored row this store dumps, except the version a hop itself raises.
+
+    Rows rather than the whole dump: the statements around them carry table
+    shapes, and a hop that republishes a table in a wider shape is expected to
+    change those while leaving what is stored exactly as it was.
     """
 
     return frozenset(
         statement
         for statement in connection.iterdump()
-        if statement.startswith("INSERT INTO")
+        if statement.startswith(_DUMPED_ROW)
         and "atelier_schema_versions" not in statement
     )
 

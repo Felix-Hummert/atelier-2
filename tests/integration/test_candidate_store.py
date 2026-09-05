@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterable
@@ -46,6 +47,7 @@ from atelier2.ports.candidate_store import (
     CandidateNotKept,
     CandidateStoreUnavailable,
     CandidateTreeUnrepresentable,
+    LeasedWorkingTree,
 )
 from tests.scenarios.agents import leased_directory_identity
 from tests.scenarios.projects import commit_to_project, git_project
@@ -836,3 +838,53 @@ def test_a_candidate_tree_names_a_real_object_or_is_no_candidate_at_all() -> Non
 
     with pytest.raises(ValueError, match="candidate tree"):
         CandidateTree(AN_ATTEMPT, "the work the agent did")
+
+
+WARNING_A_REPOSITORY_MAKES_GIT_REPEAT = (
+    b"warning: this .gitattributes line names something git does not know\n"
+)
+WARNINGS_PAST_ONE_PIPE_BUFFER = 4_000
+"""More standard error than any pipe holds, so a child writing it has to block."""
+
+THE_PATCH_A_FLOODING_GIT_STILL_PRINTS = b"diff --git a/tool.py b/tool.py\n"
+A_FLOODING_GIT_GIVES_UP_AFTER_SECONDS = 20
+"""What keeps a deadlock a failing test rather than a suite that never ends."""
+
+A_GIT_THAT_FLOODS_ITS_STANDARD_ERROR = f"""#!{sys.executable}
+import signal
+import sys
+
+signal.alarm({A_FLOODING_GIT_GIVES_UP_AFTER_SECONDS})
+sys.stderr.buffer.write(
+    {WARNING_A_REPOSITORY_MAKES_GIT_REPEAT!r} * {WARNINGS_PAST_ONE_PIPE_BUFFER}
+)
+sys.stderr.buffer.flush()
+sys.stdout.buffer.write({THE_PATCH_A_FLOODING_GIT_STILL_PRINTS!r})
+"""
+"""A git that says a great deal before it answers, as a warned-about tree does."""
+
+
+def test_a_git_flooding_its_standard_error_still_answers_a_bounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The patch is read under a bound, so nothing else may be a pipe nobody drains.
+
+    How much git warns is decided by the tree it reads -- one `.gitattributes`
+    line git does not understand is warned about once per path it touches -- and
+    a bounded read stops taking standard output while the child is still
+    running. A child filling a standard-error pipe the parent is not draining
+    blocks on that write for as long as the parent waits, which is forever.
+    """
+
+    project = Project(tmp_path, {"tool.py": COMMITTED})
+    on_the_path = tmp_path / "a-flooding-git"
+    on_the_path.mkdir()
+    flooding = on_the_path / "git"
+    flooding.write_text(A_GIT_THAT_FLOODS_ITS_STANDARD_ERROR, encoding="utf-8")
+    flooding.chmod(0o755)
+    monkeypatch.setenv("PATH", str(on_the_path))
+
+    patch = project.store.changes(LeasedWorkingTree(project.pin, project.pin.tree))
+
+    assert patch.read == THE_PATCH_A_FLOODING_GIT_STILL_PRINTS
+    assert patch.stopped_at_the_bound is False

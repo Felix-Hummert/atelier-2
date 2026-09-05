@@ -103,10 +103,7 @@ from atelier2.contracts.executions import (
     RunEventKind,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.node_records_v3 import (
-    PersistedReceiptDisposition,
-    read_stored_node_receipt_reason,
-)
+from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_cancellations import RunCancelCommandId
@@ -116,6 +113,9 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevision,
     WorkflowRevisionHash,
+)
+from atelier2.contracts.stored_node_receipt_reasons import (
+    read_stored_node_receipt_reason,
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_attempts import AgentAttemptCancellationAccepted

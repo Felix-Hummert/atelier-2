@@ -117,10 +117,7 @@ from atelier2.contracts.executions import (
     logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.node_records_v3 import (
-    PersistedReceiptDisposition,
-    read_stored_node_receipt_reason,
-)
+from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
@@ -159,6 +156,9 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.secret_redaction import redact_credentials
+from atelier2.contracts.stored_node_receipt_reasons import (
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import (

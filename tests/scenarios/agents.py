@@ -37,7 +37,6 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     AgentAttemptId,
     AgentAttemptState,
-    ProcessExitSignature,
 )
 from atelier2.contracts.agent_permissions import (
     GRANTS_NOTHING,
@@ -84,6 +83,7 @@ from atelier2.contracts.host_configuration import (
     ModelRegistryRevision,
     ProviderModelCheck,
 )
+from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.ports.agent_executions import (

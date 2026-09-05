@@ -91,10 +91,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 51 gives the queue policy the workflow, priority and disposition a label
-# alone is proposed under, and every proposal the decision that wrote it
-# (REQ-QUEUE-01).
-_HOP_PREDECESSOR_VERSION = 51
+# Hop 52 admits PRODUCED_VALUE_REFUSED as an attempt failure code, so a value
+# the atelier composed and this node's own schema refuses ends under its own
+# word instead of under the provider's (#1235).
+_HOP_PREDECESSOR_VERSION = 52
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -140,6 +140,7 @@ _VERSION_FORTY_NINE = 49
 _VERSION_FIFTY = 50
 _VERSION_FIFTY_ONE = 51
 _VERSION_FIFTY_TWO = 52
+_VERSION_FIFTY_THREE = 53
 # docs/PRODUCT.md "Stage: prototype": no store compatibility is owed.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -366,6 +367,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     50: "bb34288b35fbf4fe059960323b7a92ee4e5473b5a945e697c0f4b9fe29c6d8a9",
     51: "2b0be085b59e160db8b9d925bbb889205b32a2bbd45fcad673277b2b229fd622",
     52: "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2",
+    53: "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -1343,7 +1345,8 @@ agent_attempts = sa.Table(
         "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED', "
         "'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED', "
         "'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED', "
-        "'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED') "
+        "'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED', "
+        "'PRODUCED_VALUE_REFUSED') "
         "AND receipt_hash IS NULL)"
     ),
 )
@@ -2804,7 +2807,8 @@ _PRODUCT_TRIGGERS = {
                ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
                 'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
                 'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',
-                'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED')
+                'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED',
+                'PRODUCED_VALUE_REFUSED')
              AND NEW.runner_manifest_id IS NULL
              AND NEW.receipt_hash IS NULL
              AND NEW.cancellation_command_id IS NULL)
@@ -2919,7 +2923,8 @@ _PRODUCT_TRIGGERS = {
                ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
                 'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
                 'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',
-                'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED')
+                'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED',
+                'PRODUCED_VALUE_REFUSED')
              AND NEW.receipt_hash IS NULL)
             OR
             (OLD.state = 'CANCEL_REQUESTED'
@@ -3684,11 +3689,12 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V52 widened two queue tables and added none, so V51 holds exactly today's
-    # set. V51 adds the authorisation ledger; V50 widened one table's
-    # failure-code vocabulary and added no table, so V49 and V50 hold the same
-    # set: today's without that ledger.
-    if version in {SCHEMA_VERSION, _VERSION_FIFTY_ONE}:
+    # V53 widened one table's failure-code vocabulary and V52 two queue tables,
+    # neither adding a table, so V51 holds exactly today's set. V51 adds the
+    # authorisation ledger; V50 widened one table's failure-code vocabulary and
+    # added no table, so V49 and V50 hold the same set: today's without that
+    # ledger.
+    if version in {SCHEMA_VERSION, _VERSION_FIFTY_TWO, _VERSION_FIFTY_ONE}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_FIFTY, _VERSION_FORTY_NINE}:
         return before_permission_receipts
@@ -4825,6 +4831,13 @@ _V32_AGENT_ATTEMPT_TRIGGERS = {
     "agent_attempts_state_transition": _V32_AGENT_ATTEMPT_STATE_TRANSITION,
     "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
 }
+_NINE_FAILURE_CODES = (
+    "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',\n"
+    "                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',\n"
+    "                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',\n"
+    "                'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED',\n"
+    "                'PRODUCED_VALUE_REFUSED')"
+)
 _EIGHT_FAILURE_CODES = (
     "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',\n"
     "                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',\n"
@@ -4845,10 +4858,10 @@ _SIX_FAILURE_CODES = (
 _V38_AGENT_ATTEMPT_TRIGGERS = {
     "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
         "agent_attempts_state_transition"
-    ].replace(_EIGHT_FAILURE_CODES, _SIX_FAILURE_CODES),
+    ].replace(_NINE_FAILURE_CODES, _SIX_FAILURE_CODES),
     "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
 }
-"""What V33 to V38 published: today's trigger without two words.
+"""What V33 to V38 published: today's trigger without three words.
 
 Derived rather than copied out, the way every earlier vocabulary hop here is
 derived: the whole difference *is* the failure-code list, so writing the other
@@ -4861,10 +4874,18 @@ second, quieter definition of what a failure code is."""
 _V49_AGENT_ATTEMPT_TRIGGERS = {
     "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
         "agent_attempts_state_transition"
-    ].replace(_EIGHT_FAILURE_CODES, _SEVEN_FAILURE_CODES),
+    ].replace(_NINE_FAILURE_CODES, _SEVEN_FAILURE_CODES),
     "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
 }
 """What V39 to V49 published, derived from today's trigger for the same reason."""
+
+_V52_AGENT_ATTEMPT_TRIGGERS = {
+    "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
+        "agent_attempts_state_transition"
+    ].replace(_NINE_FAILURE_CODES, _EIGHT_FAILURE_CODES),
+    "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
+}
+"""What V50 to V52 published, derived from today's trigger for the same reason."""
 
 
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
@@ -6115,6 +6136,7 @@ def _apply_v49_to_v50(connection: sqlite3.Connection) -> None:
         _AGENT_ATTEMPTS_TRIGGERS,
         _VERSION_FORTY_NINE,
         _VERSION_FIFTY,
+        trigger_source=_V52_AGENT_ATTEMPT_TRIGGERS,
     )
     _raise_declared_version(connection, _VERSION_FORTY_NINE, _VERSION_FIFTY)
 
@@ -6184,6 +6206,33 @@ def _apply_v51_to_v52(connection: sqlite3.Connection) -> None:
         filled_columns={"source": f"'{QueueProposalSource.OPERATOR.value}'"},
     )
     _raise_declared_version(connection, _VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO)
+
+
+_PREDECESSOR_ATTEMPTS_BEFORE_PRODUCED_VALUE_REFUSED = (
+    "agent_attempts_before_produced_value_refused"
+)
+
+
+def _apply_v52_to_v53(connection: sqlite3.Connection) -> None:
+    """Admit PRODUCED_VALUE_REFUSED, and keep every stored row exactly as it is.
+
+    A vocabulary hop and nothing else: every stored FAILED attempt carries one
+    of the eight older codes, which the widened constraint still admits, so no
+    ending changes meaning. Nothing is backfilled -- an attempt refused before
+    this word existed was refused for bytes a provider wrote, which is what
+    `OUTPUT_SCHEMA_REFUSED` says of it, and renaming it now would move an
+    authorship this product never recorded.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_ATTEMPTS_BEFORE_PRODUCED_VALUE_REFUSED,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_FIFTY_TWO,
+        _VERSION_FIFTY_THREE,
+    )
+    _raise_declared_version(connection, _VERSION_FIFTY_TWO, _VERSION_FIFTY_THREE)
 
 
 @dataclass(frozen=True)
@@ -6365,6 +6414,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FORTY_NINE, _VERSION_FIFTY, _apply_v49_to_v50),
     _SchemaMigrationStep(_VERSION_FIFTY, _VERSION_FIFTY_ONE, _apply_v50_to_v51),
     _SchemaMigrationStep(_VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO, _apply_v51_to_v52),
+    _SchemaMigrationStep(_VERSION_FIFTY_TWO, _VERSION_FIFTY_THREE, _apply_v52_to_v53),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

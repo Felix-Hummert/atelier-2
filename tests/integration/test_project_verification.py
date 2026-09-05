@@ -12,6 +12,7 @@ pin that no longer resolves each cost no run.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -44,6 +45,7 @@ from atelier2.contracts.agents import (
     AgentExecutionResult,
 )
 from atelier2.contracts.artifacts import Artifact
+from atelier2.contracts.candidate_reports import CANDIDATE_DIFF_TRUNCATION_MARKER
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
@@ -71,7 +73,11 @@ from atelier2.ports.agent_executions import (
     PrintModeExecutor,
 )
 from atelier2.ports.artifacts import ArtifactCreated, PublishArtifactResult
-from atelier2.ports.candidate_store import CandidateTreeStore
+from atelier2.ports.candidate_store import (
+    CANDIDATE_DIFF_READ_BYTES,
+    MAXIMUM_CANDIDATE_DIFF_BYTES,
+    CandidateTreeStore,
+)
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import (
@@ -88,6 +94,7 @@ from tests.scenarios.agents import (
     leased_directory_identity,
     prepared_agent_attempt,
 )
+from tests.scenarios.credentials import assembled
 from tests.scenarios.projects import (
     CandidatesKeptInMemory,
     declaring_verification,
@@ -665,6 +672,7 @@ class _RecordingSuccessStore:
     attempt: AgentAttempt | None = None
     redemption: ToolRedemptionReceipt | None = None
     verification_failure_evidence: ProjectVerificationFailureEvidence | None = None
+    candidate_diff: str | None = None
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         self.calls.append("prepare")
@@ -688,11 +696,13 @@ class _RecordingSuccessStore:
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
         verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
+        candidate_diff: str | None = None,
     ) -> AgentAttemptFailed:
         del execution, result
         self.calls.append("complete_success")
         self.redemption = redemption
         self.verification_failure_evidence = verification_failure_evidence
+        self.candidate_diff = candidate_diff
         assert self.attempt is not None
         self.attempt = replace(
             self.attempt,
@@ -1013,6 +1023,55 @@ def test_a_credential_shape_in_a_red_checks_output_is_redacted_before_it_is_kept
     assert REDACTION_MARKER.encode() in published.content
 
 
+A_KEY_BLOCK_OPENS = assembled("-----BEGIN ", "RSA PRIVATE KEY", "-----")
+A_KEY_BLOCK_CLOSES = assembled("-----END ", "RSA PRIVATE KEY", "-----")
+KEY_MATERIAL_CHARACTER = "k"
+"""One character of key material, and none of what stands where a key is taken out."""
+
+FAILING_VERIFICATION_PRINTING_A_KEY_WIDER_THAN_THE_TAIL_COMMAND = [
+    "/bin/sh",
+    "-c",
+    (
+        f"printf '%s' '{A_KEY_BLOCK_OPENS}'; "
+        f"printf '{KEY_MATERIAL_CHARACTER}%.0s' "
+        f"$(seq {MAXIMUM_VERIFICATION_OUTPUT_TAIL_BYTES}); "
+        f"printf '%s' '{A_KEY_BLOCK_CLOSES}'; exit 1"
+    ),
+]
+"""A check printing key material as wide as the whole tail an outcome retains."""
+
+
+@pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
+def test_a_key_block_whose_opening_the_tail_cut_dropped_leaves_no_material_behind(
+    tmp_path: Path,
+) -> None:
+    """The tail keeps the last bytes, so a wide enough key loses its opening marker.
+
+    What is retained then is key material and the closing marker naming it, and
+    no shape recognises a block whose opening is on the other side of the cut.
+    A close standing without an opening before it says everything printed ahead
+    of it was key material, so that is what goes.
+    """
+
+    publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(
+        tmp_path,
+        publisher,
+        store,
+        command=FAILING_VERIFICATION_PRINTING_A_KEY_WIDER_THAN_THE_TAIL_COMMAND,
+    )
+
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.output.redacted is True
+    published = publisher.published[0]
+    assert KEY_MATERIAL_CHARACTER.encode() not in published.content
+    assert b"PRIVATE KEY" not in published.content
+    assert published.content.startswith(REDACTION_MARKER.encode())
+
+
 @pytest.mark.proves("a-red-verifications-output-is-kept-as-a-readable-artifact")
 def test_a_zero_exit_verification_never_publishes_an_artifact(
     tmp_path: Path,
@@ -1229,6 +1288,149 @@ def test_a_credential_shape_in_the_rejected_patch_is_redacted_before_it_is_kept(
     assert REDACTION_MARKER.encode() in patch
 
 
+PASSING_VERIFICATION_COMMAND = ["/bin/sh", "-c", "printf all-green"]
+WHAT_THE_CHECK_WROTE = "the check itself wrote this line\n"
+CHECK_THAT_WRITES_INTO_THE_WORKSPACE = [
+    "/bin/sh",
+    "-c",
+    f"printf %s {json.dumps(WHAT_THE_CHECK_WROTE)} >> {WHAT_THE_BUILDER_CHANGED}",
+]
+"""A passing check that leaves the workspace different from how it found it."""
+
+
+def _candidate_diff_handed_on_after_a_green_check(
+    tmp_path: Path,
+    what_the_builder_wrote: str,
+    verification_command: list[str] | None = None,
+) -> str | None:
+    """What a passing attempt gives the node that judges its candidate next."""
+
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_passing_verification(
+        tmp_path, what_the_builder_wrote, store, verification_command
+    )
+
+    assert "complete_success" in store.calls
+    return store.candidate_diff
+
+
+def _drive_through_a_real_passing_verification(
+    tmp_path: Path,
+    what_the_builder_wrote: str,
+    store: _RecordingSuccessStore,
+    verification_command: list[str] | None = None,
+) -> None:
+    """A green check run by the real adapter, driven into the given store."""
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root,
+        {
+            **declaring_verification(
+                verification_command or PASSING_VERIFICATION_COMMAND
+            ),
+            **A_PROJECT_THE_BUILDER_CHANGES,
+        },
+    )
+    execute_agent_attempt(
+        agent_attempt_execution(agent_execution_request_v2()),
+        _SucceedingExecutor(),  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _RecordingSupervisor(  # type: ignore[arg-type]
+            leaves={WHAT_THE_BUILDER_CHANGED: what_the_builder_wrote}
+        ),
+        _LeasingWorkspaces(tmp_path / "lease"),
+        PinnedProjectSource(
+            LocalGitProjectSource(root),
+            runner_for(root),
+            _a_real_candidate_store(tmp_path, root),
+            pin,
+            THE_GRANT,
+        ),
+        _RecordingArtifactPublisher(),  # type: ignore[arg-type]
+        permissions=GRANTS_NOTHING,
+    )
+
+
+def test_a_green_check_hands_on_the_patch_the_kept_candidate_is(
+    tmp_path: Path,
+) -> None:
+    """A reviewer that reads no file still reads what this attempt did (#1235)."""
+
+    diff = _candidate_diff_handed_on_after_a_green_check(tmp_path, THE_BUILDERS_CHANGE)
+
+    assert diff is not None
+    assert WHAT_THE_BUILDER_CHANGED in diff
+    assert THE_BUILDERS_CHANGE.strip() in diff
+
+
+def test_a_credential_shape_in_the_kept_patch_is_redacted_before_it_travels(
+    tmp_path: Path,
+) -> None:
+    """The patch reaches another provider's job, so no token rides along in it."""
+
+    diff = _candidate_diff_handed_on_after_a_green_check(
+        tmp_path, "TOKEN = 'sk-ant-abcdefghijklmnopqrstuvwx'\n"
+    )
+
+    assert diff is not None
+    assert "sk-ant-" not in diff
+    assert REDACTION_MARKER in diff
+
+
+def test_what_the_check_itself_wrote_is_in_the_patch_the_reviewer_reads(
+    tmp_path: Path,
+) -> None:
+    """The check runs in the same workspace, so the tree it left is the candidate.
+
+    A project may declare a command that formats, generates or fixes; whatever
+    it writes is kept as part of the candidate, and a patch read before the
+    check ran would show a reviewer a change nobody is about to open.
+    """
+
+    diff = _candidate_diff_handed_on_after_a_green_check(
+        tmp_path, THE_BUILDERS_CHANGE, CHECK_THAT_WRITES_INTO_THE_WORKSPACE
+    )
+
+    assert diff is not None
+    assert THE_BUILDERS_CHANGE.strip() in diff
+    assert WHAT_THE_CHECK_WROTE.strip() in diff
+
+
+PADDING_THAT_ENDS_JUST_BEFORE_THE_CUT = "a" * (MAXIMUM_CANDIDATE_DIFF_BYTES - 1_000)
+"""Enough that what follows it begins before what a reader is shown ends."""
+
+KEY_MATERIAL_SENTINEL = "KEYMATERIALKEYMATERIAL" * 64
+"""Long enough that the cut falls inside it and its closing marker past it."""
+
+
+def test_a_credential_lying_across_the_readers_cut_is_replaced_whole(
+    tmp_path: Path,
+) -> None:
+    """Cutting first and scrubbing after would publish the half before the cut.
+
+    The block below begins before the bound a reader is shown and ends past it,
+    and only its closing marker makes it recognisable at all -- so a patch cut
+    to that bound before the redactor sees it carries key material no shape can
+    match any more.
+    """
+
+    diff = _candidate_diff_handed_on_after_a_green_check(
+        tmp_path,
+        f"{PADDING_THAT_ENDS_JUST_BEFORE_THE_CUT}\n"
+        f"{A_KEY_BLOCK_OPENS}\n"
+        f"{KEY_MATERIAL_SENTINEL}\n"
+        f"{A_KEY_BLOCK_CLOSES}\n",
+    )
+
+    assert diff is not None
+    assert KEY_MATERIAL_SENTINEL not in diff
+    assert "RSA PRIVATE KEY" not in diff
+    assert REDACTION_MARKER in diff
+    assert len(diff.encode("utf-8")) <= MAXIMUM_CANDIDATE_DIFF_BYTES
+
+
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")
 def test_a_pin_this_source_cannot_answer_for_refuses_before_the_attempt_is_claimed(
     tmp_path: Path,
@@ -1259,3 +1461,115 @@ class _SilentSupervisor:
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         raise AssertionError(execution)
+
+
+AS_THE_PIN_HAS_IT = A_PROJECT_THE_BUILDER_CHANGES[WHAT_THE_BUILDER_CHANGED]
+CHECK_THAT_REVERTS_THE_BUILDERS_CHANGE = [
+    "/bin/sh",
+    "-c",
+    # `%b` rather than `%s`: the pinned line ends in a newline, and only the
+    # escape-reading conversion writes one back out of a shell word.
+    f"printf %b {json.dumps(AS_THE_PIN_HAS_IT)} > {WHAT_THE_BUILDER_CHANGED}",
+]
+"""A check that passes and leaves the workspace holding exactly the pinned tree."""
+
+
+def test_a_green_check_that_undid_every_change_ends_as_a_candidate_unchanged(
+    tmp_path: Path,
+) -> None:
+    """A tree read before the check is no answer to what the check left behind.
+
+    A project may declare a command that reverts, cleans or regenerates; where
+    it puts the workspace back exactly as the pin had it, there is no candidate
+    to keep and no patch to hand on -- and a success naming neither would tell
+    the node reading it that this attempt's change was empty rather than that
+    it was undone.
+    """
+
+    store = _UnchangedRecordingStore()
+
+    _drive_through_a_real_passing_verification(
+        tmp_path,
+        THE_BUILDERS_CHANGE,
+        store,
+        CHECK_THAT_REVERTS_THE_BUILDERS_CHANGE,
+    )
+
+    assert store.calls == ["prepare", "claim", "complete_candidate_unchanged"]
+    assert store.candidate_diff is None
+    assert store.verdict is not None
+    assert THE_ANSWER_THE_PROVIDER_GAVE.decode("ascii") in store.verdict
+
+
+WHAT_THE_RED_CHECK_WROTE = "the failing check itself wrote this line\n"
+FAILING_CHECK_THAT_WRITES_INTO_THE_WORKSPACE = [
+    "/bin/sh",
+    "-c",
+    (
+        f"printf %s {json.dumps(WHAT_THE_RED_CHECK_WROTE)} "
+        f">> {WHAT_THE_BUILDER_CHANGED}; "
+        f"printf '%s' '{FAILING_VERIFICATION_TAIL.decode('ascii')}'; exit 1"
+    ),
+]
+"""A check that writes into the workspace and then says no to what stands there."""
+
+
+@pytest.mark.proves("a-rejected-attempts-own-diff-is-kept-as-a-readable-artifact")
+def test_the_patch_a_red_check_rejected_is_the_tree_that_check_left(
+    tmp_path: Path,
+) -> None:
+    """What an operator is shown is what the check said no to, not what preceded it.
+
+    A check runs in the same workspace and may write into it before it exits
+    nonzero -- a formatter, a generator, a fixer that got half way. A patch read
+    before it ran shows a tree no check ever judged.
+    """
+
+    root = tmp_path / "project"
+    publisher = _RecordingArtifactPublisher()
+    store = _RecordingSuccessStore()
+
+    _drive_through_a_real_failing_verification(
+        tmp_path,
+        publisher,
+        store,
+        FAILING_CHECK_THAT_WRITES_INTO_THE_WORKSPACE,
+        candidates=_a_real_candidate_store(tmp_path, root),
+    )
+
+    evidence = store.verification_failure_evidence
+    assert isinstance(evidence, ProjectVerificationFailureEvidence)
+    assert evidence.candidate_diff.artifact_hash is not None
+    kept = {
+        artifact.artifact_hash: artifact.content for artifact in publisher.published
+    }
+    patch = kept[evidence.candidate_diff.artifact_hash].decode("utf-8")
+    assert THE_BUILDERS_CHANGE.strip() in patch
+    assert WHAT_THE_RED_CHECK_WROTE.strip() in patch
+
+
+A_LINE_THE_BUILDER_REPEATS = "print('one more line of it')\n"
+MORE_WORK_THAN_ANY_READER_IS_SHOWN = A_LINE_THE_BUILDER_REPEATS * (
+    CANDIDATE_DIFF_READ_BYTES // len(A_LINE_THE_BUILDER_REPEATS) + 1
+)
+"""A change whose patch outgrows even what the store reads under its own bound."""
+
+
+def test_a_patch_larger_than_the_store_reads_reaches_the_reviewer_saying_so(
+    tmp_path: Path,
+) -> None:
+    """A cut nobody is told about reads as a change that ended where it stopped.
+
+    The store stops reading at its own bound, and redaction can shrink what it
+    read back under what a reader is shown -- so the length of the text is no
+    answer to whether hunks were left out, and the marker is the only one.
+    """
+
+    diff = _candidate_diff_handed_on_after_a_green_check(
+        tmp_path, MORE_WORK_THAN_ANY_READER_IS_SHOWN
+    )
+
+    assert diff is not None
+    assert diff.endswith(CANDIDATE_DIFF_TRUNCATION_MARKER)
+    assert len(diff.encode("utf-8")) <= MAXIMUM_CANDIDATE_DIFF_BYTES
+    assert A_LINE_THE_BUILDER_REPEATS.strip() in diff

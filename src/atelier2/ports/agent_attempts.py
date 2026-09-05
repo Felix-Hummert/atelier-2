@@ -10,7 +10,6 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
-    ProcessExitSignature,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agent_permissions import PermissionReceipt
@@ -19,6 +18,7 @@ from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionRes
 from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.run_cancellations import CancelRunRequest
 from atelier2.contracts.run_projections import RunCancellationRefusal
@@ -314,6 +314,7 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
         verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
+        candidate_diff: str | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         """Keep this attempt's terminal truth, and what its grant redeemed with it.
 
@@ -333,6 +334,17 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         carries -- pytest's own summary, where the check's output was kept, and
         where the patch it rejected was kept -- and it is read only on that one
         ending; every other ending ignores it.
+
+        `candidate_diff` is the patch the kept candidate is, for the node that
+        judges it next. It is the atelier's own reading of the tree the attempt
+        left, never the provider's word, and it reaches the node's value only
+        where that node's declared output schema names a property for it
+        (`contracts/candidate_reports.py`); the agent receipt keeps the exact
+        bytes the provider answered either way. Absent means there was no patch
+        to read -- no project, or a tree the check left as the pin had it. A
+        patch that could not be read is not one of the ways to reach here at
+        all: nothing is anchored before it is read, so that attempt ends as a
+        candidate that was not kept.
         """
         ...
 

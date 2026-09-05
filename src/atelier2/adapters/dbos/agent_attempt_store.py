@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator, Mapping
-from decimal import Decimal
 from typing import Any, assert_never
 
 import sqlalchemy as sa
@@ -24,6 +22,13 @@ from atelier2.adapters.dbos.names import (
     REPLACEMENT_WORKFLOW_NAME,
 )
 from atelier2.adapters.dbos.node_records import keep_node_receipt
+from atelier2.adapters.dbos.produced_node_values import (
+    NoProducibleValue,
+    declared_output_schema_document,
+    declared_output_schema_refusal,
+    schema_refusal_receipt_reason,
+    the_value_this_execution_produced,
+)
 from atelier2.adapters.dbos.run_store import (
     AgentReceiptConflict,
     ToolRedemptionConflict,
@@ -33,7 +38,6 @@ from atelier2.adapters.dbos.run_store import (
     _tool_redemption_values,
     load_kept_value,
     load_node_outputs,
-    load_published_schema_document,
     load_run_inputs,
 )
 from atelier2.adapters.dbos.run_transitions import (
@@ -59,6 +63,9 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.uncontinuable_runs import live_driver_workflow_ids
+from atelier2.adapters.dbos.verification_failure_words import (
+    verification_failure_verdict,
+)
 from atelier2.adapters.dbos.workflow_ids import (
     cancellation_workflow_id_for,
     driving_workflow_ids,
@@ -85,14 +92,12 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
     OutputSchemaRefusalReceipt,
-    ProcessExitSignature,
     RunnerEvidenceAcceptancePhase,
     RunnerGenerationId,
     RunnerInvocationId,
     RunnerManifestId,
     RunnerTerminalEvidenceHash,
     WatchdogGenerationId,
-    process_exit_verdict,
 )
 from atelier2.contracts.agent_permissions import (
     PermissionAuthority,
@@ -109,8 +114,6 @@ from atelier2.contracts.agent_refusals import (
 )
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
-    MAXIMUM_AGENT_FIELD_CHARACTERS,
-    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -139,6 +142,10 @@ from atelier2.contracts.node_records_v3 import (
     node_receipt_reason,
 )
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.process_endings import (
+    ProcessExitSignature,
+    process_exit_verdict,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_cancellations import (
@@ -153,14 +160,7 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevisionHash,
 )
-from atelier2.contracts.schemas_v3 import (
-    InstanceRefused,
-    SchemaRefused,
-    read_instance_document,
-    read_schema_document,
-)
 from atelier2.contracts.tool_grants_v3 import (
-    MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES,
     ToolRedemptionReceipt,
 )
 from atelier2.contracts.verdicts import Verdict, read_verdict
@@ -196,7 +196,6 @@ from atelier2.ports.agent_attempts import (
     AgentExecutorBindingRefusalNeedsPreparedCleanup,
     AgentExecutorBindingRefusalResult,
     AgentExecutorBindingRefusalWritten,
-    KeptEvidence,
     ProjectVerificationFailureEvidence,
     RunCancellationAccepted,
     RunCancellationCommandConflict,
@@ -930,78 +929,91 @@ def _fail_current_attempt(
     return AgentAttemptFailed(durable_failure)
 
 
-def _declared_output_schema_refusal(
-    session: Any, node_id: str, declared: NodeOutput, payload: bytes
-) -> InstanceRefused | None:
-    """Read one declared output against its pinned schema without losing its shape."""
-    document = load_published_schema_document(
-        session, declared.schema_reference.revision
+def _agent_declared_refusal(
+    connection: Any,
+    execution: AgentAttemptExecution,
+    durable: AgentAttempt,
+    declared: NodeOutput,
+    result: AgentExecutionResult,
+    redemption: ToolRedemptionReceipt | None,
+) -> AgentAttemptFailed | None:
+    """This node's declared refusal form, where the provider answered with one."""
+
+    if declared.refusal is None:
+        return None
+    named = agent_refusal_reason(result.output_bytes)
+    if named is None:
+        return None
+    return _fail_current_attempt(
+        connection,
+        execution,
+        durable,
+        AgentAttemptFailureCode.AGENT_REFUSED,
+        node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
+        AGENT_REFUSAL_SCHEMA.revision_hash,
+        result.output_bytes,
+        result.transcript,
+        redemption,
     )
-    if document is None:
-        raise RunTransitionConflict(
-            f"the schema node {node_id!r} pinned for output "
-            f"{declared.name!r} is absent from the store"
-        )
-    schema = read_schema_document(document)
-    if isinstance(schema, SchemaRefused):
-        raise RunTransitionConflict(
-            f"the schema node {node_id!r} pinned for output "
-            f"{declared.name!r} is not one: {schema}"
-        )
-    # The byte bound belongs to the route the value arrived by
-    # (schemas_v3.py's read_instance_document docstring), and an agent output
-    # arrives through the provider frame, not an inline order: its route bound
-    # is MAXIMUM_AGENT_OUTPUT_BYTES_V2, not read_instance_document's inline
-    # default. #901 slice 5's V3 schema validation newly applied the inline
-    # door's bound to outputs the provider frame legally admits, refusing a
-    # legal answer before the schema itself was ever consulted.
-    verdict = read_instance_document(
-        payload, schema, maximum_bytes=MAXIMUM_AGENT_OUTPUT_BYTES_V2
+
+
+def _refused_by_the_project(
+    connection: Any,
+    execution: AgentAttemptExecution,
+    durable: AgentAttempt,
+    declared: NodeOutput,
+    result: AgentExecutionResult,
+    redemption: ToolRedemptionReceipt,
+    evidence: ProjectVerificationFailureEvidence | None,
+) -> AgentAttemptFailed:
+    """End an attempt whose granted check said no, with the answer it said no to.
+
+    The schema admitted these bytes, and that judgment is kept with the ending:
+    a reader who cannot see what the provider answered cannot tell a broken
+    build from a builder that did nothing (#1156).
+    """
+
+    return _fail_current_attempt(
+        connection,
+        execution,
+        durable,
+        AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+        node_receipt_reason(
+            NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
+            verification_failure_verdict(redemption, evidence),
+        ),
+        PublishedRevisionHash(declared.schema_reference.revision),
+        result.output_bytes,
+        transcript=result.transcript,
     )
-    return verdict if isinstance(verdict, InstanceRefused) else None
 
 
-def _value_at_schema_violation(payload: bytes, pointer: str | None) -> object:
-    """Read the one JSON value whose repr JSON Schema put in its diagnostic."""
-    value: object = json.loads(payload.decode("utf-8"), parse_float=Decimal)
-    if pointer is None:
-        return value
-    for escaped_part in pointer.removeprefix("/").split("/"):
-        part = escaped_part.replace("~1", "/").replace("~0", "~")
-        if isinstance(value, list):
-            value = value[int(part)]
-        elif isinstance(value, dict):
-            value = value[part]
-        else:
-            raise TypeError(
-                f"schema violation pointer {pointer!r} does not address its value"
-            )
-    return value
+def _refused_produced_value(
+    connection: Any,
+    execution: AgentAttemptExecution,
+    durable: AgentAttempt,
+    declared: NodeOutput,
+    produced: NoProducibleValue,
+    transcript: AttemptTranscript | None,
+    redemption: ToolRedemptionReceipt | None,
+) -> AgentAttemptFailed:
+    """End an attempt on the value the atelier composed, named after its author.
 
+    No repair round: the one this store orders asks the provider to answer
+    again, and the provider did not write what was refused here.
+    """
 
-def _schema_rule_without_rejected_value(reason: str, rejected_value: object) -> str:
-    """Remove exactly JSON Schema's repr of the rejected value from its rule."""
-    rendered_value = repr(rejected_value)
-    return reason.replace(rendered_value, "", 1).strip()
-
-
-def _compact_schema_refusal(refusal: InstanceRefused, payload: bytes) -> str:
-    """Name the schema's place and rule without embedding rejected output."""
-    violation = refusal.violation
-    if violation is None:
-        words = str(refusal)
-    else:
-        place = "the value itself" if violation.pointer is None else violation.pointer
-        words = (
-            f"{refusal.refusal.value}: {place}: "
-            f"{_schema_rule_without_rejected_value(violation.reason, _value_at_schema_violation(payload, violation.pointer))}"
-        )
-    maximum_words = (
-        MAXIMUM_AGENT_FIELD_CHARACTERS
-        - len(NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value)
-        - len(": ")
+    return _fail_current_attempt(
+        connection,
+        execution,
+        durable,
+        AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED,
+        node_receipt_reason(NodeReceiptReason.PRODUCED_VALUE_REFUSED, produced.verdict),
+        PublishedRevisionHash(declared.schema_reference.revision),
+        produced.judged,
+        transcript=transcript,
+        redemption=redemption,
     )
-    return words[:maximum_words]
 
 
 def _store_output_schema_refusal_receipt(
@@ -1082,69 +1094,6 @@ def _proof_of_a_passed_check(
     if redemption is None or not redemption.satisfied_the_project:
         return None
     return redemption
-
-
-def _verification_failure_verdict(
-    redemption: ToolRedemptionReceipt,
-    evidence: ProjectVerificationFailureEvidence | None,
-) -> str:
-    """Everything a reader needs to judge a red check without rerunning it.
-
-    The exit code alone is six words that answer nothing: an operator cannot
-    tell a broken test from a broken environment from it (#1137). Every real
-    redemption failure supplies `evidence`, because the caller that ran the
-    check already read what it printed; it is absent only for a caller this
-    store cannot assume exists yet, so a missing evidence still names the exit
-    code and the command rather than raising.
-    """
-
-    words = [f"exit {redemption.exit_code}", " ".join(redemption.command)]
-    if evidence is not None:
-        words.append(f"after {evidence.duration_seconds:.0f} s")
-        if evidence.summary_line is not None:
-            words.append(_bounded_verification_summary(evidence.summary_line))
-        words.extend(_named_evidence("output", evidence.output))
-        words.extend(_named_evidence("candidate diff", evidence.candidate_diff))
-    return "; ".join(words)
-
-
-def _named_evidence(name: str, kept: KeptEvidence) -> tuple[str, ...]:
-    """Where one piece of this evidence was kept, or why it was not kept at all.
-
-    Silence is the honest answer for a piece that never existed -- a check that
-    printed nothing, an attempt with nothing to diff -- because a receipt saying
-    "no artifact" about something that was never there tells a reader nothing.
-    A piece that existed and could not be kept says so instead.
-    """
-
-    if kept.artifact_hash is not None:
-        return (
-            (f"{name} artifact sha256:{kept.artifact_hash.value}", f"{name} redacted")
-            if kept.redacted
-            else (f"{name} artifact sha256:{kept.artifact_hash.value}",)
-        )
-    if kept.retention_failure is not None:
-        return (f"{name} could not be kept: {kept.retention_failure}",)
-    return ()
-
-
-def _bounded_verification_summary(summary_line: str) -> str:
-    """Pytest's own summary line, bounded the way `ProcessExitSignature` bounds free text.
-
-    A project's own test runner is free to compose a summary of any length; a
-    receipt is a sentence an operator reads at a glance, not a log (#1137).
-    """
-
-    encoded = summary_line.encode("utf-8")
-    if len(encoded) <= MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES:
-        return summary_line
-    tail = encoded[-MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES:].decode(
-        "utf-8", "replace"
-    )
-    return (
-        f"last {MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES} of "
-        f"{len(encoded)} summary bytes: {tail}"
-    )
 
 
 def _keep_tool_redemption(
@@ -1940,32 +1889,28 @@ class DbosAgentAttemptStore:
         *,
         redemption: ToolRedemptionReceipt | None = None,
         verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
+        candidate_diff: str | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         request = execution.request
         node = _agent_node_for_attempt(graph, request.node_id)
         declared = node.outputs[0]
-        if declared.refusal is not None:
-            named = agent_refusal_reason(result.output_bytes)
-            if named is not None:
-                failed = _fail_current_attempt(
-                    connection,
-                    execution,
-                    durable,
-                    AgentAttemptFailureCode.AGENT_REFUSED,
-                    node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
-                    AGENT_REFUSAL_SCHEMA.revision_hash,
-                    result.output_bytes,
-                    result.transcript,
-                    _proof_of_a_passed_check(redemption),
-                )
-                return failed
-        refusal = _declared_output_schema_refusal(
-            connection, node.id, declared, result.output_bytes
+        declared_a_refusal = _agent_declared_refusal(
+            connection,
+            execution,
+            durable,
+            declared,
+            result,
+            _proof_of_a_passed_check(redemption),
+        )
+        if declared_a_refusal is not None:
+            return declared_a_refusal
+        schema_document = declared_output_schema_document(connection, node.id, declared)
+        refusal = declared_output_schema_refusal(
+            schema_document, node.id, declared, result.output_bytes
         )
         if refusal is not None:
-            reason = _compact_schema_refusal(refusal, result.output_bytes)
-            receipt_reason = node_receipt_reason(
-                NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, reason
+            receipt_reason = schema_refusal_receipt_reason(
+                refusal, result.output_bytes, NodeReceiptReason.OUTPUT_SCHEMA_REFUSED
             )
             refusal_receipt = _store_output_schema_refusal_receipt(
                 connection,
@@ -1998,25 +1943,27 @@ class DbosAgentAttemptStore:
             )
             return failed
         if redemption is not None and redemption.exit_code != 0:
-            # The bytes reached here past the refusal above, which means this
-            # node's own declared schema admitted them. That judgment is kept
-            # with the ending, exactly as a refused one is: the check said no to
-            # work, and a reader who cannot see what the provider answered
-            # cannot tell a broken build from a builder that did nothing (#1156).
-            return _fail_current_attempt(
+            return _refused_by_the_project(
                 connection,
                 execution,
                 durable,
-                AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
-                node_receipt_reason(
-                    NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
-                    _verification_failure_verdict(
-                        redemption, verification_failure_evidence
-                    ),
-                ),
-                PublishedRevisionHash(declared.schema_reference.revision),
-                result.output_bytes,
-                transcript=result.transcript,
+                declared,
+                result,
+                redemption,
+                verification_failure_evidence,
+            )
+        node_value = the_value_this_execution_produced(
+            schema_document, node.id, declared, result.output_bytes, candidate_diff
+        )
+        if isinstance(node_value, NoProducibleValue):
+            return _refused_produced_value(
+                connection,
+                execution,
+                durable,
+                declared,
+                node_value,
+                result.transcript,
+                _proof_of_a_passed_check(redemption),
             )
         receipt = AgentReceiptV2.for_execution(request, run.binding_set_hash, result)
         connection.execute(
@@ -2050,7 +1997,7 @@ class DbosAgentAttemptStore:
                 request.node_execution_id,
                 declared.name,
                 PublishedRevisionHash(declared.schema_reference.revision),
-                result.output_bytes,
+                node_value,
             ),
         )
         values: dict[str, object] = {
@@ -2104,7 +2051,7 @@ class DbosAgentAttemptStore:
             request.workflow_revision_hash,
             request.node_id,
             RunEventKind.AGENT_COMPLETED,
-            result.output_bytes,
+            node_value,
             RunState.STARTED,
             target_state,
             target_node_id,
@@ -2187,6 +2134,7 @@ class DbosAgentAttemptStore:
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
         verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
+        candidate_diff: str | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         """Write the one success this attempt is allowed, or its named refusal.
 
@@ -2200,18 +2148,16 @@ class DbosAgentAttemptStore:
         refusal records a nonterminal `AGENT_FAILED` event and orders its repair;
         only an ordinal-two refusal also writes the terminal `failed`
         `node-receipt/v3`. Both attempts use the same failure seam
-        `PROCESS_EXITED_UNSUCCESSFULLY` runs on today, so the driver ends named
-        instead of dying on an exception nobody stored.
+        `PROCESS_EXITED_UNSUCCESSFULLY` runs on today.
         A granted verification that exits nonzero is the same named seam under
         `PROJECT_VERIFICATION_FAILED`, with how the command ended in the reason
         and without a `tool_redemptions` row. `verification_failure_evidence`
-        names, in that same reason, what the redemption's exit code alone does
-        not: pytest's own summary line where the retained tail carried one, and
-        the address of the artifact that tail was kept under.
+        names, in that same reason, pytest's own summary line where the retained
+        tail carried one, and the address that tail was kept under.
 
         A V3 success additionally keeps what the run now knows durably: the
-        produced value as `node-artifact/v3` and the `succeeded`
-        `node-receipt/v3` naming it, in this same transaction.
+        produced value (`produced_node_values.py`) as `node-artifact/v3` and the
+        `succeeded` `node-receipt/v3` naming it, in this same transaction.
         """
         request = execution.request
         attempt_id = execution.attempt_id
@@ -2239,6 +2185,7 @@ class DbosAgentAttemptStore:
                 result,
                 redemption=redemption,
                 verification_failure_evidence=verification_failure_evidence,
+                candidate_diff=candidate_diff,
             )
 
     def complete_known_failure(

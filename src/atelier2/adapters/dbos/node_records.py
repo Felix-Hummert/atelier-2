@@ -42,13 +42,15 @@ from atelier2.contracts.node_records_v3 import (
     PersistedReceiptDisposition,
     ReceiptOutput,
     RunInput,
-    node_receipt_reason_names_a_schema_judgment,
-    read_stored_node_receipt_reason,
-    store_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.stored_node_receipt_reasons import (
+    node_receipt_reason_names_a_schema_judgment,
+    read_stored_node_receipt_reason,
+    store_node_receipt_reason,
+)
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 
 

@@ -1307,6 +1307,9 @@ CREATE TABLE run_events (
     # published is recorded here unchanged: the declaration speaks for the
     # current version alone, and the hop onto 50 must still materialise it.
     (50, "agent_attempts"): _AGENT_ATTEMPTS_WITH_CANDIDATE_UNCHANGED,
+    # V53 widens the vocabulary again and moves no table, so V51 and V52
+    # published the same shape V50 did.
+    (52, "agent_attempts"): _AGENT_ATTEMPTS_WITH_CANDIDATE_UNCHANGED,
     (39, "tool_redemptions"): _TOOL_REDEMPTIONS_BOUND_TO_THE_ATTEMPT,
     # V15 introduced the table in this shape and no hop before V39 moved it,
     # so the step that adds it builds the record rather than today's table.

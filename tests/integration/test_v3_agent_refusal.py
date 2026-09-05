@@ -12,11 +12,11 @@ from atelier2.adapters.dbos.schema import agent_attempts, node_receipts_v3, runs
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptState
 from atelier2.contracts.agent_refusals import AGENT_REFUSAL_FIELD, agent_refusal_reason
 from atelier2.contracts.agents import AgentExecutionResult
-from atelier2.contracts.node_records_v3 import (
-    NodeReceiptReason,
+from atelier2.contracts.node_records_v3 import NodeReceiptReason
+from atelier2.contracts.runs import RunState
+from atelier2.contracts.stored_node_receipt_reasons import (
     read_stored_node_receipt_reason,
 )
-from atelier2.contracts.runs import RunState
 from atelier2.ports.agent_attempts import AgentAttemptFailed
 from tests.integration.test_v3_output_enforcement import (
     PLAN_SCHEMA,

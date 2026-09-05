@@ -8,6 +8,10 @@
     "changed_paths": {
       "type": "array",
       "items": {"type": "string", "minLength": 1}
+    },
+    "candidate_diff": {
+      "type": "string",
+      "description": "The patch from the pinned tree to the candidate, written by the atelier itself once the builder has answered and the project's own verification has passed. A builder never writes it: whatever a provider puts here is replaced by the atelier's own reading of the tree, with credentials replaced and a marker where the patch was cut to fit one node value."
     }
   }
 }

@@ -543,7 +543,7 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[49]
         == "01930b9de9fc8804ed1be5ec34dc02df926373cb95f20319f6e38d92b1c39ea2"
     )
-    # V50 and V51 published no handoff of their own: those fingerprints are
+    # V50 to V52 published no handoff of their own: those fingerprints are
     # alive only here (#1168 finding 8), so they are pinned without adding to
     # the handoff list.
     assert (
@@ -554,11 +554,15 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         _PRODUCT_SCHEMA_FINGERPRINT_SHA256[51]
         == "2b0be085b59e160db8b9d925bbb889205b32a2bbd45fcad673277b2b229fd622"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 52
+    assert (
+        _PRODUCT_SCHEMA_FINGERPRINT_SHA256[52]
+        == "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 53
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
-        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[52]
-        == "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2"
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[53]
+        == "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881"
     )
 
 
@@ -657,10 +661,10 @@ _REPUBLISHED_BY_A_LATER_HOP = (
 """The tables a hop after the one under test republishes for reasons of its own.
 
 A store migrated to today crosses every remaining hop, not only the one a test
-is about: V50 rebuilds the attempt table to widen its failure-code vocabulary,
-and V52 gives the queue policy its proposal defaults and every proposal the
-source that wrote it. Their declarations are therefore expected to differ
-afterwards; every row in them, and every other statement, is not.
+is about: V50 and V53 rebuild the attempt table to widen its failure-code
+vocabulary, and V52 gives the queue policy its proposal defaults and every
+proposal the source that wrote it. Their declarations are therefore expected to
+differ afterwards; every row in them, and every other statement, is not.
 """
 
 
