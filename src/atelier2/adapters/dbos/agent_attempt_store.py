@@ -1956,6 +1956,10 @@ class DbosAgentAttemptStore:
         its question again seconds or days later, and that second write must
         find the answer it already gave rather than a disagreement about which
         second the clock read.
+
+        The read-back also refuses a row whose stored hash column does not
+        match the hash its own content re-derives: a schema-valid row is not
+        proof the column beside it was never altered outside this write.
         """
 
         with canonical_write_transaction(self._engine) as connection:
@@ -1975,10 +1979,12 @@ class DbosAgentAttemptStore:
                 .mappings()
                 .one()
             )
-            if (
-                _permission_receipt_from_record(stored).receipt_hash
-                != receipt.receipt_hash
-            ):
+            reconstructed_hash = _permission_receipt_from_record(stored).receipt_hash
+            if reconstructed_hash.value != str(stored["receipt_hash"]):
+                raise PermissionReceiptConflict(
+                    "durable permission receipt does not hash to its stored column"
+                )
+            if reconstructed_hash != receipt.receipt_hash:
                 raise PermissionReceiptConflict(
                     "durable permission receipt differs from the decision offered"
                 )

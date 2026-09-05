@@ -17,6 +17,7 @@ from atelier2.adapters.dbos.agent_attempt_store import (
     DbosAgentAttemptStore,
     PermissionReceiptConflict,
     _permission_receipt_from_record,
+    _permission_receipt_values,
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
@@ -1702,5 +1703,40 @@ def test_a_written_permission_receipt_can_be_neither_changed_nor_removed(
             connection.exec_driver_sql(statement)
 
         assert _kept_receipts(runtime) == (receipt,)
+    finally:
+        runtime.close()
+
+
+def test_a_stored_receipt_hash_that_disagrees_with_its_own_row_is_corrupt(
+    tmp_path: Path,
+) -> None:
+    """A schema-valid row is not proof its hash column was never altered.
+
+    The read-back re-derives the hash from every other column; a row whose
+    stored hash disagrees with that re-derivation could only have been written
+    by something other than this store, and the ledger refuses to treat it as
+    an answer rather than silently accepting it.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/tampered-hash")
+        )
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(execution)
+        receipt = _refused_network_question(execution.attempt_id)
+        tampered_values = _permission_receipt_values(receipt) | {
+            "receipt_hash": "0" * 64
+        }
+
+        with runtime.engine.begin() as connection:
+            connection.execute(permission_receipts.insert().values(**tampered_values))
+
+        with pytest.raises(
+            PermissionReceiptConflict, match="does not hash to its stored column"
+        ):
+            store.record_permission_decision(receipt)
     finally:
         runtime.close()
