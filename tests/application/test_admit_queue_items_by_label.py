@@ -191,6 +191,22 @@ class _QueueProjectionFake:
         raise AssertionError("an automatic admission never reconciles the open set")
 
 
+@dataclass
+class _QueueProjectionReadBeforeAnotherSweepWrote(_QueueProjectionFake):
+    """A projection whose page was read before a concurrent sweep wrote to it.
+
+    Two sweeps serialise on the durable write, so the second one plans and
+    confirms against snapshots the first has already moved past. The page and
+    the durable items are separate here for exactly that reason.
+    """
+
+    page: list[QueueItemSnapshot] = field(default_factory=list)
+
+    def list_items(self, after: QueueItemId | None, limit: int) -> QueueItemsPage:
+        assert after is None, "this fixture serves exactly one page"
+        return QueueItemsPage(tuple(self.page), None)
+
+
 def _policy_with_defaults(
     disposition: QueueAutomationDisposition | None = None,
 ) -> QueueProjectPolicyFound:
@@ -207,6 +223,25 @@ def _policy_with_defaults(
     )
     return QueueProjectPolicyFound(
         QueueProjectPolicyRevision(PROJECT, 1, 2, LABEL, defaults)
+    )
+
+
+def _proposed_from_the_defaults(tracker: str) -> QueueItemSnapshot:
+    """The row a sweep leaves behind after writing the policy's own proposal."""
+
+    return QueueItemSnapshot(
+        _reference(tracker),
+        QueueItemState.PROPOSED,
+        QueueProjectionRevision(1),
+        None,
+        QueueProposal(
+            DEFAULT_PRIORITY,
+            LINEAGE,
+            (),
+            QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+            1,
+            QueueProposalSource.POLICY_DEFAULT,
+        ),
     )
 
 
@@ -340,14 +375,34 @@ def test_a_labelled_item_is_proposed_from_the_policy_defaults_and_admitted() -> 
     assert outcome == QueueLabelAdmissionsDecided(_item_ids("gh:1"), ())
     admitted = queue.state_of("gh:1")
     assert admitted.state is QueueItemState.ADMITTED
-    assert admitted.proposal == QueueProposal(
-        DEFAULT_PRIORITY,
-        LINEAGE,
-        (),
-        QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
-        1,
-        QueueProposalSource.POLICY_DEFAULT,
+    assert admitted.proposal == _proposed_from_the_defaults("gh:1").proposal
+    assert admitted.admission is not None
+    assert admitted.admission.authority is QueueDecisionAuthority.AUTOMATION_RULE
+
+
+@pytest.mark.proves("the-automation-label-admits-the-items-that-carry-it")
+def test_a_second_sweep_admits_the_proposal_the_first_sweep_left_behind() -> None:
+    """A sweep that loses the proposal write still admits the item it read.
+
+    The write is serialised, so the losing sweep is answered with the proposal
+    that is already current. Confirming the revision its own stale page named
+    would leave the item merely proposed, waiting for a sweep that has nothing
+    left to do.
+    """
+
+    queue = _QueueProjectionReadBeforeAnotherSweepWrote(
+        [_proposed_from_the_defaults("gh:1")],
+        _policy_with_defaults(QueueAutomationDisposition.AUTOMATION_AUTHORIZED),
+        page=[_observed("gh:1")],
     )
+
+    outcome = admit_queue_items_by_label(
+        queue, project=PROJECT, tracker=_tracker(("gh:1", (LABEL,)))
+    )
+
+    assert outcome == QueueLabelAdmissionsDecided(_item_ids("gh:1"), ())
+    admitted = queue.state_of("gh:1")
+    assert admitted.state is QueueItemState.ADMITTED
     assert admitted.admission is not None
     assert admitted.admission.authority is QueueDecisionAuthority.AUTOMATION_RULE
 

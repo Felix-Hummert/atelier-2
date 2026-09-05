@@ -24,14 +24,7 @@ from atelier2.api.openapi import (
     QUEUE_PROPOSALS_PATH,
 )
 from atelier2.api.problems import ApiProblem
-from atelier2.api.wire.requests import (
-    ConfirmQueueProposalRequestResource,
-    PutQueueProjectPolicyRequestResource,
-    PutQueueProposalRequestResource,
-)
-from atelier2.api.wire.resources import (
-    InvalidFieldResource,
-    ProjectSourceImportResource,
+from atelier2.api.wire.queue import (
     QueueAdmissionDecisionResource,
     QueueAdmissionResource,
     QueueItemPageResource,
@@ -41,6 +34,15 @@ from atelier2.api.wire.resources import (
     QueueProjectPolicyResource,
     QueueProposalDecisionResource,
     QueueProposalResource,
+)
+from atelier2.api.wire.requests import (
+    ConfirmQueueProposalRequestResource,
+    PutQueueProjectPolicyRequestResource,
+    PutQueueProposalRequestResource,
+)
+from atelier2.api.wire.resources import (
+    InvalidFieldResource,
+    ProjectSourceImportResource,
 )
 from atelier2.application.admit_queue_item import QueueItemsListed
 from atelier2.application.import_project_source_issues import (

@@ -240,7 +240,13 @@ disposition a labelled item with no proposal is proposed under (V52). The
 label sweep then writes that proposal itself, recording `POLICY_DEFAULT` as
 its source and the policy revision it came from, before the same admission CAS
 runs; a policy without those defaults leaves such an item observed exactly as
-before. The disposition defaults to `HUMAN_REQUIRED`, so an operator who
+before. What a person inspected there is the policy, once -- not the item: a
+proposal carrying `POLICY_DEFAULT` was read by nobody before it was written,
+which is exactly what that source keeps apart from `OPERATOR`. A policy whose
+disposition is `AUTOMATION_AUTHORIZED` therefore makes adding the label the
+whole human act that starts an agent run on that item and spends provider
+money on it, with no per-item confirmation in between. The disposition is
+`HUMAN_REQUIRED` unless the operator states otherwise, so an operator who
 states no authorisation gets a proposal to release rather than a started run
 (REQ-QUEUE-05).
 

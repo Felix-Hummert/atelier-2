@@ -601,7 +601,8 @@ const queueProposalSchema = z
     workflow_lineage_id: sha256,
     prerequisite_item_ids: z.array(sha256),
     automation_disposition: z.enum(["HUMAN_REQUIRED", "AUTOMATION_AUTHORIZED"]),
-    policy_revision: positiveSafeInteger.nullable()
+    policy_revision: positiveSafeInteger.nullable(),
+    source: z.enum(["OPERATOR", "POLICY_DEFAULT"])
   })
   .strict();
 

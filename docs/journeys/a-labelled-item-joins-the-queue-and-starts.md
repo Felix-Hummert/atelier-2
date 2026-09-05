@@ -19,18 +19,21 @@ a gap:
    tracker stays the one source of item truth; the Atelier holds no second
    copy of item state (REQ-QUEUE-09, REQ-QUEUE-14). No label named means no
    automatic admission at all.
-2. **Triage decides throughput, not the verdict.** For an item that carries an
-   inspected proposal — priority and workflow, written once via
-   `PUT /queue-proposals`, or written by the sweep itself from the policy's
-   own `default_workflow_lineage_id` and `default_priority_rank` — the sweep
-   reads the tracker at decision time and
-   admits every such item whose label matches the policy, under the
-   `AUTOMATION_RULE` authority
+2. **Triage decides throughput, not the verdict.** The sweep reads the tracker
+   at decision time and admits every item carrying a proposal whose label
+   matches the policy, under the `AUTOMATION_RULE` authority
    (`the-automation-label-admits-the-items-that-carry-it`); every other item
    still waits for a human's one-click confirmation (REQ-QUEUE-01,
-   REQ-QUEUE-08). The label authorises only because a human sets it in the
-   tracker: the platform adapter carries no write path for that label, so the
-   Atelier itself can never grant its own admission.
+   REQ-QUEUE-08). That proposal — priority and workflow — is either one a
+   person wrote and inspected through `PUT /queue-proposals`, or one the sweep
+   wrote from the policy's own `default_workflow_lineage_id` and
+   `default_priority_rank`, which no one inspected per item: there the
+   inspection happened once, at the policy. When that policy also states
+   `automation_disposition_default: AUTOMATION_AUTHORIZED`, setting the label
+   is the whole human act that launches an agent on the item and spends
+   provider money on it. The label authorises only because a human sets it in
+   the tracker: the platform adapter carries no write path for that label, so
+   the Atelier itself can never grant its own admission.
 3. **Start, once.** Admission and start run in the same sweep. An admitted
    item starts bound to one exact run and workflow revision; a repeated sweep
    or a moved lineage head reports the existing run rather than a second one
