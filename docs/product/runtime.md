@@ -186,12 +186,11 @@ nothing, which is the honest absence rather than an invented shape.
 Three guards make the address mean what it says: it must resolve to bytes this
 store holds, it may stand only on an ended attempt, and once written it can
 never be moved or cleared. Redaction is not a door a caller may walk past
-either — building a transcript at all is what makes its steps safe. What the
-boundary to a Runner cannot yet carry it refuses out loud instead of dropping:
-that record is bounded far below one transcript and its hash is part of Core's
-acceptance chain, so carrying one is its own decision rather than a silent
-truncation. Node detail serves the decoded, redacted events of a stored
-transcript; the node panel's Log tab is still not built.
+either — building a transcript at all is what makes its steps safe. The Runner
+that would have carried a bounded terminal-evidence record here was deleted
+2026-09-05 (issue #1252) and lives on in Git history. Node detail serves the
+decoded, redacted events of a stored transcript; the node panel's Log tab is
+still not built.
 
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one

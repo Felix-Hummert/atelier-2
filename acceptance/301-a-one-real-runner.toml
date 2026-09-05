@@ -7,4 +7,4 @@ text = "The free child receives a kernel denial when it directly reads Runner id
 
 [[sentence]]
 id = "runner-cancel-none"
-text = "After STARTED, Core persists CancelAgentAttemptRequest with replacement NONE before the CANCEL frame, and Runner evidence copies that command id and one physical observation."
+text = "After STARTED, a cancelled child is reaped and its exit is observed against the signal timeline (exited before signal, reaped after TERM, or reaped after KILL)."

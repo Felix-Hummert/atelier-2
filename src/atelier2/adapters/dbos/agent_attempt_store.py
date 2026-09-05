@@ -836,7 +836,6 @@ def _fail_current_attempt(
     receipt_reason: str,
     schema_revision: PublishedRevisionHash | None = None,
     judged_value: bytes | None = None,
-    runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
     transcript: AttemptTranscript | None = None,
     redemption: ToolRedemptionReceipt | None = None,
     terminal_node_failure: bool = True,
@@ -899,22 +898,6 @@ def _fail_current_attempt(
         "failure_code": failure.value,
         **_kept_transcript_values(connection, transcript),
     }
-    if runner_evidence_hash is not None:
-        values.update(
-            runner_terminal_evidence_hash=runner_evidence_hash.value,
-            runner_evidence_acceptance_phase=(
-                RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
-            ),
-        )
-        if durable.state is AgentAttemptState.CANCEL_REQUESTED:
-            values.update(
-                cancellation_command_id=None,
-                cancellation_expected_state_version=None,
-                replacement=None,
-                redrive_state=None,
-                cancellation_disposition=None,
-                cancellation_workflow_id=None,
-            )
     updated = connection.execute(
         agent_attempts.update()
         .where(
@@ -1957,7 +1940,6 @@ class DbosAgentAttemptStore:
         *,
         redemption: ToolRedemptionReceipt | None = None,
         verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
-        runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         request = execution.request
         node = _agent_node_for_attempt(graph, request.node_id)
@@ -1973,7 +1955,6 @@ class DbosAgentAttemptStore:
                     node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
                     AGENT_REFUSAL_SCHEMA.revision_hash,
                     result.output_bytes,
-                    runner_evidence_hash,
                     result.transcript,
                     _proof_of_a_passed_check(redemption),
                 )
@@ -2003,7 +1984,6 @@ class DbosAgentAttemptStore:
                     result,
                     refusal_receipt,
                     redemption,
-                    runner_evidence_hash,
                 )
             failed = _fail_current_attempt(
                 connection,
@@ -2013,7 +1993,6 @@ class DbosAgentAttemptStore:
                 receipt_reason,
                 PublishedRevisionHash(declared.schema_reference.revision),
                 result.output_bytes,
-                runner_evidence_hash,
                 result.transcript,
                 _proof_of_a_passed_check(redemption),
             )
@@ -2037,7 +2016,6 @@ class DbosAgentAttemptStore:
                 ),
                 PublishedRevisionHash(declared.schema_reference.revision),
                 result.output_bytes,
-                runner_evidence_hash=runner_evidence_hash,
                 transcript=result.transcript,
             )
         receipt = AgentReceiptV2.for_execution(request, run.binding_set_hash, result)
@@ -2081,22 +2059,6 @@ class DbosAgentAttemptStore:
             "receipt_hash": receipt.receipt_hash.value,
             **_kept_transcript_values(connection, result.transcript),
         }
-        if runner_evidence_hash is not None:
-            values.update(
-                runner_terminal_evidence_hash=runner_evidence_hash.value,
-                runner_evidence_acceptance_phase=(
-                    RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
-                ),
-            )
-            if durable.state is AgentAttemptState.CANCEL_REQUESTED:
-                values.update(
-                    cancellation_command_id=None,
-                    cancellation_expected_state_version=None,
-                    replacement=None,
-                    redrive_state=None,
-                    cancellation_disposition=None,
-                    cancellation_workflow_id=None,
-                )
         updated = connection.execute(
             agent_attempts.update()
             .where(
@@ -2167,7 +2129,6 @@ class DbosAgentAttemptStore:
         result: AgentExecutionResult,
         refusal_receipt: OutputSchemaRefusalReceipt,
         redemption: ToolRedemptionReceipt | None,
-        runner_evidence_hash: RunnerTerminalEvidenceHash | None,
     ) -> AgentAttemptFailed:
         request = execution.request
         failed = _fail_current_attempt(
@@ -2178,7 +2139,6 @@ class DbosAgentAttemptStore:
             refusal_receipt.reason,
             refusal_receipt.schema_revision,
             result.output_bytes,
-            runner_evidence_hash,
             result.transcript,
             _proof_of_a_passed_check(redemption),
             terminal_node_failure=False,

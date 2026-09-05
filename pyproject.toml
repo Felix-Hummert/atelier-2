@@ -9,7 +9,6 @@ license = "MIT"
 classifiers = ["License :: OSI Approved :: MIT License"]
 requires-python = "==3.12.13"
 dependencies = [
-    "cryptography==50.0.0",
     "dbos==2.29.0",
     "fastapi==0.141.1",
     "githubkit==0.16.1",

@@ -190,8 +190,8 @@ execution.
 - Duplex is new surface in the session owner and each vendor channel is a pin
   that must be raised deliberately: permission and cancel can race, so that race
   is part of every adapter's proof.
-- The Runner keeps existing, frozen: it is not extended, hardened or migrated
-  while this record's port is built on the live path.
+- The Runner was deleted 2026-09-05 (issue #1252) for having no live caller; it
+  lives on in Git history.
 
 ## Named edges, not decided here
 
@@ -203,9 +203,9 @@ execution.
   per hosted model — is accepted, not abstracted away.
 - The human terminal seat (#1099) and a real PTY for a child process (#943) stay
   separate from this boundary.
-- Unfreezing the Runner has one trigger and no other: a named caller needing
-  isolation for foreign repositories or more than one user. Until then its code
-  is kept as it is, and moving the session port behind it is a slice of its own.
+- Reviving the Runner has one trigger and no other: a named caller needing
+  isolation for foreign repositories or more than one user; until then it
+  stays deleted, in Git history, and rebuilding it is a slice of its own.
 
 ## Order
 

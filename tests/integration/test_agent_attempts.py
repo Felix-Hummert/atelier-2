@@ -243,12 +243,7 @@ def attempt_request(
 
 
 def _the_driving_workflow(attempt: AgentAttempt) -> str:
-    """The one workflow a local-process attempt ever holds a status under.
-
-    `driving_workflow_ids` also names the Runner slot, because a lease-carried
-    attempt's row cannot say whether the slot has taken it over. These attempts
-    are local-process, so no workflow is ever minted under that second id.
-    """
+    """The one workflow a local-process attempt ever holds a status under."""
 
     return driving_workflow_ids(attempt)[0]
 
@@ -1367,11 +1362,10 @@ def test_driverless_iteration_bounds_ten_thousand_row_queries(
         assert discovered == 10_000
         assert len(attempt_reads) == 101
         assert len(workflow_reads) == 100
-        # One page of attempts, each naming the workflows that can still drive it
-        # -- its own, and the Runner slot its row cannot rule out -- plus the
-        # three driving statuses and the application version they must belong to.
-        # Bounded by the page, not by the store's size.
-        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS * 2 + 4
+        # One page of attempts, each naming the one workflow that can still drive
+        # it, plus the three driving statuses and the application version they
+        # must belong to. Bounded by the page, not by the store's size.
+        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS + 4
         assert len(observed_reads) == 201
     finally:
         runtime.close()
