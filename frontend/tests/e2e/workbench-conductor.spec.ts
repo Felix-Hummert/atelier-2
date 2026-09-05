@@ -447,14 +447,21 @@ test("the composer stays honestly locked without a conductor, then starts one co
     timeout: 60_000
   });
 
-  const waitingConversations = await page.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
-  expect(waitingConversations.status()).toBe(200);
-  const waitingConversationRows = (await waitingConversations.json()) as { items: RunListRow[] };
-  expect(
-    healthyRunListItems(waitingConversationRows.items).filter(
-      (run) => run.workflow_revision_hash === seededConductor.workflow_revision_hash
-    )
-  ).toHaveLength(1);
+  // The reply already rendered from the run's own event stream, but this
+  // list is the queue-driven projection every other WAITING_INPUT read in
+  // this file barriers on (`waitForFreshConductorRound`, the bounded-decision
+  // count below): it settles after the durable state, not with it, so a
+  // single read here would race the same queue on a loaded box (#747).
+  await expect(async () => {
+    const waitingConversations = await page.request.get("/atelier/api/v1/runs?state=WAITING_INPUT&limit=50");
+    expect(waitingConversations.status()).toBe(200);
+    const waitingConversationRows = (await waitingConversations.json()) as { items: RunListRow[] };
+    expect(
+      healthyRunListItems(waitingConversationRows.items).filter(
+        (run) => run.workflow_revision_hash === seededConductor.workflow_revision_hash
+      )
+    ).toHaveLength(1);
+  }).toPass({ timeout: 20_000 });
   await photograph(page, "workbench-conductor-reply");
 
   // The linked run page is the reply's manual counterpart: the conversation
