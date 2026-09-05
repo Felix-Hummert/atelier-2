@@ -38,7 +38,7 @@ from atelier2.api.references import (
     MAXIMUM_RUN_ORDERS,
     MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS,
 )
-from atelier2.api.wire import events, library, requests, resources
+from atelier2.api.wire import events, library, queue, requests, resources
 from atelier2.contracts.agent_definitions import (
     MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
     MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
@@ -74,7 +74,7 @@ from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
 from atelier2.contracts.run_projections import MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
-WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)
+WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library, queue)
 
 # Which owner each bounded wire field answers to. Three of them are contracts the
 # durable side already obeys; the fourth is the wire's own, because no durable

@@ -8,14 +8,20 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
-from atelier2.adapters.dbos.schema import (
+from atelier2.adapters.dbos.queue_projection_records import (
+    policy_from_record,
+    policy_row,
+    proposal_from_record,
+    proposal_row,
+)
+from atelier2.adapters.dbos.queue_tables import (
     queue_dependency_edges,
     queue_items,
     queue_launch_bindings,
     queue_project_policy_revisions,
     queue_proposal_revisions,
-    runs,
 )
+from atelier2.adapters.dbos.schema import catalog_lineages, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import ProjectId
@@ -36,7 +42,6 @@ from atelier2.contracts.queue_projection import (
     QueueItemState,
     QueueItemTrackerObservation,
     QueueLaunchBinding,
-    QueuePriorityRank,
     QueueProjectionRevision,
     QueueProjectPolicyRevision,
     QueueProposal,
@@ -173,17 +178,7 @@ def _snapshot_from_record(
                 .order_by(queue_dependency_edges.c.prerequisite_item_id)
             )
         )
-        proposal = QueueProposal(
-            QueuePriorityRank(int(proposal_record["priority_rank"])),
-            CatalogLineageId(str(proposal_record["workflow_lineage_id"])),
-            prerequisites,
-            QueueAutomationDisposition(str(proposal_record["automation_disposition"])),
-            (
-                None
-                if proposal_record["policy_revision"] is None
-                else int(proposal_record["policy_revision"])
-            ),
-        )
+        proposal = proposal_from_record(proposal_record, prerequisites)
         if admission is not None:
             admission = QueueAdmission(
                 admission.workflow_lineage_id,
@@ -417,13 +412,7 @@ class DbosQueueProjectionStore:
                 proposal = outcome.proposal
                 connection.execute(
                     queue_proposal_revisions.insert().values(
-                        item_id=reference.item_id.value,
-                        proposal_revision=revision,
-                        project_id=reference.project.value,
-                        priority_rank=proposal.priority.rank,
-                        workflow_lineage_id=proposal.workflow_lineage_id.value,
-                        automation_disposition=proposal.automation_disposition.value,
-                        policy_revision=proposal.policy_revision,
+                        proposal_row(reference, revision, proposal)
                     )
                 )
                 for prerequisite in proposal.prerequisite_item_ids:
@@ -546,17 +535,12 @@ class DbosQueueProjectionStore:
                     .one_or_none()
                 )
                 actual = 0 if current is None else int(current["revision_number"])
-                if current is not None and _policy_from_record(current) == policy:
+                if current is not None and policy_from_record(current) == policy:
                     return QueueProjectPolicyUnchanged(policy)
                 if expected_revision != actual or policy.revision_number != actual + 1:
                     return QueueProjectPolicyRevisionConflict(expected_revision, actual)
                 connection.execute(
-                    queue_project_policy_revisions.insert().values(
-                        project_id=policy.project_id.value,
-                        revision_number=policy.revision_number,
-                        maximum_active_runs=policy.maximum_active_runs,
-                        automation_label=policy.automation_label,
-                    )
+                    queue_project_policy_revisions.insert().values(policy_row(policy))
                 )
                 return QueueProjectPolicyPublished(policy)
         except (OperationalError, PoolTimeoutError):
@@ -698,6 +682,18 @@ class DbosQueueProjectionStore:
                 return QueueProposalRefused(
                     QueueProposalRefusal.POLICY_REVISION_MISSING
                 )
+        lineage_exists = connection.scalar(
+            sa.select(sa.literal(True)).where(
+                sa.exists(
+                    sa.select(catalog_lineages.c.lineage_id).where(
+                        catalog_lineages.c.lineage_id
+                        == proposal.workflow_lineage_id.value
+                    )
+                )
+            )
+        )
+        if lineage_exists is not True:
+            return QueueProposalRefused(QueueProposalRefusal.WORKFLOW_LINEAGE_MISSING)
         if proposal.prerequisite_item_ids:
             rows = connection.execute(
                 sa.select(queue_items.c.item_id).where(
@@ -711,52 +707,7 @@ class DbosQueueProjectionStore:
                 return QueueProposalRefused(
                     QueueProposalRefusal.PREREQUISITE_NOT_IN_PROJECT
                 )
-        edges = {
-            (str(item), str(prerequisite))
-            for item, prerequisite in connection.execute(
-                sa.select(
-                    queue_dependency_edges.c.item_id,
-                    queue_dependency_edges.c.prerequisite_item_id,
-                )
-                .join(
-                    queue_items,
-                    sa.and_(
-                        queue_items.c.item_id == queue_dependency_edges.c.item_id,
-                        queue_items.c.current_proposal_revision
-                        == queue_dependency_edges.c.proposal_revision,
-                    ),
-                )
-                .where(
-                    queue_items.c.project_id == command.item_reference.project.value,
-                    queue_dependency_edges.c.project_id
-                    == command.item_reference.project.value,
-                )
-            )
-        }
-        edges.update(
-            (command.item_reference.item_id.value, prerequisite.value)
-            for prerequisite in proposal.prerequisite_item_ids
-        )
-        graph: dict[str, set[str]] = {}
-        for item, prerequisite in edges:
-            graph.setdefault(item, set()).add(prerequisite)
-            graph.setdefault(prerequisite, set())
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def cycle(node: str) -> bool:
-            if node in visiting:
-                return True
-            if node in visited:
-                return False
-            visiting.add(node)
-            if any(cycle(prerequisite) for prerequisite in graph[node]):
-                return True
-            visiting.remove(node)
-            visited.add(node)
-            return False
-
-        if any(cycle(node) for node in tuple(graph)):
+        if _closes_a_dependency_cycle(connection, command):
             return QueueProposalRefused(QueueProposalRefusal.DEPENDENCY_CYCLE)
         return None
 
@@ -774,7 +725,7 @@ class DbosQueueProjectionStore:
             .mappings()
             .one_or_none()
         )
-        return None if record is None else _policy_from_record(record)
+        return None if record is None else policy_from_record(record)
 
     @staticmethod
     def _active_launch_count(connection: Connection, project: ProjectId) -> int:
@@ -882,17 +833,60 @@ class DbosQueueProjectionStore:
         return bool(unranked), int(rank), str(item_id)
 
 
-def _policy_from_record(record: Mapping[Any, Any]) -> QueueProjectPolicyRevision:
-    return QueueProjectPolicyRevision(
-        ProjectId(str(record["project_id"])),
-        int(record["revision_number"]),
-        int(record["maximum_active_runs"]),
-        (
-            None
-            if record["automation_label"] is None
-            else str(record["automation_label"])
-        ),
+def _closes_a_dependency_cycle(connection: Connection, command: PlanQueueItem) -> bool:
+    """Whether this proposal's prerequisites would close a cycle in the project.
+
+    The graph is the project's current proposals plus the edges this command
+    would add, so an item waiting on itself through any chain is refused before
+    the proposal is written rather than found when nothing can ever start.
+    """
+
+    edges = {
+        (str(item), str(prerequisite))
+        for item, prerequisite in connection.execute(
+            sa.select(
+                queue_dependency_edges.c.item_id,
+                queue_dependency_edges.c.prerequisite_item_id,
+            )
+            .join(
+                queue_items,
+                sa.and_(
+                    queue_items.c.item_id == queue_dependency_edges.c.item_id,
+                    queue_items.c.current_proposal_revision
+                    == queue_dependency_edges.c.proposal_revision,
+                ),
+            )
+            .where(
+                queue_items.c.project_id == command.item_reference.project.value,
+                queue_dependency_edges.c.project_id
+                == command.item_reference.project.value,
+            )
+        )
+    }
+    edges.update(
+        (command.item_reference.item_id.value, prerequisite.value)
+        for prerequisite in command.proposal.prerequisite_item_ids
     )
+    graph: dict[str, set[str]] = {}
+    for item, prerequisite in edges:
+        graph.setdefault(item, set()).add(prerequisite)
+        graph.setdefault(prerequisite, set())
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def reaches_itself(node: str) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        if any(reaches_itself(prerequisite) for prerequisite in graph[node]):
+            return True
+        visiting.remove(node)
+        visited.add(node)
+        return False
+
+    return any(reaches_itself(node) for node in tuple(graph))
 
 
 def _binding_from_record(record: Mapping[Any, Any]) -> QueueLaunchBinding:

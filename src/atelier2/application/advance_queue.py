@@ -2,9 +2,10 @@
 
 Both halves run on the same trigger and read the same projection, so they live
 together: `admit_queue_items_by_label` turns the operator's label in the
-tracker into the one durable admission decision an automation rule may make,
-and `advance_queue` starts each exact launch of an admitted item once. The cap
-and the priority govern the start, never the admission.
+tracker into the proposal the project's policy defaults name and the one
+durable admission decision an automation rule may make, and `advance_queue`
+starts each exact launch of an admitted item once. The cap and the priority
+govern the start, never the admission.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import Final, assert_never
 
 from atelier2.application.admit_queue_item import confirm_queue_proposal
+from atelier2.application.plan_queue_item import plan_queue_item
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
@@ -37,16 +39,22 @@ from atelier2.contracts.orders import WorkItemOrderValue
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.queue_projection import (
     ConfirmQueueProposal,
+    PlanQueueItem,
     QueueAdmissionOutcome,
     QueueAdmissionRationale,
     QueueBlockerKind,
     QueueDecisionAuthority,
     QueueItemAdmitted,
     QueueItemId,
+    QueueItemProposed,
     QueueItemSnapshot,
     QueueItemState,
     QueueLaunchBinding,
+    QueueProjectionRevision,
     QueueProjectPolicyRevision,
+    QueueProposal,
+    QueueProposalAlreadyCurrent,
+    QueueProposalSource,
     WorkItemReference,
     queue_start_order_key,
 )
@@ -189,17 +197,21 @@ def admit_queue_items_by_label(
 
     What the rule may admit is the projection's decision, not this function's:
     every labelled item goes through the same `confirm` CAS the operator's
-    door uses, under `AUTOMATION_RULE`. An item reserved for a human, one that
-    carries no inspected proposal yet, and one already admitted are therefore
-    declined by the contract itself and left exactly as they were. Admission
-    is not a start: the cap and the priority still govern what
-    `advance_queue` starts afterwards.
+    door uses, under `AUTOMATION_RULE`. An item reserved for a human and one
+    already admitted are therefore declined by the contract itself and left
+    exactly as they were. Admission is not a start: the cap and the priority
+    still govern what `advance_queue` starts afterwards.
+
+    A labelled item that carries no proposal is proposed first when the policy
+    states its defaults, so the label alone is the operator's whole handgrip
+    and what it writes is still only a proposal (REQ-QUEUE-01); without them
+    the item stays observed and the admission says so, exactly as before.
     """
 
     policy = _active_policy(queue, project)
-    label = None if policy is None else policy.automation_label
-    if label is None:
+    if policy is None or policy.automation_label is None:
         return QueueAutomationLabelUnset()
+    label = policy.automation_label
     labelled = _labelled_item_ids(tracker, project, label)
     if isinstance(labelled, QueueAutomationSourceUnreadable):
         return labelled
@@ -213,7 +225,8 @@ def admit_queue_items_by_label(
         # refuses to act on.
         if item.retired_at is not None or item_id not in labelled:
             continue
-        outcome = _confirmed_by_rule(queue, item, rationale)
+        expected_revision = _proposed_from_policy_defaults(queue, item, policy)
+        outcome = _confirmed_by_rule(queue, item, expected_revision, rationale)
         if isinstance(outcome, QueueItemAdmitted):
             admitted.append(item_id)
         else:
@@ -253,15 +266,58 @@ def _labelled_item_ids(
             assert_never(unreachable)
 
 
+def _proposed_from_policy_defaults(
+    queue: QueueProjection,
+    item: QueueItemSnapshot,
+    policy: QueueProjectPolicyRevision,
+) -> QueueProjectionRevision:
+    """Fill a labelled item's missing proposal from the policy's own defaults.
+
+    Answers the revision the admission must now confirm: the proposal's own,
+    whether this call wrote it or a concurrent sweep already wrote exactly it,
+    and the item's own revision otherwise. A policy without defaults, an item
+    that already carries a decision, and a proposal the projection refuses all
+    leave the item exactly as it was, and the admission that follows reports in
+    its own words why it was not admitted.
+    """
+
+    defaults = policy.defaults
+    if defaults is None or item.state is not QueueItemState.OBSERVED:
+        return item.revision
+    outcome = plan_queue_item(
+        PlanQueueItem(
+            item.item_reference,
+            QueueProposal(
+                defaults.priority,
+                defaults.workflow_lineage_id,
+                (),
+                defaults.automation_disposition,
+                policy.revision_number,
+                QueueProposalSource.POLICY_DEFAULT,
+            ),
+            item.revision,
+        ),
+        queue,
+    )
+    if isinstance(outcome, WriteUnavailable):
+        raise QueueAdvanceUnavailable("a proposal from the policy could not commit")
+    if isinstance(outcome, DurableStateCorrupt):
+        raise QueueAdvanceCorrupt("a proposal from the policy found corrupt state")
+    if isinstance(outcome, QueueItemProposed | QueueProposalAlreadyCurrent):
+        return outcome.revision
+    return item.revision
+
+
 def _confirmed_by_rule(
     queue: QueueProjection,
     item: QueueItemSnapshot,
+    expected_revision: QueueProjectionRevision,
     rationale: QueueAdmissionRationale,
 ) -> QueueAdmissionOutcome:
     outcome = confirm_queue_proposal(
         ConfirmQueueProposal(
             item.item_reference,
-            item.revision,
+            expected_revision,
             rationale,
             QueueDecisionAuthority.AUTOMATION_RULE,
         ),

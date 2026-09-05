@@ -44,10 +44,6 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
-    RunnerCancellation,
-    RunnerCancellationObservation,
-    RunnerProviderResult,
-    RunnerTerminalEvidenceEnvelope,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
@@ -75,16 +71,13 @@ from atelier2.ports.agent_attempts import (
     RunCancellationAccepted,
     RunCancellationCommandConflict,
     RunCancellationNotCancellable,
-    RunCancellationOvertakenBySuccess,
     RunCancellationRefusal,
     RunCancellationRunMissing,
     RunCancellationTerminalRetry,
-    RunnerTerminalEvidenceCommitted,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.run_queries import RunFound
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
-from tests.integration.test_runner_terminal_evidence_store import _armed, _v3_armed
 from tests.integration.test_v3_agent_start import publish as publish_v3_workflow
 from tests.integration.test_v3_bounded_loop_run import RUN as LOOP_RUN
 from tests.integration.test_v3_bounded_loop_run import (
@@ -491,47 +484,6 @@ def test_a_v3_run_is_cancelled_once_through_the_route_application_path(
         runtime.close()
 
 
-def test_runner_success_overtakes_an_accepted_run_cancel_command(
-    tmp_path: Path,
-) -> None:
-    runtime, store, execution, binding, invocation = _armed(
-        tmp_path, "run-cancel/runner-success-wins"
-    )
-    try:
-        request = CancelRunRequest(
-            execution.request.run_id,
-            "operator-runner-success-1",
-            execution.request.node_execution_id,
-        )
-        accepted = store.request_run_cancellation(request)
-        assert isinstance(accepted, RunCancellationAccepted)
-        assert accepted.attempt.state is AgentAttemptState.CANCEL_REQUESTED
-
-        committed = store.commit_runner_terminal_evidence(
-            execution,
-            RunnerTerminalEvidenceEnvelope(
-                binding,
-                invocation,
-                RunnerProviderResult(AgentExecutionResult(b'"finished in hand"')),
-            ),
-        )
-        assert isinstance(committed, RunnerTerminalEvidenceCommitted)
-        assert committed.attempt.state is AgentAttemptState.SUCCEEDED
-        assert committed.attempt.cancellation is None
-
-        retried = store.request_run_cancellation(request)
-
-        assert isinstance(retried, RunCancellationOvertakenBySuccess)
-        # The run kept going on the success; this command never ended it.
-        assert retried.run.state is RunState.STARTED
-        assert _cancel_event_kinds(runtime.engine) == [
-            RunEventKind.AGENT_CANCEL_REQUESTED.value,
-            RunEventKind.AGENT_COMPLETED.value,
-        ]
-    finally:
-        runtime.close()
-
-
 def test_the_legacy_carrier_lets_an_accepted_cancel_win_over_a_late_success(
     tmp_path: Path,
 ) -> None:
@@ -652,52 +604,6 @@ def test_a_parent_death_disposition_still_lifts_the_run_cancelled_not_failed(
         assert _node_receipt(runtime.engine, execution.request.node_execution_id) == (
             PersistedReceiptDisposition.CANCELLED.value,
             "cancelled-by-operator: OWNER_LOST_AFTER_PARENT_DEATH",
-        )
-    finally:
-        runtime.close()
-
-
-def test_the_runner_carrier_lifts_the_run_cancelled_with_the_same_receipt(
-    tmp_path: Path,
-) -> None:
-    """The runner-bound cleanup path (`_commit_runner_cancellation`) lifts the
-    run exactly like the legacy carrier's own attestation does -- one command
-    identity, one run ending, on either carrier (#439 Bauplan P3).
-    """
-    runtime, store, execution, binding, invocation = _v3_armed(
-        tmp_path, "run-cancel/runner-receipt"
-    )
-    try:
-        request = CancelRunRequest(
-            execution.request.run_id,
-            "operator-runner-receipt-1",
-            execution.request.node_execution_id,
-        )
-        accepted = store.request_run_cancellation(request)
-        assert isinstance(accepted, RunCancellationAccepted)
-        cancellation = accepted.attempt.cancellation
-        assert cancellation is not None
-
-        committed = store.commit_runner_terminal_evidence(
-            execution,
-            RunnerTerminalEvidenceEnvelope(
-                binding,
-                invocation,
-                RunnerCancellation(
-                    cancellation.command_id,
-                    RunnerCancellationObservation.REAPED_AFTER_TERM,
-                ),
-            ),
-        )
-        assert isinstance(committed, RunnerTerminalEvidenceCommitted)
-        assert committed.attempt.state is AgentAttemptState.CANCELLED
-
-        with runtime.engine.connect() as connection:
-            canonical_run = load_run(connection, execution.request.run_id)
-        assert canonical_run.state is RunState.CANCELLED
-        assert _node_receipt(runtime.engine, execution.request.node_execution_id) == (
-            PersistedReceiptDisposition.CANCELLED.value,
-            "cancelled-by-operator: REAPED_AFTER_TERM",
         )
     finally:
         runtime.close()

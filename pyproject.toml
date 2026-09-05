@@ -9,7 +9,6 @@ license = "MIT"
 classifiers = ["License :: OSI Approved :: MIT License"]
 requires-python = "==3.12.13"
 dependencies = [
-    "cryptography==50.0.0",
     "dbos==2.29.0",
     "fastapi==0.141.1",
     "githubkit==0.16.1",
@@ -23,9 +22,6 @@ dependencies = [
 
 [project.scripts]
 atelier2 = "atelier2.host:main"
-atelier2-runner-launcher = "atelier2.host.runner_launcher:main"
-atelier2-runner = "atelier2.runner:main"
-atelier2-runner-identity-receiver = "atelier2.runner.identity_receiver:main"
 
 [dependency-groups]
 dev = [
@@ -95,7 +91,7 @@ type = "layers"
 containers = ["atelier2"]
 layers = [
     "__main__",
-    "host | runner",
+    "host",
     "api | adapters",
     "application",
     "ports",

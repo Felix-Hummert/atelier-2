@@ -6,10 +6,13 @@ import signal
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import PurePosixPath
 
 from atelier2.contracts.agent_attempts import RunnerCancellationObservation
-from atelier2.contracts.runner_manifests import RunnerPathGrant, RunnerPathRight
 
+_MAXIMUM_PATH_BYTES = 4096
 _LANDLOCK_CREATE_RULESET = 444
 _LANDLOCK_ADD_RULE = 445
 _LANDLOCK_RESTRICT_SELF = 446
@@ -29,6 +32,42 @@ _ACCESS_MAKE_FIFO = 1 << 10
 _ACCESS_MAKE_SYMLINK = 1 << 12
 REQUIRED_LANDLOCK_ABI = 1
 _HANDLED_ACCESS = (1 << 13) - 1
+
+
+class RunnerPathRight(StrEnum):
+    """What a Runner's provider child may do beneath one attested path.
+
+    Execution is its own right rather than a property of being readable,
+    because the two differ exactly where it matters: the image root holds the
+    interpreter and the provider CLI and must be executable, while a surface
+    that carries a provider's own configuration -- plugins, hooks, shell
+    snippets a real credential directory is full of -- must be readable and
+    never runnable. A mount option cannot carry that distinction here, because
+    the one host surface ADR 0009 sec. 2 admits is a bind mount and the
+    launcher cannot mount it `noexec`, so the right does.
+    """
+
+    READ_AND_EXECUTE = "read-and-execute"
+    READ_ONLY = "read-only"
+    READ_WRITE = "read-write"
+
+
+@dataclass(frozen=True)
+class RunnerPathGrant:
+    """One attested path of a provider child's filesystem surface, with its right."""
+
+    path: PurePosixPath
+    right: RunnerPathRight
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, PurePosixPath) or not self.path.is_absolute():
+            raise ValueError("a runner path grant must name an absolute POSIX path")
+        if ".." in self.path.parts:
+            raise ValueError("a runner path grant must name a normalized path")
+        if len(self.path.as_posix().encode("utf-8")) > _MAXIMUM_PATH_BYTES:
+            raise ValueError("a runner path grant must name a bounded path")
+
+
 # `EXECUTE` is granted only where the image root's own code lives. Neither
 # other right carries it, and both drop the device-node rights as well:
 #
@@ -106,9 +145,9 @@ def start_runner_child(
         launcher = (
             "import os, signal, sys\n"
             "from pathlib import PurePosixPath\n"
-            "from atelier2.adapters.runner_child import install_landlock_guard\n"
-            "from atelier2.contracts.runner_manifests import "
-            "RunnerPathGrant, RunnerPathRight\n"
+            "from atelier2.adapters.runner_child import (\n"
+            "    RunnerPathGrant, RunnerPathRight, install_landlock_guard,\n"
+            ")\n"
             "install_landlock_guard(tuple(\n"
             "    RunnerPathGrant(PurePosixPath(path), RunnerPathRight(right))\n"
             f"    for path, right in {declared!r}\n"

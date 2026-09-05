@@ -25,6 +25,7 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
     QUEUE_PROJECTION_REVISION_OBSERVED,
     ConfirmQueueProposal,
+    PlanQueueItem,
     QueueAdmission,
     QueueAdmissionAlreadyDecided,
     QueueAdmissionAuthorityRefused,
@@ -35,12 +36,16 @@ from atelier2.contracts.queue_projection import (
     QueueDecisionAuthority,
     QueueItemAdmitted,
     QueueItemId,
+    QueueItemProposed,
     QueueItemSnapshot,
     QueueItemState,
     QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyDefaults,
     QueueProjectPolicyRevision,
     QueueProposal,
+    QueueProposalOutcome,
+    QueueProposalSource,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -63,6 +68,7 @@ LINEAGE = CatalogLineageId("b" * 64)
 LABEL = "bereit"
 OBSERVED_AT = RecordedAt("2026-09-04T09:00:00Z")
 OPERATOR_RATIONALE = QueueAdmissionRationale("operator approved the proposal")
+DEFAULT_PRIORITY = QueuePriorityRank(3)
 
 
 def _reference(tracker: str) -> WorkItemReference:
@@ -160,8 +166,18 @@ class _QueueProjectionFake:
                 return index, snapshot
         raise AssertionError(f"this scenario holds no item {item_id.value}")
 
-    def plan(self, command: object) -> Never:
-        raise AssertionError("an automatic admission never plans a proposal")
+    def plan(self, command: PlanQueueItem) -> QueueProposalOutcome:
+        index, snapshot = self._locate(command.item_reference.item_id)
+        outcome = snapshot.plan(command)
+        if isinstance(outcome, QueueItemProposed):
+            self.items[index] = QueueItemSnapshot(
+                snapshot.item_reference,
+                QueueItemState.PROPOSED,
+                outcome.revision,
+                None,
+                outcome.proposal,
+            )
+        return outcome
 
     def put_policy(self, policy: object, expected_revision: object) -> Never:
         raise AssertionError("an automatic admission never publishes a policy")
@@ -173,6 +189,60 @@ class _QueueProjectionFake:
         self, project: object, items: object, observed_at: object
     ) -> Never:
         raise AssertionError("an automatic admission never reconciles the open set")
+
+
+@dataclass
+class _QueueProjectionReadBeforeAnotherSweepWrote(_QueueProjectionFake):
+    """A projection whose page was read before a concurrent sweep wrote to it.
+
+    Two sweeps serialise on the durable write, so the second one plans and
+    confirms against snapshots the first has already moved past. The page and
+    the durable items are separate here for exactly that reason.
+    """
+
+    page: list[QueueItemSnapshot] = field(default_factory=list)
+
+    def list_items(self, after: QueueItemId | None, limit: int) -> QueueItemsPage:
+        assert after is None, "this fixture serves exactly one page"
+        return QueueItemsPage(tuple(self.page), None)
+
+
+def _policy_with_defaults(
+    disposition: QueueAutomationDisposition | None = None,
+) -> QueueProjectPolicyFound:
+    """A policy naming the label and what an unproposed item is proposed under.
+
+    An absent `disposition` is the operator saying nothing about it, which is
+    not the same as saying HUMAN_REQUIRED here: the contract owns that answer.
+    """
+
+    defaults = (
+        QueueProjectPolicyDefaults(LINEAGE, DEFAULT_PRIORITY)
+        if disposition is None
+        else QueueProjectPolicyDefaults(LINEAGE, DEFAULT_PRIORITY, disposition)
+    )
+    return QueueProjectPolicyFound(
+        QueueProjectPolicyRevision(PROJECT, 1, 2, LABEL, defaults)
+    )
+
+
+def _proposed_from_the_defaults(tracker: str) -> QueueItemSnapshot:
+    """The row a sweep leaves behind after writing the policy's own proposal."""
+
+    return QueueItemSnapshot(
+        _reference(tracker),
+        QueueItemState.PROPOSED,
+        QueueProjectionRevision(1),
+        None,
+        QueueProposal(
+            DEFAULT_PRIORITY,
+            LINEAGE,
+            (),
+            QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+            1,
+            QueueProposalSource.POLICY_DEFAULT,
+        ),
+    )
 
 
 def _tracker(*items: tuple[str, tuple[str, ...]]) -> FakeTrackerItemSource:
@@ -287,6 +357,98 @@ def test_a_labelled_item_with_no_inspected_proposal_stays_observed() -> None:
     (declined,) = outcome.declined
     assert isinstance(declined.outcome, QueueAdmissionProposalRequired)
     assert queue.state_of("gh:1").state is QueueItemState.OBSERVED
+
+
+@pytest.mark.proves("the-automation-label-admits-the-items-that-carry-it")
+def test_a_labelled_item_is_proposed_from_the_policy_defaults_and_admitted() -> None:
+    """With defaults published, the label alone is the operator's whole handgrip."""
+
+    queue = _QueueProjectionFake(
+        [_observed("gh:1")],
+        _policy_with_defaults(QueueAutomationDisposition.AUTOMATION_AUTHORIZED),
+    )
+
+    outcome = admit_queue_items_by_label(
+        queue, project=PROJECT, tracker=_tracker(("gh:1", (LABEL,)))
+    )
+
+    assert outcome == QueueLabelAdmissionsDecided(_item_ids("gh:1"), ())
+    admitted = queue.state_of("gh:1")
+    assert admitted.state is QueueItemState.ADMITTED
+    assert admitted.proposal == _proposed_from_the_defaults("gh:1").proposal
+    assert admitted.admission is not None
+    assert admitted.admission.authority is QueueDecisionAuthority.AUTOMATION_RULE
+
+
+@pytest.mark.proves("the-automation-label-admits-the-items-that-carry-it")
+def test_a_second_sweep_admits_the_proposal_the_first_sweep_left_behind() -> None:
+    """A sweep that loses the proposal write still admits the item it read.
+
+    The write is serialised, so the losing sweep is answered with the proposal
+    that is already current. Confirming the revision its own stale page named
+    would leave the item merely proposed, waiting for a sweep that has nothing
+    left to do.
+    """
+
+    queue = _QueueProjectionReadBeforeAnotherSweepWrote(
+        [_proposed_from_the_defaults("gh:1")],
+        _policy_with_defaults(QueueAutomationDisposition.AUTOMATION_AUTHORIZED),
+        page=[_observed("gh:1")],
+    )
+
+    outcome = admit_queue_items_by_label(
+        queue, project=PROJECT, tracker=_tracker(("gh:1", (LABEL,)))
+    )
+
+    assert outcome == QueueLabelAdmissionsDecided(_item_ids("gh:1"), ())
+    admitted = queue.state_of("gh:1")
+    assert admitted.state is QueueItemState.ADMITTED
+    assert admitted.admission is not None
+    assert admitted.admission.authority is QueueDecisionAuthority.AUTOMATION_RULE
+
+
+def test_a_policy_default_the_operator_did_not_authorise_waits_for_a_human() -> None:
+    """REQ-QUEUE-05: the queue writes the proposal, a person still releases it."""
+
+    queue = _QueueProjectionFake([_observed("gh:1")], _policy_with_defaults())
+
+    outcome = admit_queue_items_by_label(
+        queue, project=PROJECT, tracker=_tracker(("gh:1", (LABEL,)))
+    )
+
+    assert isinstance(outcome, QueueLabelAdmissionsDecided)
+    assert outcome.admitted == ()
+    (declined,) = outcome.declined
+    assert declined.outcome == QueueAdmissionAuthorityRefused(
+        QueueDecisionAuthority.AUTOMATION_RULE,
+        QueueAutomationDisposition.HUMAN_REQUIRED,
+    )
+    proposed = queue.state_of("gh:1")
+    assert proposed.state is QueueItemState.PROPOSED
+    assert proposed.proposal is not None
+    assert (
+        proposed.proposal.automation_disposition
+        is QueueAutomationDisposition.HUMAN_REQUIRED
+    )
+
+
+def test_the_policy_defaults_never_replace_a_proposal_the_operator_wrote() -> None:
+    """The defaults fill a missing decision; they do not revise an existing one."""
+
+    queue = _QueueProjectionFake(
+        [_proposed("gh:1")],
+        _policy_with_defaults(QueueAutomationDisposition.AUTOMATION_AUTHORIZED),
+    )
+
+    outcome = admit_queue_items_by_label(
+        queue, project=PROJECT, tracker=_tracker(("gh:1", (LABEL,)))
+    )
+
+    assert outcome == QueueLabelAdmissionsDecided(_item_ids("gh:1"), ())
+    admitted = queue.state_of("gh:1")
+    assert admitted.proposal is not None
+    assert admitted.proposal.priority == QueuePriorityRank(1)
+    assert admitted.proposal.source is QueueProposalSource.OPERATOR
 
 
 def test_a_retired_row_is_not_admitted_even_while_the_tracker_lists_it() -> None:

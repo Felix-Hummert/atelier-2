@@ -32,19 +32,28 @@ WAITING_FOR_A_CALLER = (
     },
     {
         "names": (
-            "adapters/docker_carrier.py:attest_runner_inspect",
-            "adapters/free_runner_executor.py:encode_free_runner_job",
-            "contracts/runner_session_codec.py:MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES",
-            "contracts/runner_terminal_evidence_codec.py:refused_exchange",
+            "adapters/runner_child.py:start_runner_child",
+            "adapters/runner_child.py:reap_cancelled_runner_child",
+            "adapters/runner_child.py:landlock_kernel_abi",
         ),
         "why": (
-            "The Agent Runner cluster (runner/, adapters/free_runner_executor.py, "
-            "adapters/runner_child.py, adapters/docker_carrier.py): the candidate "
-            "issuer, its job encoder and the session codec's bounds are exercised "
-            "by tests/witness and the codec tests, and wait for the placement of "
-            "the Runner in the serving host."
+            "The one runner-cluster module #1252 kept: #1177 Schritt 0 already "
+            "names `start_runner_child` as the subprocess primitive the future "
+            "AgentSession duplex driver spawns a provider child through, and "
+            "the cancel/landlock-ABI helpers beside it serve the same seam. "
+            "Every other caller was the frozen Agent Runner deleted with #1252."
         ),
-        "item": "#1177 (Runner-Platzierung offen)",
+        "item": "#1177 Schritt 2 (2-B/2-C duplex driver)",
+    },
+    {
+        "names": ("contracts/agents.py:AuthReference",),
+        "why": (
+            "#1177 F names this exact shape as the Runner's future credential "
+            'reference ("eine logische Referenz (AuthReference)"); its one '
+            "production constructor, the fake-free candidate, was deleted with "
+            "#1252 and no other provider builds one yet."
+        ),
+        "item": "#1177 Schritt 2/F (Credential-Referenz)",
     },
     {
         "names": (
@@ -104,12 +113,14 @@ WAITING_FOR_A_CALLER = (
             "contracts/run_bindings.py:AnyBoundRun",
             "contracts/node_records_v3.py:MAXIMUM_KIND_TOKEN_CHARACTERS",
             "contracts/catalog_v3.py:derived",
+            "contracts/catalog_v3.py:claimed",
         ),
         "why": (
             "Contract helpers a caller was planned for and has not arrived at: the "
             "scheduler that applies a join, the reader that reports which lineage "
-            "id was derived, the bound-run alias and the kind token bound. Each "
-            "is proven by a domain test and named by an ADR."
+            "id was claimed and which was derived, the bound-run alias and the "
+            "kind token bound. Each is proven by a domain test and named by an "
+            "ADR."
         ),
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
