@@ -158,7 +158,7 @@ _VERSION_FORTY_NINE = 49
 _VERSION_FIFTY = 50
 _VERSION_FIFTY_ONE = 51
 _VERSION_FIFTY_TWO = 52
-# Operator ruling 5307892458: no store compatibility until a named maturity.
+# docs/PRODUCT.md "Stage: prototype": no store compatibility is owed.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11

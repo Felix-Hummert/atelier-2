@@ -51,6 +51,8 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
     PermissionDecider,
+    PrintModeExecutor,
+    ProviderCancellationCause,
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
@@ -278,7 +280,7 @@ def _failed_attempt_execution() -> AgentAttemptExecution:
     )
 
 
-class _FailingExecutor:
+class _FailingExecutor(PrintModeExecutor):
     def prepare_process(self, request: object) -> AgentProcessCommand:
         del request
         return AgentProcessCommand(("false",), standard_output_frame_bytes=1)
@@ -448,13 +450,15 @@ class _SilentSupervisor:
         return AgentProcessCompletion(1, b"", b"")
 
     def cancel(
-        self, attempt: AgentAttempt
+        self,
+        attempt: AgentAttempt,
+        cause: ProviderCancellationCause = ProviderCancellationCause.OPERATOR,
     ) -> tuple[
         AgentAttemptCancellationDisposition,
         AgentProcessOwnerId,
         WatchdogGenerationId,
     ]:
-        raise AssertionError(attempt)
+        raise AssertionError((attempt, cause))
 
     def recover(
         self, attempt: AgentAttempt

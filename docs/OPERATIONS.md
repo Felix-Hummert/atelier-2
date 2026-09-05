@@ -1433,11 +1433,10 @@ live list of what actually runs.
 
 Machine-checkable rules are gates there. Running today: the architecture check
 (`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
-above, and the dead-code gates above. Dispatched and not landed yet: `ruff
-check --select ANN401` over `contracts`, `ports`, `application` and `api`
-(#1196). The size, complexity and narrative checks are ruled but unbuilt, and
-the core-test-import ratchet starts only once the first adapter-bound test
-module has moved.
+above, the dead-code gates above, and `ruff check --select ANN401` over
+`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The size,
+complexity and narrative checks are ruled but unbuilt, and the core-test-import
+ratchet starts only once the first adapter-bound test module has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become

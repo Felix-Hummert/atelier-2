@@ -171,7 +171,13 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
 
         for operation, handler, cached in (
             ("WAIT", watchdog._handle_wait, cached_wait),
-            ("CANCEL", watchdog._handle_cancel, cached_cancel),
+            (
+                "CANCEL",
+                lambda connection, now: watchdog._handle_cancel(
+                    connection, {"operation": "CANCEL"}, now
+                ),
+                cached_cancel,
+            ),
         ):
             server, peer = socket.socketpair()
             peers.append(peer)
@@ -411,6 +417,29 @@ def test_unclassified_busy_reply_survives_every_bounded_contender_exit(
             assert _receive_control_bytes(contender) == encode_control_frame(
                 {"type": "BUSY"}
             )
+
+
+def test_a_cancellation_is_admitted_while_another_connection_holds_the_slot(
+    running_wire_watchdog: tuple[Watchdog, Path],
+) -> None:
+    """A stop never waits out the connection a relay exchange is opening.
+
+    The duplex relay reconnects for every exchange, so a cancellation racing
+    one of those connections would meet the busy refusal and cost a retry --
+    a second in which nothing has been signalled.
+    """
+
+    watchdog, endpoint = running_wire_watchdog
+    with _connect_control(endpoint):
+        _wait_until(lambda: "UNCLASSIFIED" in watchdog._slots)
+
+        answer = _request_control_bytes(
+            endpoint, encode_control_frame({"operation": "CANCEL"})
+        )
+
+    assert answer == encode_control_frame(
+        {"disposition": "NEVER_LAUNCHED", "type": "CANCELLED"}
+    )
 
 
 @pytest.mark.parametrize("_startup", range(5))
@@ -861,7 +890,10 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
         lost_cancel.close()
         with blocked:
             assert _receive_control(blocked) == {"type": "CONTROL_FRAME_TIMEOUT"}
-        assert cancel_requests == process_module.MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS
+        # A peer holding the door with half a frame delays nobody's stop: the
+        # cancellation is admitted on its first try and the bad peer is still
+        # answered on its own bound.
+        assert cancel_requests == 1
         assert disposition is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
         terminal = store.attest_cancellation_cleanup(
             command, disposition, owner, generation
