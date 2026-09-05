@@ -23,7 +23,7 @@ readonly check_run_appearance_grace_seconds=1800
 # comfortably covers a merge burst several times that size while keeping
 # each tick's worst-case GitHub lookups bounded.
 readonly green_ancestor_search_depth=20
-readonly github_repository="repos/FlexOr2/atelier-2"
+readonly github_repository="repos/overnightworks/atelier-2"
 # Must match serve_live_update.sh's own intake_refused_exit_code: the deploy
 # still succeeded (the new commit is served), only a workflow intake was
 # refused, so this is not an ordinary failure tick.

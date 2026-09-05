@@ -106,9 +106,10 @@ def test_one_call_of_one_attempt_always_addresses_the_same_question() -> None:
 
     attempt_id = an_attempt_id()
 
-    assert PermissionCorrelationId.for_call(
-        attempt_id, 1
-    ) == PermissionCorrelationId.for_call(attempt_id, 1)
+    first_construction = PermissionCorrelationId.for_call(attempt_id, 1)
+    second_construction = PermissionCorrelationId.for_call(attempt_id, 1)
+
+    assert first_construction == second_construction
 
 
 def test_each_call_of_one_attempt_is_its_own_question() -> None:
@@ -136,8 +137,10 @@ def test_the_same_call_of_two_attempts_are_two_questions() -> None:
 def test_a_call_ordinal_outside_the_counted_calls_is_refused(
     call_ordinal: int,
 ) -> None:
+    attempt_id = an_attempt_id()
+
     with pytest.raises(ValueError, match="counts from one"):
-        PermissionCorrelationId.for_call(an_attempt_id(), call_ordinal)
+        PermissionCorrelationId.for_call(attempt_id, call_ordinal)
 
 
 def test_the_closed_policy_keeps_the_identity_it_was_landed_with() -> None:
