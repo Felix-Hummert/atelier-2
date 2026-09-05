@@ -1,0 +1,914 @@
+# The size and complexity debt this tree already carries, generated from
+# today's tree by `scripts/check_size_ratchet.py`'s own measurement. One
+# entry per path or qualified symbol over its threshold, carrying the value
+# it may not exceed. Shrinking an entry below its threshold makes it an
+# orphan the gate asks to be removed; growing it, or a new offender the
+# baseline does not yet name, turns the gate red.
+
+[[file]]
+path = "src/atelier2/adapters/agent_process_watchdog.py"
+lines = 1196
+
+[[file]]
+path = "src/atelier2/adapters/agent_processes.py"
+lines = 992
+
+[[file]]
+path = "src/atelier2/adapters/claude_subscription.py"
+lines = 2166
+
+[[file]]
+path = "src/atelier2/adapters/dbos/advancer.py"
+lines = 812
+
+[[file]]
+path = "src/atelier2/adapters/dbos/agent_attempt_store.py"
+lines = 3527
+
+[[file]]
+path = "src/atelier2/adapters/dbos/catalog_store.py"
+lines = 1085
+
+[[file]]
+path = "src/atelier2/adapters/dbos/effect_store.py"
+lines = 1100
+
+[[file]]
+path = "src/atelier2/adapters/dbos/host_configuration.py"
+lines = 1097
+
+[[file]]
+path = "src/atelier2/adapters/dbos/published_schema_shapes.py"
+lines = 1549
+
+[[file]]
+path = "src/atelier2/adapters/dbos/queries.py"
+lines = 2932
+
+[[file]]
+path = "src/atelier2/adapters/dbos/queue_projection_store.py"
+lines = 904
+
+[[file]]
+path = "src/atelier2/adapters/dbos/run_fork_store.py"
+lines = 1048
+
+[[file]]
+path = "src/atelier2/adapters/dbos/run_store.py"
+lines = 1526
+
+[[file]]
+path = "src/atelier2/adapters/dbos/run_transitions.py"
+lines = 922
+
+[[file]]
+path = "src/atelier2/adapters/dbos/runtime.py"
+lines = 1958
+
+[[file]]
+path = "src/atelier2/adapters/dbos/schema.py"
+lines = 6757
+
+[[file]]
+path = "src/atelier2/adapters/dbos/starter.py"
+lines = 1027
+
+[[file]]
+path = "src/atelier2/adapters/dbos/uncontinuable_runs.py"
+lines = 865
+
+[[file]]
+path = "src/atelier2/adapters/dbos/workflow.py"
+lines = 1341
+
+[[file]]
+path = "src/atelier2/adapters/docker_carrier.py"
+lines = 1419
+
+[[file]]
+path = "src/atelier2/adapters/github/live_effects.py"
+lines = 802
+
+[[file]]
+path = "src/atelier2/adapters/grok_subscription.py"
+lines = 1783
+
+[[file]]
+path = "src/atelier2/api/openapi.py"
+lines = 1221
+
+[[file]]
+path = "src/atelier2/api/problems.py"
+lines = 850
+
+[[file]]
+path = "src/atelier2/api/routes/revisions.py"
+lines = 1038
+
+[[file]]
+path = "src/atelier2/api/wire/resources.py"
+lines = 1715
+
+[[file]]
+path = "src/atelier2/application/project_connections.py"
+lines = 1149
+
+[[file]]
+path = "src/atelier2/contracts/agent_attempts.py"
+lines = 1026
+
+[[file]]
+path = "src/atelier2/contracts/node_records_v3.py"
+lines = 800
+
+[[file]]
+path = "src/atelier2/contracts/schemas_v3.py"
+lines = 888
+
+[[file]]
+path = "src/atelier2/contracts/workflows_v3.py"
+lines = 1865
+
+[[file]]
+path = "src/atelier2/host/__init__.py"
+lines = 1197
+
+[[file]]
+path = "src/atelier2/host/provider_canary.py"
+lines = 1190
+
+[[file]]
+path = "src/atelier2/host/run_command.py"
+lines = 937
+
+[[file]]
+path = "src/atelier2/host/runner_launcher.py"
+lines = 1331
+
+[[file]]
+path = "src/atelier2/host/serving.py"
+lines = 1439
+
+[[file]]
+path = "src/atelier2/ports/agent_executions.py"
+lines = 1163
+
+[[file]]
+path = "src/atelier2/runner/session.py"
+lines = 1072
+
+[[function]]
+qualified_name = "atelier2.adapters.agent_process_watchdog.Watchdog._handle_launch"
+lines = 98
+
+[[function]]
+qualified_name = "atelier2.adapters.agent_process_watchdog._decode_launch_request"
+lines = 77
+
+[[function]]
+qualified_name = "atelier2.adapters.agent_processes.AgentProcessSupervisor.launch_and_wait"
+lines = 91
+
+[[function]]
+qualified_name = "atelier2.adapters.agent_processes.AgentProcessSupervisor.prepare"
+lines = 95
+
+[[function]]
+qualified_name = "atelier2.adapters.claude_subscription._decoded_claude_answer"
+lines = 66
+
+[[function]]
+qualified_name = "atelier2.adapters.claude_subscription._jobless_invocation_answer"
+lines = 60
+
+[[function]]
+qualified_name = "atelier2.adapters.codex_subscription.CodexSubscriptionExecutor.prepare_process"
+lines = 63
+
+[[function]]
+qualified_name = "atelier2.adapters.codex_subscription.attest_codex_containment"
+lines = 60
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.advancer._documentation_release_action_intent"
+lines = 81
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.advancer.graph_action_intent"
+lines = 76
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.advancer.legacy_agent_effect_runs_without_receipt"
+lines = 83
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._begin_output_schema_repair"
+lines = 63
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._commit_new_cancellation"
+lines = 77
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._commit_runner_cancellation"
+lines = 65
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._commit_success"
+lines = 210
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.attest_cancellation_cleanup"
+lines = 138
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.claim"
+lines = 71
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.commit_never_launched_cancellation"
+lines = 91
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.commit_runner_terminal_evidence"
+lines = 193
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.refuse_unavailable_executor"
+lines = 61
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.request_cancellation"
+lines = 68
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.request_run_cancellation"
+lines = 157
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store._attempt_values"
+lines = 80
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store._fail_current_attempt"
+lines = 117
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store._validate_request"
+lines = 71
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.attempt_from_record"
+lines = 72
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.load_output_schema_refusal_receipt"
+lines = 78
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.agent_catalog.DbosAgentConfigurationCatalog.list_agent_configuration_revisions"
+lines = 94
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.attention_events.load_attention_event_page"
+lines = 82
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.catalog_store.DbosCatalogStore.resolve_name"
+lines = 91
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.definition_source_store.DbosDefinitionSources._take_in"
+lines = 154
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.effect_store.commit_resolution"
+lines = 139
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.effect_store.fork_fenced_resolution"
+lines = 133
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.host_configuration._write_model_registry_revision"
+lines = 71
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.host_configuration._write_project_source_connection_revision"
+lines = 84
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.node_records.keep_node_receipt"
+lines = 110
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.node_records.persist_bound_node_executions"
+lines = 67
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._event_projection"
+lines = 131
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._run_projections"
+lines = 426
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.get_node_detail"
+lines = 82
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.get_reconciliation_retry_target"
+lines = 65
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.list_described_workflow_revisions"
+lines = 77
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.list_runs"
+lines = 62
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.prepare_run_event_stream"
+lines = 84
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.read_run_event_page"
+lines = 112
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries._current_attempt_projection"
+lines = 160
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries._node_detail_execution"
+lines = 62
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries._node_job_and_refusal"
+lines = 88
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
+lines = 223
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queue_projection_store.DbosQueueProjectionStore._proposal_refusal"
+lines = 84
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queue_projection_store.DbosQueueProjectionStore.plan"
+lines = 65
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queue_projection_store.DbosQueueProjectionStore.reserve_launch"
+lines = 72
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.queue_projection_store._snapshot_from_record"
+lines = 138
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.reconciler.DbosEffectReconcileCommander.submit_result"
+lines = 123
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_fork_store.DbosRunForkStore.fork_run"
+lines = 171
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_fork_store._effective_receipt_record"
+lines = 112
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_fork_store._resolve_reused_node"
+lines = 70
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_fork_store._validate_reused_source"
+lines = 74
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_store.DbosWaitAnswerer.submit_result"
+lines = 336
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_store.commit_confirmed_effect"
+lines = 86
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_store.commit_wait_answered"
+lines = 72
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_store.load_node_output_payload"
+lines = 115
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_store.load_node_outputs"
+lines = 77
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_transitions._commit_event"
+lines = 139
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_transitions._existing_event"
+lines = 63
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_transitions._insert_event"
+lines = 74
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.run_transitions.run_from_record_and_binding_rows"
+lines = 81
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.runtime.DbosRuntimeSettings.__post_init__"
+lines = 81
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
+lines = 228
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.runtime._runner_lease_attempt_driver"
+lines = 69
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.runtime._still_open_effect_intents"
+lines = 66
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.schema._apply_v44_to_v45"
+lines = 158
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.schema._rebuild_product_table"
+lines = 82
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.schema._refuse_redemptions_that_cannot_be_re_owned"
+lines = 84
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.schema._table_names_for_version"
+lines = 113
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.schema.migrate_store"
+lines = 133
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.starter.DbosDurableRunStarter._start"
+lines = 335
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.starter._refused_order"
+lines = 92
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.uncontinuable_runs._attempt_family_target_state"
+lines = 61
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.uncontinuable_runs._retag_stranded_reconciliation"
+lines = 65
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.workflow._reconstructed_agent_repair_job"
+lines = 70
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.workflow.reconstruct_agent_attempt"
+lines = 60
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow"
+lines = 730
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.durable_node"
+lines = 84
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.durable_runner_lease_attempt"
+lines = 68
+
+[[function]]
+qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.redeem_agent_node_effect"
+lines = 84
+
+[[function]]
+qualified_name = "atelier2.adapters.github.effects.GitHubEffectAdapter.execute"
+lines = 66
+
+[[function]]
+qualified_name = "atelier2.adapters.github.project_connections.GitHubProjectSourceConnector.validate"
+lines = 61
+
+[[function]]
+qualified_name = "atelier2.adapters.grok_subscription._discovered_surfaces"
+lines = 60
+
+[[function]]
+qualified_name = "atelier2.adapters.grok_subscription.attest_grok_containment"
+lines = 64
+
+[[function]]
+qualified_name = "atelier2.adapters.grok_subscription.attest_grok_workspace_tool_invocation"
+lines = 62
+
+[[function]]
+qualified_name = "atelier2.api.app.bound_use_cases"
+lines = 354
+
+[[function]]
+qualified_name = "atelier2.api.app.create_app"
+lines = 100
+
+[[function]]
+qualified_name = "atelier2.api.openapi._install_event_components"
+lines = 61
+
+[[function]]
+qualified_name = "atelier2.api.openapi._install_parameter_contracts"
+lines = 131
+
+[[function]]
+qualified_name = "atelier2.api.openapi._install_problem_components"
+lines = 97
+
+[[function]]
+qualified_name = "atelier2.api.projection.events.run_event_resource"
+lines = 152
+
+[[function]]
+qualified_name = "atelier2.api.projection.runs._transcript_event_resource"
+lines = 70
+
+[[function]]
+qualified_name = "atelier2.api.projection.runs.run_resource"
+lines = 95
+
+[[function]]
+qualified_name = "atelier2.api.routes.queue._snapshot_resource"
+lines = 65
+
+[[function]]
+qualified_name = "atelier2.api.routes.runs.cancel_agent_attempt_route"
+lines = 63
+
+[[function]]
+qualified_name = "atelier2.api.routes.runs.reconcile_run_route"
+lines = 62
+
+[[function]]
+qualified_name = "atelier2.api.routes.runs.start_run_route"
+lines = 89
+
+[[function]]
+qualified_name = "atelier2.api.stream.stream_attention_events"
+lines = 181
+
+[[function]]
+qualified_name = "atelier2.api.stream.stream_server_events"
+lines = 92
+
+[[function]]
+qualified_name = "atelier2.application.advance_queue._advance_one"
+lines = 134
+
+[[function]]
+qualified_name = "atelier2.application.answer_wait.answer_wait_result"
+lines = 64
+
+[[function]]
+qualified_name = "atelier2.application.evaluate_executability.resolve_document_references"
+lines = 93
+
+[[function]]
+qualified_name = "atelier2.application.execute_agent_attempt._ended_after_the_provider"
+lines = 85
+
+[[function]]
+qualified_name = "atelier2.application.execute_agent_attempt.execute_agent_attempt"
+lines = 159
+
+[[function]]
+qualified_name = "atelier2.application.execute_agent_attempt_on_runner.execute_agent_attempt_on_runner"
+lines = 79
+
+[[function]]
+qualified_name = "atelier2.application.model_configuration.get_project_model_resolution"
+lines = 78
+
+[[function]]
+qualified_name = "atelier2.application.model_configuration.publish_model_registry"
+lines = 105
+
+[[function]]
+qualified_name = "atelier2.application.model_configuration.publish_project_model_defaults"
+lines = 61
+
+[[function]]
+qualified_name = "atelier2.application.model_configuration.validate_model_registry_entry"
+lines = 86
+
+[[function]]
+qualified_name = "atelier2.application.project_connections.connect_managed_project_source"
+lines = 164
+
+[[function]]
+qualified_name = "atelier2.application.project_connections.connect_project_source"
+lines = 94
+
+[[function]]
+qualified_name = "atelier2.application.project_connections.disconnect_project_source"
+lines = 102
+
+[[function]]
+qualified_name = "atelier2.application.project_connections.rotate_project_source_token"
+lines = 234
+
+[[function]]
+qualified_name = "atelier2.application.read_workflow_revisions._classify_wait_answer"
+lines = 60
+
+[[function]]
+qualified_name = "atelier2.application.resolve_references.resolve_declared_reference_with_revision"
+lines = 61
+
+[[function]]
+qualified_name = "atelier2.application.resolve_start_bindings._candidate_choices"
+lines = 82
+
+[[function]]
+qualified_name = "atelier2.application.resolve_start_bindings._select_component"
+lines = 180
+
+[[function]]
+qualified_name = "atelier2.application.resolve_start_bindings.cast_unbound_roles"
+lines = 71
+
+[[function]]
+qualified_name = "atelier2.application.resolve_start_bindings.resolve_start_bindings"
+lines = 98
+
+[[function]]
+qualified_name = "atelier2.application.run_runner_session.CoreRunnerSession._advance"
+lines = 63
+
+[[function]]
+qualified_name = "atelier2.application.start_published_run.start_published_run"
+lines = 101
+
+[[function]]
+qualified_name = "atelier2.contracts.adapter_operations_v3.read_adapter_operation_document"
+lines = 64
+
+[[function]]
+qualified_name = "atelier2.contracts.agent_attempts.AgentAttempt.__post_init__"
+lines = 183
+
+[[function]]
+qualified_name = "atelier2.contracts.agent_transcripts._event_document"
+lines = 67
+
+[[function]]
+qualified_name = "atelier2.contracts.agent_transcripts._event_from_document"
+lines = 61
+
+[[function]]
+qualified_name = "atelier2.contracts.agents.AgentExecutionRequestV2.__post_init__"
+lines = 62
+
+[[function]]
+qualified_name = "atelier2.contracts.budgets_v3.read_budget_revision_document"
+lines = 60
+
+[[function]]
+qualified_name = "atelier2.contracts.executions.RunEvent.__post_init__"
+lines = 176
+
+[[function]]
+qualified_name = "atelier2.contracts.host_configuration.ProjectSourceConnectionRevision.__post_init__"
+lines = 64
+
+[[function]]
+qualified_name = "atelier2.contracts.provider_probe_receipts.read_provider_probe_receipt"
+lines = 89
+
+[[function]]
+qualified_name = "atelier2.contracts.run_configuration_v3._walk_node"
+lines = 72
+
+[[function]]
+qualified_name = "atelier2.contracts.runner_manifests.decode_runner_manifest"
+lines = 63
+
+[[function]]
+qualified_name = "atelier2.contracts.runner_terminal_evidence_codec._encode_evidence"
+lines = 60
+
+[[function]]
+qualified_name = "atelier2.contracts.tool_grants_v3.read_tool_grant_document"
+lines = 74
+
+[[function]]
+qualified_name = "atelier2.host._argument_parser"
+lines = 299
+
+[[function]]
+qualified_name = "atelier2.host._connect"
+lines = 107
+
+[[function]]
+qualified_name = "atelier2.host._serve"
+lines = 86
+
+[[function]]
+qualified_name = "atelier2.host.mcp_tools.tool_definitions"
+lines = 151
+
+[[function]]
+qualified_name = "atelier2.host.provider_canary._configured_vectors"
+lines = 65
+
+[[function]]
+qualified_name = "atelier2.host.provider_canary._execute_vector"
+lines = 118
+
+[[function]]
+qualified_name = "atelier2.host.provider_canary.execute_provider_canaries"
+lines = 94
+
+[[function]]
+qualified_name = "atelier2.host.run_command._admit_published_v3"
+lines = 67
+
+[[function]]
+qualified_name = "atelier2.host.runner_identity.RunnerIdentityAuthority.issue_runner_identity"
+lines = 70
+
+[[function]]
+qualified_name = "atelier2.host.runner_launcher.RunnerLauncher._issue_identity"
+lines = 74
+
+[[function]]
+qualified_name = "atelier2.host.runner_launcher._parser"
+lines = 68
+
+[[function]]
+qualified_name = "atelier2.host.serving.HostProviderModelInspector.validate_model"
+lines = 93
+
+[[function]]
+qualified_name = "atelier2.host.serving.HostSettings.__post_init__"
+lines = 112
+
+[[function]]
+qualified_name = "atelier2.host.serving._discover_codex_models"
+lines = 64
+
+[[function]]
+qualified_name = "atelier2.host.serving._subscription_executor_registrations"
+lines = 79
+
+[[function]]
+qualified_name = "atelier2.host.serving.compose_application"
+lines = 115
+
+[[function]]
+qualified_name = "atelier2.ports.agent_executions.AgentExecutorRegistry.__init__"
+lines = 84
+
+[[function]]
+qualified_name = "atelier2.runner.__main__._run_candidate_session"
+lines = 90
+
+[[function]]
+qualified_name = "atelier2.runner.identity_receiver.load_published_identity"
+lines = 63
+
+[[function]]
+qualified_name = "atelier2.runner.session.run_candidate_session"
+lines = 75
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.commit_runner_terminal_evidence"
+complexity = 18
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._run_projections"
+complexity = 43
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.queries._current_attempt_projection"
+complexity = 17
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
+complexity = 30
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.run_fork_store.DbosRunForkStore.fork_run"
+complexity = 18
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.run_store.DbosWaitAnswerer.submit_result"
+complexity = 46
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
+complexity = 27
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.schema._table_names_for_version"
+complexity = 20
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.schema.migrate_store"
+complexity = 18
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.starter.DbosDurableRunStarter._start"
+complexity = 38
+
+[[complexity]]
+qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow"
+complexity = 61
+
+[[complexity]]
+qualified_name = "atelier2.api.projection.events.run_event_resource"
+complexity = 23
+
+[[complexity]]
+qualified_name = "atelier2.api.routes.runs.start_run_route"
+complexity = 19
+
+[[complexity]]
+qualified_name = "atelier2.api.stream.stream_attention_events"
+complexity = 26
+
+[[complexity]]
+qualified_name = "atelier2.api.stream.stream_server_events"
+complexity = 18
+
+[[complexity]]
+qualified_name = "atelier2.application.advance_queue._advance_one"
+complexity = 21
+
+[[complexity]]
+qualified_name = "atelier2.application.model_configuration.get_project_model_resolution"
+complexity = 18
+
+[[complexity]]
+qualified_name = "atelier2.application.model_configuration.publish_model_registry"
+complexity = 22
+
+[[complexity]]
+qualified_name = "atelier2.application.model_configuration.validate_model_registry_entry"
+complexity = 21
+
+[[complexity]]
+qualified_name = "atelier2.application.project_connections.connect_managed_project_source"
+complexity = 41
+
+[[complexity]]
+qualified_name = "atelier2.application.project_connections.disconnect_project_source"
+complexity = 27
+
+[[complexity]]
+qualified_name = "atelier2.application.project_connections.rotate_project_source_token"
+complexity = 62
+
+[[complexity]]
+qualified_name = "atelier2.application.resolve_start_bindings._select_component"
+complexity = 27
+
+[[complexity]]
+qualified_name = "atelier2.application.start_published_run.start_published_run"
+complexity = 21
+
+[[complexity]]
+qualified_name = "atelier2.contracts.agent_attempts.AgentAttempt.__post_init__"
+complexity = 27
+
+[[complexity]]
+qualified_name = "atelier2.contracts.executions.RunEvent.__post_init__"
+complexity = 22
+
+[[complexity]]
+qualified_name = "atelier2.contracts.provider_probe_receipts.ProviderProbeReceipt.__post_init__"
+complexity = 16
+
+[[complexity]]
+qualified_name = "atelier2.contracts.run_configuration_v3._walk_node"
+complexity = 18
+
+[[complexity]]
+qualified_name = "atelier2.host.serving.HostSettings.__post_init__"
+complexity = 18

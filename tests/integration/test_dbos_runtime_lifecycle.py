@@ -91,7 +91,7 @@ from tests.scenarios.runs import (
     publish_pinned_revisions,
     start_published_v3_run,
 )
-from tests.scenarios.runtime import recording_exact_runtime
+from tests.scenarios.runtime import binding_refusal_of, recording_exact_runtime
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
     OPEN_PR_OPERATION,
@@ -175,7 +175,7 @@ def run_state(engine: Engine, run_id: RunId) -> RunState:
     return RunState(str(state))
 
 
-def wait_until_bootstrap_succeeds(engine: Engine, run_id: RunId) -> str:
+def wait_until_workflow_succeeds(engine: Engine, workflow_id: str) -> str:
     deadline = time.monotonic() + WORKFLOW_TIMEOUT_SECONDS
     status = "PENDING"
     while status != "SUCCESS" and time.monotonic() < deadline:
@@ -185,12 +185,16 @@ def wait_until_bootstrap_succeeds(engine: Engine, run_id: RunId) -> str:
                     sa.text(
                         "SELECT status FROM workflow_status WHERE workflow_uuid=:id"
                     ),
-                    {"id": bootstrap_workflow_id_for(run_id)},
+                    {"id": workflow_id},
                 )
             )
         if status != "SUCCESS":
             time.sleep(WORKFLOW_POLL_SECONDS)
     return status
+
+
+def wait_until_bootstrap_succeeds(engine: Engine, run_id: RunId) -> str:
+    return wait_until_workflow_succeeds(engine, bootstrap_workflow_id_for(run_id))
 
 
 def wait_until_run_state(engine: Engine, run_id: RunId, expected: RunState) -> RunState:
@@ -474,8 +478,8 @@ def test_incompatible_factory_is_refused_before_it_opens_or_mutates_its_store(
         )
     )
     try:
-        with pytest.raises(DbosRuntimeBindingConflict):
-            DbosRuntime(settings, refused)
+        binding_refusal_of(lambda: DbosRuntime(settings, refused))
+
         assert refused.opens == 0
         assert not refused_path.parent.exists()
     finally:
@@ -665,7 +669,14 @@ def _force_workflow_status(engine: Engine, workflow_id: str, status: str) -> Non
     means reaching into the table DBOS itself owns, exactly like the
     production check this proves (`dbos_runtime._TERMINAL_WORKFLOW_STATUSES`)
     does.
+
+    A workflow commits the run and intent rows an arrangement waits for from
+    inside itself, and DBOS records its own terminal status only after it
+    returns; waiting for that status first is therefore what keeps this
+    rewrite from being overwritten a moment later by the very workflow it
+    describes.
     """
+    assert wait_until_workflow_succeeds(engine, workflow_id) == "SUCCESS"
     with engine.begin() as connection:
         updated = connection.execute(
             sa.text(
@@ -728,10 +739,11 @@ def test_restart_binding_conflict_follows_the_owning_workflows_terminal_status(
     )
 
     if expect_refusal:
-        with pytest.raises(DbosRuntimeBindingConflict) as failure:
-            recording_exact_runtime(settings, changed_factory, b'"draft-17"')
+        failure = binding_refusal_of(
+            lambda: recording_exact_runtime(settings, changed_factory, b'"draft-17"')
+        )
 
-        message = str(failure.value)
+        message = str(failure)
         assert "open-pr" in message
         assert intent_state.value in message
         assert logical_key[:16] in message
@@ -762,10 +774,11 @@ def test_restart_refuses_a_prepared_intent_whose_workflow_never_finished(
         EffectDestination("loopback-test"),
     )
 
-    with pytest.raises(DbosRuntimeBindingConflict) as failure:
-        recording_exact_runtime(settings, changed_factory, b'"draft-17"')
+    failure = binding_refusal_of(
+        lambda: recording_exact_runtime(settings, changed_factory, b'"draft-17"')
+    )
 
-    message = str(failure.value)
+    message = str(failure)
     assert "open-pr" in message
     assert EffectIntentState.PREPARED.value in message
     assert intent.binding.logical_key.value[:16] in message
@@ -840,8 +853,8 @@ def test_restart_refusal_message_bounds_the_offending_intent_preview(
     runtime.close()
     changed_path = tmp_path / "changed" / "external.sqlite"
 
-    with pytest.raises(DbosRuntimeBindingConflict) as failure:
-        recording_exact_runtime(
+    failure = binding_refusal_of(
+        lambda: recording_exact_runtime(
             settings,
             LoopbackEffectAdapterFactory(
                 changed_path,
@@ -850,8 +863,9 @@ def test_restart_refusal_message_bounds_the_offending_intent_preview(
             ),
             b'"draft-17"',
         )
+    )
 
-    message = str(failure.value)
+    message = str(failure)
     assert message.count("open-pr intent") == preview_limit
     assert f"and {omitted_count} more" in message
 
@@ -994,10 +1008,11 @@ def test_restart_refuses_an_agent_redeemed_intent_whose_node_workflow_is_unfinis
     runtime.close()
     changed_path = tmp_path / "changed" / "external.sqlite"
 
-    with pytest.raises(DbosRuntimeBindingConflict) as failure:
-        _restart_under_a_changed_identity(settings, changed_path)
+    failure = binding_refusal_of(
+        lambda: _restart_under_a_changed_identity(settings, changed_path)
+    )
 
-    message = str(failure.value)
+    message = str(failure)
     assert "open-pr" in message
     assert EffectIntentState.CONFIRMED.value in message
     assert logical_key[:16] in message
@@ -1026,10 +1041,11 @@ def test_restart_refuses_an_intent_whose_key_no_node_execution_accounts_for(
     runtime.close()
     changed_path = tmp_path / "changed" / "external.sqlite"
 
-    with pytest.raises(DbosRuntimeBindingConflict) as failure:
-        _restart_under_a_changed_identity(settings, changed_path)
+    failure = binding_refusal_of(
+        lambda: _restart_under_a_changed_identity(settings, changed_path)
+    )
 
-    message = str(failure.value)
+    message = str(failure)
     assert message.count("open-pr intent") == 1
     assert not changed_path.parent.exists()
 
@@ -1059,8 +1075,8 @@ def test_restart_with_the_same_identity_opens_regardless_of_open_intent_state(
 def test_canonical_and_external_store_must_be_distinct(tmp_path: Path) -> None:
     database = canonical_database(tmp_path)
 
-    with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
-        DbosRuntime(
+    failure = binding_refusal_of(
+        lambda: DbosRuntime(
             runtime_settings(database),
             LoopbackEffectAdapterFactory(
                 database,
@@ -1068,6 +1084,9 @@ def test_canonical_and_external_store_must_be_distinct(tmp_path: Path) -> None:
                 EffectDestination("loopback-test"),
             ),
         )
+    )
+
+    assert "must be distinct" in str(failure)
 
 
 def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
@@ -1087,8 +1106,8 @@ def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
     external_alias = tmp_path / "external-alias.sqlite"
     os.link(database, external_alias)
 
-    with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
-        DbosRuntime(
+    failure = binding_refusal_of(
+        lambda: DbosRuntime(
             runtime_settings(database),
             LoopbackEffectAdapterFactory(
                 external_alias,
@@ -1096,7 +1115,9 @@ def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
                 EffectDestination("loopback-test"),
             ),
         )
+    )
 
+    assert "must be distinct" in str(failure)
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
