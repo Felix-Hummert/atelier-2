@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from collections.abc import Mapping
@@ -24,7 +25,6 @@ from atelier2.contracts.effect_requests import (
     GitCommitIdentity,
     HeadBranch,
     PushAtelierCommit,
-    PushAtelierCommitReceipt,
     ReviewedDocumentationPullRequest,
     ReviewedDocumentReplacement,
     reviewed_documentation_candidate_digest,
@@ -203,7 +203,7 @@ def test_push_creates_the_declared_commit_and_replay_finds_no_twin(
 
 
 def test_a_branch_no_open_pull_request_reviews_is_replaced_under_a_lease_on_it(
-    tmp_path: Path,
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     store, remote, base, tree = _repositories(tmp_path)
     foreign = _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
@@ -215,7 +215,8 @@ def test_a_branch_no_open_pull_request_reviews_is_replaced_under_a_lease_on_it(
     adapter = factory.open()
     try:
         observed = adapter.readback(intent, ReadbackPhase.BEFORE_SEND)
-        performed = adapter.execute(intent)
+        with caplog.at_level(logging.INFO, logger="atelier2"):
+            performed = adapter.execute(intent)
     finally:
         adapter.close()
 
@@ -224,8 +225,17 @@ def test_a_branch_no_open_pull_request_reviews_is_replaced_under_a_lease_on_it(
     assert performed.effect_id.value == expected
     assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == expected
     assert pull_requests.asked == [HEAD_BRANCH, HEAD_BRANCH]
-    receipt = PushAtelierCommitReceipt.from_result_bytes(performed.result.payload)
-    assert receipt.replaced_oid == foreign
+    # ADR 0010's 2026-09-05 amendment: the replaced oid is evidence for an
+    # operator, not part of the receipt's identity, so it is logged at the
+    # send rather than carried in the result bytes a crash readback must
+    # reconstruct identically without ever observing it.
+    replaced_head_logs = [
+        record
+        for record in caplog.records
+        if record.__dict__.get("event") == "git_transport_push_replaced_branch_head"
+    ]
+    assert len(replaced_head_logs) == 1
+    assert replaced_head_logs[0].__dict__["replaced_oid"] == foreign
     assert len(runner.push_arguments) == 1
     assert (
         f"--force-with-lease={HEAD_BRANCH.full_ref}:{foreign}"
@@ -305,6 +315,33 @@ def test_a_branch_that_moves_after_the_read_fails_the_lease_and_is_not_overwritt
     assert runner.pushes == 1
     assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == racing
     assert racing != foreign
+
+
+def test_a_foreign_oid_read_after_send_stays_unknown_without_asking_the_tracker(
+    tmp_path: Path,
+) -> None:
+    """A branch someone else moved and one this send lost a race for read alike.
+
+    The pre-send lease amendment only ever licenses a *pre-send* replacement:
+    a foreign commit read after a send already happened is still the
+    divergence the create-only fence never resolves for itself, so the
+    tracker is never asked and the branch is left exactly as read.
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    foreign = _foreign_commit(tmp_path, base, tree, remote, b"a foreign write\n")
+    pull_requests = FakeHeadBranchPullRequests()
+    factory = _factory(store, remote, pull_requests=pull_requests)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        observed = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        adapter.close()
+
+    assert isinstance(observed, EffectUnknownOutcome)
+    assert pull_requests.asked == []
+    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == foreign
 
 
 def test_concurrent_replay_publishes_one_commit_and_no_twin(tmp_path: Path) -> None:

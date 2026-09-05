@@ -38,6 +38,7 @@ from atelier2.contracts.effects import (
     EffectReceipt,
     EffectUnknownOutcome,
     OperatorAuthoritativeAbsence,
+    PerformedEffect,
     ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
@@ -637,6 +638,60 @@ def test_a_replay_after_a_lease_push_reads_the_same_commit_and_sends_nothing(
         ).stdout.strip()
         == expected
     )
+
+
+def test_a_lease_push_receipt_is_the_same_bytes_read_directly_or_after_a_crash(
+    tmp_path: Path,
+) -> None:
+    """Which oid a lease replaced is evidence for an operator, not the effect's identity.
+
+    A push that replaces a foreign commit under a lease and one that a crash
+    interrupts right after the remote accepted it must agree on what the
+    accepted send produced: the same request against the same store and
+    remote is read back as the identical receipt bytes whether that receipt
+    comes straight from the accepting `execute` or is reconstructed later by
+    a readback that never itself observed the oid the branch stood at before.
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    from tests.integration.test_git_transport_push import (
+        HEAD_BRANCH,
+        _factory,
+        _foreign_commit,
+    )
+
+    foreign = _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
+    factory = _factory(store, remote)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+    assert isinstance(performed, PerformedEffect)
+
+    # Put the branch back where this attempt observed it, so a second send
+    # against the same store and remote replays the identical lease push --
+    # this time interrupted by a crash right after the remote accepts it.
+    subprocess.run(
+        ("git", "-C", str(remote), "update-ref", HEAD_BRANCH.full_ref, foreign),
+        check=True,
+    )
+    crashing = _factory(store, remote, CrashAfterAcceptedPush()).open()
+    try:
+        with pytest.raises(RuntimeError, match="injected crash"):
+            crashing.execute(intent)
+    finally:
+        crashing.close()
+
+    recovered = _factory(store, remote).open()
+    try:
+        receipt = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        recovered.close()
+
+    assert isinstance(receipt, EffectReceipt)
+    assert receipt.result.payload == performed.result.payload
 
 
 def test_a_ref_removed_after_an_accepted_push_stays_unknown_and_pushes_nothing(

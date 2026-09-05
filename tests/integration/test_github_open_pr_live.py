@@ -1126,3 +1126,28 @@ def test_a_listing_that_never_ends_leaves_the_branch_unreadable_rather_than_loop
     assert isinstance(standing, HeadBranchPullRequestsUnreadable)
     assert "did not end within" in standing.reason.detail
     assert server.pull_request_searches == MAXIMUM_PULL_REQUEST_LISTING_PAGES
+
+
+@pytest.mark.parametrize(
+    "malformed_number",
+    [
+        pytest.param(None, id="missing-number"),
+        pytest.param(True, id="boolean-number"),
+        pytest.param("1001", id="non-integer-number"),
+    ],
+)
+def test_an_open_pull_request_with_a_malformed_number_leaves_the_branch_unreadable(
+    head_branch_pull_requests: LiveGitHubHeadBranchPullRequests,
+    server: _FakeGitHubServer,
+    malformed_number: object,
+) -> None:
+    pull_request = _decoy_pull_request(1001, "release/1001", "open")
+    if malformed_number is None:
+        del pull_request["number"]
+    else:
+        pull_request["number"] = malformed_number
+    server.pull_requests = [pull_request]
+
+    standing = head_branch_pull_requests.open_pull_requests_on(HEAD_BRANCH)
+
+    assert isinstance(standing, HeadBranchPullRequestsUnreadable)

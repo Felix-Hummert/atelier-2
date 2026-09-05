@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import shlex
@@ -53,6 +54,8 @@ from atelier2.ports.effects import (
 
 _HOOK_FREE_ARGUMENTS = ("-c", f"core.hooksPath={os.devnull}")
 _GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+_LOG = logging.getLogger("atelier2")
 
 
 class GitTransportRefused(RuntimeError):
@@ -156,6 +159,30 @@ def _unknown_reason(observation: _RemoteRefObservation) -> UnknownOutcomeReason 
             "the remote advertises no such ref, and a send was already attempted",
         )
     return None
+
+
+def _log_branch_head_replaced(
+    full_ref: str, replaced_oid: str, commit_oid: str
+) -> None:
+    """The one record of which oid a lease push replaced.
+
+    The replaced oid is evidence for an operator reading why a branch moved,
+    not identity: the receipt this push produces must be the same bytes a
+    later crash readback of the same accepted send reconstructs, and a
+    readback has no way to recover which oid a now-overwritten branch used to
+    carry.
+    """
+
+    _LOG.info(
+        "A lease push replaced a branch head nobody reviews any more: %s",
+        full_ref,
+        extra={
+            "event": "git_transport_push_replaced_branch_head",
+            "full_ref": full_ref,
+            "replaced_oid": replaced_oid,
+            "commit_oid": commit_oid,
+        },
+    )
 
 
 class GitCommandRunner(Protocol):
@@ -312,6 +339,8 @@ class GitTransportEffectAdapter:
         # that moves between that read and this send fails the lease and stays
         # as it is, so no send ever overwrites a value it did not observe.
         leased = "0" * len(expected) if replaced_oid is None else replaced_oid
+        if replaced_oid is not None:
+            _log_branch_head_replaced(full_ref, replaced_oid, expected)
         self._remote_git(
             (
                 "push",
@@ -324,7 +353,7 @@ class GitTransportEffectAdapter:
             ),
             in_store=True,
         )
-        return self._readback_after_send(intent, request, expected, replaced_oid)
+        return self._readback_after_send(intent, request, expected)
 
     def publish(
         self, intent: EffectIntent, request: ReviewedDocumentationPullRequest
@@ -653,10 +682,7 @@ class GitTransportEffectAdapter:
         return result.stdout.decode("ascii", errors="strict").strip()
 
     def _performed(
-        self,
-        request: PushAtelierCommit,
-        commit_oid: str,
-        replaced_oid: str | None = None,
+        self, request: PushAtelierCommit, commit_oid: str
     ) -> PerformedEffect:
         receipt = PushAtelierCommitReceipt(
             self._remote.identity,
@@ -667,22 +693,17 @@ class GitTransportEffectAdapter:
             request.head_branch.value,
             request.author,
             request.committer,
-            replaced_oid,
         )
         return PerformedEffect(
             EffectId(commit_oid), EffectResult(receipt.result_bytes())
         )
 
     def _readback_after_send(
-        self,
-        intent: EffectIntent,
-        request: PushAtelierCommit,
-        expected: str,
-        replaced_oid: str | None,
+        self, intent: EffectIntent, request: PushAtelierCommit, expected: str
     ) -> PerformedEffect | EffectUnknownOutcome:
         observation = self._remote_ref(request.head_branch.full_ref)
         if isinstance(observation, _RemoteRefFound) and observation.oid == expected:
-            return self._performed(request, expected, replaced_oid)
+            return self._performed(request, expected)
         return _unknown(intent, observation)
 
     def _credential_arguments(self) -> tuple[str, ...]:

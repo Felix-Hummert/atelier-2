@@ -777,9 +777,17 @@ class LiveGitHubHeadBranchPullRequests:
             for pull_request in page.pull_requests:
                 state = pull_request.get("state")
                 if state == _OPEN_PULL_REQUEST_STATE:
-                    return PullRequestOpenOnHeadBranch(
-                        _integer_field(pull_request, "number", "pull request listing")
-                    )
+                    number = pull_request.get("number")
+                    if not isinstance(number, int) or isinstance(number, bool):
+                        return HeadBranchPullRequestsUnreadable(
+                            UnknownOutcomeReason(
+                                page.status_code,
+                                page.duration_milliseconds,
+                                "an open pull request on this head branch names "
+                                f"no integer 'number' field: {number!r}",
+                            )
+                        )
+                    return PullRequestOpenOnHeadBranch(number)
                 if state != _CLOSED_PULL_REQUEST_STATE:
                     return HeadBranchPullRequestsUnreadable(
                         UnknownOutcomeReason(
