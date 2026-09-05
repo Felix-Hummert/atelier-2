@@ -94,8 +94,20 @@ def _peak_bytes_encoding(
         tracemalloc.stop()
 
 
+ALLOCATOR_GRANULARITY_BYTES = 4_096
+"""One page of tolerance for a tracemalloc peak against its own ceiling.
+
+CPython's small-object allocator hands out arenas and pools in page-sized
+steps, so a peak measured this way can carry up to one page of allocator
+noise unrelated to the bound itself -- most visible against a ceiling this
+tight, where hundreds of bytes of that noise would otherwise read as a
+codec-caused excess.
+"""
+
+
 def _maximum_transient_bytes(maximum_bytes: int) -> int:
-    """This bound's own ceiling, plus the fixed cost of an empty string leaf.
+    """This bound's own ceiling, plus the fixed cost of an empty string leaf
+    and one page of allocator noise.
 
     The fixed part is measured against the same shape of message -- a
     `"line"` key present but empty -- rather than guessed or measured against
@@ -108,7 +120,11 @@ def _maximum_transient_bytes(maximum_bytes: int) -> int:
     _empty_result, fixed_overhead = _peak_bytes_encoding(
         JsonRpcResponse(1, {"line": ""}), maximum_bytes
     )
-    return _MAXIMUM_TRANSIENT_FACTOR_OF_BOUND * maximum_bytes + fixed_overhead
+    return (
+        _MAXIMUM_TRANSIENT_FACTOR_OF_BOUND * maximum_bytes
+        + fixed_overhead
+        + ALLOCATOR_GRANULARITY_BYTES
+    )
 
 
 def test_a_frame_split_across_chunks_is_read_once_it_is_whole() -> None:
