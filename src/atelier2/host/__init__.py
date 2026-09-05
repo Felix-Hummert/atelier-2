@@ -350,12 +350,6 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             grok_workspace_tools_start_refusal=grok.workspace_tools_start_refusal,
             codex_subscription=codex.settings,
             codex_start_refusal=codex.start_refusal,
-            runner_lease_root=parsed.runner_lease_root,
-            runner_image=parsed.runner_image,
-            runner_image_digest=parsed.runner_image_digest,
-            runner_console_container=parsed.runner_console_container,
-            runner_core_identity_directory=parsed.runner_core_identity_directory,
-            runner_accept_timeout_seconds=parsed.runner_accept_timeout_seconds,
         )
         settings = _atelier_doors_attested(settings)
     except ValueError as refusal:
@@ -971,20 +965,6 @@ def _argument_parser() -> argparse.ArgumentParser:
         choices=tuple(mode.value for mode in CodexSandboxMode),
         default=CodexSandboxMode.READ_ONLY.value,
     )
-    # The Runner-lease deployment (`#540` C-4). All six or none: a `RUNNER_LEASE`
-    # carrier served with only part of its manifest would leave the runner
-    # session guessing at the rest, so `DbosRuntimeSettings.__post_init__` --
-    # reached through `HostSettings.runtime_settings()` -- refuses a partial
-    # group by name, and `_serve` surfaces that refusal at the command line.
-    # Its seventh manifest fact, the source commit, is the already-required
-    # `--source-commit`; `HostSettings` carries that value into the manifest
-    # once this deployment is declared rather than asking for it twice.
-    serve_parser.add_argument("--runner-lease-root", type=Path)
-    serve_parser.add_argument("--runner-image")
-    serve_parser.add_argument("--runner-image-digest")
-    serve_parser.add_argument("--runner-console-container")
-    serve_parser.add_argument("--runner-core-identity-directory", type=Path)
-    serve_parser.add_argument("--runner-accept-timeout-seconds", type=float)
     migrate_parser = commands.add_parser(
         "migrate",
         help="raise an existing store to the current schema, offline",

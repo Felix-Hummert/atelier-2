@@ -122,9 +122,7 @@ class AuthReference:
 
     Never the credential value and never a host path -- both sides of the
     wire check this exact typed form and refuse anything else. Each provider
-    owns its own derivation into this shape; the fake-free candidate's lives
-    in `atelier2.adapters.free_runner_executor`, the one production adapter
-    reachable from both Core's encode side and the Runner's resolve side.
+    owns its own derivation into this shape.
     """
 
     value: str

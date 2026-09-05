@@ -10,9 +10,7 @@ waits for the matching health identity, and prints its exact shell-safe
 teardown command from a private candidate-lifecycle descriptor, so later
 checkout changes cannot redirect cleanup. It has no provider executable,
 credential/configuration or host-home/scratch mount, Runner service, or
-external execution claim; its entrypoint can carry an operator-declared
-Runner-lease deployment from `ATELIER2_RUNNER_*` environment variables, which
-the disposable candidate leaves undeclared, so it starts runner-free. The
+external execution claim. The
 operator runbook is
 [OPERATIONS.md](../OPERATIONS.md); network hardening remains
 [ADR 0009](../decisions/0009-runner-trust.md).

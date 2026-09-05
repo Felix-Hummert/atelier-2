@@ -62,7 +62,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.github import (
     live_github_effect_registry,
     live_github_issue_source,
@@ -138,7 +137,6 @@ from atelier2.host.run_command import REQUEST_TIMEOUT_SECONDS
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     AgentAttemptWorkspaceLease,
-    AgentExecutorCarrier,
     AgentExecutorFactoryV2,
     AgentExecutorKey,
     AgentExecutorRegistration,
@@ -313,18 +311,6 @@ class HostSettings:
     grok_workspace_tools_start_refusal: str | None = None
     codex_subscription: CodexSubscriptionSettings | None = None
     codex_start_refusal: str | None = None
-    # The Runner-lease deployment (`#540` C-3.6): declared together or not at
-    # all -- `DbosRuntimeSettings.__post_init__`, reached through
-    # `runtime_settings()` below, owns that refusal so it stays one owner
-    # rather than a second copy of the same rule here. `source_commit` above
-    # doubles as the manifest's own provenance fact once this deployment is
-    # declared; it is not repeated as a seventh flag.
-    runner_lease_root: Path | None = None
-    runner_image: str | None = None
-    runner_image_digest: str | None = None
-    runner_console_container: str | None = None
-    runner_core_identity_directory: Path | None = None
-    runner_accept_timeout_seconds: float | None = None
     # The provider-probe receipt gate's evidence directory (`#1013`): `None`
     # takes the same default `atelier2 provider-canary` already writes to
     # (`default_provider_canary_state_directory`, reused rather than a second
@@ -363,15 +349,6 @@ class HostSettings:
             bootstrap_project_root=self.project_root,
             agent_termination_grace_seconds=self.agent_termination_grace_seconds,
             sqlite_lock_timeout_seconds=self.sqlite_lock_timeout_seconds,
-            runner_lease_root=self.runner_lease_root,
-            runner_image=self.runner_image,
-            runner_image_digest=self.runner_image_digest,
-            runner_console_container=self.runner_console_container,
-            runner_core_identity_directory=self.runner_core_identity_directory,
-            runner_accept_timeout_seconds=self.runner_accept_timeout_seconds,
-            runner_lease_source_commit=(
-                self.source_commit if self.runner_lease_root is not None else None
-            ),
             provider_probe_receipt_directory=(
                 self.provider_probe_receipt_directory
                 if self.provider_probe_receipt_directory is not None
@@ -387,16 +364,6 @@ class HostSettings:
         object.__setattr__(self, "database_path", database_path)
         object.__setattr__(self, "effect_store_path", effect_store_path)
         object.__setattr__(self, "frontend_dist", frontend_dist)
-        if self.runner_lease_root is not None:
-            object.__setattr__(
-                self, "runner_lease_root", self.runner_lease_root.resolve()
-            )
-        if self.runner_core_identity_directory is not None:
-            object.__setattr__(
-                self,
-                "runner_core_identity_directory",
-                self.runner_core_identity_directory.resolve(),
-            )
         if self.provider_probe_receipt_directory is not None:
             object.__setattr__(
                 self,
@@ -648,34 +615,6 @@ def _own_service_url(settings: HostSettings) -> str:
     host = settings.host
     address = f"[{host}]" if ":" in host and not host.startswith("[") else host
     return f"http://{address}:{settings.port}"
-
-
-def _runner_lease_executor_registrations(
-    settings: HostSettings,
-) -> tuple[AgentExecutorRegistration, ...]:
-    """The fake-free candidate as this deployment's one `RUNNER_LEASE` offer.
-
-    `#540` C-3.6's slice: only the fixed fake-free candidate is served this
-    way, and only once the whole Runner-lease deployment is declared
-    (`DbosRuntimeSettings.__post_init__`, reached through
-    `runtime_settings()`, refuses a partial declaration by name). Real
-    providers over a Runner lease wait on `#15` and B-3.
-
-    Its two jobs are printing a line and holding until it is reaped, so the
-    call reaches no file of the attempt and the registration says `WITHHELD`
-    rather than keeping the permissive default: a node that pins a tool grant
-    is refused against this candidate instead of being cast onto it (#1166).
-    """
-
-    if settings.runner_lease_root is None:
-        return ()
-    return (
-        AgentExecutorRegistration.startable(
-            FreeRunnerExecutorFactory(),
-            AgentExecutorCarrier.RUNNER_LEASE,
-            WorkspaceFileTools.WITHHELD,
-        ),
-    )
 
 
 _MODEL_DISCOVERY_OUTPUT_BYTES = 1_048_576
@@ -1283,10 +1222,7 @@ def compose_application(
     the one caller that turns it on, for its own served process's own
     runtime (issue #1117).
     """
-    subscription_executors = (
-        *_subscription_executor_registrations(settings),
-        *_runner_lease_executor_registrations(settings),
-    )
+    subscription_executors = _subscription_executor_registrations(settings)
     # Read once: the same connection record composes the effect adapter, the
     # queue sweep's own work-item reads, and the import door's tracker source.
     source_connection = _project_source_connection(settings)
