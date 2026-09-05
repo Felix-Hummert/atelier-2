@@ -53,7 +53,6 @@ from atelier2.contracts.schemas_v3 import (
 from atelier2.host.conductor_workflow import (
     CONDUCTOR_DOOR_SERVER_NAME,
     CONDUCTOR_DOOR_TOOLS,
-    CONDUCTOR_REPORT_SCHEMA,
 )
 from atelier2.host.mcp_tools import MCP_SERVER_NAME, McpToolName
 from atelier2.ports.agent_executions import AgentProcessInvocation
@@ -72,6 +71,35 @@ from tests.scenarios.agents import (
 )
 
 _LOOPBACK_SERVICE_URL = "http://127.0.0.1:8422"
+
+# A nontrivial output schema this scenario declares -- its shape does not
+# matter to what these tests prove (that a declared schema changes the job,
+# never the door grant, and that the seam decodes exactly what it admits);
+# it only needs to be a real JSON Schema `_EPISODE_REPORT` below validates
+# against.
+_SAMPLE_OUTPUT_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "required": [
+            "answer",
+            "started_run_ids",
+            "carried_context",
+            "carried_context_truncated",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "answer": {"type": "string", "minLength": 1},
+            "started_run_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+            "carried_context": {"type": "string"},
+            "carried_context_truncated": {"type": "boolean"},
+        },
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+).encode()
 
 
 def doors_deployment(root: Path, name: str, program: str) -> ClaudeAtelierDoorsSettings:
@@ -240,7 +268,7 @@ def test_a_schema_bearing_doors_call_grants_no_tool_for_the_schema(
     settings = doors_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
     executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
     command = executor.prepare_process(
-        doors_request(declared_output_schema_bytes=CONDUCTOR_REPORT_SCHEMA)
+        doors_request(declared_output_schema_bytes=_SAMPLE_OUTPUT_SCHEMA)
     )
 
     assert "--tools=" in command.arguments
@@ -251,7 +279,7 @@ def test_a_schema_bearing_doors_call_grants_no_tool_for_the_schema(
         argument.startswith("--json-schema") for argument in command.arguments
     )
     assert command.standard_input is not None
-    assert command.standard_input.endswith(CONDUCTOR_REPORT_SCHEMA)
+    assert command.standard_input.endswith(_SAMPLE_OUTPUT_SCHEMA)
     executor.release_credential_channel(command)
     executor.close()
 
@@ -482,8 +510,8 @@ def test_a_doors_attempt_leaves_none_of_the_scrub_residue_in_its_workspace(
 
 # The report every fake episode below answers with. Its field names are this
 # scenario's, not a second owner's: what makes them right is that
-# `CONDUCTOR_REPORT_SCHEMA` -- the published contract the run really pins --
-# admits the value, which every assertion here goes through.
+# `_SAMPLE_OUTPUT_SCHEMA` -- the schema the request declares -- admits the
+# value, which every assertion here goes through.
 _EPISODE_REPORT = {
     "answer": "Started the tidy workflow; run-tidy-1 is running.",
     "started_run_ids": ["run-tidy-1"],
@@ -546,7 +574,7 @@ def episode_output(settings: ClaudeAtelierDoorsSettings, workspace: Path) -> byt
     """One whole episode: the real vector launched, and its real decode."""
 
     executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
-    request = doors_request(declared_output_schema_bytes=CONDUCTOR_REPORT_SCHEMA)
+    request = doors_request(declared_output_schema_bytes=_SAMPLE_OUTPUT_SCHEMA)
     command = executor.prepare_process(request)
     outcome = executor.decode_process_completion(
         leased(request, command, workspace), launched(command, workspace)
@@ -559,7 +587,7 @@ def episode_output(settings: ClaudeAtelierDoorsSettings, workspace: Path) -> byt
 def report_verdict(output: bytes) -> InstanceVerdict:
     """What the output seam makes of these bytes, through its own owner."""
 
-    schema = read_schema_document(CONDUCTOR_REPORT_SCHEMA)
+    schema = read_schema_document(_SAMPLE_OUTPUT_SCHEMA)
     assert isinstance(schema, SchemaAccepted), schema
     return read_instance_document(output, schema)
 

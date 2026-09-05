@@ -2,11 +2,10 @@ schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/7"
 
 # Phase B of the conductor (#7): the first executor whose tools reach the
-# product's own API, and the workflow document that consumes it. Offline
-# proofs only -- the billed conformance probe (door fires, built-ins stay
-# imitation, no customization returns without safe mode) is a separate
-# operator-gated step and is deliberately NOT a sentence here: no offline test
-# may claim it.
+# product's own API. Offline proofs only -- the billed conformance probe
+# (door fires, built-ins stay imitation, no customization returns without
+# safe mode) is a separate operator-gated step and is deliberately NOT a
+# sentence here: no offline test may claim it.
 #
 # What is deliberately absent, and why:
 #
@@ -22,6 +21,11 @@ story = "https://github.com/FlexOr2/atelier-2/issues/7"
 #     live 400 before any model started (#1188) -- so no vector here carries
 #     the flag. The declared schema closes the job instead, and the answer is
 #     judged at the output seam, which is what the two sentences below say.
+#   - NO conductor-document sentence. Operator ruling 05.09.2026 (audit #1244
+#     finding 10) deleted the loop{wait, agent} document's production
+#     builder for want of a caller; the Workbench e2e proof now builds the
+#     same shape as test-owned scenario data in tests/e2e/conductor_seed.py,
+#     which carries no acceptance sentence of its own.
 
 [[sentence]]
 id = "the-doors-vector-admits-exactly-the-granted-doors"
@@ -34,7 +38,3 @@ text = "Ten identical episodes whose node declared the conductor report schema e
 [[sentence]]
 id = "an-episode-answering-no-such-value-is-still-refused"
 text = "An episode whose answer carries no value the declared schema admits hands that answer on unchanged, so the output seam refuses it by name rather than any narrowing accepting or repairing it."
-
-[[sentence]]
-id = "the-conductor-document-carries-its-own-fence"
-text = "The conductor workflow document parses under the production V3 grammar as one loop round -- a wait node followed by an agent node, capped at the conductor's own named ceiling of 24 rounds -- whose agent instruction names only the three granted doors and carries the recursion-fence sentence, and the builder refuses a document that lost the fence or authors an order naming the conductor itself."

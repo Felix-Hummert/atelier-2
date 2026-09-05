@@ -1,11 +1,49 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Iterator
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
+if TYPE_CHECKING:
+    from atelier2.adapters.dbos.runtime import _DbosProcessOwner
+
 PROOF_MARKER = "proves"
+DBOS_RUNTIME_MODULE = "atelier2.adapters.dbos.runtime"
+
+
+@pytest.fixture(autouse=True)
+def dbos_runtime_binding_is_left_free() -> Iterator[None]:
+    """Fail the test that ends while the process-wide DBOS binding is still held.
+
+    A process owns one DBOS runtime binding, so a test that opens a runtime and
+    never closes it -- an assertion, a timeout, or a refusal that never came,
+    between opening and closing -- makes every later runtime in that worker
+    refuse. Releasing the binding here, and failing the test that kept it, is
+    what keeps one broken test from being read as hundreds of them.
+
+    A process that never imported the runtime cannot hold a binding, so the
+    module is looked up rather than imported and this costs a test that has no
+    runtime nothing.
+    """
+
+    yield
+    module = sys.modules.get(DBOS_RUNTIME_MODULE)
+    if module is None:
+        return
+    owner = cast("_DbosProcessOwner", module._PROCESS_OWNER)
+    held = owner._bound
+    if held is None:
+        return
+    database = held.settings.database_path
+    while owner._bound is not None:
+        owner.release(held)
+    pytest.fail(
+        "this test ended still holding the process-wide DBOS runtime binding "
+        f"of {database}"
+    )
 
 
 @pytest.fixture(
