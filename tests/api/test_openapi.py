@@ -64,6 +64,7 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId
+from scripts.write_openapi_frozen import rendered_document
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 FROZEN_DOCUMENT_PATH = Path(__file__).with_name("openapi_frozen.json")
@@ -95,16 +96,6 @@ def api_routes(app: FastAPI) -> Iterator[RouteContext]:
     for route in iter_route_contexts(app.routes):
         if isinstance(route.original_route, APIRoute):
             yield route
-
-
-def rendered_document(document: dict[str, Any]) -> str:
-    """The published document as the frozen artefact stores it.
-
-    Byte equality is the point: it pins the order of the ``paths`` keys, which
-    follows registration order, on top of every value the document carries.
-    """
-
-    return json.dumps(document, separators=(",", ":"))
 
 
 NODE_DETAIL_PATH = API_PREFIX + "/runs/{public_ref}/nodes/{node_id}"
@@ -416,13 +407,9 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact carries the declared wire changes of the heads that regenerated
-    it. This head publishes what a queue policy may now state -- the workflow
-    lineage, priority rank and automation disposition a labelled item with no
-    proposal is proposed under -- and the source every proposal names, so a
-    reader can tell the operator's own triage from one the policy wrote
-    (#1236).
-    Refreshing the artefact alongside a refactor is what this test still refuses.
+    `scripts/write_openapi_frozen.py` owns the artefact's serialisation and
+    regenerates it; this test only refuses a route or schema change that ran
+    without that regeneration.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
