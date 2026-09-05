@@ -1336,6 +1336,16 @@ the harness observes them.
 
 ## Land a pull request
 
+Every pull request against `main` carries exactly one typed classification
+line in its body: `Work-Item: #n` together with a closing reference for that
+same item (for example `Work-Item: #1267` plus `Closes #1267`), or `No-Item:
+docs` / `No-Item: fix` for a lane that owns no issue. The required `Landing
+classification` check runs `agent-claim pr-check --pr <n>` and refuses the
+merge when the line is missing, malformed, or does not match the pull
+request's active claim; the agent-claim README's "Landing classification"
+section owns the full semantics (what counts as a valid line, parentage
+through GitHub's sub-issue relation, and every refusal case).
+
 **`gh pr merge --auto --merge` queues a pull request; it does not merge it on
 the spot.** GitHub's merge queue builds a merge candidate from one or more
 armed pull requests, runs `ci.yml` once against that candidate on the
@@ -1425,8 +1435,8 @@ names every path or qualified symbol this tree already carries at its current
 value. An offender missing from the baseline, or one that grew past its listed
 value, turns the gate red; a listed entry that no longer offends is an orphan
 and is red too. Shrinking a listed offender, or leaving it exactly at its
-baseline value, is quiet and rewrites nothing. This script is not wired into
-`ci.yml` yet -- wiring it in is tracked by #1263.
+baseline value, is quiet and rewrites nothing. This runs as a step of the
+`quality` job.
 
 ## SonarCloud and CodeQL
 
@@ -1457,23 +1467,26 @@ live list of what actually runs.
 
 Machine-checkable rules are gates there. Running today: the architecture check
 (`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
-above, the dead-code gates above, and `ruff check --select ANN401` over
-`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The size
-and complexity ratchet above is built and green but not yet a CI gate --
-wiring it in is tracked by #1263. The narrative check is ruled but unbuilt,
-and the core-test-import ratchet starts only once the first adapter-bound test
-module has moved.
+above, the size and complexity ratchet above, the dead-code gates above, the
+frozen OpenAPI document check below, and `ruff check --select ANN401` over
+`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The
+narrative check is ruled but unbuilt, and the core-test-import ratchet starts
+only once the first adapter-bound test module has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become
-gates, because a check cannot judge a cut. Everything a machine cannot judge is
-ruled to run as a scheduled agent audit on the self-hosted runner, producing one
-distributor issue per run (operator ruling 04.09.2026); that workflow does not
-exist yet.
+gates, because a check cannot judge a cut. `scripts/report_corridor.py` proves
+the slice-size sentence this way: it runs as a step of the `quality` job,
+prints the change's production file and line counts on every run, and only
+over the corridor does it write the job summary and update its one pull
+request comment (marker `<!-- corridor-report -->`) -- it always exits 0.
+Everything else a machine cannot judge is ruled to run as a scheduled agent
+audit on the self-hosted runner, producing one distributor issue per run
+(operator ruling 04.09.2026); that workflow does not exist yet.
 
 After a route change, regenerate the frozen OpenAPI document with `uv run
 python scripts/write_openapi_frozen.py` before committing; its `--check` twin
-becomes a CI gate once #917 wires it into `ci.yml`.
+runs as a step of the `quality` job.
 
 ## Verification
 
