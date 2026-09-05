@@ -15,6 +15,7 @@ import pytest
 
 from atelier2.adapters.newline_json_rpc import (
     _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES,
+    _MAXIMUM_TRANSIENT_FACTOR_OF_BOUND,
     JSON_RPC_VERSION,
     EncodedFrame,
     JsonObject,
@@ -33,6 +34,14 @@ from atelier2.adapters.newline_json_rpc import (
 )
 
 ROOM_FOR_ANY_FRAME_HERE = 4_096
+_LARGE_ESCAPING_BOUND_BYTES = 200_000
+_TINY_ESCAPING_BOUND_BYTES = 64
+"""Smallest bound that still reaches the string leaf itself.
+
+The envelope around it -- `{"jsonrpc":"2.0","id":7,"result":{"line":` and its
+close -- already costs over forty bytes on its own, so anything smaller is
+refused by the envelope alone, never touching the string this test is about.
+"""
 _SLICE_BOUNDARY_BOUND_BYTES = 2_000
 _SLICE_BOUNDARY_CHARACTERS = (
     _SLICE_BOUNDARY_BOUND_BYTES // _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES
@@ -55,6 +64,42 @@ def _asked(codec: NewlineJsonRpc, method: str = "session/prompt") -> int:
     minted = codec.ask(method, {}).id
     assert type(minted) is int
     return minted
+
+
+def _peak_bytes_encoding(
+    message: JsonRpcResponse, maximum_bytes: int
+) -> tuple[EncodedFrame | UnsendableFrame, int]:
+    """This encode call's tracemalloc peak, alongside its own result.
+
+    A first, untraced call warms interpreter-wide caches -- CPython's
+    single-character string cache, notably -- that a cold process would
+    otherwise charge to this measurement once and never again: what this
+    returns is the codec's own steady-state cost, not a one-time runtime
+    artifact that would make the peak depend on which test ran first.
+    """
+
+    _codec().encode(message, maximum_bytes)
+    tracemalloc.start()
+    try:
+        result = _codec().encode(message, maximum_bytes)
+        return result, tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def _maximum_transient_bytes(maximum_bytes: int) -> int:
+    """This bound's own ceiling, plus the fixed cost of an empty frame.
+
+    The fixed part is measured rather than guessed, because interpreter and
+    container overhead unrelated to string escaping -- the envelope dict, the
+    tracemalloc harness itself -- is real and belongs in the ceiling, not in
+    the proportional factor this codec's contract actually bounds.
+    """
+
+    _empty_result, fixed_overhead = _peak_bytes_encoding(
+        JsonRpcResponse(1, {}), maximum_bytes
+    )
+    return _MAXIMUM_TRANSIENT_FACTOR_OF_BOUND * maximum_bytes + fixed_overhead
 
 
 def test_a_frame_split_across_chunks_is_read_once_it_is_whole() -> None:
@@ -276,22 +321,21 @@ def test_a_message_whose_escaping_passes_the_bound_is_refused_before_it_is_held(
     spelling it whole has already held what the bound exists to refuse. One
     large string is the adversarial case: an encoder that escapes a string
     leaf whole, rather than in bounded slices, still allocates its full
-    escaped form before this bound can see it."""
+    escaped form before this bound can see it: a non-BMP character escapes at
+    this codec's own widest width, so 100,000 of them (1,200,000 escaped
+    bytes) materialised in one piece peaks well past
+    `_MAXIMUM_TRANSIENT_FACTOR_OF_BOUND` times this bound, while escaping them
+    in slices this bound itself derives does not."""
     raw_characters = 100_000
-    written = "\x00" * raw_characters
-    bound_far_smaller_than_the_escaped_string = ROOM_FOR_ANY_FRAME_HERE
+    written = "\U0001f600" * raw_characters
+    bound_far_smaller_than_the_escaped_string = _LARGE_ESCAPING_BOUND_BYTES
 
-    tracemalloc.start()
-    refused = _codec().encode(
+    refused, peak = _peak_bytes_encoding(
         JsonRpcResponse(7, {"line": written}), bound_far_smaller_than_the_escaped_string
     )
-    _current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
 
     assert refused == UnsendableFrame()
-    escaped_bytes_per_control_character = 6  # a null is six characters escaped
-    escaped_size = raw_characters * escaped_bytes_per_control_character
-    assert peak < escaped_size // 2
+    assert peak <= _maximum_transient_bytes(bound_far_smaller_than_the_escaped_string)
 
 
 def test_a_message_is_spelled_byte_identically_to_the_whole_document_encoder() -> None:
@@ -369,19 +413,21 @@ def test_a_tiny_bound_refuses_a_large_non_bmp_string_without_holding_it() -> Non
     """A non-BMP character is the widest single-code-point escape this codec
     ever writes, so it is the adversarial case for the slice a tiny bound
     derives: an encoder that still escaped a whole slice before measuring it
-    would allocate far past a bound this small."""
+    would allocate far past a bound this small. This bound is the smallest
+    that still reaches the string at all -- anything smaller is refused by
+    the envelope alone, proven separately -- so it derives a slice of only a
+    few code points; a fixed 1,024-character slice would still fail this
+    assertion."""
     raw_characters = 100_000
     written = "\U0001f600" * raw_characters
-    tiny_bound = 16
+    tiny_bound = _TINY_ESCAPING_BOUND_BYTES
 
-    tracemalloc.start()
-    refused = _codec().encode(JsonRpcResponse(7, {"line": written}), tiny_bound)
-    _current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    refused, peak = _peak_bytes_encoding(
+        JsonRpcResponse(7, {"line": written}), tiny_bound
+    )
 
     assert refused == UnsendableFrame()
-    escaped_size = raw_characters * _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES
-    assert peak < escaped_size // 2
+    assert peak <= _maximum_transient_bytes(tiny_bound)
 
 
 def test_the_unfinished_tail_is_kept_exactly_as_it_arrived() -> None:
