@@ -898,6 +898,17 @@ admitting only non-failing pull requests) -- is an operator/head step done
 once, through `gh api`, after this change lands; the queue has no effect on
 pull requests opened before that step runs.
 
+The Python pipeline separates fast feedback from the coverage-instrumented
+suite: `Python: architecture, lint, types, tests` keeps the existing required
+check name and proves the architecture, dead-code, documentation,
+product-status, ANN401, Ruff, formatting, Pyright, and screenshot-review gates,
+while the independent `Python: tests` job proves non-crash behavior and
+publishes its JUnit and coverage reports. This lets static failures report
+without waiting roughly 17 minutes for pytest; `Static and behavior` still
+waits for both jobs, so every required-check name and its protection meaning
+stays unchanged. The operator may later add `Python: tests` as its own required
+context.
+
 ## Dead-code gates
 
 Two gates keep code that nothing reaches out of the tree, and they do not yet
@@ -950,6 +961,19 @@ gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
 two one owner *and* deleting its entry.
 
+## The size and complexity ratchet
+
+`uv run --locked python scripts/check_size_ratchet.py` holds three more debt
+shapes in `src/atelier2` from growing: files at 800 lines or more, functions
+and methods at 60 lines or more (measured with `ast`), and functions ruff's
+`C901` McCabe check reports over a complexity of 15. `size_ratchet_baseline.toml`
+names every path or qualified symbol this tree already carries at its current
+value. An offender missing from the baseline, or one that grew past its listed
+value, turns the gate red; a listed entry that no longer offends is an orphan
+and is red too. Shrinking a listed offender, or leaving it exactly at its
+baseline value, is quiet and rewrites nothing. This runs as a step of the
+`quality` job.
+
 ## SonarCloud and CodeQL
 
 `sonar-project.properties` at the repository root configures SonarCloud's
@@ -962,7 +986,7 @@ measurement week described in #1203, which compares Sonar's findings against
 the duplicate ratchet above and the `C901` complexity count.
 
 Automatic Analysis cannot read coverage, so analysis runs from CI instead
-(ruling 05.09.2026, #1203): the `quality` job's pytest run writes
+(ruling 05.09.2026, #1203): the `tests` job's pytest run writes
 `reports/coverage.xml` (`pytest-cov`) and the `frontend` job's vitest run
 writes `reports/frontend-coverage/lcov.info` (`@vitest/coverage-v8`); the
 `sonar` job downloads both and runs `sonarqube-scan-action` with the
@@ -979,18 +1003,26 @@ live list of what actually runs.
 
 Machine-checkable rules are gates there. Running today: the architecture check
 (`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
-above, and the dead-code gates above. Dispatched and not landed yet: `ruff
-check --select ANN401` over `contracts`, `ports`, `application` and `api`
-(#1196). The size, complexity and narrative checks are ruled but unbuilt, and
-the core-test-import ratchet starts only once the first adapter-bound test
-module has moved.
+above, the size and complexity ratchet above, the dead-code gates above, the
+frozen OpenAPI document check below, and `ruff check --select ANN401` over
+`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The
+narrative check is ruled but unbuilt, and the core-test-import ratchet starts
+only once the first adapter-bound test module has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become
-gates, because a check cannot judge a cut. Everything a machine cannot judge is
-ruled to run as a scheduled agent audit on the self-hosted runner, producing one
-distributor issue per run (operator ruling 04.09.2026); that workflow does not
-exist yet.
+gates, because a check cannot judge a cut. `scripts/report_corridor.py` proves
+the slice-size sentence this way: it runs as a step of the `quality` job,
+prints the change's production file and line counts on every run, and only
+over the corridor does it write the job summary and update its one pull
+request comment (marker `<!-- corridor-report -->`) -- it always exits 0.
+Everything else a machine cannot judge is ruled to run as a scheduled agent
+audit on the self-hosted runner, producing one distributor issue per run
+(operator ruling 04.09.2026); that workflow does not exist yet.
+
+After a route change, regenerate the frozen OpenAPI document with `uv run
+python scripts/write_openapi_frozen.py` before committing; its `--check` twin
+runs as a step of the `quality` job.
 
 ## Verification
 

@@ -2,6 +2,7 @@
   "name": "atelier-2-cockpit",
   "private": true,
   "version": "0.0.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "vite build",

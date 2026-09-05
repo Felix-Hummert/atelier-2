@@ -163,7 +163,7 @@ def assert_python_carrier_configuration(
     assert f'requires-python = "=={PYTHON_VERSION}"' in project
     assert f'requires-python = "=={PYTHON_VERSION}"' in lock
     configured_versions = _CI_PYTHON_VERSION.findall(workflow)
-    assert configured_versions == [PYTHON_VERSION] * 4
+    assert configured_versions == [PYTHON_VERSION] * 5
 
 
 def assert_isolated_compose(document: dict[str, Any]) -> None:
