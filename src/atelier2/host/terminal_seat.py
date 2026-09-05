@@ -24,6 +24,7 @@ import os
 import secrets
 import shlex
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -41,6 +42,8 @@ SEAT_STAGED_NAME_BYTES = 8
 HIGHEST_PORT = 65535
 SEAT_DOCUMENT_MODE = 0o600
 SEAT_DIGEST_SEPARATOR = b"\0"
+STATE_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+STAGED_DOCUMENT_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 SYSTEMD_RUN_PROGRAM = "systemd-run"
 SYSTEMCTL_PROGRAM = "systemctl"
 SCOPE_UNIT_SUFFIX = ".scope"
@@ -57,7 +60,7 @@ SYSTEMCTL_ABSENT_EXIT_CODES = frozenset({3, 4})
 
 
 class TerminalSeatCommandFailed(RuntimeError):
-    """A management command the seat issued did not succeed."""
+    """A step of the seat's lifecycle -- a command, or its state file -- failed."""
 
 
 class SeatPresence(Enum):
@@ -399,22 +402,57 @@ class TerminalSeat:
         put in the way.
         """
 
-        document = self.settings.state_directory / self.settings.mcp_document.file_name
-        document.parent.mkdir(parents=True, exist_ok=True)
-        staged = document.with_name(
-            f"{document.name}.{secrets.token_hex(SEAT_STAGED_NAME_BYTES)}"
+        self.settings.state_directory.mkdir(parents=True, exist_ok=True)
+        state_directory = self._opened_state_directory()
+        try:
+            self._replace_document_from_staged(state_directory)
+        finally:
+            os.close(state_directory)
+        return self.settings.state_directory / self.settings.mcp_document.file_name
+
+    def _opened_state_directory(self) -> int:
+        """The state directory itself, held open while the document is placed.
+
+        Every step below works relative to this descriptor, so a directory
+        swapped for a link between the steps cannot redirect the write.
+        """
+
+        try:
+            return os.open(self.settings.state_directory, STATE_DIRECTORY_FLAGS)
+        except OSError as error:
+            raise TerminalSeatCommandFailed(
+                f"the seat's state directory {self.settings.state_directory} "
+                "is not a directory this serve can open"
+            ) from error
+
+    def _replace_document_from_staged(self, state_directory: int) -> None:
+        """Write the document beside its name and move it on, or leave nothing."""
+
+        document = self.settings.mcp_document
+        staged_name = (
+            f"{document.file_name}.{secrets.token_hex(SEAT_STAGED_NAME_BYTES)}"
         )
         descriptor = os.open(
-            staged,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            staged_name,
+            STAGED_DOCUMENT_FLAGS,
             SEAT_DOCUMENT_MODE,
+            dir_fd=state_directory,
         )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as opened:
-            opened.write(self.settings.mcp_document.content)
-            opened.flush()
-            os.fsync(opened.fileno())
-        os.replace(staged, document)
-        return document
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as opened:
+                opened.write(document.content)
+                opened.flush()
+                os.fsync(opened.fileno())
+            os.replace(
+                staged_name,
+                document.file_name,
+                src_dir_fd=state_directory,
+                dst_dir_fd=state_directory,
+            )
+        except BaseException:
+            with suppress(FileNotFoundError):
+                os.unlink(staged_name, dir_fd=state_directory)
+            raise
 
     def _run_checked(self, argv: Sequence[str]) -> None:
         answer = self.host.run(argv)

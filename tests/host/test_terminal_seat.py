@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shlex
 from collections.abc import Callable, Sequence
@@ -491,6 +492,34 @@ def test_a_link_where_the_document_belongs_is_replaced_rather_than_followed(
     assert elsewhere.read_text(encoding="utf-8") == "not the seat's to write"
     assert not document.is_symlink()
     assert document.read_text(encoding="utf-8") == MCP_DOCUMENT.content
+
+
+def test_a_document_that_could_not_be_placed_leaves_nothing_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = settings_for(tmp_path)
+
+    def refuse_to_replace(*_: object, **__: object) -> None:
+        raise OSError("the disk went away")
+
+    monkeypatch.setattr(os, "replace", refuse_to_replace)
+
+    with pytest.raises(OSError, match="the disk went away"):
+        TerminalSeat(settings, FakeSeatHost()).ensure_session()
+
+    assert list(settings.state_directory.iterdir()) == []
+
+
+def test_a_state_directory_that_is_a_link_is_refused(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    settings = settings_for(tmp_path)
+    settings.state_directory.symlink_to(elsewhere)
+
+    with pytest.raises(TerminalSeatCommandFailed, match="state directory"):
+        TerminalSeat(settings, FakeSeatHost()).ensure_session()
+
+    assert list(elsewhere.iterdir()) == []
 
 
 @pytest.mark.parametrize(
