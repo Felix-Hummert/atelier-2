@@ -20,6 +20,7 @@ from pathlib import Path
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
 from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.candidate_reports import ReadPatch
 from atelier2.contracts.project_sources import (
     CandidateTree,
     GitObjectFormat,
@@ -85,9 +86,9 @@ class CandidatesKeptInMemory:
         del lease
         return LeasedWorkingTree(pin, A_TREE_THE_PIN_DOES_NOT_NAME)
 
-    def changes(self, written: LeasedWorkingTree) -> bytes:
+    def changes(self, written: LeasedWorkingTree) -> ReadPatch:
         del written
-        return b""
+        return ReadPatch(b"", stopped_at_the_bound=False)
 
 
 def git_project(

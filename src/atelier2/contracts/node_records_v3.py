@@ -8,7 +8,6 @@ policy activation, supersede markers, and store tables are not this owner.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -82,6 +81,7 @@ class NodeReceiptReason(StrEnum):
     PROJECT_VERIFICATION_FAILED = "project-verification-failed"
     CANDIDATE_CAPTURE_FAILED = "candidate-capture-failed"
     CANDIDATE_UNCHANGED = "candidate-unchanged"
+    PRODUCED_VALUE_REFUSED = "produced-value-refused"
     CANCELLED_BY_OPERATOR = "cancelled-by-operator"
     """The running node's own receipt when an operator's run-cancel ends it.
 
@@ -100,98 +100,6 @@ def node_receipt_reason(token: NodeReceiptReason, verdict: str | None = None) ->
     writer used, rather than on the habit of the writer that happened to run.
     """
     return token.value if verdict is None else f"{token.value}: {verdict}"
-
-
-class NodeReceiptIdentityField(StrEnum):
-    """The JSON keys a judged `node-receipt/v3` adds to the stored reason column.
-
-    The family is a JSON payload, not a new frame domain: old rows keep the
-    plain reason string, new judged rows name these keys beside it. The words
-    stay the reason; these two are the schema identity the judgment used.
-    """
-
-    SCHEMA_REVISION = "schema_revision"
-    VALUE_HASH = "value_hash"
-
-
-_STORED_REASON_FIELD = "reason"
-
-
-def node_receipt_reason_names_a_schema_judgment(reason: str) -> bool:
-    """Whether these words are a schema owner's verdict, not a process ending."""
-
-    token, _separator, _rest = reason.partition(": ")
-    return token in {
-        NodeReceiptReason.OUTPUT_ACCEPTED.value,
-        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value,
-    }
-
-
-def store_node_receipt_reason(
-    reason: str,
-    schema_revision: PublishedRevisionHash | None,
-    value_hash: Sha256Hash | None,
-) -> str:
-    """The reason column: the words, or the words plus the judged identity.
-
-    A receipt nobody judged stays the plain string it has always been. A
-    receipt that judged bytes becomes the JSON object that carries those
-    bytes' schema identity -- same column, same family, no store hop.
-    """
-
-    if schema_revision is None and value_hash is None:
-        return reason
-    if schema_revision is None or value_hash is None:
-        raise ValueError("schema identity is both fields or neither")
-    return json.dumps(
-        {
-            _STORED_REASON_FIELD: reason,
-            NodeReceiptIdentityField.SCHEMA_REVISION.value: schema_revision.value,
-            NodeReceiptIdentityField.VALUE_HASH.value: value_hash.value,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-        ensure_ascii=True,
-    )
-
-
-def read_stored_node_receipt_reason(
-    stored: str,
-) -> tuple[str, PublishedRevisionHash | None, Sha256Hash | None]:
-    """Three truths, never mixed: plain words, named identity, or loud corruption.
-
-    A string that is not an object is an older row, or a receipt nobody
-    judged -- honestly empty identity, words intact. A well-formed object
-    names the words and both identity fields. Anything that looks like an
-    object and is not that shape is unreadable, not empty.
-    """
-
-    if not stored.startswith("{"):
-        return stored, None, None
-    try:
-        payload = json.loads(stored)
-    except json.JSONDecodeError as error:
-        raise ValueError("a node-receipt/v3 payload is unreadable") from error
-    expected = {
-        _STORED_REASON_FIELD,
-        NodeReceiptIdentityField.SCHEMA_REVISION.value,
-        NodeReceiptIdentityField.VALUE_HASH.value,
-    }
-    if not isinstance(payload, dict) or set(payload) != expected:
-        raise ValueError("a node-receipt/v3 payload is unreadable")
-    reason = payload[_STORED_REASON_FIELD]
-    if not isinstance(reason, str) or reason == "":
-        raise ValueError("a node-receipt/v3 payload is unreadable")
-    try:
-        return (
-            reason,
-            PublishedRevisionHash(
-                payload[NodeReceiptIdentityField.SCHEMA_REVISION.value]
-            ),
-            Sha256Hash(payload[NodeReceiptIdentityField.VALUE_HASH.value]),
-        )
-    except (TypeError, ValueError) as error:
-        raise ValueError("a node-receipt/v3 schema identity is unreadable") from error
 
 
 class ProjectedDeliveryStatus(StrEnum):

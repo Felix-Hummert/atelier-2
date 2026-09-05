@@ -1318,6 +1318,7 @@ const runEventSchema = z
           "PROJECT_VERIFICATION_FAILED",
           "CANDIDATE_CAPTURE_FAILED",
           "CANDIDATE_UNCHANGED",
+          "PRODUCED_VALUE_REFUSED",
         ]),
         reason: z.string().min(1).nullable(),
       })

@@ -84,7 +84,6 @@ from atelier2.api.projection.events import bounded_event_summary
 from atelier2.api.references import encode_public_run_reference
 from atelier2.application.compose_node_job import OUTPUT_SCHEMA_REPAIR_HEADING
 from atelier2.contracts.agent_attempts import (
-    MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -92,7 +91,6 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
     CancelAgentAttemptRequest,
-    ProcessExitSignature,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -126,7 +124,10 @@ from atelier2.contracts.node_records_v3 import (
     NodeReceiptReason,
     PersistedReceiptDisposition,
     node_receipt_reason,
-    read_stored_node_receipt_reason,
+)
+from atelier2.contracts.process_endings import (
+    MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
+    ProcessExitSignature,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
@@ -139,6 +140,9 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
+from atelier2.contracts.stored_node_receipt_reasons import (
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -187,6 +191,32 @@ PADDED_PLAN_SCHEMA = PublishedRevision(
     b'"minimum": 1}, "notes": {"type": "string"}}, "required": ["steps"]}',
 )
 """The same plan, with room for a `notes` field a size-bound test can pad."""
+
+PLAN_SCHEMA_DECLARING_A_PATCH = PublishedRevision(
+    RevisionKind.SCHEMA,
+    b'{"type": "object", "properties": {"steps": {"type": "integer", '
+    b'"minimum": 1}, "candidate_diff": {"type": "string"}}, '
+    b'"required": ["steps"], "additionalProperties": false}',
+)
+"""The same plan, whose author made room for the patch the atelier writes."""
+
+PLAN_SCHEMA_DECLARING_A_PATCH_AS_A_NUMBER = PublishedRevision(
+    RevisionKind.SCHEMA,
+    b'{"type": "object", "properties": {"steps": {"type": "integer", '
+    b'"minimum": 1}, "candidate_diff": {"type": "integer"}}, '
+    b'"required": ["steps"], "additionalProperties": false}',
+)
+"""The same room, declared as something no patch can ever be."""
+
+PLAN_SCHEMA_DECLARING_A_PATCH_BESIDE_NOTES = PublishedRevision(
+    RevisionKind.SCHEMA,
+    b'{"type": "object", "properties": {"steps": {"type": "integer", '
+    b'"minimum": 1}, "notes": {"type": "string"}, '
+    b'"candidate_diff": {"type": "string"}}, "required": ["steps"]}',
+)
+"""The same room again, beside a field an answer can fill the whole value with."""
+
+THE_PATCH_THE_ATELIER_READ = "--- a/x\n+++ b/x\n+one line\n"
 
 NODE = "plan"
 SUCCESSOR = "review"
@@ -832,6 +862,121 @@ def test_two_schema_refusals_end_failed_under_output_schema_refused(
     assert terminal_schema == PLAN_SCHEMA.revision_hash
     assert terminal_value_hash == Sha256Hash.of(THE_ANSWER_THE_SCHEMA_REFUSES)
     assert durable_answer(runtime)[2] == RunState.FAILED.value
+
+
+@pytest.mark.proves("a-value-the-atelier-composed-is-refused-under-its-own-name")
+def test_a_patch_this_nodes_own_schema_refuses_never_becomes_a_success(
+    runtime: DbosRuntime,
+) -> None:
+    """The atelier's own property is judged too, and its own answer can be refused.
+
+    The provider's bytes satisfy this schema; the value the node produces once
+    the patch stands in it does not, because the author declared the property as
+    a number. Judging only the provider's half would write an artifact and a
+    completion event carrying a value the very schema they name refuses -- and
+    naming that refusal after the provider would put an agent's name on bytes
+    the atelier wrote.
+    """
+    execution = armed_attempt(runtime, schema=PLAN_SCHEMA_DECLARING_A_PATCH_AS_A_NUMBER)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    refused = store.complete_success(
+        execution,
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS),
+        candidate_diff=THE_PATCH_THE_ATELIER_READ,
+    )
+
+    assert isinstance(refused, AgentAttemptFailed), refused
+    assert (
+        refused.attempt.failure_code is AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED
+    )
+    receipts, completions, run_state, attempt_state = durable_answer(runtime)
+    assert (receipts, completions) == (0, 1)
+    assert run_state == RunState.FAILED.value
+    assert attempt_state == AgentAttemptState.FAILED.value
+    with runtime.engine.connect() as connection:
+        stored = connection.scalar(sa.select(node_receipts_v3.c.reason))
+        artifacts = connection.execute(sa.select(node_artifacts_v3)).all()
+    reason, _schema, judged = read_stored_node_receipt_reason(str(stored))
+    assert reason.startswith(
+        f"{NodeReceiptReason.PRODUCED_VALUE_REFUSED.value}: schema-violated: "
+        "/candidate_diff"
+    )
+    assert judged != Sha256Hash.of(THE_ANSWER_THE_SCHEMA_ADMITS)
+    assert artifacts == []
+
+
+@pytest.mark.proves("a-value-the-atelier-composed-is-refused-under-its-own-name")
+def test_a_patch_with_no_room_beside_the_answer_is_refused_under_its_own_name(
+    runtime: DbosRuntime,
+) -> None:
+    """The other way the atelier's own value fails: an answer that leaves no room.
+
+    Nothing about the schema is violated here -- the value simply cannot be
+    written at all, because saying the patch was cut would already push it past
+    what one produced value carries. It is still the atelier's composition that
+    failed, so it ends under the same word rather than under the provider's.
+    """
+    overhead = len(json.dumps({"steps": 3, "notes": ""}).encode())
+    answered = json.dumps(
+        {"steps": 3, "notes": "x" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - overhead)}
+    ).encode()
+    assert len(answered) == MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    execution = armed_attempt(
+        runtime,
+        document=reviewed_planning_document(PLAN_SCHEMA_DECLARING_A_PATCH_BESIDE_NOTES),
+        schema=PLAN_SCHEMA_DECLARING_A_PATCH_BESIDE_NOTES,
+    )
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    refused = store.complete_success(
+        execution,
+        AgentExecutionResult(answered),
+        candidate_diff=THE_PATCH_THE_ATELIER_READ,
+    )
+
+    assert isinstance(refused, AgentAttemptFailed), refused
+    assert (
+        refused.attempt.failure_code is AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED
+    )
+    with runtime.engine.connect() as connection:
+        stored = connection.scalar(sa.select(node_receipts_v3.c.reason))
+    reason, _schema, _judged = read_stored_node_receipt_reason(str(stored))
+    assert reason.startswith(NodeReceiptReason.PRODUCED_VALUE_REFUSED.value)
+    assert "no room" in reason
+
+
+@pytest.mark.proves("a-succeeded-node-writes-artifact-and-receipt-atomically")
+def test_the_value_a_node_produced_carries_the_patch_its_schema_declares(
+    runtime: DbosRuntime,
+) -> None:
+    """The contrast: the same seam, a schema whose room the patch actually fits.
+
+    The completion event and the artifact carry the answer with the patch in it,
+    and the agent receipt carries the provider's own bytes alone -- two records
+    of two facts, written in the one transaction.
+    """
+    execution = armed_attempt(runtime, schema=PLAN_SCHEMA_DECLARING_A_PATCH)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    succeeded = store.complete_success(
+        execution,
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS),
+        candidate_diff=THE_PATCH_THE_ATELIER_READ,
+    )
+
+    assert isinstance(succeeded, AgentAttemptSucceeded), succeeded
+    with runtime.engine.connect() as connection:
+        payload = connection.scalar(
+            sa.select(run_events.c.payload).where(run_events.c.run_id == RUN.value)
+        )
+        answered = connection.scalar(sa.select(agent_receipts_v2.c.output_bytes))
+        artifact = connection.execute(sa.select(node_artifacts_v3)).mappings().one()
+    written = json.loads(bytes(payload or b""))
+    assert written["steps"] == 3
+    assert written["candidate_diff"] == THE_PATCH_THE_ATELIER_READ
+    assert bytes(answered or b"") == THE_ANSWER_THE_SCHEMA_ADMITS
+    assert bytes(artifact["value"]) == bytes(payload or b"")
 
 
 @pytest.mark.proves("an-admitted-answer-does-not-open-a-repair-round")

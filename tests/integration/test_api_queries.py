@@ -84,7 +84,7 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.node_records_v3 import RunInput, store_node_receipt_reason
+from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV3
@@ -100,6 +100,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.stored_node_receipt_reasons import store_node_receipt_reason
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,

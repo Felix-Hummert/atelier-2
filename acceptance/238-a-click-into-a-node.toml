@@ -46,6 +46,13 @@ story = "https://github.com/FlexOr2/atelier-2/issues/238"
 #
 # The node-detail answer itself is THIS head: one read that hands a caller those
 # layers for one node, as a route, a use case and a query.
+#
+# WHOSE BYTES ARE WHOSE. The provenance layer answers who *answered*, never who
+# authored every byte of the value: the agent receipt is the provider's own bytes
+# and nothing else, while the value a node wrote is what that execution produced
+# -- which, for a node that kept a candidate, is the provider's answer with the
+# atelier's own patch of the tree written into it (#1235). Both sentences below
+# are worded so a reader is never told the named agent typed the whole value.
 
 [[sentence]]
 id = "a-format-three-event-answers-in-the-shape-that-says-so"
@@ -53,7 +60,7 @@ text = "Every event of a format-3 run answers in its own shape: it names the for
 
 [[sentence]]
 id = "a-click-into-a-node-answers-what-it-was-asked-and-wrote"
-text = "One read of one node of a run answers what that node was handed -- the exact job the run composed for its provider, the same bytes the driver passed -- what it wrote, with the hash its own completion event kept, and which agent under which configuration produced it, carrying the receipt's own request hash rather than a hash of the job standing in for it, so a reader is told what the server already knows instead of stitching it together from the run, the events and the receipts."
+text = "One read of one node of a run answers what that node was handed -- the exact job the run composed for its provider, the same bytes the driver passed -- what the node wrote, with the hash its own completion event kept, and which agent under which configuration answered for it, carrying the receipt's own request hash rather than a hash of the job standing in for it, so a reader is told what the server already knows instead of stitching it together from the run, the events and the receipts."
 
 [[sentence]]
 id = "a-node-that-stops-the-run-says-what-it-is-waiting-on"
@@ -72,7 +79,7 @@ text = "A node that cannot be given what its author declared it reads names the 
 
 [[sentence]]
 id = "a-click-into-a-node-shows-what-it-was-asked-and-wrote"
-text = "A click on a node of a run opens that node: the exact job it was handed and the exact value it wrote, both whole rather than previewed, the hash each carries, and which agent under which configuration produced it -- and where usage and duration would stand, the panel says they are not recorded rather than leaving an operator to wonder."
+text = "A click on a node of a run opens that node: the exact job it was handed and the exact value it wrote, both whole rather than previewed, the hash each carries, and which agent under which configuration answered for it -- and where usage and duration would stand, the panel says they are not recorded rather than leaving an operator to wonder."
 
 [[sentence]]
 id = "a-stopped-node-says-so-and-a-waiting-one-does-not"

@@ -247,9 +247,13 @@ def test_what_the_call_really_wrote_survives_the_sweep(
     )
 
     assert written.tree != written.pin.tree
-    changes = GitCandidateTreeStore(
-        tmp_path / "project", tmp_path / "runtime" / "atelier.sqlite"
-    ).changes(written)
+    changes = (
+        GitCandidateTreeStore(
+            tmp_path / "project", tmp_path / "runtime" / "atelier.sqlite"
+        )
+        .changes(written)
+        .read
+    )
     assert b"docs/product/interfaces.md" in changes
     assert b".claude/commands/one.md" in changes
     assert b"package.json" not in changes

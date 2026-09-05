@@ -234,8 +234,24 @@ back from the provider is then read against that schema by the profile owner
 above, inside the transaction that would have written the success and before its
 first row: an answer the schema refuses leaves no agent receipt, no completion
 event and no advanced run, so a run can no longer end successfully on work its
-own contract rejects. The catalog `code-review` and `plan-review` result schemas
-refuse a `revise` with no finding or risk and admit `cannot-judge` only with a
+own contract rejects. That one value is the provider's answer and, for a node
+that kept a candidate, the atelier's own patch of the tree behind it: where the
+node's published output schema declares a `candidate_diff` property, the runtime
+writes the credential-scrubbed diff from the pinned tree to the candidate into
+the value under it — never the provider, whose own bytes stay exactly what the
+agent receipt keeps — so the node that reads the value next judges the change
+rather than an account of it. The patch is cut, with a marker saying so, where it
+would push the value past what a produced value carries, and the value is read
+against that same declared schema once the patch stands in it -- a node whose
+author declared the property as something a patch cannot be, or whose answer
+fills the produced value so completely that not even the marker follows it, ends
+`FAILED` under `PRODUCED_VALUE_REFUSED` with the `produced-value-refused`
+receipt, rather than succeeding with the property quietly absent. That is a
+separate word from the provider's `OUTPUT_SCHEMA_REFUSED` because the refused
+bytes have a separate author: the provider wrote none of them, so it is neither
+named for them nor asked for a repair round about them. The catalog
+`code-review` and `plan-review` result schemas refuse a `revise` with no
+finding or risk and admit `cannot-judge` only with a
 reason, so a reviewer that cannot judge the evidence names that instead of
 emitting an empty revise. Both catalog review workflows take a required `context` order carrying the owner-document excerpt the reviewer must judge against; a head that has no excerpt passes the explicit word none. The refusal is durable and named. The record family ADR
 0006 declared has its production writer: the public start persists each node's

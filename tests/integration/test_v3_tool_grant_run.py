@@ -63,14 +63,14 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.node_records_v3 import (
-    NodeReceiptReason,
-    read_stored_node_receipt_reason,
-)
+from atelier2.contracts.node_records_v3 import NodeReceiptReason
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_forks import RunForkCommandId
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
+from atelier2.contracts.stored_node_receipt_reasons import (
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.tool_grants_v3 import (
     MAXIMUM_RECEIPTED_VERIFICATION_SUMMARY_BYTES,
     ToolGrantCapability,

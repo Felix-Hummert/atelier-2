@@ -7,7 +7,6 @@ import pytest
 
 from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
-    MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttempt,
     AgentAttemptCancellation,
@@ -20,9 +19,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
-    ProcessExitSignature,
     WatchdogGenerationId,
-    process_exit_verdict,
 )
 from atelier2.contracts.agent_transcripts import (
     AttemptTranscript,
@@ -36,6 +33,11 @@ from atelier2.contracts.agents import (
     AgentReceiptHash,
 )
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.process_endings import (
+    MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
+    ProcessExitSignature,
+    process_exit_verdict,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
 

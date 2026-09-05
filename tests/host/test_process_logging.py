@@ -22,7 +22,6 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
-    ProcessExitSignature,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agent_permissions import GRANTS_NOTHING, PermissionReceipt
@@ -33,6 +32,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.host.logging import PROCESS_LOGGER_NAME, configure_process_logging
 from atelier2.ports.agent_attempts import (
@@ -362,9 +362,16 @@ class _FailingAttemptStore:
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
         verification_failure_evidence: ProjectVerificationFailureEvidence | None = None,
+        candidate_diff: str | None = None,
     ) -> AgentAttemptSucceeded:
         raise AssertionError(
-            (execution, result, redemption, verification_failure_evidence)
+            (
+                execution,
+                result,
+                redemption,
+                verification_failure_evidence,
+                candidate_diff,
+            )
         )
 
     def complete_project_verification_failure(

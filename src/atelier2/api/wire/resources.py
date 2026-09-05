@@ -953,6 +953,7 @@ AgentAttemptFailureCodeName = Literal[
     AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
     AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED,
     AgentAttemptFailureCode.CANDIDATE_UNCHANGED,
+    AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED,
 ]
 
 
@@ -1069,11 +1070,11 @@ class NodeRefusalOutputResource(ApiModel):
 
 
 class NodeProvenanceResource(ApiModel):
-    """Which agent produced a node's answer, as its receipt recorded it.
+    """Which agent answered for a node, as its own receipt recorded it.
 
-    Usage is absent because no receipt holds it: this answer can prove what ran
-    and what came out, and cannot say what it cost. How long it took is recorded
-    beside the attempt, not on this receipt.
+    Who answered, not who wrote every byte of the value beside it. Usage is
+    absent because no receipt holds it: this proves what ran and what came out,
+    never what it cost, and how long it took is recorded beside the attempt.
     """
 
     role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)

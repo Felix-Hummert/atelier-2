@@ -152,9 +152,13 @@ class _ClaimingStore:
         return AgentAttemptClaimedByThisCall(self.attempt)
 
     def complete_success(
-        self, execution: object, result: object, redemption: object
+        self,
+        execution: object,
+        result: object,
+        redemption: object,
+        candidate_diff: str | None = None,
     ) -> AgentAttemptSucceeded:
-        del execution, result
+        del execution, result, candidate_diff
         self.completed += 1
         self.redemption = redemption
         assert self.attempt is not None

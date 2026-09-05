@@ -19,15 +19,15 @@ from atelier2.application.project_node_rail import project_node_rail
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.artifacts import ArtifactHash
-from atelier2.contracts.node_records_v3 import (
-    NodeReceiptReason,
-    read_stored_node_receipt_reason,
-)
+from atelier2.contracts.node_records_v3 import NodeReceiptReason
 from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.run_projections import (
     NodeState,
     PublicAgentAttemptState,
     RunPage,
+)
+from atelier2.contracts.stored_node_receipt_reasons import (
+    read_stored_node_receipt_reason,
 )
 from atelier2.ports.agent_attempts import (
     NOTHING_TO_KEEP,
