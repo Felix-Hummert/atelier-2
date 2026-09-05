@@ -116,11 +116,6 @@ from atelier2.contracts.work_items import (
     WorkItemKind,
 )
 from atelier2.host import serving
-from atelier2.host.conductor_workflow import (
-    CONDUCTOR_MESSAGE_SCHEMA,
-    CONDUCTOR_REPORT_SCHEMA,
-    conductor_workflow_document,
-)
 from atelier2.host.provider_canary import (
     PROVIDER_CANARY_RECEIPT_VALIDITY,
     provider_layer_digest,
@@ -155,6 +150,11 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
 )
 from atelier2.ports.queue_projection import QueueItemsReconciled
+from tests.e2e.conductor_seed import (
+    CONDUCTOR_MESSAGE_SCHEMA,
+    CONDUCTOR_REPORT_SCHEMA,
+    conductor_workflow_document,
+)
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,

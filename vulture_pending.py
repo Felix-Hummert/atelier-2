@@ -62,18 +62,4 @@ WAITING_FOR_A_DECISION = (
         ),
         "expires_on": "2026-10-04",
     },
-    {
-        "names": (
-            "CONDUCTOR_MESSAGE_SCHEMA",
-            "CONDUCTOR_REPORT_SCHEMA",
-            "conductor_workflow_document",
-        ),
-        "why": (
-            "#1168 finding 9: host/serving.py imports only the conductor's door "
-            "name and tools; the loop document and both schemas are built by tests "
-            "and tests/e2e/serve_cockpit.py. #1078 decides at its dispatch whether "
-            "the conductor loop is parked for a slice or abandoned."
-        ),
-        "expires_on": "2026-10-04",
-    },
 )
