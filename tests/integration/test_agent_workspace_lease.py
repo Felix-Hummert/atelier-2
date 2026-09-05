@@ -67,6 +67,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
+    PrintModeExecutor,
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_claude_subscription import INTROSPECTING_CLAUDE
@@ -161,7 +162,7 @@ def materializing_command(sentinel: Path, return_code: int = 0) -> AgentProcessC
 
 
 @dataclass
-class MaterializingExecutor:
+class MaterializingExecutor(PrintModeExecutor):
     """A provider that writes into its workspace exactly as the measured CLI did."""
 
     sentinel: Path
@@ -190,7 +191,7 @@ class MaterializingExecutor:
 
 
 @dataclass
-class WaitingExecutor:
+class WaitingExecutor(PrintModeExecutor):
     """A provider that writes one file into its workspace and then hangs."""
 
     ready: Path
@@ -1148,7 +1149,7 @@ def _product_rows(engine: sa.Engine) -> Iterator[str]:
 
 
 @dataclass
-class ReportingExecutor:
+class ReportingExecutor(PrintModeExecutor):
     """One real executor, keeping whatever answer it decoded."""
 
     inner: AgentExecutorV2
@@ -1173,7 +1174,7 @@ class ReportingExecutor:
 
 
 @dataclass
-class DirectoryReportingExecutor:
+class DirectoryReportingExecutor(PrintModeExecutor):
     """A provider of no particular vendor, answering with where it was started."""
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:

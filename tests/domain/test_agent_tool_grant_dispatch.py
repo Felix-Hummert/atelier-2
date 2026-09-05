@@ -75,6 +75,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
     PermissionDecider,
+    PrintModeExecutor,
 )
 from atelier2.ports.agent_tool_effects import (
     AgentToolEffectDelivered,
@@ -161,7 +162,7 @@ class _ClaimingStore:
 
 
 @dataclass
-class _SucceedingExecutor:
+class _SucceedingExecutor(PrintModeExecutor):
     """A provider that answers; what redeems its work is the subject."""
 
     def prepare_process(self, request: object) -> AgentProcessCommand:

@@ -193,7 +193,11 @@ def execute_agent_attempt(
         lease = workspaces.acquire(execution.attempt_id)
         if project is not None:
             project.source.materialize(project.pin, lease)
-        invocation = AgentProcessInvocation(command, lease)
+        invocation = AgentProcessInvocation(
+            command,
+            lease,
+            executor.open_conversation(execution.request, command, lease),
+        )
         completion = session.launch_and_wait(
             execution,
             invocation,

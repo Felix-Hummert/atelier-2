@@ -59,6 +59,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PrintModeExecutor,
 )
 from atelier2.ports.artifacts import ArtifactPublisher, PublishArtifactResult
 from atelier2.ports.candidate_store import (
@@ -100,7 +101,7 @@ def writing(name: str, text: str) -> list[str]:
 
 
 @dataclass
-class WorkingExecutor:
+class WorkingExecutor(PrintModeExecutor):
     """A provider of no particular vendor that leaves its work in the lease."""
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
