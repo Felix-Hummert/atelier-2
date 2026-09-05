@@ -13,6 +13,7 @@ from atelier2.contracts.effect_requests import (
     ReviewedDocumentReplacement,
 )
 from atelier2.contracts.effects import (
+    MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS,
     AdapterOperationalIdentity,
     AdapterRevision,
     AuthorizedEffectExecution,
@@ -43,15 +44,19 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
     ReconcileCommandSnapshot,
     ReconcileCommandState,
     ReconcileDetermination,
+    UnknownOutcomeReason,
+    destination_holds_nothing,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.ports.effects import (
     EffectAdapterRegistration,
     EffectAdapterRegistry,
@@ -428,7 +433,34 @@ def test_adapter_readback_cannot_spoof_operator_provenance(
     response = found_receipt(intent, source, ReconcileCommandId("forged-command"))
 
     with pytest.raises(EffectAdapterResponseConflict):
-        intent.authorize_adapter_readback(response)
+        intent.authorize_adapter_readback(response, ReadbackPhase.BEFORE_SEND)
+
+
+def test_an_absence_read_after_a_send_attempt_is_refused(
+    intent: EffectIntent,
+) -> None:
+    """Only a read that no send precedes may establish an absence."""
+
+    with pytest.raises(EffectAdapterResponseConflict):
+        intent.authorize_adapter_readback(
+            authoritative_absence(intent), ReadbackPhase.AFTER_SEND
+        )
+
+
+def test_a_destination_holding_nothing_means_the_phase_it_was_read_in(
+    intent: EffectIntent,
+) -> None:
+    reason = UnknownOutcomeReason(0, 1, "the destination holds nothing")
+
+    before = destination_holds_nothing(
+        intent.reference, ReadbackPhase.BEFORE_SEND, reason
+    )
+    after = destination_holds_nothing(
+        intent.reference, ReadbackPhase.AFTER_SEND, reason
+    )
+
+    assert before == EffectAbsence(intent.reference)
+    assert after == EffectUnknownOutcome(intent.reference, reason)
 
 
 @pytest.mark.parametrize(
@@ -462,7 +494,7 @@ class _RegistryAdapter:
     def __init__(self, identity: str) -> None:
         self.identity = identity
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         return EffectUnknownOutcome(intent.reference)
 
     def execute(self, intent: EffectIntent) -> EffectUnknownOutcome:
@@ -697,6 +729,22 @@ def test_prepared_effect_and_reconcile_state_cannot_be_rebound(
     for target, attribute, value in rebindings:
         with pytest.raises((AttributeError, TypeError)):
             setattr(target, attribute, value)
+
+
+def test_an_unknown_outcome_keeps_the_last_scrubbed_words_a_destination_said() -> None:
+    echoed_credential = "ghp_" + "s" * 36
+    said = "noise\n" * 2_000 + f"fatal: authentication failed: {echoed_credential}"
+
+    reason = UnknownOutcomeReason(128, 12, said)
+
+    assert len(reason.detail) <= MAXIMUM_UNKNOWN_OUTCOME_DETAIL_CHARACTERS
+    assert echoed_credential not in reason.detail
+    assert reason.detail.endswith(f"fatal: authentication failed: {REDACTION_MARKER}")
+
+
+def test_an_unknown_outcome_cannot_claim_a_negative_duration() -> None:
+    with pytest.raises(ValueError, match="nonnegative duration"):
+        UnknownOutcomeReason(None, -1, "")
 
 
 def test_a_documentation_release_request_keeps_the_exact_reviewed_replacement() -> None:

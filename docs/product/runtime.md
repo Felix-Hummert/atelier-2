@@ -207,12 +207,26 @@ pinned project source and operation identities, the runtime derives one
 `atelier2/work-item/<id>` branch and one deterministic commit over the candidate
 tree, persists the operation with the intent and receipt, and admits success only
 when the configured remote reads back that exact commit; the PR uses the same
-branch as its head. Because neither remote absence nor an inconclusive post-send
-readback proves what happened, both enter or remain in durable reconciliation
-instead of permitting another push, while an operator-authorized send is still
-fenced by a create-only lease. The live-GitHub `open-pr` adapter renders that
-PR's own title and body from the candidate's summary and changed paths rather
-than its raw report, stating the default `Literal acceptance sentence(s): none`
+branch as its head. A destination that answers and holds nothing, asked before
+anything was sent, has said so: a remote read that succeeds and advertises no
+such ref, and a pull request listing for that exact head branch answered with
+an empty list, are absences the send proceeds on, so a first publication no
+longer waits for a person to confirm what nobody sent. Read after a send, the
+same silence says nothing -- a ref someone removed and a listing that has not
+caught up look exactly like a request that never left -- so it keeps waiting
+for a person, and the runtime, not the adapter, is what knows which of the two
+a read is. What still enters or remains in durable reconciliation instead of
+permitting another push is a read that failed, a listing naming only pull
+requests that are not this request's, and any post-send readback that did not
+find the exact thing that was sent. The adapter
+now reports why -- the code the destination answered, how long it took, and the
+last of its own words with every credential shape taken out. The effect store
+logs that account, structured, the moment the outcome enters reconciliation;
+carrying it into the durable record an operator reads without the log is a
+named follow-up (#1210). An operator-authorized send is still fenced by a
+create-only lease. The live-GitHub `open-pr` adapter renders that PR's own
+title and body from the candidate's summary and changed paths rather than its
+raw report, stating the default `Literal acceptance sentence(s): none`
 exemption the repository's own acceptance gate reads, never the report's bare
 JSON.
 

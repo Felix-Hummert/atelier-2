@@ -19,6 +19,7 @@ from atelier2.contracts.effects import (
     EffectIntentMismatch,
     EffectReceipt,
     LogicalEffectKey,
+    ReadbackPhase,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 
@@ -92,7 +93,7 @@ def test_a_served_readback_leaves_no_open_database_handle(
     intent = effect_intent(database_path, b'{"title":"the only request"}')
     performed = adapter.execute(intent)
 
-    receipt = adapter.readback(intent)
+    receipt = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
 
     assert isinstance(receipt, EffectReceipt)
     assert receipt.effect_id == performed.effect_id

@@ -38,6 +38,7 @@ from atelier2.contracts.effects import (
     EffectReceipt,
     EffectUnknownOutcome,
     OperatorAuthoritativeAbsence,
+    ReadbackPhase,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -464,6 +465,101 @@ def test_runtime_resolve_retries_an_accepted_push_without_sending_again(
     assert len(github.recorded_pull_requests()) == 1
 
 
+def test_a_replayed_resolve_after_ref_removal_pushes_the_same_commit_once_more(
+    tmp_path: Path,
+) -> None:
+    """The named residual gap, pinned at the workflow's own crash-recovery seam.
+
+    `OBSERVE` finds the ref absent and its output is memoized durably before
+    `RESOLVE` starts; the crash happens inside `RESOLVE`, after the push is
+    accepted but before the step's own output is recorded, so DBOS replays
+    `RESOLVE` on restart using that memoized absence rather than a fresh one.
+    Removing the ref between the crash and the replay reproduces the residual
+    gap named in ADR 0010 decision 5's 2026-09-05 amendment: the replay's own
+    fresh `execute()` check finds the ref absent again and pushes once more.
+    The zero-OID lease only ever admits the same deterministic commit, so the
+    replay converges on the first push's exact object rather than a twin, and
+    the run still ends `CONFIRMED`.
+    """
+
+    _project, remote, _base = _public_repositories(tmp_path)
+    _seed_public_run(tmp_path)
+
+    _child(tmp_path, "crash", expected=CRASHED)
+
+    assert (tmp_path / "accepted").read_text(encoding="utf-8") == "accepted\n"
+    assert (tmp_path / "push-attempts").read_text(encoding="utf-8").splitlines() == [
+        "push"
+    ]
+    with sqlite3.connect(tmp_path / "atelier.sqlite") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM effect_receipts WHERE operation_name=?",
+            (AdapterOperationName.PUSH_ATELIER_COMMIT.value,),
+        ).fetchone() == (0,)
+
+    pushed_branches = [
+        name
+        for name in subprocess.run(
+            (
+                "git",
+                "-C",
+                str(remote),
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/",
+            ),
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.split()
+        if name != "main"
+    ]
+    assert len(pushed_branches) == 1
+    branch = pushed_branches[0]
+    commit_before_replay = subprocess.run(
+        ("git", "-C", str(remote), "rev-parse", branch),
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ("git", "-C", str(remote), "update-ref", "-d", f"refs/heads/{branch}"),
+        capture_output=True,
+        check=True,
+    )
+
+    _child(tmp_path, "resolve")
+
+    with sqlite3.connect(tmp_path / "atelier.sqlite") as connection:
+        receipts = connection.execute(
+            "SELECT effect_id,result FROM effect_receipts WHERE operation_name=?",
+            (AdapterOperationName.PUSH_ATELIER_COMMIT.value,),
+        ).fetchall()
+        run_state = connection.execute(
+            "SELECT state FROM runs WHERE run_id=?", (RUN.value,)
+        ).fetchone()
+    assert len(receipts) == 1
+    effect_id, raw_result = receipts[0]
+    result = json.loads(bytes(raw_result).decode("utf-8"))
+    assert effect_id == commit_before_replay
+    assert result["commit_oid"] == commit_before_replay
+    assert result["branch"] == branch
+    assert run_state == (RunState.COMPLETED.value,)
+    assert (tmp_path / "push-attempts").read_text(encoding="utf-8").splitlines() == [
+        "push",
+        "push",
+    ]
+    assert (
+        subprocess.run(
+            ("git", "-C", str(remote), "rev-parse", branch),
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        == commit_before_replay
+    )
+
+
 def test_restart_reads_the_exact_commit_without_pushing_a_twin(tmp_path: Path) -> None:
     store, remote, base, tree = _repositories(tmp_path)
     from tests.integration.test_git_transport_push import _factory
@@ -479,12 +575,63 @@ def test_restart_reads_the_exact_commit_without_pushing_a_twin(tmp_path: Path) -
 
     recovered = _factory(store, remote).open()
     try:
-        receipt = recovered.readback(intent)
+        receipt = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
     finally:
         recovered.close()
     assert isinstance(receipt, EffectReceipt)
     assert receipt.effect_id.value == request.expected_commit_oid(
         intent.request.request_hash.value
+    )
+
+
+def test_a_ref_removed_after_an_accepted_push_stays_unknown_and_pushes_nothing(
+    tmp_path: Path,
+) -> None:
+    """The push landed, the answer did not, and then the ref was gone.
+
+    A read taken after a send cannot tell a remote that never received the push
+    from one that no longer holds it, so it reports the unknown outcome it has
+    instead of the absence that would license a second push (ADR 0010 decision
+    5, as amended 2026-09-05).
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    from tests.integration.test_git_transport_push import HEAD_BRANCH, _factory
+
+    factory = _factory(store, remote, CrashAfterAcceptedPush())
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        with pytest.raises(RuntimeError, match="injected crash"):
+            adapter.execute(intent)
+    finally:
+        adapter.close()
+    subprocess.run(
+        ("git", "-C", str(remote), "update-ref", "-d", HEAD_BRANCH.full_ref),
+        capture_output=True,
+        check=True,
+    )
+
+    push_attempts = tmp_path / "push-attempts"
+    recovered = _factory(
+        store, remote, PushAttemptRecordingRunner(push_attempts)
+    ).open()
+    try:
+        outcome = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        recovered.close()
+
+    assert isinstance(outcome, EffectUnknownOutcome)
+    assert outcome.reason is not None
+    assert "a send was already attempted" in outcome.reason.detail
+    assert not push_attempts.exists()
+    assert (
+        subprocess.run(
+            ("git", "-C", str(remote), "rev-parse", "--verify", HEAD_BRANCH.full_ref),
+            capture_output=True,
+            check=False,
+        ).returncode
+        != 0
     )
 
 

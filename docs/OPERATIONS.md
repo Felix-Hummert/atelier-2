@@ -1406,15 +1406,24 @@ two one owner *and* deleting its entry.
 
 ## SonarCloud and CodeQL
 
-`sonar-project.properties` at the repository root lets SonarCloud's Automatic
-Analysis (public project `FlexOr2_atelier-2` in organisation `flexor2`, Free
-plan, no token, no CI step) read the source, test, and exclusion layout and
-comment on every pull request through the SonarCloud GitHub app. It measures
-duplication, cognitive complexity, and issues on new code. CodeQL's default
-setup, enabled directly on GitHub, scans Python, JavaScript/TypeScript, and
-Actions on the same pushes. Neither is a required check yet -- that follows
-the measurement week described in #1203, which compares Sonar's findings
-against the duplicate ratchet above and the `C901` complexity count.
+`sonar-project.properties` at the repository root configures SonarCloud's
+analysis of the public project `overnightworks_atelier-2` (organisation
+`overnightworks`, Free plan): source, test, and exclusion layout, plus the
+rule classes marked won't-fix by #1203's triage. CodeQL's default setup,
+enabled directly on GitHub, scans Python, JavaScript/TypeScript, and Actions
+on the same pushes. Neither is a required check yet -- that follows the
+measurement week described in #1203, which compares Sonar's findings against
+the duplicate ratchet above and the `C901` complexity count.
+
+Automatic Analysis cannot read coverage, so analysis runs from CI instead
+(ruling 05.09.2026, #1203): the `quality` job's pytest run writes
+`reports/coverage.xml` (`pytest-cov`) and the `frontend` job's vitest run
+writes `reports/frontend-coverage/lcov.info` (`@vitest/coverage-v8`); the
+`sonar` job downloads both and runs `sonarqube-scan-action` with the
+repository's `SONAR_TOKEN` secret. Its scan step is `continue-on-error` until
+the operator turns Automatic Analysis off in the SonarCloud project settings
+-- SonarCloud refuses CI-based analysis while Automatic Analysis stays
+enabled. `sonar` is not a required check.
 
 ## Code rules: gates, metrics, audit
 

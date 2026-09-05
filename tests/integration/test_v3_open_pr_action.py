@@ -78,6 +78,7 @@ from atelier2.contracts.effects import (
     EffectResult,
     EffectUnknownOutcome,
     PerformedEffect,
+    ReadbackPhase,
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -151,9 +152,9 @@ class CountingGitHubEffectAdapter:
         self._owner = owner
         self._delegate = delegate
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         self._owner.readback_calls += 1
-        return self._delegate.readback(intent)
+        return self._delegate.readback(intent, phase)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         self._owner.execute_calls += 1

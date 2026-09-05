@@ -45,6 +45,7 @@ from atelier2.contracts.effects import (
     EffectReceipt,
     EffectUnknownOutcome,
     PerformedEffect,
+    ReadbackPhase,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
@@ -129,7 +130,7 @@ class _ScriptedAdapter:
     readback_result: EffectReadback
     execute_calls: int = field(default=0, init=False)
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         del intent
         return self.readback_result
 
@@ -276,7 +277,7 @@ def test_a_redemption_after_the_pull_request_exists_finds_it_rather_than_a_twin(
 
     adapter = github.open()
     try:
-        readback = adapter.readback(intent)
+        readback = adapter.readback(intent, ReadbackPhase.AFTER_SEND)
     finally:
         adapter.close()
 

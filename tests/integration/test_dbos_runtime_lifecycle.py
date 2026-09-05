@@ -53,6 +53,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     LogicalEffectKey,
     PerformedEffect,
+    ReadbackPhase,
     ReconcileCommandState,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -103,8 +104,8 @@ class CountingAdapter:
         self._delegate = delegate
         self.closes = 0
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
-        return self._delegate.readback(intent)
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
+        return self._delegate.readback(intent, phase)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         return self._delegate.execute(intent)

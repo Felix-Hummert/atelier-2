@@ -4,6 +4,8 @@
 reports/
 __pycache__/
 *.py[cod]
+.coverage
+.coverage.*
 
 frontend/.svelte-kit/
 frontend/coverage/

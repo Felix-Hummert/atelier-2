@@ -3,18 +3,29 @@
 Same contract as the fake platform's `atelier2.adapters.github.effects`:
 `readback` then `execute`, the request hash carried as a marker inside the
 pull request's own body, and idempotency by that marker rather than by any
-identifier GitHub assigns. What differs is the destination and one honest
-consequence of it (ADR 0010 §5): a fake platform can list every pull request
-it ever created, so a missing marker there is an authoritative absence. Live
-GitHub offers no such inventory -- a pull request search is eventually
-consistent -- so an unmatched search here can only report `EffectUnknownOutcome`,
-never `EffectAbsence`. Reporting an absence this adapter cannot prove would be
-exactly the `platform-absence-unprovable` case ADR 0010 §5 refuses.
+identifier GitHub assigns.
 
-The client is `githubkit` (ADR 0010 §7): typed request construction, retries,
-TLS and pagination are its job, not this module's. This slice composes the
-personal-access-token method only (ADR 0010 §2's low-friction path); the
-GitHub App method stays unbuilt here.
+What an unmatched read means here is decided by which read is used, and when
+(#1210). Listing pull requests by their exact head branch is not the eventually
+consistent search index: it is a direct query about one branch, and a `200`
+answering it with an empty list is GitHub's own statement that this branch
+carries no pull request, in any state. Taken before anything was sent, that is
+an authoritative absence, and reporting it as unknown was what made every live
+run wait for an operator before it had sent anything at all. Taken after a
+create was attempted -- `ReadbackPhase.AFTER_SEND` -- the same empty answer may
+equally be a listing that has not caught up, so it stays unknown. So does a
+read that failed: a refused status, any other status, a timeout, an answer that
+is not a listing, or one naming pull requests none of which carries this
+request's marker; each carries what GitHub said. A false absence still cannot
+open a twin: GitHub's own head+base uniqueness refuses the second create with
+`422`, and this adapter converges on the winner or reports its own outcome
+unknown.
+
+The client is `githubkit` (ADR 0010 §7): typed request construction, retries
+and TLS are its job, not this module's. Which page of a listing is asked for
+is this module's, because what it reads out of that answer decides whether a
+send is licensed. This slice composes the personal-access-token method only
+(ADR 0010 §2's low-friction path); the GitHub App method stays unbuilt here.
 
 The credential reaches this adapter by reference, never by value (ADR 0009 §6,
 ADR 0010 §3), the same pattern `ClaudeSubscriptionSettings.credential_directory`
@@ -27,6 +38,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -68,6 +80,9 @@ from atelier2.contracts.effects import (
     EffectResult,
     EffectUnknownOutcome,
     PerformedEffect,
+    ReadbackPhase,
+    UnknownOutcomeReason,
+    destination_holds_nothing,
 )
 
 GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
@@ -80,6 +95,19 @@ GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
 _PULL_REQUEST_ALREADY_EXISTS_STATUS = 422
 
 _DEFAULT_PULL_REQUEST_TITLE = "Atelier open-pr"
+
+# Only this status makes an empty listing GitHub's own answer that the branch
+# carries no pull request (#1210). Any other status the client accepted says
+# something this adapter did not ask for, and an absence is never read out of
+# an answer to a different question.
+_PULL_REQUEST_LISTING_STATUS = 200
+
+# GitHub pages the head-branch listing, and several pull requests can stand on
+# one head with different bases, so the marker is looked for across every page.
+# The page bound turns a destination that never ends its listing into an
+# unknown outcome the operator sees, rather than a request loop nobody sees.
+PULL_REQUESTS_PER_LISTING_PAGE = 100
+MAXIMUM_PULL_REQUEST_LISTING_PAGES = 10
 
 # A GitHub pull request title reads as a headline, not a paragraph; 72
 # characters is the conventional commit-summary width every reader here
@@ -175,6 +203,87 @@ class _RecordedPullRequest:
     branch: str
     pr_number: int
     body: str
+
+
+@dataclass(frozen=True)
+class _NoPullRequestOnBranch:
+    """GitHub answered the head-branch listing, and it names no pull request.
+
+    What that proves depends on when it was read, so it keeps what a reader
+    after a send needs to report: the status GitHub answered with, and how long
+    the whole listing took.
+    """
+
+    status_code: int
+    duration_milliseconds: int
+
+    def after_send(self) -> UnknownOutcomeReason:
+        return UnknownOutcomeReason(
+            self.status_code,
+            self.duration_milliseconds,
+            "the head branch listing named no pull request, "
+            "and a create was already attempted",
+        )
+
+
+@dataclass(frozen=True)
+class _PullRequestSearchFailed:
+    """The listing resolved nothing this caller may act on."""
+
+    reason: UnknownOutcomeReason
+
+
+type _PullRequestSearch = (
+    _RecordedPullRequest | _NoPullRequestOnBranch | _PullRequestSearchFailed
+)
+
+
+def _elapsed_milliseconds(started: float) -> int:
+    return round((time.monotonic() - started) * 1_000)
+
+
+def _refused_search(
+    error: githubkit.exception.RequestError[Any], elapsed_milliseconds: int
+) -> UnknownOutcomeReason:
+    """Why a pull request listing did not resolve, in GitHub's own words.
+
+    A refused request carries the status GitHub answered and the body it
+    explained itself in; a timeout or a transport failure never reached a
+    status at all, and then the client's own account of it is what there is.
+    """
+
+    if isinstance(error, githubkit.exception.RequestFailed):
+        return UnknownOutcomeReason(
+            error.response.status_code,
+            elapsed_milliseconds,
+            error.response.raw_response.text,
+        )
+    return UnknownOutcomeReason(None, elapsed_milliseconds, str(error.exc))
+
+
+def _listed_page(response: httpx.Response) -> list[dict[str, Any]] | None:
+    """One listing page as pull request objects, or nothing this adapter reads.
+
+    Only the listing status answers the question that was asked; any other
+    status the client accepted, an undecodable body, and a list holding
+    anything but pull request objects are all answers to something else.
+    """
+
+    if response.status_code != _PULL_REQUEST_LISTING_STATUS:
+        return None
+    try:
+        answered: Any = response.json()
+    except ValueError:
+        return None
+    if not isinstance(answered, list) or not all(
+        isinstance(pull_request, dict) for pull_request in answered
+    ):
+        return None
+    return answered
+
+
+def _body_for(request: OpenPullRequestRequest, request_hash: str) -> str:
+    return f"{request.body}\n\n{marker_line(request_hash)}\n"
 
 
 @dataclass(frozen=True)
@@ -338,11 +447,11 @@ class LiveGitHubEffectAdapterFactory:
 
     @property
     def proves_absence(self) -> bool:
-        # A live-GitHub pull request search is eventually consistent, so a
-        # not-found readback is `EffectUnknownOutcome`, never an authoritative
-        # absence (ADR 0010 §5). The shared effect path durably moves that
-        # outcome to reconciliation before an agent run can advance.
-        return False
+        # Listing pull requests by their exact head branch is a direct query,
+        # not the eventually consistent search index: a `200` with an empty
+        # list is GitHub's own answer that this branch carries none (#1210).
+        # Only before a send: after one, `ReadbackPhase` keeps it unknown.
+        return True
 
     def open(self) -> LiveGitHubEffectAdapter:
         token = self.token_credential.resolve()
@@ -376,17 +485,23 @@ class LiveGitHubEffectAdapter:
         self._documentation_publisher = documentation_publisher
         self._closed = False
 
-    def readback(self, intent: EffectIntent) -> EffectReadback:
+    def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         request = self._authorized_request(intent)
         found = self._find_recorded_pull_request(intent, request)
-        if found is None:
-            return EffectUnknownOutcome(intent.reference)
+        if isinstance(found, _PullRequestSearchFailed):
+            return EffectUnknownOutcome(intent.reference, found.reason)
+        if isinstance(found, _NoPullRequestOnBranch):
+            return destination_holds_nothing(
+                intent.reference, phase, found.after_send()
+            )
         return self._receipt(intent, found)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         request = self._authorized_request(intent)
         found = self._find_recorded_pull_request(intent, request)
-        if found is not None:
+        if isinstance(found, _PullRequestSearchFailed):
+            return EffectUnknownOutcome(intent.reference, found.reason)
+        if isinstance(found, _RecordedPullRequest):
             return self._performed(found)
         if isinstance(request, ReviewedDocumentationPullRequest):
             self._verify_reviewed_base(request)
@@ -395,8 +510,10 @@ class LiveGitHubEffectAdapter:
                     "reviewed documentation open-pr requires its push publisher"
                 )
             self._documentation_publisher.publish(intent, request)
-        record = self._create_pull_request(intent, request)
-        return self._performed(record)
+        created = self._create_pull_request(intent, request)
+        if isinstance(created, UnknownOutcomeReason):
+            return EffectUnknownOutcome(intent.reference, created)
+        return self._performed(created)
 
     def close(self) -> None:
         if self._documentation_publisher is not None:
@@ -441,31 +558,78 @@ class LiveGitHubEffectAdapter:
 
     def _find_recorded_pull_request(
         self, intent: EffectIntent, request: OpenPullRequestRequest
-    ) -> _RecordedPullRequest | None:
+    ) -> _PullRequestSearch:
+        """Which pull request on this head branch carries this request's marker.
+
+        The branch answers about itself as a whole: several pull requests can
+        stand on one head with different bases, so the marker decides which of
+        them is this request's, and a listing that names others but not this
+        one is no absence -- it is a state this adapter may not act on. Each
+        page is examined for the marker as it arrives, so a marker already
+        proven on an earlier page is returned at once: a later page's failure
+        never discards it. Only a failure reached before the marker is found
+        leaves the outcome unknown.
+        """
+
         branch = request.head_branch.value
-        response = self._client.rest.pulls.list(
-            self._repository.owner,
-            self._repository.name,
-            head=f"{self._repository.owner}:{branch}",
-            state="all",
-        )
-        matches = response.raw_response.json()
-        if not isinstance(matches, list) or not matches:
-            return None
-        pull_request = matches[0]
-        if not isinstance(pull_request, dict):
-            raise GitHubUnexpectedResponse(
-                "pull request search did not return a pull request object"
+        request_hash = intent.request.request_hash.value
+        started = time.monotonic()
+        listed_any = False
+        for page in range(1, MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1):
+            try:
+                response = self._client.rest.pulls.list(
+                    self._repository.owner,
+                    self._repository.name,
+                    head=f"{self._repository.owner}:{branch}",
+                    state="all",
+                    per_page=PULL_REQUESTS_PER_LISTING_PAGE,
+                    page=page,
+                )
+            except githubkit.exception.RequestError as error:
+                return _PullRequestSearchFailed(
+                    _refused_search(error, _elapsed_milliseconds(started))
+                )
+            raw_response = response.raw_response
+            elapsed = _elapsed_milliseconds(started)
+            answered = _listed_page(raw_response)
+            if answered is None:
+                return _PullRequestSearchFailed(
+                    UnknownOutcomeReason(
+                        raw_response.status_code, elapsed, raw_response.text
+                    )
+                )
+            listed_any = listed_any or bool(answered)
+            for pull_request in answered:
+                body = pull_request.get("body")
+                body = body if isinstance(body, str) else ""
+                if body_carries_request_hash(body, request_hash):
+                    number = _integer_field(
+                        pull_request, "number", "pull request search result"
+                    )
+                    return _RecordedPullRequest(branch, number, body)
+            if len(answered) < PULL_REQUESTS_PER_LISTING_PAGE:
+                if not listed_any:
+                    return _NoPullRequestOnBranch(raw_response.status_code, elapsed)
+                return _PullRequestSearchFailed(
+                    UnknownOutcomeReason(
+                        raw_response.status_code,
+                        elapsed,
+                        "the head branch carries pull requests, "
+                        "none of them this request's",
+                    )
+                )
+        return _PullRequestSearchFailed(
+            UnknownOutcomeReason(
+                None,
+                _elapsed_milliseconds(started),
+                "the head branch listing did not end within "
+                f"{MAXIMUM_PULL_REQUEST_LISTING_PAGES} pages",
             )
-        number = _integer_field(pull_request, "number", "pull request search result")
-        body = pull_request.get("body")
-        body = body if isinstance(body, str) else ""
-        self._verify_recorded_body(intent, body)
-        return _RecordedPullRequest(branch, number, body)
+        )
 
     def _create_pull_request(
         self, intent: EffectIntent, request: OpenPullRequestRequest
-    ) -> _RecordedPullRequest:
+    ) -> _RecordedPullRequest | UnknownOutcomeReason:
         branch = request.head_branch.value
         title, body = _title_and_content_for(request, intent.request.request_hash.value)
         create_body: ReposOwnerRepoPullsPostBodyType = {
@@ -476,6 +640,7 @@ class LiveGitHubEffectAdapter:
         }
         if isinstance(request, ReviewedDocumentationPullRequest):
             create_body["draft"] = request.draft
+        started = time.monotonic()
         try:
             response = self._client.rest.pulls.create(
                 self._repository.owner,
@@ -487,13 +652,15 @@ class LiveGitHubEffectAdapter:
                 raise
             # A concurrent execute created the pull request between this
             # attempt's search and this create; the same marker search
-            # converges on its result rather than this attempt raising or
-            # creating a twin GitHub's own constraint would have refused
-            # anyway.
+            # converges on its result rather than this attempt creating a twin
+            # GitHub's own constraint would have refused anyway. A listing that
+            # still does not name the winner leaves this attempt's own outcome
+            # unknown -- the create was sent, so its result is a reconciliation
+            # for the operator, never an exception thrown over a sent request.
             found = self._find_recorded_pull_request(intent, request)
-            if found is None:
-                raise
-            return found
+            if isinstance(found, _RecordedPullRequest):
+                return found
+            return _refused_search(error, _elapsed_milliseconds(started))
         created = response.raw_response.json()
         if not isinstance(created, dict):
             raise GitHubUnexpectedResponse(
@@ -501,13 +668,6 @@ class LiveGitHubEffectAdapter:
             )
         number = _integer_field(created, "number", "pull request creation result")
         return _RecordedPullRequest(branch, number, body)
-
-    def _verify_recorded_body(self, intent: EffectIntent, body: str) -> None:
-        request_hash = intent.request.request_hash.value
-        if not body_carries_request_hash(body, request_hash):
-            raise EffectIntentMismatch(
-                "recorded pull request does not carry this request's marker"
-            )
 
     def _performed(self, record: _RecordedPullRequest) -> PerformedEffect:
         return PerformedEffect(
