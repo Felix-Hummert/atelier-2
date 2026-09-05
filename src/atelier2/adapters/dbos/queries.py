@@ -173,6 +173,7 @@ from atelier2.contracts.workflows_v3 import (
     ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocument,
+    SubworkflowNodeV3,
     WaitNodeV3,
     WorkflowGraphV3,
 )
@@ -1262,24 +1263,83 @@ ANSWER_BEARING_EVENT_KINDS: frozenset[str] = frozenset(
 This is its own set rather than a reuse of `_run_ending_event_predicate`'s
 ending kinds: that one names what closes a run's current execution, scoped to
 the node kinds that can stand a run's sink today. This one names what a
-value-bearing write looks like at all, read wherever a node's own answer is
-asked for -- the two sets share members by coincidence of what "finished"
-means, not by one owning the other's rule.
+value-bearing write looks like at all, read by the batched ended-run scan
+below across every node kind at once. `_node_answer` asks for a single node's
+own kind instead of this whole set -- an `AgentNodeV3` that redeems a granted
+platform effect (a push, an open-pr) also writes that effect's own
+`ACTION_COMPLETED` confirmation under the same node-execution id as its
+`AGENT_COMPLETED` completion (`commit_confirmed_effect` in `run_store.py`), so
+an execution can carry two members of this set without carrying two answers.
 """
+
+
+def _own_answer_event_kind(node: object) -> RunEventKind:
+    """The one event kind that carries this node's own declared output."""
+
+    match node:
+        case AgentNodeV3():
+            return RunEventKind.AGENT_COMPLETED
+        case WaitNodeV3():
+            return RunEventKind.WAIT_ANSWERED
+        case ActionNodeV3():
+            return RunEventKind.ACTION_COMPLETED
+        case SubworkflowNodeV3():
+            return RunEventKind.SUBWORKFLOW_COMPLETED
+        case _:
+            raise TypeError(f"node kind {type(node).__name__} has no declared answer")
+
+
+def _embedded_platform_effect_kind(node: object) -> RunEventKind | None:
+    """The one other answer-bearing kind this node's own execution may carry.
+
+    `commit_confirmed_effect` (`run_store.py`) lets an `AgentNodeV3` redeem a
+    granted platform effect (a push, an open-pr) in the same execution as its
+    own completion, writing that effect's `ACTION_COMPLETED` confirmation
+    under the node's own execution id alongside its `AGENT_COMPLETED` answer.
+    Every other node kind's execution carries its own answer and nothing
+    else, so any second answer-bearing event on it is durable state
+    disagreeing with itself.
+    """
+
+    return RunEventKind.ACTION_COMPLETED if isinstance(node, AgentNodeV3) else None
 
 
 def _node_answer(
     connection: Connection,
+    node: object,
     execution_id: NodeExecutionId,
 ) -> NodeAnswer | None:
-    """The value this node wrote, or nothing when it has written none yet."""
+    """The value this node wrote, or nothing when it has written none yet.
 
-    record = connection.execute(
-        sa.select(run_events.c.payload, run_events.c.payload_hash).where(
+    Matched against this node's own declared completion kind rather than any
+    answer-bearing kind: a node execution can carry a second, embedded
+    platform-effect confirmation that is not this node's answer (see
+    `_embedded_platform_effect_kind`) and is skipped here; any other, wider
+    disagreement -- a kind neither the node's own nor that one recognized
+    companion -- still refuses loudly rather than being read past.
+    """
+
+    own_kind = _own_answer_event_kind(node)
+    embedded_kind = _embedded_platform_effect_kind(node)
+    record = None
+    for candidate in connection.execute(
+        sa.select(
+            run_events.c.event_kind, run_events.c.payload, run_events.c.payload_hash
+        ).where(
             run_events.c.node_execution_id == execution_id.value,
             run_events.c.event_kind.in_(ANSWER_BEARING_EVENT_KINDS),
         )
-    ).one_or_none()
+    ):
+        if str(candidate.event_kind) == own_kind.value:
+            if record is not None:
+                raise RunTransitionConflict(
+                    "a node execution has more than one answer-bearing event"
+                )
+            record = candidate
+        elif embedded_kind is None or str(candidate.event_kind) != embedded_kind.value:
+            raise RunTransitionConflict(
+                "a node execution has more than one answer-bearing event"
+            )
     if record is None:
         return None
     return NodeAnswer(bytes(record.payload), Sha256Hash(str(record.payload_hash)))
@@ -1310,10 +1370,13 @@ def _run_terminal_results(
     - every artifact either refusal path names, in one final read keyed by
       hash (`read_stored_artifacts`).
 
-    A node execution that wrote more than one answer-bearing event is durable
-    state disagreeing with itself -- the single-execution `_node_answer`'s own
-    `.one_or_none()` already refuses that loudly, and this batched read keeps
-    the same refusal rather than a dict silently keeping the last one seen.
+    A node execution that wrote more than one answer-bearing event of a kind
+    its own declared type -- or its one recognized embedded platform-effect
+    companion, `_embedded_platform_effect_kind` -- does not own is durable
+    state disagreeing with itself: the single-execution `_node_answer` already
+    refuses that loudly, and this batched read keeps the same refusal rather
+    than a dict silently keeping the last one seen or a companion's own row
+    silently masking the disagreement.
 
     This omits `load_output_schema_refusal_receipt`'s own re-verification of
     an attempt's schema revision and receipt hash against its expectations
@@ -1325,15 +1388,22 @@ def _run_terminal_results(
     """
     if not ended_runs:
         return {}
-    execution_by_run_id = {
-        run.run_id.value: NodeExecutionId.for_node(
+    execution_by_run_id: dict[str, NodeExecutionId] = {}
+    own_answer_kind_by_execution: dict[str, RunEventKind] = {}
+    embedded_effect_kind_by_execution: dict[str, RunEventKind | None] = {}
+    for run in ended_runs:
+        execution = NodeExecutionId.for_node(
             run.run_id,
             run.revision_hash,
             run.current_node_id,
             run.current_round_ordinal,
         )
-        for run in ended_runs
-    }
+        node = graphs[run.revision_hash].node(run.current_node_id)
+        execution_by_run_id[run.run_id.value] = execution
+        own_answer_kind_by_execution[execution.value] = _own_answer_event_kind(node)
+        embedded_effect_kind_by_execution[execution.value] = (
+            _embedded_platform_effect_kind(node)
+        )
     execution_values = tuple(
         execution.value for execution in execution_by_run_id.values()
     )
@@ -1342,6 +1412,7 @@ def _run_terminal_results(
     for record in connection.execute(
         sa.select(
             run_events.c.node_execution_id,
+            run_events.c.event_kind,
             run_events.c.payload,
             run_events.c.payload_hash,
         ).where(
@@ -1350,13 +1421,21 @@ def _run_terminal_results(
         )
     ):
         execution_value = str(record.node_execution_id)
-        if execution_value in answers_by_execution:
+        event_kind = str(record.event_kind)
+        if event_kind == own_answer_kind_by_execution[execution_value].value:
+            if execution_value in answers_by_execution:
+                raise RunTransitionConflict(
+                    "a node execution has more than one answer-bearing event"
+                )
+            answers_by_execution[execution_value] = NodeAnswer(
+                bytes(record.payload), Sha256Hash(str(record.payload_hash))
+            )
+            continue
+        embedded_kind = embedded_effect_kind_by_execution[execution_value]
+        if embedded_kind is None or event_kind != embedded_kind.value:
             raise RunTransitionConflict(
                 "a node execution has more than one answer-bearing event"
             )
-        answers_by_execution[execution_value] = NodeAnswer(
-            bytes(record.payload), Sha256Hash(str(record.payload_hash))
-        )
 
     receipts_by_execution = {
         str(record.node_execution_id): record
@@ -1808,7 +1887,7 @@ class DbosQueries:
                         state=rail[node_id],
                         job=job,
                         job_hash=job_hash,
-                        answer=_node_answer(connection, execution_id),
+                        answer=_node_answer(connection, node, execution_id),
                         provenance=_node_provenance(connection, execution_id),
                         refusal=named_refusal,
                         refusal_output=_node_receipt_refusal_output(

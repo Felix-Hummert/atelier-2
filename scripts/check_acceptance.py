@@ -119,7 +119,7 @@ REQUIRED_REPORTS = (
     RequiredReport(
         "quality.junit.xml",
         ReportFormat.PYTEST_JUNIT,
-        "Python: architecture, lint, types, tests",
+        "Python: tests",
     ),
     RequiredReport("crash.junit.xml", ReportFormat.PYTEST_JUNIT, "Crash recovery"),
     RequiredReport(
