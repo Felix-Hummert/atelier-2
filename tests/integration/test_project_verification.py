@@ -68,6 +68,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
     PermissionDecider,
+    PrintModeExecutor,
 )
 from atelier2.ports.artifacts import ArtifactCreated, PublishArtifactResult
 from atelier2.ports.candidate_store import CandidateTreeStore
@@ -471,7 +472,7 @@ class _RefusingVerifications:
 
 
 @dataclass
-class _UnlaunchedExecutor:
+class _UnlaunchedExecutor(PrintModeExecutor):
     """An executor whose command is prepared and whose process never starts."""
 
     launches: int = 0
@@ -723,7 +724,7 @@ class _UnavailableArtifactPublisher:
 
 
 @dataclass
-class _SucceedingExecutor:
+class _SucceedingExecutor(PrintModeExecutor):
     """A provider that answers; the verification after it is the subject."""
 
     def prepare_process(self, request: object) -> AgentProcessCommand:

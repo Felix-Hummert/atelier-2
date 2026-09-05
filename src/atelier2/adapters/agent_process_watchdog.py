@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from atelier2.adapters.leased_directory import entered_leased_directory
+from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    ProviderCancellationCause,
 )
 
 # The launch frame carries the process's whole standard input base64-encoded --
@@ -30,6 +32,17 @@ from atelier2.ports.agent_executions import (
 MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 2 * MAXIMUM_AGENT_PROCESS_INPUT_BYTES
 MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES = 4_096
 CONTROL_FRAME_TIMEOUT_SECONDS = 1.0
+# What one relay exchange carries back: the size of a single pipe read, so a
+# child writing at full speed is drained in as many exchanges as it wrote
+# reads, and no control frame ever holds more than one of them.
+MAXIMUM_AGENT_EXCHANGE_OUTPUT_BYTES = 65_536
+EXCHANGE_HOLD_SECONDS = CONTROL_FRAME_TIMEOUT_SECONDS
+"""How long an exchange with nothing to say waits before answering empty.
+
+The control channel's own patience for a single frame, reused: holding for it
+keeps a silent conversation at one round trip a second instead of a poll, and
+the parent waits twice as long for the answer as this watchdog holds it.
+"""
 
 
 def encode_control_frame(payload: dict[str, object]) -> bytes:
@@ -42,14 +55,38 @@ def _announce_ready_on_standard_output() -> None:
     print("READY", flush=True)
 
 
+_FRAMELESS_WAIT_ARMS = (
+    "OUTPUT_LIMIT_EXCEEDED",
+    "SUPERVISION_FAILED",
+    "STOPPED",
+    "RECOVERY_HANDOFF",
+)
+"""Every ending a wait answers with instead of a process's own frame."""
+
+_CANCELLATION_CAUSES = frozenset(cause.value for cause in ProviderCancellationCause)
+"""The words a cancellation may name itself with, and no others."""
+
+_TERMINAL_CONTROL_SLOT = "TERMINAL_CONTROL"
+
+_SLOT_OF_OPERATION = {
+    "WAIT": "WAIT",
+    "CANCEL": _TERMINAL_CONTROL_SLOT,
+    "FINALIZE": _TERMINAL_CONTROL_SLOT,
+    "LAUNCH": "LAUNCH_RETRY",
+    "EXCHANGE": "EXCHANGE",
+}
+"""Which single-holder slot each control operation occupies while it runs."""
+
+_EXCHANGE_ENDINGS = ("COMPLETED", *_FRAMELESS_WAIT_ARMS, *sorted(_CANCELLATION_CAUSES))
+"""What an exchange reports once the process has ended.
+
+The wait vocabulary, plus the cause a cancellation named: a signal cannot say
+afterwards why it was sent, so the word the canceller used is carried through
+rather than reconstructed.
+"""
+
 MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES = max(
-    len(encode_control_frame({"type": arm}))
-    for arm in (
-        "OUTPUT_LIMIT_EXCEEDED",
-        "SUPERVISION_FAILED",
-        "STOPPED",
-        "RECOVERY_HANDOFF",
-    )
+    len(encode_control_frame({"type": arm})) for arm in _FRAMELESS_WAIT_ARMS
 )
 
 
@@ -74,6 +111,23 @@ def maximum_agent_wait_response_bytes(standard_output_frame_bytes: int) -> int:
         + _base64_characters(standard_output_frame_bytes)
         + _base64_characters(MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES),
     )
+
+
+MAXIMUM_AGENT_EXCHANGE_RESPONSE_BYTES = len(
+    encode_control_frame(
+        {
+            "accepted_input_bytes": MAXIMUM_SIGNED_INT64,
+            "ending": max(_EXCHANGE_ENDINGS, key=len),
+            "standard_output": "",
+            "type": "EXCHANGED",
+        }
+    )
+) + _base64_characters(MAXIMUM_AGENT_EXCHANGE_OUTPUT_BYTES)
+"""What one exchange response may reach: a pipe read inside its widest envelope.
+
+Measured rather than spelled, so a raised read size or a longer ending name
+moves this bound with it instead of silently outgrowing a literal.
+"""
 
 
 class _CoordinatorState(StrEnum):
@@ -125,11 +179,21 @@ class Watchdog:
         self._provider_streams: dict[int, str] = {}
         self._standard_input = b""
         self._standard_input_offset = 0
+        self._standard_input_watched = False
+        self._duplex = False
+        self._delivered_input_bytes = 0
+        self._close_input_after_drain = False
+        self._cancellation_frame = b""
+        self._cancellation_cause: str | None = None
+        self._pending_exchange: _Connection | None = None
+        self._exchange_output_offset = 0
+        self._exchange_deadline = 0.0
         self._standard_output = bytearray()
         self._standard_error = bytearray()
         self._standard_output_frame_bytes: int | None = None
         self._launch_replay: tuple[bytes, bytes] | None = None
         self._wait_response: bytes | None = None
+        self._wait_arm: str | None = None
         self._cancel_response: bytes | None = None
         self._finalize_response: bytes | None = None
         self._termination_deadline: float | None = None
@@ -182,6 +246,7 @@ class Watchdog:
         now = time.monotonic()
         self._expire_connections(now)
         self._advance_process(now)
+        self._service_pending_exchange(now)
         timeout = self._next_timeout(now)
         try:
             events = self._selector.select(timeout)
@@ -271,9 +336,6 @@ class Watchdog:
                 response = "BUSY" if state.refuse_as_busy else "FRAME_TOO_LARGE"
                 self._queue_response(state, {"type": response}, now)
             return
-        if state.refuse_as_busy:
-            self._queue_response(state, {"type": "BUSY"}, now)
-            return
         self._classify_request(state, bytes(state.input_bytes), now)
 
     def _classify_request(self, state: _Connection, frame: bytes, now: float) -> None:
@@ -287,12 +349,16 @@ class Watchdog:
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
             self._queue_response(state, {"type": "MALFORMED"}, now)
             return
-        slot = {
-            "WAIT": "WAIT",
-            "CANCEL": "TERMINAL_CONTROL",
-            "FINALIZE": "TERMINAL_CONTROL",
-            "LAUNCH": "LAUNCH_RETRY",
-        }.get(operation)
+        slot = _SLOT_OF_OPERATION.get(operation)
+        if state.refuse_as_busy and slot != _TERMINAL_CONTROL_SLOT:
+            # A stop is why the busy refusal is read to its end rather than
+            # answered at the door: the relay reconnects for every exchange, so
+            # a cancellation racing one of those connections would otherwise be
+            # sent away and cost a retry -- a second in which nothing is
+            # signalled. One terminal control passes; its own slot still holds
+            # it to one at a time, and everything else is refused as before.
+            self._queue_response(state, {"type": "BUSY"}, now)
+            return
         if slot is None:
             self._queue_response(state, {"type": "MALFORMED"}, now)
             return
@@ -304,12 +370,15 @@ class Watchdog:
         self._slots[slot] = descriptor
         state.slot = slot
         state.operation = operation
+        state.refuse_as_busy = False
         if operation == "LAUNCH":
             self._handle_launch(state, request, frame, now)
         elif operation == "WAIT":
             self._handle_wait(state, now)
         elif operation == "CANCEL":
-            self._handle_cancel(state, now)
+            self._handle_cancel(state, request, now)
+        elif operation == "EXCHANGE":
+            self._handle_exchange(state, request, now)
         else:
             self._handle_finalize(state, now)
 
@@ -351,8 +420,10 @@ class Watchdog:
                 environment,
                 standard_input,
                 standard_output_frame_bytes,
+                duplex,
             ) = _decode_launch_request(request)
             self._standard_output_frame_bytes = standard_output_frame_bytes
+            self._duplex = duplex
             guarded = (
                 sys.executable,
                 "-m",
@@ -414,7 +485,15 @@ class Watchdog:
         if self._wait_response is not None:
             self._queue_encoded_response(connection, self._wait_response, now)
 
-    def _handle_cancel(self, connection: _Connection, now: float) -> None:
+    def _handle_cancel(
+        self, connection: _Connection, request: dict[str, Any], now: float
+    ) -> None:
+        cause = request.get("cause")
+        if cause is not None and cause not in _CANCELLATION_CAUSES:
+            self._queue_response(connection, {"type": "MALFORMED"}, now)
+            return
+        if self._cancellation_cause is None and type(cause) is str:
+            self._cancellation_cause = cause
         if self._cancel_response is not None:
             self._queue_encoded_response(connection, self._cancel_response, now)
             return
@@ -426,6 +505,92 @@ class Watchdog:
             self._queue_encoded_response(connection, self._cancel_response, now)
             return
         self._begin_termination("CANCEL", now)
+
+    def _handle_exchange(
+        self, connection: _Connection, request: dict[str, Any], now: float
+    ) -> None:
+        """Take this relay's bytes and hold the answer until there is one.
+
+        The parent counts in cumulative bytes on both directions, so an
+        exchange the control channel had to retry delivers no byte twice: what
+        this watchdog already accepted is skipped, and what it already sent is
+        simply sent again. It answers as soon as the child said something or
+        ended, and otherwise once its hold is up -- never a poll, never a wait
+        without an end.
+        """
+
+        if not self._duplex:
+            self._queue_response(connection, {"type": "MALFORMED"}, now)
+            return
+        try:
+            delivered_output, input_offset, chunk, cancellation, close_input = (
+                _decode_exchange_request(request)
+            )
+        except ValueError:
+            self._queue_response(connection, {"type": "MALFORMED"}, now)
+            return
+        if input_offset > self._delivered_input_bytes:
+            self._queue_response(connection, {"type": "MALFORMED"}, now)
+            return
+        fresh = chunk[self._delivered_input_bytes - input_offset :]
+        if fresh:
+            if (
+                self._unwritten_input_bytes() + len(fresh)
+                > MAXIMUM_AGENT_PROCESS_INPUT_BYTES
+            ):
+                self._queue_response(connection, {"type": "INPUT_LIMIT_EXCEEDED"}, now)
+                return
+            self._accept_standard_input(fresh)
+        if cancellation:
+            self._cancellation_frame = cancellation
+        if close_input:
+            self._close_input_after_drain = True
+            self._close_drained_standard_input()
+        self._exchange_output_offset = min(delivered_output, len(self._standard_output))
+        if self._pending_exchange is not connection:
+            self._pending_exchange = connection
+            self._exchange_deadline = now + EXCHANGE_HOLD_SECONDS
+        self._service_pending_exchange(now)
+
+    def _service_pending_exchange(self, now: float) -> None:
+        connection = self._pending_exchange
+        if connection is None:
+            return
+        available = bytes(
+            self._standard_output[
+                self._exchange_output_offset : self._exchange_output_offset
+                + MAXIMUM_AGENT_EXCHANGE_OUTPUT_BYTES
+            ]
+        )
+        ending = self._exchange_ending()
+        if not available and ending is None and now < self._exchange_deadline:
+            return
+        self._pending_exchange = None
+        self._queue_response(
+            connection,
+            {
+                "accepted_input_bytes": self._written_input_bytes(),
+                "ending": ending or "",
+                "standard_output": base64.b64encode(available).decode("ascii"),
+                "type": "EXCHANGED",
+            },
+            now,
+        )
+
+    def _exchange_ending(self) -> str | None:
+        """How this process ended, as far as a relay needs to know.
+
+        A reaped child answers `COMPLETED` even when a cancellation is what
+        reaped it, so termination is asked first: to a conversation, output
+        that stopped because someone stopped the process is not output that
+        simply ran out.
+        """
+
+        if self._wait_response is None:
+            return None
+        if self._termination_owner != "CANCEL":
+            return self._wait_arm
+        return self._cancellation_cause or "STOPPED"
 
     def _handle_finalize(self, connection: _Connection, now: float) -> None:
         if self._finalize_response is not None:
@@ -449,8 +614,9 @@ class Watchdog:
             os.set_blocking(descriptor, False)
             self._provider_streams[descriptor] = role
             self._selector.register(descriptor, events, role)
+        self._standard_input_watched = True
         if not self._standard_input:
-            self._close_provider_stream("stdin")
+            self._rest_standard_input()
 
     def _service_provider(
         self, descriptor: int, role: str, _mask: int, now: float
@@ -477,7 +643,7 @@ class Watchdog:
             return
         self._standard_input_offset += written
         if self._standard_input_offset == len(self._standard_input):
-            self._close_provider_stream("stdin")
+            self._rest_standard_input()
 
     def _read_provider_output(self, descriptor: int, role: str, now: float) -> None:
         try:
@@ -502,7 +668,7 @@ class Watchdog:
         if len(target) > limit:
             self._standard_output.clear()
             self._standard_error.clear()
-            self._standard_input = b""
+            self._drop_unwritten_input()
             self._close_provider_stream("stdin")
             self._begin_termination("OVERFLOW", now)
 
@@ -544,7 +710,9 @@ class Watchdog:
             return
         self._termination_owner = owner
         self._termination_escalated = False
-        self._standard_input = b""
+        if owner == "CANCEL":
+            self._write_cancellation_frame()
+        self._drop_unwritten_input()
         self._close_provider_stream("stdin")
         if self._process is None:
             self._termination_disposition = "NEVER_LAUNCHED"
@@ -627,6 +795,7 @@ class Watchdog:
             return
         encoded = encode_control_frame({"type": "RECOVERY_HANDOFF"})
         self._wait_response = encoded
+        self._wait_arm = "RECOVERY_HANDOFF"
         self._cancel_response = encoded
         self._termination_deadline = None
         self._state = _CoordinatorState.RECOVERY_HANDOFF
@@ -678,6 +847,7 @@ class Watchdog:
         if len(encoded) > bound:
             raise RuntimeError("watchdog wait response exceeds its exact bound")
         self._wait_response = encoded
+        self._wait_arm = str(response["type"])
         self._state = _CoordinatorState.TERMINATED
         for connection in tuple(self._connections.values()):
             if connection.operation == "WAIT" and connection.output_bytes is None:
@@ -738,6 +908,8 @@ class Watchdog:
         connection.slot = ""
 
     def _close_connection(self, connection: _Connection) -> None:
+        if self._pending_exchange is connection:
+            self._pending_exchange = None
         descriptor = connection.socket.fileno()
         self._release_slot(connection)
         self._connections.pop(descriptor, None)
@@ -746,6 +918,109 @@ class Watchdog:
         except (KeyError, ValueError):
             pass
         connection.socket.close()
+
+    def _rest_standard_input(self) -> None:
+        """Stop watching a drained standard input, and close it if nothing follows.
+
+        A print-mode child is told everything at once, so a drained input is a
+        finished one and end of file is what it waits for. A conversation's
+        child is told more later, so its pipe stays open -- unwatched, because
+        a writable pipe nobody has anything for would wake this selector
+        without end.
+        """
+
+        if not self._duplex:
+            self._close_provider_stream("stdin")
+            return
+        self._standard_input = b""
+        self._standard_input_offset = 0
+        if self._close_input_after_drain:
+            self._close_drained_standard_input()
+            return
+        descriptor = self._standard_input_descriptor()
+        if descriptor is None or not self._standard_input_watched:
+            return
+        self._standard_input_watched = False
+        try:
+            self._selector.unregister(descriptor)
+        except (KeyError, ValueError):
+            pass
+
+    def _accept_standard_input(self, chunk: bytes) -> None:
+        unwritten = self._standard_input[self._standard_input_offset :]
+        self._standard_input = unwritten + chunk
+        self._standard_input_offset = 0
+        self._delivered_input_bytes += len(chunk)
+        self._watch_standard_input()
+
+    def _unwritten_input_bytes(self) -> int:
+        return len(self._standard_input) - self._standard_input_offset
+
+    def _drop_unwritten_input(self) -> None:
+        """Forget input nobody will write, without calling it delivered.
+
+        A stop drops whatever the child never took, so those bytes leave the
+        count of what it has: a conversation that heard them acknowledged
+        would be told the provider received an answer that in fact went
+        nowhere.
+        """
+
+        self._delivered_input_bytes -= self._unwritten_input_bytes()
+        self._standard_input = b""
+        self._standard_input_offset = 0
+
+    def _written_input_bytes(self) -> int:
+        """How many of the relay's bytes the child's own pipe has taken.
+
+        The acknowledgement a conversation is held to its input bound by: bytes
+        this watchdog merely buffered are still the relay's to count, or the
+        bound the executor declared would end at this side of a pipe a child
+        never reads and the real backlog would grow behind it. What a launch
+        handed over is written before any of them, so while that payload is
+        still going out nothing of the relay's has left.
+        """
+
+        return max(0, self._delivered_input_bytes - self._unwritten_input_bytes())
+
+    def _close_drained_standard_input(self) -> None:
+        """Let a completed conversation's child see end of file, once it may."""
+
+        if self._close_input_after_drain and not self._unwritten_input_bytes():
+            self._standard_input_watched = False
+            self._close_provider_stream("stdin")
+
+    def _watch_standard_input(self) -> None:
+        descriptor = self._standard_input_descriptor()
+        if descriptor is None or self._standard_input_watched:
+            return
+        self._standard_input_watched = True
+        self._selector.register(descriptor, selectors.EVENT_WRITE, "stdin")
+
+    def _standard_input_descriptor(self) -> int | None:
+        return next(
+            (fd for fd, role in self._provider_streams.items() if role == "stdin"),
+            None,
+        )
+
+    def _write_cancellation_frame(self) -> None:
+        """Ask this provider to stop, in one nonblocking write, and stop waiting.
+
+        The frame was composed while the conversation still ran, so stopping
+        costs no round trip through it. What does not fit the pipe right now is
+        dropped rather than waited for: the signal that follows in this same
+        selector turn is the actual stop, and a cancellation that waited on a
+        full pipe would be a cancellation a stuck child could postpone.
+        """
+
+        descriptor = self._standard_input_descriptor()
+        if descriptor is None or not self._cancellation_frame:
+            return
+        frame = self._cancellation_frame
+        self._cancellation_frame = b""
+        try:
+            os.write(descriptor, frame)
+        except OSError:
+            pass
 
     def _has_provider_stream(self, role: str) -> bool:
         return role in self._provider_streams.values()
@@ -774,8 +1049,11 @@ class Watchdog:
 
 def _decode_launch_request(
     request: dict[str, Any],
-) -> tuple[tuple[str, ...], str, tuple[int, int], dict[str, str], bytes, int]:
-    if set(request) != {
+) -> tuple[tuple[str, ...], str, tuple[int, int], dict[str, str], bytes, int, bool]:
+    # `duplex` is named only by a launch that opens a conversation, so a
+    # print-mode launch frame is byte-for-byte the one this watchdog has always
+    # been given.
+    if set(request) - {"duplex"} != {
         "arguments",
         "environment",
         "operation",
@@ -834,6 +1112,9 @@ def _decode_launch_request(
     standard_output_frame_bytes = request["standard_output_frame_bytes"]
     if type(standard_output_frame_bytes) is not int or standard_output_frame_bytes < 1:
         raise ValueError("launch standard output frame is malformed")
+    duplex = request.get("duplex", False)
+    if type(duplex) is not bool:
+        raise ValueError("launch conversation flag is malformed")
     return (
         tuple(arguments_value),
         working_directory_value,
@@ -841,6 +1122,53 @@ def _decode_launch_request(
         environment,
         standard_input,
         standard_output_frame_bytes,
+        duplex,
+    )
+
+
+def _decode_exchange_request(
+    request: dict[str, Any],
+) -> tuple[int, int, bytes, bytes, bool]:
+    """One relay exchange: what the parent has taken, and what it hands over."""
+
+    if set(request) != {
+        "cancellation_frame",
+        "close_input",
+        "delivered_output_bytes",
+        "operation",
+        "standard_input",
+        "standard_input_offset",
+    }:
+        raise ValueError("exchange request has unexpected fields")
+    delivered_output_bytes = request["delivered_output_bytes"]
+    input_offset = request["standard_input_offset"]
+    if (
+        type(delivered_output_bytes) is not int
+        or delivered_output_bytes < 0
+        or type(input_offset) is not int
+        or input_offset < 0
+    ):
+        raise ValueError("exchange offsets are malformed")
+    standard_input_value = request["standard_input"]
+    cancellation_value = request["cancellation_frame"]
+    if type(standard_input_value) is not str or type(cancellation_value) is not str:
+        raise ValueError("exchange payloads are malformed")
+    standard_input = base64.b64decode(standard_input_value, validate=True)
+    cancellation_frame = base64.b64decode(cancellation_value, validate=True)
+    if (
+        len(standard_input) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES
+        or len(cancellation_frame) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES
+    ):
+        raise ValueError("exchange payload exceeds its exact bound")
+    close_input = request["close_input"]
+    if type(close_input) is not bool:
+        raise ValueError("exchange input closure is malformed")
+    return (
+        delivered_output_bytes,
+        input_offset,
+        standard_input,
+        cancellation_frame,
+        close_input,
     )
 
 

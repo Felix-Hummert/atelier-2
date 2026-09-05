@@ -81,6 +81,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    PrintModeExecutor,
 )
 
 CODEX_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
@@ -595,7 +596,7 @@ class CodexSubscriptionProcessCommand(AgentProcessCommand):
 
 
 @dataclass(frozen=True)
-class CodexSubscriptionExecutor:
+class CodexSubscriptionExecutor(PrintModeExecutor):
     settings: CodexSubscriptionSettings
     _job_directories: set[Path] = field(
         default_factory=set, init=False, compare=False, repr=False

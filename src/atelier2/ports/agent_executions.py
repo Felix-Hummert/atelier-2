@@ -19,8 +19,9 @@ from atelier2.contracts.agent_permissions import (
     PermissionDecision,
     PermissionRequest,
 )
-from atelier2.contracts.agent_transcripts import AttemptTranscript
+from atelier2.contracts.agent_transcripts import AttemptTranscript, TranscriptEvent
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     MAXIMUM_SIGNED_INT64,
@@ -220,12 +221,377 @@ class AgentAttemptWorkspaceLease:
             raise ValueError("agent attempt workspace directory exceeds the path bound")
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderConversationBounds:
+    """Every buffer one conversation may cost, declared by the executor that opens it.
+
+    The executor knows its provider's wire format and therefore what a frame, a
+    reply and a cancellation may cost there. Supervision owns the physical
+    buffers and holds each one to exactly this declaration, because a bound the
+    side that allocates does not enforce is a wish. Every bound is refused
+    against the port's own portable ceilings here, so no executor can declare
+    itself room the process seam could never give it.
+    """
+
+    maximum_total_output_bytes: int
+    maximum_incomplete_frame_bytes: int
+    maximum_reply_bytes: int
+    maximum_cancel_bytes: int
+    maximum_pending_input_bytes: int
+
+    def __post_init__(self) -> None:
+        declared = (
+            self.maximum_total_output_bytes,
+            self.maximum_incomplete_frame_bytes,
+            self.maximum_reply_bytes,
+            self.maximum_cancel_bytes,
+            self.maximum_pending_input_bytes,
+        )
+        if any(type(bound) is not int or bound < 1 for bound in declared):
+            raise ValueError("every conversation bound counts at least one byte")
+        if (
+            self.maximum_total_output_bytes
+            > MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
+            or self.maximum_incomplete_frame_bytes > self.maximum_total_output_bytes
+        ):
+            raise ValueError(
+                "a conversation cannot read past the portable output bound"
+            )
+        if (
+            self.maximum_pending_input_bytes > MAXIMUM_AGENT_PROCESS_INPUT_BYTES
+            or self.maximum_reply_bytes > self.maximum_pending_input_bytes
+            or self.maximum_cancel_bytes > self.maximum_pending_input_bytes
+        ):
+            raise ValueError(
+                "a conversation cannot write past the portable input bound"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderStandardInput:
+    """Bytes this conversation wants written to its child's standard input."""
+
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCancellationFrame:
+    """How this provider is asked to stop, published before anyone asks it to.
+
+    Held ready by supervision so that a cancellation costs no round trip
+    through the conversation: whoever stops the attempt writes these bytes once
+    and signals in the same breath.
+    """
+
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSessionEvent:
+    """One step of the conversation, already in the transcript's vocabulary."""
+
+    step: TranscriptEvent
+
+
+class ProviderFilesystemEffect(StrEnum):
+    """What a provider can ask to have done to one file, and nothing else."""
+
+    READ = "read"
+    WRITE = "write"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderFilesystemRequestId:
+    """The identity of one file request inside one conversation.
+
+    An ordinal the conversation counts, never an identifier a provider spelled:
+    a provider that invents, repeats or omits its own id could otherwise
+    address the answer meant for another request, or make two requests look
+    like one -- the same reason a permission question is correlated by a minted
+    id (`contracts.agent_permissions`).
+    """
+
+    call_ordinal: int
+
+    def __post_init__(self) -> None:
+        if type(self.call_ordinal) is not int or self.call_ordinal < 1:
+            raise ValueError("a filesystem request ordinal counts from one")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderFilesystemRequest:
+    """What a running provider wants done to one file, as Atelier understands it."""
+
+    effect: ProviderFilesystemEffect
+    path: Path
+    request_id: ProviderFilesystemRequestId
+    content: bytes = b""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.effect, ProviderFilesystemEffect):
+            raise TypeError("a filesystem request uses the closed effect vocabulary")
+        if self.content and self.effect is not ProviderFilesystemEffect.WRITE:
+            raise ValueError("only a write carries content")
+
+
+class ProviderFilesystemAnswer(StrEnum):
+    """Whether the file this request named was reached at all."""
+
+    ANSWERED = "answered"
+    REFUSED = "refused"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderFilesystemReply:
+    """What came back for exactly one file request."""
+
+    request_id: ProviderFilesystemRequestId
+    answer: ProviderFilesystemAnswer
+    content: bytes = b""
+
+    def __post_init__(self) -> None:
+        if self.content and self.answer is not ProviderFilesystemAnswer.ANSWERED:
+            raise ValueError("a refused file request carries no content")
+
+
+class ProviderFilesystemAccess(Protocol):
+    """Who reaches a file for a running provider, and refuses what it may not.
+
+    One seam, for the same reason `PermissionDecider` is one: the conversation
+    asks and spells the answer but opens nothing, and supervision carries the
+    request here and the reply back without opening anything either. A binding
+    is handed the access its deployment allows this attempt; an executor that
+    made its own would be granting itself the workspace.
+    """
+
+    def answer(self, request: ProviderFilesystemRequest) -> ProviderFilesystemReply:
+        """Do exactly this to exactly that file, or refuse it."""
+        ...
+
+
+class ProviderCancellationCause(StrEnum):
+    """Why an attempt is being stopped, as the side that stops it knows.
+
+    The cause travels with the request rather than being inferred afterwards:
+    a run stopped because its budget ran out and one an operator stopped by
+    hand end in the same signal, and only the caller knows which happened.
+    """
+
+    OPERATOR = "operator"
+    BUDGET = "budget"
+    POLICY = "policy"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCancellationRequest:
+    """This conversation asking for its own process to be stopped, and why.
+
+    A stop the driver reaches on its own: a tool ceiling spent, a policy it
+    cannot answer under. It carries the cause because the ending it will be
+    told, and the outcome that ending composes, are the caller's reading of
+    why -- not something a signal could say afterwards. The stop itself is the
+    same one an operator asks for: the frame this conversation published is
+    written once and the signal follows in the same breath.
+    """
+
+    cause: ProviderCancellationCause
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.cause, ProviderCancellationCause):
+            raise TypeError("a cancellation request uses the closed cause vocabulary")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConversationComplete:
+    """This conversation has nothing further to send, so its input may close.
+
+    How a persistent stdio server is let go without a signal: end of file is
+    what it waits for, and only the conversation knows that its last frame was
+    the last one. Whatever it has already queued is written first; the child's
+    standard input closes once that is drained.
+    """
+
+
+type ProviderConversationAction = (
+    ProviderStandardInput
+    | ProviderCancellationFrame
+    | ProviderCancellationRequest
+    | ProviderConversationComplete
+    | PermissionRequest
+    | ProviderFilesystemRequest
+    | ProviderSessionEvent
+)
+"""Everything a conversation can ask of the side that owns the process."""
+
+
+class ProviderConversationEnding(StrEnum):
+    """How the conversation's process ended, as supervision saw it."""
+
+    OUTPUT_ENDED = "output-ended"
+    TERMINATED = "terminated"
+    CANCELLED_BY_OPERATOR = "cancelled-by-operator"
+    CANCELLED_FOR_BUDGET = "cancelled-for-budget"
+    CANCELLED_FOR_POLICY = "cancelled-for-policy"
+
+    @classmethod
+    def of_cancellation(
+        cls, cause: ProviderCancellationCause
+    ) -> ProviderConversationEnding:
+        """The ending a conversation is told when this cause stopped it."""
+
+        return _ENDING_OF_CANCELLATION_CAUSE[cause]
+
+
+_ENDING_OF_CANCELLATION_CAUSE = {
+    ProviderCancellationCause.OPERATOR: (
+        ProviderConversationEnding.CANCELLED_BY_OPERATOR
+    ),
+    ProviderCancellationCause.BUDGET: ProviderConversationEnding.CANCELLED_FOR_BUDGET,
+    ProviderCancellationCause.POLICY: ProviderConversationEnding.CANCELLED_FOR_POLICY,
+}
+
+
+class ProviderTerminalReason(StrEnum):
+    """Why this conversation is over, in its own reading of what happened."""
+
+    ENDED = "ended"
+    POLICY_REFUSED = "policy-refused"
+    BUDGET_EXHAUSTED = "budget-exhausted"
+    CANCELLED_BY_OPERATOR = "cancelled-by-operator"
+    CANCELLED_BY_PROVIDER = "cancelled-by-provider"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderTerminalOutcome:
+    """How one conversation ended, typed, beside the bytes its process left.
+
+    An exit code and a transcript say what a process did, never why it stopped:
+    a refusal latched after a permission was denied, an exhausted budget and an
+    operator's own stop all end a process the same way. The provider's own stop
+    reason is kept as data on the one arm that has one, never parsed into
+    meaning here.
+    """
+
+    reason: ProviderTerminalReason
+    provider_stop_reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason, ProviderTerminalReason):
+            raise TypeError("a terminal outcome uses the closed reason vocabulary")
+        if self.provider_stop_reason and (
+            self.reason is not ProviderTerminalReason.CANCELLED_BY_PROVIDER
+        ):
+            raise ValueError("only a provider that stopped itself names a stop reason")
+        if len(self.provider_stop_reason) > MAXIMUM_AGENT_FIELD_CHARACTERS:
+            raise ValueError("a provider stop reason exceeds the agent field bound")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConversationClosing:
+    """What a conversation leaves behind: how it really ended, and its last steps.
+
+    Kept apart from the actions it publishes while running, and typed so that
+    an ended conversation cannot ask for anything: there is nothing left to
+    write to, so whatever it says here is evidence rather than a reply.
+    """
+
+    outcome: ProviderTerminalOutcome
+    steps: tuple[ProviderSessionEvent, ...] = ()
+
+
+class ProviderConversation(Protocol):
+    """One provider's wire format as a state machine, with no I/O of its own.
+
+    It reads bytes and answers with actions; writing them, deciding a
+    permission, reaching a file and enforcing a bound all belong to whoever
+    holds the process. That separation is what keeps a provider's parser out of
+    the supervision loop: nothing here can delay a cancellation, and nothing
+    here can answer a permission question or open a file under an authority it
+    chose itself.
+    """
+
+    @property
+    def bounds(self) -> ProviderConversationBounds: ...
+
+    def open(self) -> tuple[ProviderConversationAction, ...]:
+        """Say the first thing, before this process has said anything.
+
+        A protocol whose first frame is the caller's -- a handshake, a session
+        it opens -- spells that frame here, so the lifecycle and the request
+        ids it counts stay inside the conversation. A command's own standard
+        input would be the other place to put it, and there the conversation
+        could neither correlate the answer nor number what follows.
+        """
+        ...
+
+    def receive_output(self, chunk: bytes) -> tuple[ProviderConversationAction, ...]:
+        """Read exactly these output bytes and say what they ask for."""
+        ...
+
+    def input_written(
+        self, written_bytes: int
+    ) -> tuple[ProviderConversationAction, ...]:
+        """This many of the bytes it asked for have physically reached the child.
+
+        Counted cumulatively over everything this conversation queued, and said
+        only once the bytes left the parent for the child's own pipe. A
+        conversation that has to know what the provider really has -- which
+        permission answer it may still take back, what its prepared stop frame
+        should now say -- cannot learn that from a queue it does not own.
+        """
+        ...
+
+    def answer_permission(self, decision: PermissionDecision) -> ProviderStandardInput:
+        """Spell this answer in the provider's own wire format."""
+        ...
+
+    def answer_filesystem(
+        self, reply: ProviderFilesystemReply
+    ) -> ProviderStandardInput:
+        """Spell what came back for one file request, refusal included."""
+        ...
+
+    def finish(self, ending: ProviderConversationEnding) -> ProviderConversationClosing:
+        """Close this conversation, knowing how its process ended.
+
+        A half frame is one reason this exists: what an ended process leaves
+        unfinished is evidence when the output simply ran out, and something
+        else again when supervision stopped it mid-sentence. The other is the
+        outcome -- only the conversation knows whether the stop it was told
+        about was the end of a refusal it had already latched.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConversationBinding:
+    """One live conversation, bound to the executor revision that opened it.
+
+    The revision is the comparable half and neither the driver nor its file
+    access is: at-most-once launch compares what an invocation *is*, and live
+    objects are never that. A second launch of one armed session carrying
+    another revision's conversation is therefore refused instead of quietly
+    sharing the first one's ending.
+    """
+
+    executor_revision: AgentExecutorRevision
+    driver: ProviderConversation = field(compare=False, repr=False)
+    files: ProviderFilesystemAccess = field(compare=False, repr=False)
+
+
 @dataclass(frozen=True)
 class AgentProcessInvocation:
-    """One provider process invocation: a provider's command in one lease."""
+    """One provider process invocation: a provider's command in one lease.
+
+    `conversation` is absent for every provider that answers in print mode --
+    a payload in, a frame out, nothing to ask. Where one is present the child's
+    standard input stays open and supervision relays between it and this
+    attempt's own permission authority.
+    """
 
     command: AgentProcessCommand
     lease: AgentAttemptWorkspaceLease
+    conversation: ProviderConversationBinding | None = None
 
 
 class AgentAttemptWorkspaceOwner(Protocol):
@@ -246,13 +612,26 @@ class AgentAttemptWorkspaceOwner(Protocol):
 
 @dataclass(frozen=True)
 class AgentProcessCompletion:
+    """Everything supervision saw of one ended process.
+
+    `session_events` are the steps a conversation published while the process
+    ran, in the order it published them, and `terminal_outcome` is what that
+    conversation concluded about its own ending. A print-mode process leaves
+    neither: its whole story is the frame it printed, which its executor reads
+    afterwards, and an exit code is all it ever said about stopping.
+    """
+
     return_code: int
     standard_output: bytes
     standard_error: bytes
+    session_events: tuple[TranscriptEvent, ...] = ()
+    terminal_outcome: ProviderTerminalOutcome | None = None
 
     def __post_init__(self) -> None:
         if type(self.return_code) is not int:
             raise TypeError("agent process return code must be an integer")
+        if type(self.session_events) is not tuple:
+            raise TypeError("agent process session events are an exact ordered tuple")
         if not -MAXIMUM_SIGNED_INT64 - 1 <= self.return_code <= MAXIMUM_SIGNED_INT64:
             raise ValueError("agent process return code must fit signed int64")
 
@@ -260,6 +639,23 @@ class AgentProcessCompletion:
 class AgentExecutorV2(Protocol):
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         """Prepare a live-only command without starting a child."""
+        ...
+
+    def open_conversation(
+        self,
+        request: AgentExecutionRequestV2,
+        command: AgentProcessCommand,
+        lease: AgentAttemptWorkspaceLease,
+    ) -> ProviderConversationBinding | None:
+        """Open this invocation's conversation, or answer `None` for print mode.
+
+        Asked after the attempt's claim is won and its workspace is leased, and
+        before anything is launched: a conversation is live state, so a call
+        that never reaches a process must never have made one. It sees the
+        lease because a provider that speaks a protocol has to be told where it
+        stands before its first frame, and the command because the same
+        executor revision can prepare more than one shape of call.
+        """
         ...
 
     def decode_process_completion(
@@ -301,6 +697,25 @@ class AgentExecutorV2(Protocol):
         ...
 
     def close(self) -> None: ...
+
+
+class PrintModeExecutor:
+    """The half of `AgentExecutorV2` a provider that only prints has no use for.
+
+    A print-mode vector is handed its whole job at once and answers with one
+    frame; there is no channel on which it could be asked anything, and every
+    executor this product runs today is one. The sentence stands here once and
+    each such executor names it, rather than six identical refusals -- and an
+    executor that grows a real channel stops naming it and opens its own.
+    """
+
+    def open_conversation(
+        self,
+        request: AgentExecutionRequestV2,
+        command: AgentProcessCommand,
+        lease: AgentAttemptWorkspaceLease,
+    ) -> None:
+        del request, command, lease
 
 
 class PermissionDecider(Protocol):
@@ -354,8 +769,9 @@ class AgentSession(Protocol):
 
         `permissions` is the authority this run's questions are answered under,
         handed in rather than looked up so that no session can answer under one
-        the dispatch did not bind. A session whose provider channel cannot ask
-        -- everything print-mode -- carries it and never puts a question to it.
+        the dispatch did not bind. An invocation carrying no conversation
+        cannot ask at all -- print mode, a payload in and a frame out -- and
+        no question is ever put to that authority.
 
         The completion is the terminal evidence of that process: the code it
         exited with, and the bounded output and error frames supervision
@@ -370,7 +786,9 @@ class AgentSession(Protocol):
         ...
 
     def cancel(
-        self, attempt: AgentAttempt
+        self,
+        attempt: AgentAttempt,
+        cause: ProviderCancellationCause = ProviderCancellationCause.OPERATOR,
     ) -> tuple[
         AgentAttemptCancellationDisposition,
         AgentProcessOwnerId,
@@ -382,6 +800,12 @@ class AgentSession(Protocol):
         out, because that triple is what the store attests the cleanup from.
         A session this process does not hold refuses with
         `AgentProcessOwnerNotLocal`; `recover` is that attempt's question.
+
+        `cause` is why this attempt is being stopped, and it reaches the
+        conversation as its ending: a signal cannot say afterwards whether a
+        budget, a policy or an operator ended the run. It defaults to the
+        operator's own request because that is the only stop this product has
+        a caller for today.
         """
         ...
 
