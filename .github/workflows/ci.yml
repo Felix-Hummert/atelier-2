@@ -306,6 +306,11 @@ jobs:
     # The ruleset requires this exact historical name. This job now publishes
     # the fast static signal while the independent Python test job runs.
     timeout-minutes: 10
+    # contents: read is the workflow default; pull-requests: write is this
+    # job's own addition, needed only by the corridor report's PR comment.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Check out the event commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -329,8 +334,14 @@ jobs:
       - name: Check architecture contracts
         run: uv run --locked python scripts/check_architecture.py
 
+      - name: Check the size and complexity ratchet
+        run: uv run --locked python scripts/check_size_ratchet.py
+
       - name: Check for dead production code
         run: uv run --locked python scripts/check_dead_code.py
+
+      - name: Check the frozen OpenAPI document is current
+        run: uv run --locked python scripts/write_openapi_frozen.py --check
 
       - name: Check documentation order
         env:
@@ -360,6 +371,24 @@ jobs:
       # so its designed refusal never swallows another static gate's signal.
       - name: Check screenshot review freshness
         run: uv run --locked python scripts/check_screenshot_review.py
+
+      # AGENTS.md's slice corridor (three production files, a hundred changed
+      # production lines): reported, never gated, because a check cannot judge
+      # a cut. Always exits 0; only over the corridor does it write the job
+      # summary and update its one pull request comment.
+      - name: Report the change corridor
+        env:
+          CORRIDOR_BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || github.event.before }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            uv run --locked python scripts/report_corridor.py \
+              --base "${CORRIDOR_BASE_SHA}" \
+              --pull-request-number "${{ github.event.pull_request.number }}"
+          else
+            uv run --locked python scripts/report_corridor.py --base "${CORRIDOR_BASE_SHA}"
+          fi
 
   tests:
     name: "Python: tests"
