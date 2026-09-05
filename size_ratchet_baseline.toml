@@ -730,10 +730,6 @@ qualified_name = "atelier2.host._serve"
 lines = 86
 
 [[function]]
-qualified_name = "atelier2.host.conductor_workflow.require_conductor_document"
-lines = 92
-
-[[function]]
 qualified_name = "atelier2.host.mcp_tools.tool_definitions"
 lines = 151
 
