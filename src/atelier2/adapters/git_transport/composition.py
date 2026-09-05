@@ -10,6 +10,7 @@ from atelier2.adapters.git_transport.effects import (
     GitTransportEffectAdapterFactory,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.ports.effects import HeadBranchPullRequests
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class GitTransportConfiguration:
 def compose_git_transport_effect_adapter(
     candidate_store: Path,
     configuration: GitTransportConfiguration,
+    head_branch_pull_requests: HeadBranchPullRequests,
 ) -> GitTransportEffectAdapterFactory:
     return GitTransportEffectAdapterFactory(
         candidate_store,
@@ -32,4 +34,5 @@ def compose_git_transport_effect_adapter(
         ),
         AdapterRevision("git-transport-push-v1"),
         EffectDestination("git"),
+        head_branch_pull_requests,
     )

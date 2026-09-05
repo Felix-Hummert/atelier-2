@@ -70,6 +70,7 @@ from tests.scenarios.agents import (
     launching,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
@@ -220,6 +221,7 @@ def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
         GitRemote("local-crash-test", str(root / "remote.git")),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
+        FakeHeadBranchPullRequests(),
         runner,
     )
     registry = EffectAdapterRegistry(
@@ -581,6 +583,59 @@ def test_restart_reads_the_exact_commit_without_pushing_a_twin(tmp_path: Path) -
     assert isinstance(receipt, EffectReceipt)
     assert receipt.effect_id.value == request.expected_commit_oid(
         intent.request.request_hash.value
+    )
+
+
+def test_a_replay_after_a_lease_push_reads_the_same_commit_and_sends_nothing(
+    tmp_path: Path,
+) -> None:
+    """The replaced branch was accepted, the answer was lost, the retry replays.
+
+    A push that replaced an earlier attempt's commit under a lease leaves the
+    branch naming this request's own deterministic commit, so the read after
+    the crash resolves to that commit's receipt rather than to a second send --
+    the same convergence a create-only push already has, now for the branch
+    this operation replaced.
+    """
+
+    store, remote, base, tree = _repositories(tmp_path)
+    from tests.integration.test_git_transport_push import (
+        HEAD_BRANCH,
+        _factory,
+        _foreign_commit,
+    )
+
+    _foreign_commit(tmp_path, base, tree, remote, b"an earlier attempt\n")
+    factory = _factory(store, remote, CrashAfterAcceptedPush())
+    intent, request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        with pytest.raises(RuntimeError, match="injected crash"):
+            adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    push_attempts = tmp_path / "push-attempts"
+    recovered = _factory(
+        store, remote, PushAttemptRecordingRunner(push_attempts)
+    ).open()
+    try:
+        receipt = recovered.readback(intent, ReadbackPhase.AFTER_SEND)
+    finally:
+        recovered.close()
+
+    expected = request.expected_commit_oid(intent.request.request_hash.value)
+    assert isinstance(receipt, EffectReceipt)
+    assert receipt.effect_id.value == expected
+    assert not push_attempts.exists()
+    assert (
+        subprocess.run(
+            ("git", "-C", str(remote), "rev-parse", HEAD_BRANCH.full_ref),
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        == expected
     )
 
 

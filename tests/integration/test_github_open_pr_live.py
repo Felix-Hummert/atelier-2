@@ -28,7 +28,10 @@ from atelier2.adapters.github.live_effects import (
     MAXIMUM_PULL_REQUEST_LISTING_PAGES,
     PULL_REQUESTS_PER_LISTING_PAGE,
     GitHubEffectRefused,
+    GitHubRepository,
+    GitHubTokenCredential,
     LiveGitHubEffectAdapterFactory,
+    LiveGitHubHeadBranchPullRequests,
 )
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
 from atelier2.contracts.effect_requests import (
@@ -65,6 +68,12 @@ from atelier2.contracts.host_configuration import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
+from atelier2.ports.effects import (
+    HeadBranchPullRequestState,
+    HeadBranchPullRequestsUnreadable,
+    NoPullRequestOpenOnHeadBranch,
+    PullRequestOpenOnHeadBranch,
+)
 
 ADAPTER_REVISION = AdapterRevision("github-open-pr-live-v1")
 DESTINATION = EffectDestination("github")
@@ -182,6 +191,7 @@ class _FakeGitHubServer:
                 "body": payload.get("body", ""),
                 "title": payload["title"],
                 "draft": payload.get("draft", False),
+                "state": "open",
                 "head": {"label": head_label},
                 "base": {"ref": payload["base"]},
             }
@@ -231,8 +241,16 @@ def connection_revision(
 
 
 @pytest.fixture
+def credential_directory(tmp_path: Path) -> Path:
+    directory = tmp_path / "github-credential"
+    directory.mkdir()
+    (directory / "token").write_text(CANARY_TOKEN, encoding="utf-8")
+    return directory
+
+
+@pytest.fixture
 def factory(
-    tmp_path: Path, server: _FakeGitHubServer
+    credential_directory: Path, server: _FakeGitHubServer
 ) -> LiveGitHubEffectAdapterFactory:
     """The factory exactly as serve composes it: from the connection record.
 
@@ -241,15 +259,23 @@ def factory(
     transport seam is attached afterward because a record never carries one.
     """
 
-    credential_directory = tmp_path / "github-credential"
-    credential_directory.mkdir()
-    (credential_directory / "token").write_text(CANARY_TOKEN, encoding="utf-8")
     composed = live_github_effect_adapter_factory(
         connection_revision(credential_directory),
         ADAPTER_REVISION,
         DESTINATION,
     )
     return replace(composed, transport=httpx.MockTransport(server.handle))
+
+
+@pytest.fixture
+def head_branch_pull_requests(
+    credential_directory: Path, server: _FakeGitHubServer
+) -> LiveGitHubHeadBranchPullRequests:
+    return LiveGitHubHeadBranchPullRequests(
+        GitHubRepository(OWNER, REPO, BASE_BRANCH),
+        GitHubTokenCredential(credential_directory),
+        httpx.MockTransport(server.handle),
+    )
 
 
 def test_the_record_composed_factory_names_the_connected_repository(
@@ -589,7 +615,7 @@ def test_a_listing_that_did_not_resolve_creates_nothing_and_keeps_what_github_sa
         assert outcome.reason.duration_milliseconds >= 0
 
 
-def _decoy_pull_request(number: int, base: str) -> dict[str, Any]:
+def _decoy_pull_request(number: int, base: str, state: str = "open") -> dict[str, Any]:
     """Another pull request standing on the same head branch, not this request's."""
 
     return {
@@ -597,6 +623,7 @@ def _decoy_pull_request(number: int, base: str) -> dict[str, Any]:
         "body": f"an earlier attempt onto {base}\n",
         "title": "decoy",
         "draft": False,
+        "state": state,
         "head": {"label": f"{OWNER}:{HEAD_BRANCH.value}"},
         "base": {"ref": base},
     }
@@ -1027,3 +1054,75 @@ def test_a_long_summary_is_truncated_but_the_acceptance_line_and_trailer_survive
     assert body_carries_request_hash(body, intent.request.request_hash.value)
     assert isinstance(read_back, EffectReceipt)
     assert read_back.effect_id.value == str(server.pull_requests[0]["number"])
+
+
+@pytest.mark.parametrize(
+    ("states", "expected"),
+    [
+        pytest.param((), NoPullRequestOpenOnHeadBranch(), id="no-pull-request-at-all"),
+        pytest.param(
+            ("closed", "closed"),
+            NoPullRequestOpenOnHeadBranch(),
+            id="every-pull-request-closed",
+        ),
+        pytest.param(
+            ("closed", "open"),
+            PullRequestOpenOnHeadBranch(1001),
+            id="one-still-open",
+        ),
+    ],
+)
+def test_which_pull_requests_still_stand_open_on_one_head_branch(
+    head_branch_pull_requests: LiveGitHubHeadBranchPullRequests,
+    server: _FakeGitHubServer,
+    states: tuple[str, ...],
+    expected: HeadBranchPullRequestState,
+) -> None:
+    server.pull_requests = [
+        _decoy_pull_request(1000 + index, f"release/{index}", state)
+        for index, state in enumerate(states)
+    ]
+
+    assert head_branch_pull_requests.open_pull_requests_on(HEAD_BRANCH) == expected
+
+
+def test_a_listing_that_failed_leaves_the_branch_s_pull_requests_unreadable(
+    head_branch_pull_requests: LiveGitHubHeadBranchPullRequests,
+    server: _FakeGitHubServer,
+) -> None:
+    server.fail_pull_request_search_on_page = 1
+
+    standing = head_branch_pull_requests.open_pull_requests_on(HEAD_BRANCH)
+
+    assert isinstance(standing, HeadBranchPullRequestsUnreadable)
+    assert standing.reason.failure_code == 404
+
+
+def test_a_pull_request_state_this_adapter_does_not_read_is_never_read_as_closed(
+    head_branch_pull_requests: LiveGitHubHeadBranchPullRequests,
+    server: _FakeGitHubServer,
+) -> None:
+    server.pull_requests = [_decoy_pull_request(1000, "release/1000", "archived")]
+
+    standing = head_branch_pull_requests.open_pull_requests_on(HEAD_BRANCH)
+
+    assert isinstance(standing, HeadBranchPullRequestsUnreadable)
+    assert "'archived'" in standing.reason.detail
+
+
+def test_a_listing_that_never_ends_leaves_the_branch_unreadable_rather_than_looping(
+    head_branch_pull_requests: LiveGitHubHeadBranchPullRequests,
+    server: _FakeGitHubServer,
+) -> None:
+    server.pull_requests = [
+        _decoy_pull_request(number, f"release/{number}", "closed")
+        for number in range(
+            PULL_REQUESTS_PER_LISTING_PAGE * MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1
+        )
+    ]
+
+    standing = head_branch_pull_requests.open_pull_requests_on(HEAD_BRANCH)
+
+    assert isinstance(standing, HeadBranchPullRequestsUnreadable)
+    assert "did not end within" in standing.reason.detail
+    assert server.pull_request_searches == MAXIMUM_PULL_REQUEST_LISTING_PAGES

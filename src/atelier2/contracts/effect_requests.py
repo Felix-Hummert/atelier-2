@@ -409,6 +409,14 @@ class PushAtelierCommit:
 
 @dataclass(frozen=True, slots=True)
 class PushAtelierCommitReceipt:
+    """What one accepted push put on the remote, and what it replaced there.
+
+    `replaced_oid` is the commit the branch stood at when this push took its
+    lease on it, and is absent for the ordinary create onto a branch that held
+    nothing -- the receipt is the only durable record of which of the two a
+    send was.
+    """
+
     remote_identity: str
     full_ref: str
     commit_oid: str
@@ -417,6 +425,7 @@ class PushAtelierCommitReceipt:
     branch: str
     author: GitCommitIdentity
     committer: GitCommitIdentity
+    replaced_oid: str | None = None
 
     @classmethod
     def from_result_bytes(cls, result: bytes) -> Self:
@@ -433,6 +442,7 @@ class PushAtelierCommitReceipt:
                     "full_ref",
                     "parent",
                     "remote_identity",
+                    "replaced_oid",
                 )
             ),
             "push receipt",
@@ -445,7 +455,10 @@ class PushAtelierCommitReceipt:
             "parent",
             "remote_identity",
         )
-        if any(not isinstance(value[field], str) for field in text_fields):
+        replaced_oid = value["replaced_oid"]
+        if any(not isinstance(value[field], str) for field in text_fields) or not (
+            replaced_oid is None or isinstance(replaced_oid, str)
+        ):
             raise TypeError("push receipt identity, objects and branch are text")
         return cls(
             value["remote_identity"],
@@ -456,6 +469,7 @@ class PushAtelierCommitReceipt:
             value["branch"],
             GitCommitIdentity.from_json(value["author"]),
             GitCommitIdentity.from_json(value["committer"]),
+            replaced_oid,
         )
 
     def result_bytes(self) -> bytes:
@@ -469,5 +483,6 @@ class PushAtelierCommitReceipt:
                 "full_ref": self.full_ref,
                 "parent": self.parent,
                 "remote_identity": self.remote_identity,
+                "replaced_oid": self.replaced_oid,
             }
         )

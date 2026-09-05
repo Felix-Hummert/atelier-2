@@ -1,5 +1,9 @@
 """Publication and readback for the `open-pr` adapter operation against live GitHub.
 
+The same head-branch listing also answers `ports.effects.HeadBranchPullRequests`
+for the git transport, which asks whether anyone still reviews a branch before
+replacing what it carries (ADR 0010 §5's 2026-09-05 amendment on #1224).
+
 Same contract as the fake platform's `atelier2.adapters.github.effects`:
 `readback` then `execute`, the request hash carried as a marker inside the
 pull request's own body, and idempotency by that marker rather than by any
@@ -84,6 +88,12 @@ from atelier2.contracts.effects import (
     UnknownOutcomeReason,
     destination_holds_nothing,
 )
+from atelier2.ports.effects import (
+    HeadBranchPullRequestState,
+    HeadBranchPullRequestsUnreadable,
+    NoPullRequestOpenOnHeadBranch,
+    PullRequestOpenOnHeadBranch,
+)
 
 GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
 
@@ -95,6 +105,11 @@ GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
 _PULL_REQUEST_ALREADY_EXISTS_STATUS = 422
 
 _DEFAULT_PULL_REQUEST_TITLE = "Atelier open-pr"
+
+# GitHub's own two states for a pull request: a merged one is closed carrying a
+# merge, so "not open" is exactly the work no reviewer stands on any more.
+_OPEN_PULL_REQUEST_STATE = "open"
+_CLOSED_PULL_REQUEST_STATE = "closed"
 
 # Only this status makes an empty listing GitHub's own answer that the branch
 # carries no pull request (#1210). Any other status the client accepted says
@@ -282,6 +297,78 @@ def _listed_page(response: httpx.Response) -> list[dict[str, Any]] | None:
     return answered
 
 
+@dataclass(frozen=True)
+class _ListedPullRequestPage:
+    """One page of the head-branch listing, as GitHub answered it."""
+
+    pull_requests: tuple[dict[str, Any], ...]
+    status_code: int
+    duration_milliseconds: int
+
+    @property
+    def ends_the_listing(self) -> bool:
+        return len(self.pull_requests) < PULL_REQUESTS_PER_LISTING_PAGE
+
+
+def _list_head_branch_page(
+    client: githubkit.GitHub[githubkit.TokenAuthStrategy],
+    repository: GitHubRepository,
+    branch: str,
+    page: int,
+    started: float,
+) -> _ListedPullRequestPage | _PullRequestSearchFailed:
+    """One page of the pull requests standing on one head branch, in any state.
+
+    `started` is when the whole listing began, so a failure on a later page
+    reports how long the caller waited altogether rather than how long its last
+    page took.
+    """
+
+    try:
+        response = client.rest.pulls.list(
+            repository.owner,
+            repository.name,
+            head=f"{repository.owner}:{branch}",
+            state="all",
+            per_page=PULL_REQUESTS_PER_LISTING_PAGE,
+            page=page,
+        )
+    except githubkit.exception.RequestError as error:
+        return _PullRequestSearchFailed(
+            _refused_search(error, _elapsed_milliseconds(started))
+        )
+    raw_response = response.raw_response
+    elapsed = _elapsed_milliseconds(started)
+    answered = _listed_page(raw_response)
+    if answered is None:
+        return _PullRequestSearchFailed(
+            UnknownOutcomeReason(raw_response.status_code, elapsed, raw_response.text)
+        )
+    return _ListedPullRequestPage(tuple(answered), raw_response.status_code, elapsed)
+
+
+def _listing_did_not_end(started: float) -> UnknownOutcomeReason:
+    return UnknownOutcomeReason(
+        None,
+        _elapsed_milliseconds(started),
+        "the head branch listing did not end within "
+        f"{MAXIMUM_PULL_REQUEST_LISTING_PAGES} pages",
+    )
+
+
+def _github_client(
+    token: str, transport: httpx.BaseTransport | None
+) -> githubkit.GitHub[githubkit.TokenAuthStrategy]:
+    return githubkit.GitHub(
+        token,
+        transport=transport,
+        # A cached read could answer a retry's search from before an earlier
+        # crashed attempt's create, which is exactly the twin the
+        # readback-then-create rule exists to prevent.
+        http_cache=False,
+    )
+
+
 def _body_for(request: OpenPullRequestRequest, request_hash: str) -> str:
     return f"{request.body}\n\n{marker_line(request_hash)}\n"
 
@@ -454,15 +541,7 @@ class LiveGitHubEffectAdapterFactory:
         return True
 
     def open(self) -> LiveGitHubEffectAdapter:
-        token = self.token_credential.resolve()
-        client: githubkit.GitHub[githubkit.TokenAuthStrategy] = githubkit.GitHub(
-            token,
-            transport=self.transport,
-            # A cached read could answer a retry's search from before an
-            # earlier crashed attempt's create, which is exactly the twin
-            # the readback-then-create rule exists to prevent.
-            http_cache=False,
-        )
+        client = _github_client(self.token_credential.resolve(), self.transport)
         publisher = (
             None
             if self.documentation_publisher_factory is None
@@ -575,31 +654,14 @@ class LiveGitHubEffectAdapter:
         request_hash = intent.request.request_hash.value
         started = time.monotonic()
         listed_any = False
-        for page in range(1, MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1):
-            try:
-                response = self._client.rest.pulls.list(
-                    self._repository.owner,
-                    self._repository.name,
-                    head=f"{self._repository.owner}:{branch}",
-                    state="all",
-                    per_page=PULL_REQUESTS_PER_LISTING_PAGE,
-                    page=page,
-                )
-            except githubkit.exception.RequestError as error:
-                return _PullRequestSearchFailed(
-                    _refused_search(error, _elapsed_milliseconds(started))
-                )
-            raw_response = response.raw_response
-            elapsed = _elapsed_milliseconds(started)
-            answered = _listed_page(raw_response)
-            if answered is None:
-                return _PullRequestSearchFailed(
-                    UnknownOutcomeReason(
-                        raw_response.status_code, elapsed, raw_response.text
-                    )
-                )
-            listed_any = listed_any or bool(answered)
-            for pull_request in answered:
+        for page_number in range(1, MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1):
+            page = _list_head_branch_page(
+                self._client, self._repository, branch, page_number, started
+            )
+            if isinstance(page, _PullRequestSearchFailed):
+                return page
+            listed_any = listed_any or bool(page.pull_requests)
+            for pull_request in page.pull_requests:
                 body = pull_request.get("body")
                 body = body if isinstance(body, str) else ""
                 if body_carries_request_hash(body, request_hash):
@@ -607,25 +669,20 @@ class LiveGitHubEffectAdapter:
                         pull_request, "number", "pull request search result"
                     )
                     return _RecordedPullRequest(branch, number, body)
-            if len(answered) < PULL_REQUESTS_PER_LISTING_PAGE:
+            if page.ends_the_listing:
                 if not listed_any:
-                    return _NoPullRequestOnBranch(raw_response.status_code, elapsed)
+                    return _NoPullRequestOnBranch(
+                        page.status_code, page.duration_milliseconds
+                    )
                 return _PullRequestSearchFailed(
                     UnknownOutcomeReason(
-                        raw_response.status_code,
-                        elapsed,
+                        page.status_code,
+                        page.duration_milliseconds,
                         "the head branch carries pull requests, "
                         "none of them this request's",
                     )
                 )
-        return _PullRequestSearchFailed(
-            UnknownOutcomeReason(
-                None,
-                _elapsed_milliseconds(started),
-                "the head branch listing did not end within "
-                f"{MAXIMUM_PULL_REQUEST_LISTING_PAGES} pages",
-            )
-        )
+        return _PullRequestSearchFailed(_listing_did_not_end(started))
 
     def _create_pull_request(
         self, intent: EffectIntent, request: OpenPullRequestRequest
@@ -684,3 +741,54 @@ class LiveGitHubEffectAdapter:
             EffectResult(_result_payload(record.branch, record.pr_number)),
             ConfirmationSource.ADAPTER_READBACK,
         )
+
+
+@dataclass(frozen=True)
+class LiveGitHubHeadBranchPullRequests:
+    """Which pull requests still stand open on one head branch, live from GitHub.
+
+    The same head-branch listing the `open-pr` adapter reads its own marker out
+    of, asked the other question a publisher has about a branch: not which pull
+    request is this request's, but whether anyone is still reviewing what the
+    branch carries. Nothing here is decided about the branch -- the caller owns
+    that -- and an answer this module cannot read is unreadable rather than
+    quietly counted as nobody reviewing.
+
+    The token is resolved per question rather than held (ADR 0009 §6's
+    by-reference discipline, and the question is asked only about a branch that
+    already stands at a foreign commit).
+    """
+
+    repository: GitHubRepository
+    token_credential: GitHubTokenCredential
+    transport: httpx.BaseTransport | None = None
+
+    def open_pull_requests_on(
+        self, head_branch: HeadBranch
+    ) -> HeadBranchPullRequestState:
+        client = _github_client(self.token_credential.resolve(), self.transport)
+        started = time.monotonic()
+        for page_number in range(1, MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1):
+            page = _list_head_branch_page(
+                client, self.repository, head_branch.value, page_number, started
+            )
+            if isinstance(page, _PullRequestSearchFailed):
+                return HeadBranchPullRequestsUnreadable(page.reason)
+            for pull_request in page.pull_requests:
+                state = pull_request.get("state")
+                if state == _OPEN_PULL_REQUEST_STATE:
+                    return PullRequestOpenOnHeadBranch(
+                        _integer_field(pull_request, "number", "pull request listing")
+                    )
+                if state != _CLOSED_PULL_REQUEST_STATE:
+                    return HeadBranchPullRequestsUnreadable(
+                        UnknownOutcomeReason(
+                            page.status_code,
+                            page.duration_milliseconds,
+                            "a pull request on this head branch names no state "
+                            f"this adapter reads: {state!r}",
+                        )
+                    )
+            if page.ends_the_listing:
+                return NoPullRequestOpenOnHeadBranch()
+        return HeadBranchPullRequestsUnreadable(_listing_did_not_end(started))
