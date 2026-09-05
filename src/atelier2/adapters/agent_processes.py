@@ -44,11 +44,13 @@ from atelier2.ports.agent_executions import (
     AgentProcessOwnerNotLocal,
     AgentSession,
     PermissionDecider,
+    ProviderConversationBinding,
+)
+from atelier2.ports.provider_conversations import (
     ProviderCancellationCause,
     ProviderCancellationFrame,
     ProviderCancellationRequest,
     ProviderConversationAction,
-    ProviderConversationBinding,
     ProviderConversationComplete,
     ProviderConversationEnding,
     ProviderFilesystemRequest,
@@ -126,7 +128,6 @@ class _ConversationRelay:
         self._pending_input = b""
         self._written_input_bytes = 0
         self._delivered_output_bytes = 0
-        self._unanswered_output_bytes = 0
         self._unpublished_cancellation: bytes | None = None
         self._requested_cancellation: ProviderCancellationCause | None = None
         self._input_complete = False
@@ -220,12 +221,9 @@ class _ConversationRelay:
         self._delivered_output_bytes += len(chunk)
         if self._delivered_output_bytes > self._bounds.maximum_total_output_bytes:
             raise RuntimeError("conversation output exceeds its declared bound")
-        self._unanswered_output_bytes += len(chunk)
         actions = self._driver.receive_output(chunk)
-        if actions:
-            self._unanswered_output_bytes = 0
-        elif (
-            self._unanswered_output_bytes > self._bounds.maximum_incomplete_frame_bytes
+        if self._driver.incomplete_frame_bytes > (
+            self._bounds.maximum_incomplete_frame_bytes
         ):
             raise RuntimeError("conversation frame exceeds its declared bound")
         self._apply(actions)

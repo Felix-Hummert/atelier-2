@@ -138,6 +138,28 @@ once it has a live caller.
 - **Open and self-hosted models**: an agent-client-protocol agent (Goose or
   OpenCode) in front of an OpenAI-compatible endpoint, behind the same port.
 
+**The protocol itself is implemented once, provider-neutrally.** The
+agent-client-protocol client is one bounded state machine over newline-delimited
+JSON-RPC: it owns the framing and its bounds, the handshake, the session, the
+single prompt, the correlation of every question to its answer, and the terminal
+reading of how a conversation ended. It knows no vendor. What a vendor spells
+differently reaches it through a narrow classifier that answers with typed values
+or with "unrepresentable", never with a provider's own object; an unrepresentable
+request that would have reached a file or a shell is refused closed. A second
+vector therefore brings a classifier and its pin, not a second parser.
+
+**The neutral ACP core is two adapter modules behind `ProviderConversation`.**
+`adapters/newline_json_rpc.py` owns the bounded codec: every complete frame and
+the exact unfinished remainder are measured against the port's own bounds
+before anything is decoded, and an outgoing message is measured against the
+caller's own bound before it is spelled. `adapters/agent_client_protocol.py`
+owns the standard ACP state machine built on that codec — handshake, session,
+permission and cancellation races, and the five terminal outcomes — translating
+frames into `ProviderConversationAction`s and back. Neither module knows a
+vendor's vocabulary; what a vendor spells outside ACP's standard fields reaches
+the state machine only through the classifier seam above, never as a raw
+provider dict.
+
 A new provider is not configuration alone. Executors are selected by an exact
 `(provider, executor revision)` key through the registry in
 `ports/agent_executions.py`; every new vector needs a registered executor

@@ -96,7 +96,6 @@ from atelier2.ports.agent_executions import (
     AgentSession,
     PermissionDecider,
     PrintModeExecutor,
-    ProviderCancellationCause,
     ProviderConversationBinding,
 )
 from atelier2.ports.durable_runs import (
@@ -108,6 +107,7 @@ from atelier2.ports.host_configuration import (
     ModelRegistryRevisionCreated,
     ModelRegistryRevisionExisting,
 )
+from atelier2.ports.provider_conversations import ProviderCancellationCause
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 SCENARIO_PROVIDER_FRAME_BYTES = 49_152

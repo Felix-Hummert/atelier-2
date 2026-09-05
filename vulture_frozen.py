@@ -17,21 +17,18 @@ Read as data by the gate; never imported at runtime.
 WAITING_FOR_A_CALLER = (
     {
         "names": (
-            "ports/agent_executions.py:READ",
-            "ports/agent_executions.py:ENDED",
-            "ports/agent_executions.py:POLICY_REFUSED",
-            "ports/agent_executions.py:BUDGET_EXHAUSTED",
             "ports/agent_executions.py:terminal_outcome",
+            "adapters/agent_client_protocol.py:AgentClientProtocolConversation",
         ),
         "why": (
-            "The duplex conversation seam (ADR 0020 step 2, slice 2-B): the "
-            "supervisor relays file requests, cancellation causes and the typed "
-            "terminal outcome a conversation composes, but every executor this "
-            "product runs still answers in print mode, so no production site "
-            "reads a file effect, a terminal reason or the completion's outcome "
-            "until the first speaking provider arrives."
+            "The duplex conversation seam (ADR 0020 step 2): the ACP client "
+            "reads the wire, correlates every question and composes the typed "
+            "terminal outcome, but every executor this product runs still "
+            "answers in print mode -- so nothing opens a conversation, and "
+            "nothing reads the outcome a completion carries, until the first "
+            "speaking executor revision is registered."
         ),
-        "item": "#1177 Schritt 2 (2-C ACP-Client, 2-D Grok-Executor)",
+        "item": "#1177 Schritt 2 (2-D Grok-Executor als Aufrufer)",
     },
     {
         "names": (
@@ -140,25 +137,19 @@ WAITING_FOR_A_CALLER = (
     },
     {
         "names": (
-            "contracts/agent_permissions.py:WORKSPACE_READ",
-            "contracts/agent_permissions.py:WORKSPACE_WRITE",
             "contracts/agent_permissions.py:COMMAND",
             "contracts/agent_permissions.py:NETWORK",
             "contracts/agent_permissions.py:SECRET_READ",
-            "contracts/agent_permissions.py:PATH_PREFIX",
             "contracts/agent_permissions.py:COMMAND_NAME",
             "contracts/agent_permissions.py:HOST",
-            "contracts/agent_permissions.py:for_call",
         ),
         "why": (
-            "The asking half of the permission boundary "
-            "(contracts/agent_permissions.py): the effect and scope vocabulary a "
-            "provider question is expressed in, and the correlation id minted "
-            "for one call of one attempt. Production binds the policy, hands the "
-            "decider to every session, and writes what each decision answered "
-            "into the permission ledger; nothing asks yet, so the grant branch "
-            "and the words a question is spelled in wait for the first provider "
-            "channel that can put one (ADR 0020 step 2)."
+            "The words no question can be spelled in yet "
+            "(contracts/agent_permissions.py): the ACP client asks a workspace "
+            "read or write scoped by path, so those words have a speaker, but a "
+            "standard permission request names no command and no host and a "
+            "credential channel is opened by nothing. They wait for the vendor "
+            "vocabulary that can scope a command (ADR 0020 step 2)."
         ),
         "item": "#1177 Schritt 2 (erster fragender Provider-Kanal)",
     },

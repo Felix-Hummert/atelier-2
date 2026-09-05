@@ -2,7 +2,9 @@
 
 The subject is the seam, not a provider: a fake conversation stands in for the
 wire format so that what is proven here is the relay -- who reads, who decides,
-who writes, and which bound refuses -- and not one vendor's frames.
+who writes, and which bound refuses -- and not one vendor's frames. One test
+drives the standard ACP conversation instead, because a port only ever relayed
+for a fake proves the fake.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters import agent_processes as process_module
+from atelier2.adapters.agent_client_protocol import AgentClientProtocolConversation
 from atelier2.adapters.agent_processes import AgentProcessSupervisor
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.contracts.agent_attempts import (
@@ -52,11 +55,13 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
     PermissionDecider,
+    ProviderConversationBinding,
+)
+from atelier2.ports.provider_conversations import (
     ProviderCancellationCause,
     ProviderCancellationFrame,
     ProviderCancellationRequest,
     ProviderConversationAction,
-    ProviderConversationBinding,
     ProviderConversationBounds,
     ProviderConversationClosing,
     ProviderConversationComplete,
@@ -84,6 +89,8 @@ _GRANTS_THE_WORKSPACE = PermissionPolicyRevision(
 )
 _CONVERSING_REVISION = AgentExecutorRevision("fake-conversation/v1")
 _ANOTHER_REVISION = AgentExecutorRevision("fake-conversation/v2")
+_STANDARD_ACP_REVISION = AgentExecutorRevision("standard-acp/v1")
+_ACP_SESSION = "01a06f4c-7326-79d0-9bde-ed08ee7e716c"
 
 _PROVIDER_PRINTS_ONE_FRAME = r"""
 import os, sys
@@ -152,6 +159,40 @@ import os, sys
 os.write(1, b'{"stop":"' + sys.argv[1].encode() + b'"}\n')
 """
 
+# It answers the handshake, the session and the prompt this client sends, and
+# splits the one update in between so that the relay has to hand a partial
+# frame to a conversation that owns its own reassembly.
+_PROVIDER_SPEAKS_ACP_AND_SPLITS_ONE_UPDATE = r"""
+import json, os, sys, time
+
+def asked():
+    return json.loads(sys.stdin.readline())
+
+def answer(identifier, result):
+    frame = json.dumps({"jsonrpc": "2.0", "id": identifier, "result": result})
+    os.write(1, frame.encode() + b"\n")
+
+session, said = sys.argv[1], sys.argv[2]
+answer(asked()["id"], {"protocolVersion": 1})
+answer(asked()["id"], {"sessionId": session})
+prompt = asked()
+update = json.dumps({
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+        "sessionId": session,
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": said},
+        },
+    },
+}).encode()
+os.write(1, update[:24])
+time.sleep(0.2)
+os.write(1, update[24:] + b"\n")
+answer(prompt["id"], {"stopReason": "end_turn"})
+"""
+
 _PROVIDER_SPLITS_ONE_FRAME_AND_COALESCES_TWO = r"""
 import os, time
 os.write(1, b'{"say":"one')
@@ -162,6 +203,11 @@ os.write(1, b'"}\n{"say":"two"}\n{"say":"three"}\n')
 _PROVIDER_WRITES_WHOLE_FRAMES = r"""
 import os, sys
 os.write(1, int(sys.argv[1]) * b'{"say":"line"}\n')
+"""
+
+_PROVIDER_WRITES_FRAMES_NOBODY_ANSWERS = r"""
+import os, sys
+os.write(1, int(sys.argv[1]) * b'{"ignore":"line"}\n')
 """
 
 _PROVIDER_NEVER_ENDS_ITS_FRAME = r"""
@@ -261,8 +307,9 @@ class _LineFramedConversation:
     `{"write": path, "content": text}` are file requests, `{"stop": reason}` is
     the provider ending itself, `{"cancel": cause}` is this conversation asking
     for its own stop, `{"done": true}` is it saying it will send nothing more,
-    every other line is a step, and whatever stands after the last newline is
-    the half frame an ending has to account for.
+    `{"ignore": anything}` is a whole frame it has nothing to say about, every
+    other line is a step, and whatever stands after the last newline is the
+    half frame an ending has to account for.
     """
 
     attempt_id: AgentAttemptId
@@ -280,6 +327,10 @@ class _LineFramedConversation:
     refused_a_permission: bool = False
     provider_stop_reason: str = ""
     incomplete: bytes = b""
+
+    @property
+    def incomplete_frame_bytes(self) -> int:
+        return len(self.incomplete)
 
     def open(self) -> tuple[ProviderConversationAction, ...]:
         if not self.opening:
@@ -305,7 +356,9 @@ class _LineFramedConversation:
             self.cancellation_frame = None
         while b"\n" in self.incomplete:
             line, _newline, self.incomplete = self.incomplete.partition(b"\n")
-            actions.append(self._read(line.decode("utf-8")))
+            read = self._read(line.decode("utf-8"))
+            if read is not None:
+                actions.append(read)
         return tuple(actions)
 
     def answer_permission(self, decision: PermissionDecision) -> ProviderStandardInput:
@@ -360,8 +413,10 @@ class _LineFramedConversation:
         # such an attempt has no completion to carry an outcome on.
         return ProviderTerminalOutcome(ProviderTerminalReason.ENDED)
 
-    def _read(self, line: str) -> ProviderConversationAction:
+    def _read(self, line: str) -> ProviderConversationAction | None:
         spoken = json.loads(line)
+        if "ignore" in spoken:
+            return None
         if "ask" in spoken:
             self.questions += 1
             return PermissionRequest(
@@ -688,6 +743,40 @@ def test_split_and_coalesced_frames_reach_the_conversation_whole(
         attempt.finalize_after_failure()
 
 
+def test_the_standard_acp_conversation_speaks_with_a_real_child_through_the_relay(
+    tmp_path: Path,
+) -> None:
+    """The seam is proven here with a fake, so the conversation this product
+    ships is proven once against the relay itself: everything the relay asks of
+    a conversation -- its bounds, its unfinished frame, the actions it
+    publishes -- has to be there before a live attempt reads its first byte."""
+    said = "half a frame, then the rest"
+    with _claimed_attempt(tmp_path, "process/standard-acp") as attempt:
+        conversation = AgentClientProtocolConversation(
+            attempt.execution.attempt_id,
+            "append one line to README.md",
+            tmp_path,
+            _bounds(),
+            maximum_tool_calls=8,
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_SPEAKS_ACP_AND_SPLITS_ONE_UPDATE,
+            _ACP_SESSION,
+            said,
+            conversation=ProviderConversationBinding(
+                _STANDARD_ACP_REVISION, conversation, _FakeFilesystemAccess()
+            ),
+        )
+
+        completion = attempt.launch(invocation, _AuthorityNothingMayAsk()).completion
+
+        assert completion.session_events == (AssistantTurn(said),)
+        assert completion.terminal_outcome == ProviderTerminalOutcome(
+            ProviderTerminalReason.ENDED
+        )
+        attempt.finalize_after_failure()
+
+
 def test_output_past_the_declared_total_ends_the_attempt_loudly(
     tmp_path: Path,
 ) -> None:
@@ -725,6 +814,30 @@ def test_a_frame_that_never_ends_refuses_at_the_declared_incomplete_bound(
 
         assert isinstance(failure, RuntimeError)
         assert "frame exceeds its declared bound" in str(failure)
+        attempt.finalize_after_failure()
+
+
+def test_whole_frames_this_conversation_answers_nothing_to_end_no_attempt(
+    tmp_path: Path,
+) -> None:
+    """The incomplete-frame bound refuses a sentence that never ends, never a
+    stream of finished ones the conversation had nothing to say about."""
+    with _claimed_attempt(tmp_path, "process/consumed-frames") as attempt:
+        conversation = _LineFramedConversation(
+            attempt.execution.attempt_id, bounds=_bounds(incomplete=64)
+        )
+        invocation = attempt.invocation(
+            _PROVIDER_WRITES_FRAMES_NOBODY_ANSWERS,
+            "64",
+            conversation=_binding(conversation),
+        )
+
+        launch = attempt.launch(invocation, _RecordingAuthority())
+
+        assert launch.completion.terminal_outcome == ProviderTerminalOutcome(
+            ProviderTerminalReason.ENDED
+        )
+        assert launch.completion.session_events == ()
         attempt.finalize_after_failure()
 
 
