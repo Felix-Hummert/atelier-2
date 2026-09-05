@@ -134,6 +134,11 @@ Before adding a literal, constant, default, or fixture value, classify its owner
   the baseline shrinks in slices with an owner.
 - A review of new code asks which existing owner was checked before it was
   written.
+- Every required review brief carries the same contract core as the build:
+  current item body, candidate diff, and verification evidence; relevant
+  rulings and neighbours are folded into the body, not passed as parallel
+  truth. Existing risk classes, landing authority, and delta/full-review
+  rules still govern.
 - Keep short duplication when abstraction would hide meaning or couple unrelated
   concepts.
 - Use maintained libraries for solved hard problems when the standard library is
@@ -160,6 +165,11 @@ Before adding a literal, constant, default, or fixture value, classify its owner
   protocol values, or adapter details.
 - After the contract exists, write the failing behavioral test first for risky
   behavior, implement the smallest behavior, then refactor under the same test.
+- For risky behavior, the builder derives that failing test from the ruled
+  sentence or approved plan before implementation; existing code may inform
+  setup, never the expected result. The independent reviewer judges that test
+  against the contract; syntax or mutation metrics become gates only after a
+  project pilot proves signal and runtime cost.
 - Add focused tests for new behavior and regression tests for bug fixes.
 - Put a regression test at the observable boundary that owns the defect; use a
   port fake only when the defect crosses a port boundary.
