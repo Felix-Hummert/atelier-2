@@ -7,4 +7,4 @@ text = "The free child receives a kernel denial when it directly reads Runner id
 
 [[sentence]]
 id = "runner-cancel-none"
-text = "After STARTED, a cancelled child is reaped and its exit is observed against the signal timeline (exited before signal, reaped after TERM, or reaped after KILL)."
+text = "A cancelled child is reaped by exit, by TERM, or by KILL, in that order."

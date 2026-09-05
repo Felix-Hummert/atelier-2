@@ -687,10 +687,10 @@ def _the_run_got_somewhere(
 
     An attempt that succeeded proves it. So does a workflow genuinely minted for
     the run, and that second proof is the only one a carrier leaves when it dies
-    or is retired before preparing its first Attempt (#636): a Runner slot
-    workflow left `ENQUEUED` by a version that will never run again has no
-    attempt to its name, and demanding one would leave the run `STARTED` for as
-    long as the store exists.
+    or is retired before preparing its first Attempt (#636): a node workflow
+    left `ENQUEUED` by a version that will never run again has no attempt to
+    its name, and demanding one would leave the run `STARTED` for as long as
+    the store exists.
 
     A run nothing has carried yet has neither, which is exactly the answer
     wanted: every id derived for it is speculative and matches no row, so a run

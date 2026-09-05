@@ -161,6 +161,7 @@ def test_cancel_reap_observes_exit_before_signal() -> None:
     )
 
 
+@pytest.mark.proves("runner-cancel-none")
 def test_cancel_reap_observes_term() -> None:
     child = start_runner_child((sys.executable, "-c", "import time; time.sleep(60)"))
     try:
@@ -174,6 +175,7 @@ def test_cancel_reap_observes_term() -> None:
             child.wait(timeout=2)
 
 
+@pytest.mark.proves("runner-cancel-none")
 def test_cancel_reap_kills_a_child_that_ignores_term(tmp_path: Path) -> None:
     ready = tmp_path / "ready"
     child = start_runner_child(

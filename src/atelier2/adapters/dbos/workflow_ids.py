@@ -129,15 +129,13 @@ def replacement_workflow_id_for(attempt_id: AgentAttemptId) -> str:
 def driving_workflow_ids(attempt: AgentAttempt) -> tuple[str, ...]:
     """Every durable workflow that can still owe this attempt its next move.
 
-    Which one it is follows from the attempt itself: a cancelled attempt is owed
-    its cleanup by the cancellation it carries, a replacement by the replacement
-    workflow that was enqueued for it, and every other attempt by the node
+    A carried cancellation always wins first: its cleanup workflow is the
+    answer regardless of anything else about the attempt. Absent one, a
+    runner-bound attempt names none, because nothing durable still drives it;
+    an attempt awaiting replacement names the replacement workflow already
+    enqueued for it; and every other attempt is owed its next move by the node
     workflow of its execution. Naming that here is what lets a restart ask
     whether anything is still driving an attempt at all.
-
-    A runner-bound attempt names none: the Runner-lease carrier that would have
-    driven it was deleted (issue #1252) for having no live caller, so a row
-    still carrying that binding has nothing left that could ever move it.
     """
 
     if attempt.cancellation is not None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import stat
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -98,10 +99,7 @@ from atelier2.host.serving import (
     compose_application,
 )
 from atelier2.ports.agent_configurations import AgentConfigurationRevisionPage
-from atelier2.ports.agent_executions import (
-    AgentExecutorCarrier,
-    WorkspaceFileTools,
-)
+from atelier2.ports.agent_executions import AgentExecutorCarrier
 from atelier2.ports.issue_observation import WorkItemRevisionObserved
 from atelier2.ports.published_revisions import CatalogLineageFounded
 from atelier2.ports.queue_projection import QueueItemsPage, QueueItemsReconciled
