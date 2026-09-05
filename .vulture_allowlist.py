@@ -22,10 +22,12 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
         ),
     },
     {
-        "names": ("WORKSPACE_WRITE",),
+        "names": ("END_TURN", "MAX_TOKENS", "MAX_TURN_REQUESTS", "IN_PROGRESS"),
         "why": (
-            "A CodexSandboxMode member; the adapter selects a sandbox by the "
-            "value codex-cli documents, never by attribute."
+            "AcpStopReason and AcpToolCallStatus members; "
+            "adapters/agent_client_protocol.py reads a stop reason and a tool "
+            "call's progress back from the wire by the value the protocol "
+            "publishes, never by attribute."
         ),
     },
     {

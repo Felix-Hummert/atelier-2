@@ -134,6 +134,16 @@ once it has a live caller.
 - **Open and self-hosted models**: an agent-client-protocol agent (Goose or
   OpenCode) in front of an OpenAI-compatible endpoint, behind the same port.
 
+**The protocol itself is implemented once, provider-neutrally.** The
+agent-client-protocol client is one bounded state machine over newline-delimited
+JSON-RPC: it owns the framing and its bounds, the handshake, the session, the
+single prompt, the correlation of every question to its answer, and the terminal
+reading of how a conversation ended. It knows no vendor. What a vendor spells
+differently reaches it through a narrow classifier that answers with typed values
+or with "unrepresentable", never with a provider's own object; an unrepresentable
+request that would have reached a file or a shell is refused closed. A second
+vector therefore brings a classifier and its pin, not a second parser.
+
 A new provider is not configuration alone. Executors are selected by an exact
 `(provider, executor revision)` key through the registry in
 `ports/agent_executions.py`; every new vector needs a registered executor
