@@ -1,9 +1,9 @@
 """The Claude executable path value, independent of any deployment.
 
-A future seat (#1099) launches only the binary: no credential directory, no
-search path, no bubblewrap. `ClaudeSubscriptionSettings` layers those on top
-of this same path invariant for the headless executor, but the invariant
-itself stands alone.
+Launching only the binary needs no credential directory, no search path, no
+bubblewrap. `ClaudeSubscriptionSettings` layers those on top of this same
+path invariant for the headless executor, but the invariant itself stands
+alone.
 """
 
 from __future__ import annotations

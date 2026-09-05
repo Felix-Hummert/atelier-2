@@ -2,8 +2,8 @@
 
 `ClaudeSubscriptionSettings` (`claude_subscription.py`) layers credential
 directory, search path, and bubblewrap requirements on top of this value for
-the headless executor; a seat that only launches the binary interactively
-needs exactly this invariant and nothing more (#1099).
+the headless executor; a caller that only launches the binary interactively
+needs exactly this invariant and nothing more.
 """
 
 from __future__ import annotations
