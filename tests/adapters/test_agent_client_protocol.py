@@ -11,6 +11,7 @@ conversation asks for and what it concludes, never what someone did about it.
 from __future__ import annotations
 
 import json
+import tracemalloc
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -27,11 +28,13 @@ from atelier2.adapters.agent_client_protocol import (
 )
 from atelier2.adapters.newline_json_rpc import (
     INTERNAL_ERROR_CODE,
+    INVALID_PARAMS_CODE,
     INVALID_REQUEST_CODE,
     JSON_RPC_VERSION,
     METHOD_NOT_FOUND_CODE,
     PARSE_ERROR_CODE,
     JsonObject,
+    rendered,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agent_permissions import (
@@ -52,6 +55,7 @@ from atelier2.contracts.agent_transcripts import (
     TranscriptEvent,
     UnrecognisedProviderOutput,
 )
+from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.ports.agent_executions import (
     ProviderCancellationCause,
     ProviderCancellationFrame,
@@ -306,13 +310,28 @@ def test_what_the_agent_says_becomes_one_turn_rather_than_one_step_per_chunk() -
     _prompting(conversation)
 
     said = conversation.receive_output(
-        _updates({"sessionUpdate": "agent_thought_chunk", "content": _text("I will ")})
+        _updates({"sessionUpdate": "agent_message_chunk", "content": _text("I will ")})
         + _updates({"sessionUpdate": "agent_message_chunk", "content": _text("do it.")})
     )
     ending = conversation.receive_output(_ended())
 
     assert _steps(said) == ()
     assert _steps(ending) == (AssistantTurn("I will do it."),)
+
+
+def test_what_the_agent_thought_is_no_part_of_what_it_said() -> None:
+    """A thought is the agent talking to itself: the transcript this version
+    publishes carries what it said and did, and nothing reads a thought."""
+    conversation = _conversation()
+    _prompting(conversation)
+
+    thought = conversation.receive_output(
+        _updates({"sessionUpdate": "agent_thought_chunk", "content": _text("hmm.")})
+    )
+    ending = conversation.receive_output(_ended())
+
+    assert thought == ()
+    assert _steps(ending) == ()
 
 
 def test_a_turn_wider_than_a_transcript_step_is_published_before_it_grows() -> None:
@@ -486,6 +505,40 @@ def test_a_frame_that_is_not_a_message_is_answered_where_one_is_owed(
     )
 
 
+def test_an_unreadable_call_is_answered_under_the_id_it_arrived_with() -> None:
+    """An error answers a request, and a request is addressed by its id: an
+    answer carrying none leaves the agent waiting for one it can correlate."""
+    conversation = _conversation()
+    _prompting(conversation)
+
+    refused = conversation.receive_output(
+        b'{"jsonrpc":"2.0","id":12,"method":"fs/read_text_file","params":[1]}\n'
+    )
+
+    assert _written(refused) == (
+        {
+            "jsonrpc": JSON_RPC_VERSION,
+            "id": 12,
+            "error": {
+                "code": INVALID_REQUEST_CODE,
+                "message": "this client could not read that frame",
+            },
+        },
+    )
+
+
+def test_an_answer_this_client_cannot_read_is_a_protocol_fault() -> None:
+    conversation = _conversation()
+    _prompting(conversation)
+
+    unreadable = conversation.receive_output(
+        _line({"id": PROMPT_ID, "result": {}, "error": {"code": -1, "message": "no"}})
+    )
+
+    assert unreadable == (ProviderConversationComplete(),)
+    _broke(conversation, AcpConversationFault.UNREADABLE_ANSWER)
+
+
 def test_a_permission_this_vocabulary_can_read_is_asked_under_a_minted_id() -> None:
     conversation = _conversation()
     _prompting(conversation)
@@ -565,13 +618,17 @@ def test_a_permission_offering_no_once_option_is_refused_closed() -> None:
         ("execute", ({"path": "README.md"},)),
         ("edit", ()),
         ("edit", ({"path": ""},)),
+        ("edit", ({"path": "README.md"}, {"path": "LICENCE"})),
+        ("edit", ({"path": "d" * (MAXIMUM_AGENT_FIELD_CHARACTERS + 1)},)),
     ],
 )
 def test_a_permission_this_vocabulary_cannot_scope_is_refused_without_being_asked(
     kind: str, locations: tuple[JsonObject, ...]
 ) -> None:
     """A shell has no standard scope and an edit that names no location has
-    none either: neither can be put to a policy, so neither is."""
+    none either; a second location and a path too long to be held whole are the
+    same problem once more -- the answer would authorise something other than
+    the question, so none of them is put to a policy."""
     conversation = _conversation()
     _prompting(conversation)
 
@@ -589,6 +646,45 @@ def test_a_permission_this_vocabulary_cannot_scope_is_refused_without_being_aske
     )
     assert conversation.finish(ProviderConversationEnding.OUTPUT_ENDED).outcome == (
         ProviderTerminalOutcome(ProviderTerminalReason.POLICY_REFUSED)
+    )
+
+
+def test_a_refused_permission_keeps_only_the_fields_that_name_it() -> None:
+    """The evidence of a refusal is which door was asked for, of what kind and
+    where. What the agent chose to put through that door -- its arguments, its
+    vendor envelope -- is not evidence and may carry a secret."""
+    conversation = _conversation()
+    _prompting(conversation)
+
+    refused = conversation.receive_output(
+        _asks(
+            0,
+            AcpMethod.REQUEST_PERMISSION,
+            {
+                "sessionId": SESSION,
+                "toolCall": {
+                    "toolCallId": "call-1",
+                    "kind": "execute",
+                    "title": "Run `psql`",
+                    "locations": [{"path": "README.md"}],
+                    "rawInput": {"command": "psql postgres://user:s3cret@host/db"},
+                    "_meta": {"x.ai/tool.name": "shell"},
+                },
+                "options": [{"optionId": "no-once", "kind": "reject_once"}],
+            },
+        )
+    )
+
+    assert _steps(refused) == (
+        UnrecognisedProviderOutput(
+            rendered(
+                {
+                    "title": "Run `psql`",
+                    "kind": "execute",
+                    "locations": ["README.md"],
+                }
+            )
+        ),
     )
 
 
@@ -693,24 +789,110 @@ def test_a_file_this_client_does_not_deliver_is_an_error_the_turn_survives(
     )
 
 
-def test_a_file_request_this_client_cannot_read_is_refused_by_its_params() -> None:
+def test_a_file_wider_than_this_conversation_may_write_is_never_spelled() -> None:
+    """A file arrives from a disk and a reply bound is a buffer: a client that
+    only discovers the width after spelling the answer has already held it."""
+    conversation = _conversation()
+    _prompting(conversation)
+    conversation.receive_output(
+        _asks(4, AcpMethod.READ_TEXT_FILE, {"sessionId": SESSION, "path": "/a/big"})
+    )
+    wider_than_any_reply = b"x" * 4_000_000
+
+    tracemalloc.start()
+    answered = conversation.answer_filesystem(
+        ProviderFilesystemReply(
+            ProviderFilesystemRequestId(1),
+            ProviderFilesystemAnswer.ANSWERED,
+            wider_than_any_reply,
+        )
+    )
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert json.loads(answered.data) == {
+        "jsonrpc": JSON_RPC_VERSION,
+        "id": 4,
+        "error": {
+            "code": INTERNAL_ERROR_CODE,
+            "message": "this client cannot answer a file that wide",
+        },
+    }
+    assert peak < len(wider_than_any_reply)
+
+
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        (AcpMethod.READ_TEXT_FILE, {"path": None}),
+        (AcpMethod.WRITE_TEXT_FILE, {"path": "/a/README.md"}),
+        (AcpMethod.WRITE_TEXT_FILE, {"path": "/a/README.md", "content": None}),
+    ],
+)
+def test_a_file_request_this_client_cannot_read_is_refused_by_its_params(
+    method: str, params: JsonObject
+) -> None:
+    """A write is what its content says: a request that names none is one
+    nobody can answer, never a file this client empties on the agent's behalf.
+    The turn survives it, as it survives every other refused file."""
     conversation = _conversation()
     _prompting(conversation)
 
     asked = conversation.receive_output(
-        _asks(4, AcpMethod.READ_TEXT_FILE, {"sessionId": SESSION, "path": None})
+        _asks(4, method, {"sessionId": SESSION, **params})
     )
+    ended = conversation.receive_output(_ended())
 
+    assert not [
+        action for action in asked if isinstance(action, ProviderFilesystemRequest)
+    ]
     assert _written(asked) == (
         {
             "jsonrpc": JSON_RPC_VERSION,
             "id": 4,
             "error": {
-                "code": -32602,
+                "code": INVALID_PARAMS_CODE,
                 "message": "this client could not read that request",
             },
         },
     )
+    assert ended == (ProviderConversationComplete(),)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        _notifies(
+            AcpMethod.SESSION_UPDATE,
+            {
+                "sessionId": "another-session",
+                "update": {"sessionUpdate": "agent_message_chunk"},
+            },
+        ),
+        _asks(
+            7,
+            AcpMethod.READ_TEXT_FILE,
+            {"sessionId": "another-session", "path": "/a/x"},
+        ),
+        _asks(7, AcpMethod.READ_TEXT_FILE, {"path": "/a/x"}),
+        _asks(
+            7,
+            AcpMethod.REQUEST_PERMISSION,
+            {"sessionId": "another-session", "toolCall": {}, "options": []},
+        ),
+    ],
+)
+def test_a_message_bound_to_another_session_is_a_protocol_fault(frame: bytes) -> None:
+    """The session this client opened is the only one it is in: a message
+    addressed to another, or to none, is not this conversation's -- answering
+    it would let a second session's traffic reach this attempt's authority."""
+    conversation = _conversation()
+    _prompting(conversation)
+
+    foreign = conversation.receive_output(frame)
+
+    assert foreign == (ProviderConversationComplete(),)
+    _broke(conversation, AcpConversationFault.FOREIGN_SESSION)
 
 
 def test_the_agents_questions_are_answered_while_its_prompt_is_still_open() -> None:
@@ -718,7 +900,7 @@ def test_the_agents_questions_are_answered_while_its_prompt_is_still_open() -> N
     _prompting(conversation)
 
     both = conversation.receive_output(
-        _asks(0, AcpMethod.READ_TEXT_FILE, {"path": "/a/x"})
+        _asks(0, AcpMethod.READ_TEXT_FILE, {"sessionId": SESSION, "path": "/a/x"})
         + _permission_asked(identifier=1)
     )
     ended = conversation.receive_output(_ended())
@@ -750,6 +932,23 @@ def test_a_tool_call_ceiling_stops_the_attempt_once_it_is_spent() -> None:
     assert conversation.finish(
         ProviderConversationEnding.CANCELLED_FOR_BUDGET
     ).outcome == ProviderTerminalOutcome(ProviderTerminalReason.BUDGET_EXHAUSTED)
+
+
+def test_no_tool_call_is_taken_on_after_the_ceiling_stopped_the_attempt() -> None:
+    """A conversation that has asked for its own stop is not still collecting:
+    what it kept counting could grow for as long as the provider talked."""
+    conversation = _conversation(maximum_tool_calls=1)
+    _prompting(conversation)
+    conversation.receive_output(
+        _updates({"sessionUpdate": "tool_call", "toolCallId": "one", "title": "a"})
+        + _updates({"sessionUpdate": "tool_call", "toolCallId": "two", "title": "b"})
+    )
+
+    later = conversation.receive_output(
+        _updates({"sessionUpdate": "tool_call", "toolCallId": "three", "title": "c"})
+    )
+
+    assert _steps(later) == ()
 
 
 @pytest.mark.parametrize(

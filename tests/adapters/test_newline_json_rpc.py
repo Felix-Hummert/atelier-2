@@ -176,6 +176,42 @@ def test_a_second_answer_to_one_question_is_a_protocol_fault() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"result": {}, "error": {"code": -32603, "message": "no"}},
+        {},
+        {"result": 5},
+        {"error": {"code": "not a code", "message": "no"}},
+    ],
+)
+def test_an_answer_that_is_neither_one_result_nor_one_refusal_is_named_as_such(
+    answer: JsonObject,
+) -> None:
+    """A response says exactly one thing about the question it answers: reading
+    a result beside an error would take the half a sender never meant."""
+    codec = _codec()
+    identifier = _asked(codec)
+
+    read = codec.receive(_line(_message(id=identifier, **answer)))
+
+    assert read == (JsonRpcProtocolFault(JsonRpcFault.MALFORMED_RESPONSE),)
+
+
+def test_a_call_this_protocol_refuses_keeps_the_id_its_answer_is_owed_under() -> None:
+    """The refusal of a request is addressed to that request: an id read off the
+    frame is the only thing that can address it."""
+    read = _codec().receive(
+        b'{"jsonrpc":"2.0","id":7,"method":"one","params":[1]}\n'
+        b'{"jsonrpc":"1.0","id":"a","method":"one"}\n'
+    )
+
+    assert read == (
+        JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE, 7),
+        JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE, "a"),
+    )
+
+
 def test_a_refusal_of_our_own_question_carries_its_method_code_and_message() -> None:
     codec = _codec()
     identifier = _asked(codec, "initialize")

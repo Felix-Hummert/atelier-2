@@ -104,19 +104,31 @@ class JsonRpcFailure:
 
 
 class JsonRpcFault(StrEnum):
-    """A frame this codec will not believe, in the reading that refuses it."""
+    """A frame this codec will not believe, in the reading that refuses it.
+
+    A call and an answer are refused apart because only one of them is owed an
+    answer: an error frame addressed to a response would be this side inventing
+    a question the other side never asked.
+    """
 
     UNPARSEABLE = "unparseable"
     NOT_A_MESSAGE = "not-a-message"
     UNEXPECTED_RESPONSE = "unexpected-response"
+    MALFORMED_RESPONSE = "malformed-response"
     OVERSIZE_FRAME = "oversize-frame"
 
 
 @dataclass(frozen=True, slots=True)
 class JsonRpcProtocolFault:
-    """One frame the codec refused, and why it could not be read."""
+    """One frame the codec refused, why it could not be read, and whose it was.
+
+    The id is the refused frame's own, kept wherever the frame was still
+    readable as a call: an error answers exactly one request, and a request is
+    addressed by nothing else.
+    """
 
     fault: JsonRpcFault
+    id: JsonRpcId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +159,15 @@ def _an_id(value: object) -> TypeGuard[JsonRpcId]:
     """Text or a whole number, which is every id this protocol admits."""
 
     return type(value) is str or type(value) is int
+
+
+def _refused_call(payload: JsonObject) -> JsonRpcProtocolFault:
+    """This frame refused as a message, addressed by the id it owes an answer to."""
+
+    identifier = payload.get("id")
+    if isinstance(payload.get("method"), str) and _an_id(identifier):
+        return JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE, identifier)
+    return JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE)
 
 
 def _payload(message: OutgoingMessage) -> JsonObject:
@@ -228,6 +249,9 @@ class NewlineJsonRpc:
         cancellation are each held to a different one, and only the caller
         knows which of them it is spelling. What is measured is the finished
         line: the escaping and the envelope are part of what has to be written.
+        A caller carrying a payload of unknown width refuses it against the
+        same bound before it composes the message, because what arrives here is
+        spelled once whatever its length.
         """
 
         data = json.dumps(_payload(message), separators=_COMPACT_SEPARATORS).encode()
@@ -249,8 +273,10 @@ class NewlineJsonRpc:
             payload = json.loads(frame)
         except ValueError:
             return JsonRpcProtocolFault(JsonRpcFault.UNPARSEABLE)
-        if not isinstance(payload, dict) or payload.get("jsonrpc") != JSON_RPC_VERSION:
+        if not isinstance(payload, dict):
             return JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE)
+        if payload.get("jsonrpc") != JSON_RPC_VERSION:
+            return _refused_call(payload)
         method = payload.get("method")
         if isinstance(method, str):
             return self._called(payload, method)
@@ -259,7 +285,7 @@ class NewlineJsonRpc:
     def _called(self, payload: JsonObject, method: str) -> IncomingFrame:
         params = payload.get("params", NO_PARAMS)
         if not isinstance(params, Mapping):
-            return JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE)
+            return _refused_call(payload)
         if "id" not in payload:
             return JsonRpcNotification(method, params)
         identifier = payload["id"]
@@ -271,19 +297,21 @@ class NewlineJsonRpc:
         identifier = payload.get("id")
         if not _an_id(identifier) or identifier not in self._awaited:
             return JsonRpcProtocolFault(JsonRpcFault.UNEXPECTED_RESPONSE)
+        if ("result" in payload) == ("error" in payload):
+            return JsonRpcProtocolFault(JsonRpcFault.MALFORMED_RESPONSE)
         result = payload.get("result")
-        error = payload.get("error")
         if isinstance(result, Mapping):
             return JsonRpcAnswer(self._awaited.pop(identifier), result)
+        error = payload.get("error")
         if isinstance(error, Mapping):
             return self._refused(identifier, error)
-        return JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE)
+        return JsonRpcProtocolFault(JsonRpcFault.MALFORMED_RESPONSE)
 
     def _refused(self, identifier: JsonRpcId, error: JsonObject) -> IncomingFrame:
         code = error.get("code")
         message = error.get("message")
         if type(code) is not int or not isinstance(message, str):
-            return JsonRpcProtocolFault(JsonRpcFault.NOT_A_MESSAGE)
+            return JsonRpcProtocolFault(JsonRpcFault.MALFORMED_RESPONSE)
         return JsonRpcFailure(self._awaited.pop(identifier), code, message)
 
 

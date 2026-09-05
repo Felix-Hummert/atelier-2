@@ -34,12 +34,14 @@ from atelier2.adapters.acp_vocabulary import (
     ToolCallAnnounced,
     Unrepresentable,
     cut_to_field,
+    refused_permission_evidence,
 )
 from atelier2.adapters.newline_json_rpc import (
     INTERNAL_ERROR_CODE,
     INVALID_PARAMS_CODE,
     INVALID_REQUEST_CODE,
     METHOD_NOT_FOUND_CODE,
+    NO_PARAMS,
     PARSE_ERROR_CODE,
     IncomingFrame,
     JsonObject,
@@ -150,6 +152,8 @@ class AcpConversationFault(StrEnum):
     UNSENDABLE_FRAME = "unsendable-frame"
     LOST_FRAMING = "lost-framing"
     UNEXPECTED_ANSWER = "unexpected-answer"
+    UNREADABLE_ANSWER = "unreadable-answer"
+    FOREIGN_SESSION = "foreign-session"
 
 
 _ANSWERED_FRAME_FAULTS = {
@@ -161,6 +165,7 @@ _ANSWERED_FRAME_FAULTS = {
 _FATAL_FRAME_FAULTS = {
     JsonRpcFault.OVERSIZE_FRAME: AcpConversationFault.LOST_FRAMING,
     JsonRpcFault.UNEXPECTED_RESPONSE: AcpConversationFault.UNEXPECTED_ANSWER,
+    JsonRpcFault.MALFORMED_RESPONSE: AcpConversationFault.UNREADABLE_ANSWER,
 }
 """A frame nobody can answer is the exchange itself having stopped being one."""
 
@@ -170,6 +175,15 @@ _EFFECT_OF_FILE_METHOD: dict[str, ProviderFilesystemEffect] = {
 }
 
 _STOP_REASONS_THAT_ONLY_END_A_TURN = frozenset(AcpStopReason)
+
+_SESSION_BOUND_REQUESTS = frozenset(
+    {
+        AcpMethod.REQUEST_PERMISSION,
+        AcpMethod.READ_TEXT_FILE,
+        AcpMethod.WRITE_TEXT_FILE,
+    }
+)
+"""Everything the agent may ask this client, each inside one named session."""
 
 _REASON_OF_ENDING = {
     ProviderConversationEnding.CANCELLED_BY_OPERATOR: (
@@ -192,6 +206,7 @@ _CLIENT_HANDSHAKE: JsonObject = {
 }
 _REFUSED_FILE_MESSAGE = "this client refused the file"
 _UNANSWERABLE_FILE_MESSAGE = "this client cannot answer the file as text"
+_OVERSIZE_FILE_MESSAGE = "this client cannot answer a file that wide"
 _UNKNOWN_METHOD_MESSAGE = "this client does not serve that method"
 _UNREADABLE_FRAME_MESSAGE = "this client could not read that frame"
 _UNREADABLE_PARAMS_MESSAGE = "this client could not read that request"
@@ -240,6 +255,7 @@ class AgentClientProtocolConversation:
     _files: dict[ProviderFilesystemRequestId, _PendingFile] = field(
         default_factory=dict, init=False
     )
+    _session: str = field(default="", init=False)
     _tool_calls: dict[str, str] = field(default_factory=dict, init=False)
     _asked_questions: int = field(default=0, init=False)
     _asked_files: int = field(default=0, init=False)
@@ -288,6 +304,8 @@ class AgentClientProtocolConversation:
             return self._file_refused(pending.identifier, _REFUSED_FILE_MESSAGE)
         if pending.effect is ProviderFilesystemEffect.WRITE:
             return self._answering(pending.identifier, _WRITE_ACKNOWLEDGED)
+        if len(reply.content) > self.bounds.maximum_reply_bytes:
+            return self._file_refused(pending.identifier, _OVERSIZE_FILE_MESSAGE)
         try:
             content = reply.content.decode("utf-8")
         except UnicodeDecodeError:
@@ -317,18 +335,20 @@ class AgentClientProtocolConversation:
                 return self._answered(method, result)
             case JsonRpcFailure():
                 return self._faulted(AcpConversationFault.HANDSHAKE_REFUSED)
-            case JsonRpcProtocolFault(fault):
-                return self._refused_frame(fault)
+            case JsonRpcProtocolFault() as refused:
+                return self._refused_frame(refused)
 
-    def _refused_frame(self, fault: JsonRpcFault) -> Actions:
-        code = _ANSWERED_FRAME_FAULTS.get(fault)
+    def _refused_frame(self, refused: JsonRpcProtocolFault) -> Actions:
+        code = _ANSWERED_FRAME_FAULTS.get(refused.fault)
         if code is None:
-            return self._faulted(_FATAL_FRAME_FAULTS[fault])
-        return self._sending(JsonRpcError(None, code, _UNREADABLE_FRAME_MESSAGE))
+            return self._faulted(_FATAL_FRAME_FAULTS[refused.fault])
+        return self._sending(JsonRpcError(refused.id, code, _UNREADABLE_FRAME_MESSAGE))
 
     def _notified(self, method: str, params: JsonObject) -> Actions:
         if method != AcpMethod.SESSION_UPDATE:
             return ()
+        if self._session and self._foreign(params):
+            return self._faulted(AcpConversationFault.FOREIGN_SESSION)
         update = params.get("update")
         if not isinstance(update, dict):
             return self._flushed() + self._evidence(rendered(params))
@@ -352,14 +372,28 @@ class AgentClientProtocolConversation:
         return recorded + self._settled(named, classified.status, classified.content)
 
     def _questioned(self, asked: JsonRpcRequest) -> Actions:
+        if asked.method not in _SESSION_BOUND_REQUESTS:
+            return self._sending(
+                JsonRpcError(asked.id, METHOD_NOT_FOUND_CODE, _UNKNOWN_METHOD_MESSAGE)
+            )
+        if self._foreign(asked.params):
+            return self._faulted(AcpConversationFault.FOREIGN_SESSION)
         if asked.method == AcpMethod.REQUEST_PERMISSION:
             return self._permission_asked(asked)
-        effect = _EFFECT_OF_FILE_METHOD.get(asked.method)
-        if effect is not None:
-            return self._file_asked(asked, effect)
-        return self._sending(
-            JsonRpcError(asked.id, METHOD_NOT_FOUND_CODE, _UNKNOWN_METHOD_MESSAGE)
-        )
+        return self._file_asked(asked, _EFFECT_OF_FILE_METHOD[asked.method])
+
+    def _foreign(self, params: JsonObject) -> bool:
+        """Whether this message belongs to a session other than this client's.
+
+        A request is held to it always: nothing may reach this attempt's
+        authority or its workspace under a session nobody here opened, and
+        before `session/new` is answered there is no session to ask under at
+        all. An update is held to it once the id is known -- a released agent
+        narrates the session it is opening before that answer arrives, and
+        there is no second session those first updates could belong to.
+        """
+
+        return params.get("sessionId") != self._session
 
     def _answered(self, method: str, result: JsonObject) -> Actions:
         match method:
@@ -379,6 +413,7 @@ class AgentClientProtocolConversation:
         session = result.get("sessionId")
         if not isinstance(session, str) or not session:
             return self._faulted(AcpConversationFault.NO_SESSION)
+        self._session = session
         cancellation = self._codec.encode(
             JsonRpcNotification(AcpMethod.SESSION_CANCEL, {"sessionId": session}),
             self.bounds.maximum_cancel_bytes,
@@ -409,7 +444,7 @@ class AgentClientProtocolConversation:
         )
         tool_call = asked.params.get("toolCall")
         if not isinstance(tool_call, dict):
-            return self._closed_refusal(asked.params, offered)
+            return self._closed_refusal(NO_PARAMS, offered)
         named = tool_call.get("toolCallId")
         charged = self._charged(named) if isinstance(named, str) and named else ()
         classified = self.vocabulary.classify_permission(tool_call)
@@ -425,12 +460,12 @@ class AgentClientProtocolConversation:
         )
 
     def _closed_refusal(
-        self, asked: JsonObject, offered: _PendingPermission
+        self, tool_call: JsonObject, offered: _PendingPermission
     ) -> Actions:
         self._latch(ProviderTerminalReason.POLICY_REFUSED)
         return (
             self._flushed()
-            + self._evidence(rendered(asked))
+            + self._evidence(refused_permission_evidence(tool_call))
             + self._sending(
                 JsonRpcResponse(
                     offered.identifier, _permission_outcome(offered.refused)
@@ -442,19 +477,19 @@ class AgentClientProtocolConversation:
         self, asked: JsonRpcRequest, effect: ProviderFilesystemEffect
     ) -> Actions:
         path = asked.params.get("path")
-        content = asked.params.get("content", "")
-        if not isinstance(path, str) or not isinstance(content, str):
+        written = (
+            _written_content(asked.params)
+            if effect is ProviderFilesystemEffect.WRITE
+            else b""
+        )
+        if not isinstance(path, str) or written is None:
             return self._sending(
                 JsonRpcError(asked.id, INVALID_PARAMS_CODE, _UNREADABLE_PARAMS_MESSAGE)
             )
         self._asked_files += 1
         request_id = ProviderFilesystemRequestId(self._asked_files)
         self._files[request_id] = _PendingFile(asked.id, effect)
-        return (
-            ProviderFilesystemRequest(
-                effect, Path(path), request_id, content.encode("utf-8")
-            ),
-        )
+        return (ProviderFilesystemRequest(effect, Path(path), request_id, written),)
 
     def _asking(self, method: AcpMethod, params: JsonObject) -> Actions:
         return self._sending(self._codec.ask(method, params))
@@ -509,7 +544,9 @@ class AgentClientProtocolConversation:
     def _announced(
         self, identifier: str, title: str, locations: tuple[str, ...]
     ) -> Steps:
-        already = bool(self._tool_calls.get(identifier))
+        if identifier not in self._tool_calls:
+            return ()
+        already = bool(self._tool_calls[identifier])
         self._tool_calls[identifier] = title
         if already:
             return ()
@@ -572,6 +609,17 @@ class AgentClientProtocolConversation:
                 ProviderTerminalReason.CANCELLED_BY_PROVIDER, self._stop_reason
             )
         return ProviderTerminalOutcome(ProviderTerminalReason.ENDED)
+
+
+def _written_content(params: JsonObject) -> bytes | None:
+    """The text a write request carries, or nothing where it carried none.
+
+    A write is what its content says: a request that names none is one nobody
+    can answer, never a file this client empties on the agent's behalf.
+    """
+
+    content = params.get("content")
+    return content.encode("utf-8") if isinstance(content, str) else None
 
 
 def _kept(text: str) -> Steps:
