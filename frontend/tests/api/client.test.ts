@@ -966,7 +966,8 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
       workflow_lineage_id: digest,
       prerequisite_item_ids: [],
       automation_disposition: "HUMAN_REQUIRED",
-      policy_revision: 1
+      policy_revision: 1,
+      source: "OPERATOR"
     }
   };
   const mappedObservedItem = {

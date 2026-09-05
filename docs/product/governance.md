@@ -235,6 +235,21 @@ repository observes every open issue as one OBSERVED row (reference grammar
 identity and insert-or-ignore -- a repeated import adds nothing and never
 rewinds a proposal or admission.
 
+A project policy may state the workflow lineage, priority rank, and automation
+disposition a labelled item with no proposal is proposed under (V52). The
+label sweep then writes that proposal itself, recording `POLICY_DEFAULT` as
+its source and the policy revision it came from, before the same admission CAS
+runs; a policy without those defaults leaves such an item observed exactly as
+before. What a person inspected there is the policy, once -- not the item: a
+proposal carrying `POLICY_DEFAULT` was read by nobody before it was written,
+which is exactly what that source keeps apart from `OPERATOR`. A policy whose
+disposition is `AUTOMATION_AUTHORIZED` therefore makes adding the label the
+whole human act that starts an agent run on that item and spends provider
+money on it, with no per-item confirmation in between. The disposition is
+`HUMAN_REQUIRED` unless the operator states otherwise, so an operator who
+states no authorisation gets a proposal to release rather than a started run
+(REQ-QUEUE-05).
+
 `GET /atelier/api/v1/queue-items` is the one typed read across OBSERVED,
 PROPOSED, and ADMITTED rows. Project policy is written with an expected
 revision, proposals through `PUT /atelier/api/v1/queue-proposals`, and

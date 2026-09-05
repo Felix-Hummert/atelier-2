@@ -92,12 +92,14 @@ from atelier2.contracts.queue_projection import (
     QueueLaunchBinding,
     QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyDefaults,
     QueueProjectPolicyRevision,
     QueueProposal,
     QueueProposalAlreadyCurrent,
     QueueProposalRefusal,
     QueueProposalRefused,
     QueueProposalRevisionConflict,
+    QueueProposalSource,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -130,6 +132,7 @@ from atelier2.ports.queue_projection import (
     QueueItemsReconciled,
     QueueLaunchBlocked,
     QueueLaunchReserved,
+    QueueProjectPolicyAbsent,
     QueueProjectPolicyFound,
     QueueProjectPolicyPublished,
     QueueReadUnavailable,
@@ -259,6 +262,7 @@ def _insert_dependency_proposal(
                 workflow_lineage_id=lineage_id.value,
                 automation_disposition=QueueAutomationDisposition.HUMAN_REQUIRED.value,
                 policy_revision=1,
+                source=QueueProposalSource.OPERATOR.value,
             )
         )
         connection.execute(
@@ -752,6 +756,32 @@ def test_v44_check_rejects_a_sql_null_partial_admission(tmp_path: Path) -> None:
                 "current_proposal_revision=1 WHERE item_id=?",
                 ("a1" * 32, reference.item_id.value),
             )
+
+
+def test_a_policy_row_cannot_hold_half_of_a_proposal_default(tmp_path: Path) -> None:
+    """The typed policy cannot state half a default, and neither can the table.
+
+    Written through raw SQL, because that is the only way the shape this
+    constraint guards can be attempted at all.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            connection.execute(
+                "INSERT INTO queue_project_policy_revisions "
+                "(project_id, revision_number, maximum_active_runs, "
+                "default_priority_rank) VALUES (?, 1, 1, 4)",
+                (PROJECT.value,),
+            )
+        connection.execute(
+            "INSERT INTO queue_project_policy_revisions "
+            "(project_id, revision_number, maximum_active_runs) VALUES (?, 1, 1)",
+            (PROJECT.value,),
+        )
 
 
 def test_policy_and_launch_reservation_are_atomic_under_the_project_cap(
@@ -1287,6 +1317,13 @@ def test_queue_proposal_refusals_are_closed_typed_decisions(
         )
     )
     missing_policy = plan("gh:policy-missing", (), 99)
+    unpublished_lineage = queue.plan(
+        PlanQueueItem(
+            WorkItemReference(PROJECT, TrackerItemReference("gh:lineage-missing")),
+            _proposal(CatalogLineageId("ab" * 32)),
+            QueueProjectionRevision(0),
+        )
+    )
     missing_prerequisite = plan("gh:prerequisite-missing", (QueueItemId("c3" * 32),))
     other_project_reference = WorkItemReference(
         ProjectId("other-project"), TrackerItemReference("gh:outside-project")
@@ -1317,6 +1354,9 @@ def test_queue_proposal_refusals_are_closed_typed_decisions(
     assert self_refusal == QueueProposalRefused(QueueProposalRefusal.SELF_DEPENDENCY)
     assert missing_policy == QueueProposalRefused(
         QueueProposalRefusal.POLICY_REVISION_MISSING
+    )
+    assert unpublished_lineage == QueueProposalRefused(
+        QueueProposalRefusal.WORKFLOW_LINEAGE_MISSING
     )
     assert missing_prerequisite == QueueProposalRefused(
         QueueProposalRefusal.PREREQUISITE_NOT_IN_PROJECT
@@ -1446,7 +1486,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 51
+    assert report.target_version == SCHEMA_VERSION == 52
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:
@@ -1603,6 +1643,77 @@ def test_a_serve_launch_starts_an_admitted_item_in_a_policy_less_project(
                 .all()
             )
         assert len(bindings) == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.proves("the-automation-label-admits-the-items-that-carry-it")
+def test_a_serve_launch_proposes_a_label_only_item_from_the_policy_defaults(
+    tmp_path: Path,
+) -> None:
+    """The operator's whole handgrip is the label: policy defaults do the rest.
+
+    The item enters the store as an import leaves it -- observed, with no
+    proposal anyone wrote -- and the published policy names the workflow, the
+    rank and the authorisation a labelled item is proposed under. One Serve
+    launch therefore proposes it from those defaults, admits it under the
+    automation rule, and starts the one launch it is bound to.
+    """
+
+    label = "bereit"
+    project_root = tmp_path / "operator-project"
+    project_root.mkdir()
+    listing = OpenTrackerItemsObserved(
+        (
+            ObservedOpenTrackerItem(
+                TrackerItemReference("gh:1236"), "labelled", (label,)
+            ),
+        ),
+        RecordedAt("2026-09-05T09:00:00Z"),
+    )
+    runtime = _runtime(
+        tmp_path / "atelier.sqlite",
+        project_root=project_root,
+        tracker=FakeTrackerItemSource(open_items_answer=listing),
+    )
+    try:
+        lineage_id, _revision_hash = _found_lineage(runtime.engine)
+        queue = DbosQueueProjectionStore(runtime.engine)
+        assert isinstance(
+            queue.put_policy(
+                QueueProjectPolicyRevision(
+                    PROJECT,
+                    1,
+                    1,
+                    label,
+                    QueueProjectPolicyDefaults(
+                        lineage_id,
+                        QueuePriorityRank(5),
+                        QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+                    ),
+                ),
+                0,
+            ),
+            QueueProjectPolicyPublished,
+        )
+        reference = WorkItemReference(PROJECT, TrackerItemReference("gh:1236"))
+        _seed_open_items(queue, reference)
+
+        runtime.launch()
+
+        started = _snapshots_by_reference(queue)[reference.tracker_item]
+        assert started.state is QueueItemState.ADMITTED
+        assert started.proposal == QueueProposal(
+            QueuePriorityRank(5),
+            lineage_id,
+            (),
+            QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+            1,
+            QueueProposalSource.POLICY_DEFAULT,
+        )
+        assert started.admission is not None
+        assert started.admission.authority is QueueDecisionAuthority.AUTOMATION_RULE
+        assert len(_launch_bindings(runtime.engine, reference.item_id)) == 1
     finally:
         runtime.close()
 
@@ -2076,9 +2187,14 @@ def test_queue_api_exposes_one_typed_projection_and_confirmation_matrix(
                 "expected_revision": 0,
                 "maximum_active_runs": 1,
                 "automation_label": None,
+                "default_workflow_lineage_id": lineage_id.value,
+                "default_priority_rank": 4,
             },
         )
         assert policy.status_code == 201, policy.text
+        assert policy.json()["default_workflow_lineage_id"] == lineage_id.value
+        assert policy.json()["default_priority_rank"] == 4
+        assert policy.json()["automation_disposition_default"] == "HUMAN_REQUIRED"
         proposal = api.put(
             QUEUE_PROPOSALS_PATH,
             json={
@@ -2119,11 +2235,39 @@ def test_queue_api_exposes_one_typed_projection_and_confirmation_matrix(
         (row,) = projection.json()["items"]
         assert row["state"] == "ADMITTED"
         assert row["proposal"]["priority"] == {"rank": 1}
+        assert row["proposal"]["source"] == "OPERATOR"
         assert row["tracker_enrichment"] == "ENRICHMENT_UNAVAILABLE"
         assert row["title"] is None
         assert api.get(API_PREFIX + "/observed-queue-items").status_code == 404
     finally:
         runtime.close()
+
+
+def test_a_queue_policy_default_names_a_workflow_and_a_priority_together(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """Half a default is refused at the door instead of guessing the other half."""
+
+    queue, _engine = store
+    policy_path = PROJECT_QUEUE_POLICY_PATH.replace(
+        "{public_project_reference}", encode_public_project_reference(PROJECT)
+    )
+
+    with _queue_api(queue) as api:
+        response = api.put(
+            policy_path,
+            json={
+                "revision_number": 1,
+                "expected_revision": 0,
+                "maximum_active_runs": 1,
+                "automation_label": "bereit",
+                "default_priority_rank": 4,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith("invalid-request")
+    assert isinstance(queue.current_policy(PROJECT), QueueProjectPolicyAbsent)
 
 
 def _queue_api(queue: object) -> TestClient:
