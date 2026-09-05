@@ -57,6 +57,7 @@ from atelier2.adapters.dbos.workflow import (
 from atelier2.adapters.dbos.workflow_ids import (
     driving_workflow_ids,
     effect_workflow_id_for,
+    node_workflow_id_for,
     reconcile_workflow_id_for,
 )
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
@@ -129,7 +130,11 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.executions import (
+    AgentAttemptExecution,
+    NodeExecutionId,
+    logical_effect_key_for,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
     PROJECT_UNKNOWN,
@@ -979,19 +984,29 @@ this check inspects (`durable_effect`, `durable_reconciliation`) is registered
 with `max_recovery_attempts=None`, so DBOS never assigns it one."""
 
 
-def _open_binding_owning_workflow_id(record: sa.Row[Any]) -> str | None:
-    """The one DBOS workflow whose own terminal status frees this intent.
+_EFFECT_WORKFLOW_DRIVEN_INTENT_STATES = frozenset(
+    {EffectIntentState.PREPARED, EffectIntentState.CONFIRMED}
+)
+"""The states `durable_effect` drives -- and the only two an Agent node's own
+grant redemption (`workflow.py::redeem_agent_node_effect`) ever leaves behind,
+which is why the node-workflow fallback is offered exactly here."""
 
-    `PREPARED` and `CONFIRMED` are driven by `durable_effect`
-    (`effect_workflow_id_for`). `adapter_for_key` resolves the *current*
-    adapter registry fresh on every replay, ahead of every memoized step
-    (`workflow.py::durable_effect`), so a `CONFIRMED` intent whose commit
-    outran its own workflow's `SUCCESS` can still crash a replay under a
-    changed identity -- exempting it by its own persisted state alone could
-    strand a run already durably marked complete (#1218). `RECONCILING` is
-    driven the same way by `durable_reconciliation`
-    (`reconcile_workflow_id_for`), keyed by the intent's own reconciliation
-    command.
+
+def _open_binding_owning_workflow_id(record: sa.Row[Any]) -> str | None:
+    """The DBOS workflow whose own terminal status frees this intent, by state.
+
+    `PREPARED` and `CONFIRMED` name `durable_effect` (`effect_workflow_id_for`).
+    `adapter_for_key` resolves the *current* adapter registry fresh on every
+    replay, ahead of every memoized step (`workflow.py::durable_effect`), so a
+    `CONFIRMED` intent whose commit outran its own workflow's `SUCCESS` can
+    still crash a replay under a changed identity -- exempting it by its own
+    persisted state alone could strand a run already durably marked complete
+    (#1218). The id such an intent names is not always one DBOS ever minted:
+    an Agent node redeeming its own grant never starts a `durable_effect` at
+    all, and `_agent_redeemed_owning_workflow_ids` answers for those.
+    `RECONCILING` names `durable_reconciliation` (`reconcile_workflow_id_for`),
+    keyed by the intent's own reconciliation command; that workflow is the only
+    driver a reconciling intent can have, whichever authorization prepared it.
 
     `WAITING_RECONCILIATION` answers `None`: no workflow drives it yet, and
     the identity it recorded must still be honoured by whichever
@@ -1002,13 +1017,72 @@ def _open_binding_owning_workflow_id(record: sa.Row[Any]) -> str | None:
     """
 
     state = EffectIntentState(str(record.state))
-    if state is EffectIntentState.WAITING_RECONCILIATION:
-        return None
+    if state in _EFFECT_WORKFLOW_DRIVEN_INTENT_STATES:
+        return effect_workflow_id_for(LogicalEffectKey(str(record.logical_key)))
     if state is EffectIntentState.RECONCILING:
         return reconcile_workflow_id_for(
             ReconcileCommandId(str(record.reconciliation_owner_command_id))
         )
-    return effect_workflow_id_for(LogicalEffectKey(str(record.logical_key)))
+    return None
+
+
+def _recorded_workflow_statuses(
+    connection: Connection, workflow_ids: set[str]
+) -> dict[str, str]:
+    """What DBOS recorded for each named workflow; an unminted id is absent."""
+
+    if not workflow_ids:
+        return {}
+    return {
+        str(record.workflow_uuid): str(record.status)
+        for record in connection.execute(
+            sa.select(
+                _dbos_workflow_status.c.workflow_uuid,
+                _dbos_workflow_status.c.status,
+            ).where(_dbos_workflow_status.c.workflow_uuid.in_(workflow_ids))
+        )
+    }
+
+
+def _agent_redeemed_owning_workflow_ids(
+    connection: Connection, records: list[sa.Row[Any]]
+) -> dict[str, str]:
+    """The node workflow owning each intent whose `durable_effect` never existed.
+
+    An intent an Agent node earns through its own pinned tool grant is prepared
+    and redeemed as two steps of that node's workflow
+    (`workflow.py::redeem_agent_node_effect`), so no `atelier2-effect-*`
+    workflow is ever minted for it and reading that id back finds nothing --
+    which counted every such intent as forever open and made a moved identity
+    unstartable while five finished pushes sat in the store (#1218). Its owner
+    is the node workflow, and which node execution that is, is recomputed
+    rather than stored: every agent attempt of the intent's own run names its
+    node execution, and the logical key that execution mints
+    (`logical_effect_key_for`, the derivation `logical_effect_key_for_node`
+    composes for the preparer) either is this intent's key or is not. No match
+    names no owner, so the caller keeps the intent -- a store whose attempt
+    rows are gone fails closed rather than exempting an intent nothing
+    accounts for.
+    """
+
+    run_ids = {str(record.run_id) for record in records}
+    if not run_ids:
+        return {}
+    node_workflow_ids_by_key: dict[str, str] = {}
+    for attempt in connection.execute(
+        sa.select(agent_attempts.c.node_execution_id)
+        .where(agent_attempts.c.run_id.in_(run_ids))
+        .distinct()
+    ):
+        execution_id = NodeExecutionId(str(attempt.node_execution_id))
+        node_workflow_ids_by_key[logical_effect_key_for(execution_id).value] = (
+            node_workflow_id_for(execution_id)
+        )
+    return {
+        logical_key: node_workflow_ids_by_key[logical_key]
+        for record in records
+        if (logical_key := str(record.logical_key)) in node_workflow_ids_by_key
+    }
 
 
 def _still_open_effect_intents(
@@ -1019,11 +1093,15 @@ def _still_open_effect_intents(
     Ordered by operation and logical key so a refusal names the same intents
     in the same order every time. `ABANDONED` is domain-terminal by
     definition and is dropped before any workflow lookup; every other state
-    is kept unless the single DBOS workflow that owns it next
-    (`_open_binding_owning_workflow_id`) has already ended for good -- a
-    missing or non-terminal row counts against the binding, so an
-    already-corrupt database missing an intent's run row (or its workflow
-    row) fails closed rather than silently exempting it.
+    is kept unless the DBOS workflow that owns it next has already ended for
+    good. Which workflow that is, is asked in one order: the intent's own
+    `durable_effect` or `durable_reconciliation`
+    (`_open_binding_owning_workflow_id`) first, and only for an intent whose
+    effect workflow DBOS never minted, the node workflow that redeemed it
+    itself (`_agent_redeemed_owning_workflow_ids`). A missing or non-terminal
+    status counts against the binding, so an already-corrupt database missing
+    an intent's run row (or its workflow row) fails closed rather than
+    silently exempting it.
     """
 
     candidates = [
@@ -1031,6 +1109,7 @@ def _still_open_effect_intents(
         for record in connection.execute(
             sa.select(
                 effect_intents.c.logical_key,
+                effect_intents.c.run_id,
                 effect_intents.c.state,
                 effect_intents.c.reconciliation_owner_command_id,
                 effect_intents.c.operation_name,
@@ -1042,28 +1121,35 @@ def _still_open_effect_intents(
         if EffectIntentState(str(record.state)) is not EffectIntentState.ABANDONED
     ]
     owning_workflow_ids = {
-        record.logical_key: workflow_id
+        str(record.logical_key): workflow_id
         for record in candidates
         if (workflow_id := _open_binding_owning_workflow_id(record)) is not None
     }
-    terminal_workflow_ids = (
-        frozenset(
-            connection.scalars(
-                sa.select(_dbos_workflow_status.c.workflow_uuid).where(
-                    _dbos_workflow_status.c.workflow_uuid.in_(
-                        owning_workflow_ids.values()
-                    ),
-                    _dbos_workflow_status.c.status.in_(_TERMINAL_WORKFLOW_STATUSES),
-                )
-            )
-        )
-        if owning_workflow_ids
-        else frozenset()
+    workflow_statuses = _recorded_workflow_statuses(
+        connection, set(owning_workflow_ids.values())
     )
+    unminted_effect_workflows = [
+        record
+        for record in candidates
+        if EffectIntentState(str(record.state)) in _EFFECT_WORKFLOW_DRIVEN_INTENT_STATES
+        and owning_workflow_ids[str(record.logical_key)] not in workflow_statuses
+    ]
+    node_workflow_ids = _agent_redeemed_owning_workflow_ids(
+        connection, unminted_effect_workflows
+    )
+    owning_workflow_ids.update(node_workflow_ids)
+    workflow_statuses.update(
+        _recorded_workflow_statuses(connection, set(node_workflow_ids.values()))
+    )
+    terminal_workflow_ids = {
+        workflow_id
+        for workflow_id, status in workflow_statuses.items()
+        if status in _TERMINAL_WORKFLOW_STATUSES
+    }
     return [
         record
         for record in candidates
-        if owning_workflow_ids.get(record.logical_key) not in terminal_workflow_ids
+        if owning_workflow_ids.get(str(record.logical_key)) not in terminal_workflow_ids
     ]
 
 

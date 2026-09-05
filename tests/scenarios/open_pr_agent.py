@@ -71,6 +71,8 @@ PROVIDER = "exact"
 EXECUTOR_REVISION = "exact/v1"
 OPERATIONAL_IDENTITY = "exact-op"
 BUILDER_ROLE = "builder"
+AGENT_NODE_ID = "implement"
+"""The single node this run has, and the one whose grant redeems the effect."""
 
 PR_SPEC = json.dumps(
     {"title": "Ship the open-pr slice", "opened_by": "the agent itself"}
@@ -91,15 +93,15 @@ def open_pr_agent_executor_factory(output: bytes) -> RecordingAgentExecutorFacto
 
 def _grant_document(tools_line: str, loop_maximum_rounds: int | None = None) -> bytes:
     document = (
-        b"""format_version: 3
+        f"""format_version: 3
 name: One agent that opens its own pull request
 nodes:
-  - id: implement
+  - id: {AGENT_NODE_ID}
     type: agent
     role: builder
     mode: headless
     instruction: Draft the pull request this chain opens.
-"""
+""".encode("ascii")
         + tools_line.encode("ascii")
         + declared_output()
     )
@@ -109,7 +111,7 @@ nodes:
         document
         + f"""loops:
   - id: implement-again
-    body: [implement]
+    body: [{AGENT_NODE_ID}]
     maximum_rounds: {loop_maximum_rounds}
 """.encode()
     )
