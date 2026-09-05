@@ -3684,13 +3684,11 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    if version == SCHEMA_VERSION:
-        return PRODUCT_TABLE_NAMES
     # V52 widened two queue tables and added none, so V51 holds exactly today's
     # set. V51 adds the authorisation ledger; V50 widened one table's
     # failure-code vocabulary and added no table, so V49 and V50 hold the same
     # set: today's without that ledger.
-    if version == _VERSION_FIFTY_ONE:
+    if version in {SCHEMA_VERSION, _VERSION_FIFTY_ONE}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_FIFTY, _VERSION_FORTY_NINE}:
         return before_permission_receipts
@@ -3700,9 +3698,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         return predecessor_product_tables
     if version == _VERSION_FORTY_THREE:
         return before_phase_d
-    if version == _VERSION_FORTY_TWO:
-        return before_phase_d - attempt_receipt_tables
-    if version == _VERSION_FORTY_ONE:
+    if version in {_VERSION_FORTY_TWO, _VERSION_FORTY_ONE}:
         return before_phase_d - attempt_receipt_tables
     if version == _VERSION_FORTY:
         return before_forks
