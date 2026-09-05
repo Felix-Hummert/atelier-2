@@ -1352,6 +1352,17 @@ admitting only non-failing pull requests) -- is an operator/head step done
 once, through `gh api`, after this change lands; the queue has no effect on
 pull requests opened before that step runs.
 
+The Python pipeline separates fast feedback from the coverage-instrumented
+suite: `Python: architecture, lint, types, tests` keeps the existing required
+check name and proves the architecture, dead-code, documentation,
+product-status, ANN401, Ruff, formatting, Pyright, and screenshot-review gates,
+while the independent `Python: tests` job proves non-crash behavior and
+publishes its JUnit and coverage reports. This lets static failures report
+without waiting roughly 17 minutes for pytest; `Static and behavior` still
+waits for both jobs, so every required-check name and its protection meaning
+stays unchanged. The operator may later add `Python: tests` as its own required
+context.
+
 ## Dead-code gates
 
 Two gates keep code that nothing reaches out of the tree, and they do not yet
@@ -1416,7 +1427,7 @@ measurement week described in #1203, which compares Sonar's findings against
 the duplicate ratchet above and the `C901` complexity count.
 
 Automatic Analysis cannot read coverage, so analysis runs from CI instead
-(ruling 05.09.2026, #1203): the `quality` job's pytest run writes
+(ruling 05.09.2026, #1203): the `tests` job's pytest run writes
 `reports/coverage.xml` (`pytest-cov`) and the `frontend` job's vitest run
 writes `reports/frontend-coverage/lcov.info` (`@vitest/coverage-v8`); the
 `sonar` job downloads both and runs `sonarqube-scan-action` with the

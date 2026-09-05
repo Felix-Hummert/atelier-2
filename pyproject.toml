@@ -45,7 +45,8 @@ dev = [
 # pins the checkout into the attempt's own workspace before this runs, so the
 # tree it needs is already there.
 #
-# `tests/crash` is excluded on purpose (#1152): the pipeline's own quality job
+# `tests/crash` is excluded on purpose (#1152): the pipeline's own Python test
+# job
 # (.github/workflows/ci.yml) never bundles it with the rest either -- it runs
 # alone, in the `crash-recovery` job, inside a systemd scope with cgroup
 # delegation (`Delegate=yes`, `KillMode=control-group`) that a grant's
