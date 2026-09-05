@@ -4,8 +4,9 @@
   dispatch), 2026-09-05 (issue #1252: the Agent Runner inventory named in §1
   -- `runner/session.py`, `runner/executors.py`, and the rest of the
   container-hosted cluster ADR 0009 describes -- was deleted for having no
-  live caller) — step 1 carries the typed policy and the decider seam; steps
-  2-6 are not implemented
+  live caller; its code stays reachable in Git history for reference and is
+  not to be revived) — step 1 carries the typed policy and the decider seam;
+  steps 2-6 are not implemented
 - Date: 2026-09-04
 - Decision authority: the operator ruling of 2026-09-04 on proposal
   [#1177](https://github.com/FlexOr2/atelier-2/issues/1177), which owns the
