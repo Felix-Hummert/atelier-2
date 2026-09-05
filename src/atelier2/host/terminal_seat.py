@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
@@ -37,6 +37,7 @@ from atelier2.contracts.host_configuration import ProjectId
 SEAT_BIND_ADDRESS = "127.0.0.1"
 DEFAULT_SEAT_PORT = 7681
 SEAT_PATH_TOKEN_BYTES = 24
+SEAT_STAGED_NAME_BYTES = 8
 HIGHEST_PORT = 65535
 SEAT_DOCUMENT_MODE = 0o600
 SEAT_DIGEST_SEPARATOR = b"\0"
@@ -46,7 +47,9 @@ SCOPE_UNIT_SUFFIX = ".scope"
 
 # What tmux answers when the seat is simply not there. Every other failing
 # probe is an unread answer, never an absence: an unreachable socket would
-# otherwise read as "gone" and cost a living session its scope.
+# otherwise read as "gone" and cost a living session its scope. These wordings
+# are measured against the installed tmux when the seat gets its caller; an
+# answer this list does not know stays a failed probe.
 TMUX_ABSENT_ANSWERS = ("no server running", "can't find session", "session not found")
 # `systemctl is-active` answers 3 for a unit that is not active and 4 for one it
 # does not know; an unreachable bus answers otherwise.
@@ -201,11 +204,10 @@ class TerminalSeat:
             return TerminalSeatOutcome.REFUSED_SYSTEMD_MISSING
         if not self.host.loopback_port_is_free(self.settings.port):
             return TerminalSeatOutcome.REFUSED_PORT_BUSY
-        if self._established(self._session_presence()) is SeatPresence.ALIVE:
+        session, scope = self._established_presence(systemctl)
+        if session is SeatPresence.ALIVE:
             return TerminalSeatOutcome.ALREADY_RUNNING
-        orphaned_scope = (
-            self._established(self._scope_presence(systemctl)) is SeatPresence.ALIVE
-        )
+        orphaned_scope = scope is SeatPresence.ALIVE
         if orphaned_scope:
             self._stop_scope(systemctl)
         self._create_session(systemd_run, systemctl)
@@ -225,17 +227,14 @@ class TerminalSeat:
         systemctl = self.host.locate_executable(SYSTEMCTL_PROGRAM)
         if systemctl is None:
             return TerminalSeatOutcome.REFUSED_SYSTEMD_MISSING
-        alive = self._established(self._session_presence()) is SeatPresence.ALIVE
-        if alive:
+        session, scope = self._established_presence(systemctl)
+        if session is SeatPresence.ALIVE:
             self._run_checked(
                 self._tmux_command("kill-session", "-t", self._session_target)
             )
-        active_scope = (
-            self._established(self._scope_presence(systemctl)) is SeatPresence.ALIVE
-        )
-        if active_scope:
+        if scope is SeatPresence.ALIVE:
             self._stop_scope(systemctl)
-        if alive or active_scope:
+        if SeatPresence.ALIVE in (session, scope):
             return TerminalSeatOutcome.STOPPED
         return TerminalSeatOutcome.NOT_RUNNING
 
@@ -295,18 +294,23 @@ class TerminalSeat:
             return SeatPresence.MISSING
         return SeatPresence.FAILED
 
-    def _established(self, presence: SeatPresence) -> SeatPresence:
-        """Only an established answer decides; an unread probe ends the call.
+    def _established_presence(
+        self, systemctl: Path
+    ) -> tuple[SeatPresence, SeatPresence]:
+        """Both halves of the seat, read before any of them is touched.
 
-        Nothing is stopped, killed, or created on a probe that did not answer:
-        an absence the seat could not confirm is not an absence.
+        A probe that did not answer ends the call before the first mutation:
+        an absence the seat could not confirm is not an absence, and a session
+        must not be killed on the strength of a scope nobody could read.
         """
 
-        if presence is SeatPresence.FAILED:
+        session = self._session_presence()
+        scope = self._scope_presence(systemctl)
+        if SeatPresence.FAILED in (session, scope):
             raise TerminalSeatCommandFailed(
                 f"the seat {self.settings.seat_digest} could not be probed"
             )
-        return presence
+        return session, scope
 
     def _stop_scope(self, systemctl: Path) -> None:
         self._run_checked((str(systemctl), "--user", "stop", self.settings.scope_unit))
@@ -338,19 +342,36 @@ class TerminalSeat:
                     str(configuration),
                 )
             )
-        except TerminalSeatCommandFailed:
-            self._discard_half_created_seat(systemctl)
-            raise
+        except TerminalSeatCommandFailed as hand_over:
+            self._discard_half_created_seat(systemctl, hand_over)
 
-    def _discard_half_created_seat(self, systemctl: Path) -> None:
-        """Leave no seat without its agent, and keep the first failure.
+    def _discard_half_created_seat(
+        self, systemctl: Path, hand_over: TerminalSeatCommandFailed
+    ) -> NoReturn:
+        """Leave no seat without its agent, and report what the cleanup left.
 
-        Exit codes are ignored here on purpose: what went wrong is the failure
-        being re-raised, and a teardown raising its own would hide it.
+        The hand-over failure stays the cause; a teardown command that failed
+        too is named beside it rather than raised over it, because a seat
+        nobody could discard is what the next call would otherwise find.
         """
 
-        self.host.run(self._tmux_command("kill-session", "-t", self._session_target))
-        self.host.run((str(systemctl), "--user", "stop", self.settings.scope_unit))
+        teardown = (
+            self._tmux_command("kill-session", "-t", self._session_target),
+            (str(systemctl), "--user", "stop", self.settings.scope_unit),
+        )
+        left_behind: list[str] = []
+        for argv in teardown:
+            answer = self.host.run(argv)
+            if answer.exit_code != 0:
+                left_behind.append(f"{shlex.join(argv)} exited {answer.exit_code}")
+        cleanup = (
+            "session and scope discarded"
+            if not left_behind
+            else f"left behind: {'; '.join(left_behind)}"
+        )
+        raise TerminalSeatCommandFailed(
+            f"the seat's agent could not be handed over ({hand_over}); {cleanup}"
+        ) from hand_over
 
     def _type_into_login_shell(self, argv: Sequence[str]) -> None:
         """Type the agent CLI where the operator would type it.
@@ -372,17 +393,27 @@ class TerminalSeat:
         """Put the composed MCP document where the serve keeps its state.
 
         Never into the operator's project tree, and readable only by the user
-        whose agent is about to be told to read it.
+        whose agent is about to be told to read it: the document is written to
+        a fresh file of its own and moved onto its name, so no reader ever sees
+        a half-written seat, an older file's permissions, or a link somebody
+        put in the way.
         """
 
         document = self.settings.state_directory / self.settings.mcp_document.file_name
         document.parent.mkdir(parents=True, exist_ok=True)
+        staged = document.with_name(
+            f"{document.name}.{secrets.token_hex(SEAT_STAGED_NAME_BYTES)}"
+        )
         descriptor = os.open(
-            document, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SEAT_DOCUMENT_MODE
+            staged,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            SEAT_DOCUMENT_MODE,
         )
         with os.fdopen(descriptor, "w", encoding="utf-8") as opened:
             opened.write(self.settings.mcp_document.content)
-        document.chmod(SEAT_DOCUMENT_MODE)
+            opened.flush()
+            os.fsync(opened.fileno())
+        os.replace(staged, document)
         return document
 
     def _run_checked(self, argv: Sequence[str]) -> None:

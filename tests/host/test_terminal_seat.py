@@ -245,8 +245,18 @@ def test_an_orphaned_scope_is_stopped_before_the_seat_is_recreated(
 @pytest.mark.parametrize(
     "host_with_unreadable_probe",
     [
-        pytest.param(lambda: FakeSeatHost(tmux_probe_unreadable=True), id="tmux"),
-        pytest.param(lambda: FakeSeatHost(scope_probe_unreadable=True), id="systemd"),
+        pytest.param(
+            lambda: FakeSeatHost(
+                session_alive=True, scope_active=True, tmux_probe_unreadable=True
+            ),
+            id="tmux",
+        ),
+        pytest.param(
+            lambda: FakeSeatHost(
+                session_alive=True, scope_active=True, scope_probe_unreadable=True
+            ),
+            id="systemd",
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -318,9 +328,12 @@ def test_a_seat_whose_agent_could_not_be_handed_over_is_discarded(
     settings = settings_for(tmp_path)
     seat = TerminalSeat(settings, host)
 
-    with pytest.raises(TerminalSeatCommandFailed, match="exited 1"):
+    with pytest.raises(TerminalSeatCommandFailed) as refusal:
         seat.ensure_session()
 
+    assert "could not be handed over" in str(refusal.value)
+    assert "session and scope discarded" in str(refusal.value)
+    assert "exited 1" in str(refusal.value.__cause__)
     assert host.commands_containing("kill-session") == [
         (
             "/usr/bin/tmux",
@@ -336,6 +349,21 @@ def test_a_seat_whose_agent_could_not_be_handed_over_is_discarded(
     ]
     host.exit_codes.clear()
     assert seat.ensure_session() is TerminalSeatOutcome.CREATED
+
+
+def test_a_seat_that_could_not_be_discarded_says_what_it_left_behind(
+    tmp_path: Path,
+) -> None:
+    host = FakeSeatHost(exit_codes={"-l": 1, "kill-session": 2})
+    settings = settings_for(tmp_path)
+
+    with pytest.raises(TerminalSeatCommandFailed) as refusal:
+        TerminalSeat(settings, host).ensure_session()
+
+    assert "left behind" in str(refusal.value)
+    assert "kill-session" in str(refusal.value)
+    assert "exited 2" in str(refusal.value)
+    assert "exited 1" in str(refusal.value.__cause__)
 
 
 def test_stopping_the_seat_kills_the_session_and_stops_its_scope(
@@ -430,6 +458,39 @@ def test_the_seat_persists_the_document_it_was_given_and_composes_nothing(
     assert document.read_text(encoding="utf-8") == given.content
     assert document.stat().st_mode & 0o777 == 0o600
     assert list(settings.project_root.iterdir()) == []
+    assert list(settings.state_directory.iterdir()) == [document]
+
+
+def test_an_older_document_is_replaced_without_keeping_its_permissions(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path)
+    document = settings.state_directory / MCP_DOCUMENT.file_name
+    document.parent.mkdir(parents=True)
+    document.write_text("the seat of an earlier serve", encoding="utf-8")
+    document.chmod(0o644)
+
+    TerminalSeat(settings, FakeSeatHost()).ensure_session()
+
+    assert document.read_text(encoding="utf-8") == MCP_DOCUMENT.content
+    assert document.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_link_where_the_document_belongs_is_replaced_rather_than_followed(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path)
+    elsewhere = tmp_path / "somebody-elses.json"
+    elsewhere.write_text("not the seat's to write", encoding="utf-8")
+    settings.state_directory.mkdir(parents=True)
+    document = settings.state_directory / MCP_DOCUMENT.file_name
+    document.symlink_to(elsewhere)
+
+    TerminalSeat(settings, FakeSeatHost()).ensure_session()
+
+    assert elsewhere.read_text(encoding="utf-8") == "not the seat's to write"
+    assert not document.is_symlink()
+    assert document.read_text(encoding="utf-8") == MCP_DOCUMENT.content
 
 
 @pytest.mark.parametrize(
