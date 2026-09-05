@@ -15,6 +15,7 @@ import atelier2.adapters.dbos.agent_attempt_store as agent_attempt_store_module
 import atelier2.adapters.dbos.run_transitions as run_transitions_module
 from atelier2.adapters.dbos.agent_attempt_store import (
     DbosAgentAttemptStore,
+    DurableStateCorrupt,
     PermissionReceiptConflict,
     _permission_receipt_from_record,
     _permission_receipt_values,
@@ -1735,7 +1736,7 @@ def test_a_stored_receipt_hash_that_disagrees_with_its_own_row_is_corrupt(
             connection.execute(permission_receipts.insert().values(**tampered_values))
 
         with pytest.raises(
-            PermissionReceiptConflict, match="does not hash to its stored column"
+            DurableStateCorrupt, match="does not hash to its stored column"
         ):
             store.record_permission_decision(receipt)
     finally:

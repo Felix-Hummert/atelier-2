@@ -222,11 +222,22 @@ from atelier2.ports.agent_attempts import (
     RunnerTerminalEvidenceCommitted,
     RunnerTerminalEvidenceRefusal,
 )
-from atelier2.ports.durable_runs import DurableStateCorrupt
+from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 
 
 class PermissionReceiptConflict(RunTransitionConflict):
     """One question of one attempt contradicts its durable permission receipt."""
+
+
+class DurableStateCorrupt(RuntimeError):
+    """A durable row disagrees with a value only this store could have written.
+
+    Distinct from `PermissionReceiptConflict`: a conflict is two honest answers
+    to the same question, and it names a decision this store must reconcile. A
+    row whose stored hash no longer matches what its own content re-derives
+    could not have come from this store's write at all, so there is no decision
+    to reconcile -- the durable state itself is no longer trusted.
+    """
 
 
 def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
@@ -1417,7 +1428,7 @@ def _run_cancellation_from_event_log(
         RunEventKind.AGENT_INTERRUPTED.value,
     ):
         return RunCancellationTerminalRetry(run)
-    return DurableStateCorrupt()
+    return PortDurableStateCorrupt()
 
 
 def _wait_cancellation_from_event_log(
@@ -1959,7 +1970,10 @@ class DbosAgentAttemptStore:
 
         The read-back also refuses a row whose stored hash column does not
         match the hash its own content re-derives: a schema-valid row is not
-        proof the column beside it was never altered outside this write.
+        proof the column beside it was never altered outside this write. That
+        disagreement raises `DurableStateCorrupt` rather than
+        `PermissionReceiptConflict` -- it is not a second answer to reconcile,
+        it is a row this store no longer trusts.
         """
 
         with canonical_write_transaction(self._engine) as connection:
@@ -1981,8 +1995,10 @@ class DbosAgentAttemptStore:
             )
             reconstructed_hash = _permission_receipt_from_record(stored).receipt_hash
             if reconstructed_hash.value != str(stored["receipt_hash"]):
-                raise PermissionReceiptConflict(
-                    "durable permission receipt does not hash to its stored column"
+                raise DurableStateCorrupt(
+                    "permission receipt does not hash to its stored column "
+                    f"(attempt {receipt.attempt_id.value}, "
+                    f"correlation {receipt.correlation_id.value})"
                 )
             if reconstructed_hash != receipt.receipt_hash:
                 raise PermissionReceiptConflict(
@@ -3132,7 +3148,7 @@ class DbosAgentAttemptStore:
                     return RunCancellationTerminalRetry(
                         load_run(connection, request.run_id)
                     )
-                return DurableStateCorrupt()
+                return PortDurableStateCorrupt()
 
             from_event_log = _run_cancellation_from_event_log(
                 connection, request.run_id, command_id
