@@ -268,21 +268,54 @@ def test_a_message_whose_escaping_passes_the_bound_is_refused_before_it_is_held(
 ):
     """Escaping is what a frame really costs: a payload that fits raw can still
     be a line nobody may buffer, and a codec that only learns that after
-    spelling it whole has already held what the bound exists to refuse."""
-    escaped_bytes_per_control_character = 6  # a null is six characters escaped
-    written = ["\x00" * 50] * 2_000
-    raw_characters = sum(len(line) for line in written)
+    spelling it whole has already held what the bound exists to refuse. One
+    large string is the adversarial case: an encoder that escapes a string
+    leaf whole, rather than in bounded slices, still allocates its full
+    escaped form before this bound can see it."""
+    raw_characters = 100_000
+    written = "\x00" * raw_characters
     room_for_the_raw_text_twice_over = 2 * raw_characters
 
     tracemalloc.start()
     refused = _codec().encode(
-        JsonRpcResponse(7, {"lines": written}), room_for_the_raw_text_twice_over
+        JsonRpcResponse(7, {"line": written}), room_for_the_raw_text_twice_over
     )
     _current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
     assert refused == UnsendableFrame()
-    assert peak < escaped_bytes_per_control_character * raw_characters
+    escaped_bytes_per_control_character = 6  # a null is six characters escaped
+    escaped_size = raw_characters * escaped_bytes_per_control_character
+    assert peak < escaped_size // 2
+
+
+def test_a_message_is_spelled_byte_identically_to_the_whole_document_encoder() -> None:
+    """Escaping a string in bounded slices must write exactly what escaping the
+    whole string in one call would have written: the bound changes how much is
+    held at once, never what the frame says."""
+    nested_shapes: list[JsonObject] = [
+        {},
+        {"a": 1, "b": [1, 2.5, True, False, None]},
+        {"nested": {"list": [{"k": "v"}, [1, [2, 3]]]}},
+        {"unicode": "héllo wörld ☃ \U0001f600", "control": "\n\t\x00\x1f"},
+    ]
+
+    for result in nested_shapes:
+        encoded = _codec().encode(JsonRpcResponse(1, result), 1_000_000)
+        assert isinstance(encoded, EncodedFrame)
+
+        expected_payload: JsonObject = {
+            "jsonrpc": JSON_RPC_VERSION,
+            "id": 1,
+            "result": result,
+        }
+        expected = (
+            json.dumps(
+                expected_payload, separators=(",", ":"), ensure_ascii=True
+            ).encode()
+            + b"\n"
+        )
+        assert encoded.data == expected
 
 
 def test_the_unfinished_tail_is_kept_exactly_as_it_arrived() -> None:

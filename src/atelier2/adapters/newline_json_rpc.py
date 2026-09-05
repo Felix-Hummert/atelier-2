@@ -23,7 +23,7 @@ state nobody can answer for. Every such frame is therefore named and returned.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TypeGuard, assert_never
@@ -45,8 +45,13 @@ type JsonRpcId = int | str
 NO_PARAMS: JsonObject = {}
 _COMPACT_SEPARATORS = (",", ":")
 _FRAME_SEPARATOR = b"\n"
-_ENCODER = json.JSONEncoder(separators=_COMPACT_SEPARATORS)
-"""One spelling of JSON, reused: an encoder holds its settings and no state."""
+_STRING_SLICE_CHARACTERS = 1_024
+"""How much of one string this codec ever escapes before it is counted.
+
+Escaping a JSON string can multiply its length several times over, so the
+slice bounds how much any single string leaf can inflate before the running
+total sees it -- independent of how long the string actually is.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,19 +200,73 @@ def _payload(message: OutgoingMessage) -> JsonObject:
             assert_never(unreachable)
 
 
+def _spelled_string_pieces(text: str) -> Iterator[str]:
+    """One string leaf, escaped in slices no wider than the escaping bound.
+
+    Escaping is context-free per character, so slicing on character
+    boundaries and escaping each slice alone reproduces exactly what escaping
+    the whole string would have written -- without ever holding the whole
+    string's escaped form at once.
+    """
+
+    yield '"'
+    for start in range(0, len(text), _STRING_SLICE_CHARACTERS):
+        slice_ = text[start : start + _STRING_SLICE_CHARACTERS]
+        yield json.dumps(slice_, ensure_ascii=True)[1:-1]
+    yield '"'
+
+
+def _spelled_pieces(value: JsonValue) -> Iterator[str]:
+    """This value's own JSON spelling, one bounded piece at a time.
+
+    Byte-identical to `json.dumps(value, separators=(",", ":"),
+    ensure_ascii=True)`, but no piece here can grow past the escaping bound of
+    one string slice: a bounded reader never has to hold an unbounded write.
+    """
+
+    match value:
+        case None:
+            yield "null"
+        case bool():
+            yield "true" if value else "false"
+        case int() | float():
+            yield json.dumps(value)
+        case str():
+            yield from _spelled_string_pieces(value)
+        case Mapping():
+            yield "{"
+            for index, (key, item) in enumerate(value.items()):
+                if index:
+                    yield ","
+                yield from _spelled_string_pieces(key)
+                yield ":"
+                yield from _spelled_pieces(item)
+            yield "}"
+        case Sequence():
+            yield "["
+            for index, item in enumerate(value):
+                if index:
+                    yield ","
+                yield from _spelled_pieces(item)
+            yield "]"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _spelled_within(payload: JsonObject, maximum_bytes: int) -> bytes | None:
     """This payload's own bytes, or nothing once they would pass the bound.
 
-    Counted as the encoder spells them rather than after: escaping can multiply
-    a text several times over, so a payload measured before it is spelled is
-    not measured at all -- and spelling it whole to find out is exactly the
-    buffer the bound exists to refuse. A piece with more characters than there
-    are bytes left cannot fit however it encodes, so it is refused unencoded.
+    Counted as each bounded piece is spelled rather than after: escaping can
+    multiply a text several times over, so a payload measured before it is
+    spelled is not measured at all -- and spelling it whole to find out is
+    exactly the buffer the bound exists to refuse. A piece with more
+    characters than there are bytes left cannot fit however it encodes, so it
+    is refused unencoded.
     """
 
     remaining = maximum_bytes - len(_FRAME_SEPARATOR)
     spelled: list[bytes] = []
-    for piece in _ENCODER.iterencode(payload):
+    for piece in _spelled_pieces(payload):
         if len(piece) > remaining:
             return None
         encoded = piece.encode()
