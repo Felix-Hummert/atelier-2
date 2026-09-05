@@ -104,7 +104,15 @@ def test_the_order_document_carries_the_read_a_run_has_to_reproduce() -> None:
 def test_the_same_read_always_writes_the_same_order_bytes() -> None:
     """The value hash a run stores must not depend on dictionary order."""
 
-    assert work_item_order_document(revision()) == work_item_order_document(revision())
+    first = revision()
+    second = ObservedWorkItemRevision(
+        observed_at=first.observed_at,
+        change_marker=first.change_marker,
+        body=first.body,
+        kind=first.kind,
+        item=first.item,
+    )
+    assert work_item_order_document(first) == work_item_order_document(second)
 
 
 @pytest.mark.parametrize(
