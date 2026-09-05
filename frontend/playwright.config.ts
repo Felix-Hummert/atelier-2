@@ -2,12 +2,14 @@ import { defineConfig } from "@playwright/test";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { chooseHarnessPort } from "./tests/e2e/harness-port";
+
 const frontendRoot = import.meta.dirname;
 const repositoryRoot = resolve(frontendRoot, "..");
 const resultRoot = resolve(frontendRoot, "test-results");
 const runtimeRoot = resolve(frontendRoot, ".playwright-runtime");
 const e2eDirectory = "tests/e2e";
-const port = 8423;
+const port = await chooseHarnessPort();
 
 /**
  * The suite's own order owner (#742): the file listing below, read fresh from
