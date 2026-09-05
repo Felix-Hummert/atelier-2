@@ -7,9 +7,9 @@ the pinned commit). `tests/crash` needs a systemd scope with cgroup delegation
 that a grant's workspace does not have, so it stays the pipeline's own
 `crash-recovery` job (#1152) and the declared command must not bundle it back
 in. This test pins both halves of that contract: the declaration excludes
-`tests/crash`, and it names exactly the same pytest invocation the quality job
-in `.github/workflows/ci.yml` actually runs -- so a change to either side that
-drifts from the other fails here before it fails a live grant redemption.
+`tests/crash`, and it names exactly the same pytest invocation the Python test
+job in `.github/workflows/ci.yml` actually runs -- so a change to either side
+that drifts from the other fails here before it fails a live grant redemption.
 """
 
 from __future__ import annotations
@@ -24,7 +24,8 @@ import yaml
 PROJECT_ROOT = Path(__file__).parents[2]
 PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 CI_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
-QUALITY_STEP_NAME = "Test non-crash behavior"
+PYTHON_TEST_JOB = "tests"
+PYTHON_TEST_STEP_NAME = "Test non-crash behavior"
 UV_BINARY_TOKEN = "uv"
 UV_PATH_VARIABLE = "${uv_path}"
 CRASH_EXCLUSION = "--ignore=tests/crash"
@@ -41,16 +42,16 @@ def declared_verification_command() -> tuple[str, ...]:
     return tuple(command)
 
 
-def quality_job_pytest_invocation() -> tuple[str, ...]:
+def python_test_job_pytest_invocation() -> tuple[str, ...]:
     workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
     step = next(
         step
-        for step in workflow["jobs"]["quality"]["steps"]
-        if step.get("name") == QUALITY_STEP_NAME
+        for step in workflow["jobs"][PYTHON_TEST_JOB]["steps"]
+        if step.get("name") == PYTHON_TEST_STEP_NAME
     )
     invocation = PYTEST_INVOCATION.search(step["run"])
     assert invocation is not None, (
-        f"{QUALITY_STEP_NAME!r} no longer runs a recognizable pytest invocation"
+        f"{PYTHON_TEST_STEP_NAME!r} no longer runs a recognizable pytest invocation"
     )
     tokens = [token for token in shlex.split(invocation.group()) if token.strip()]
     pytest_tokens = [token for token in tokens if not token.startswith("--junitxml=")]
@@ -66,7 +67,7 @@ def test_the_declared_verification_excludes_crash_recovery() -> None:
     assert "tests/crash" not in declared
 
 
-def test_the_declared_verification_matches_what_the_quality_job_runs() -> None:
+def test_the_declared_verification_matches_what_the_python_test_job_runs() -> None:
     declared = declared_verification_command()
 
-    assert declared == quality_job_pytest_invocation()
+    assert declared == python_test_job_pytest_invocation()
