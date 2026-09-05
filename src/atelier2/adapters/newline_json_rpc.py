@@ -11,7 +11,11 @@ vocabulary: nothing in it knows what a method means.
 been counted: a provider that never writes a newline, or writes one line larger
 than this conversation may hold, must be refused while it is still a length --
 decoding first is exactly the buffer this bound exists to refuse. Both the
-completed frame and the exact unfinished remainder are held to it.
+completed frame and the exact unfinished remainder are held to it. Spelling
+an outgoing frame is measured the same way: a string leaf is escaped in
+slices of at most `maximum_bytes // 12` code points, so escaping it can never
+hold a transient wider than that twelvefold factor of the caller's own bound,
+whatever the string's real length is.
 
 **Why a broken frame is a value, not an exception.** Everything a provider can
 get wrong -- unparseable bytes, a batch, an id that is not an id, an answer to
@@ -45,13 +49,23 @@ type JsonRpcId = int | str
 NO_PARAMS: JsonObject = {}
 _COMPACT_SEPARATORS = (",", ":")
 _FRAME_SEPARATOR = b"\n"
-_STRING_SLICE_CHARACTERS = 1_024
-"""How much of one string this codec ever escapes before it is counted.
+_MAXIMUM_JSON_ESCAPE_WIDTH_BYTES = 12
+"""Widest one code point can spell as a `json.dumps(ensure_ascii=True)` escape.
 
-Escaping a JSON string can multiply its length several times over, so the
-slice bounds how much any single string leaf can inflate before the running
-total sees it -- independent of how long the string actually is.
+A surrogate pair -- the escaping of one non-BMP code point -- spells as two
+`\\uXXXX` units, twelve ASCII characters for that single code point. No
+character escapes wider than this, so a slice of `maximum_bytes // 12` code
+points can never spell more than `maximum_bytes` however its characters
+escape: the transient this codec ever holds for one string leaf is bounded by
+that same constant factor of the caller's own bound, not by the string's
+length.
 """
+
+
+def _string_slice_characters(maximum_bytes: int) -> int:
+    """How many code points one escaping slice may hold under this bound."""
+
+    return max(1, maximum_bytes // _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,8 +214,8 @@ def _payload(message: OutgoingMessage) -> JsonObject:
             assert_never(unreachable)
 
 
-def _spelled_string_pieces(text: str) -> Iterator[str]:
-    """One string leaf, escaped in slices no wider than the escaping bound.
+def _spelled_string_pieces(text: str, slice_characters: int) -> Iterator[str]:
+    """One string leaf, escaped in slices no wider than `slice_characters`.
 
     Escaping is context-free per character, so slicing on character
     boundaries and escaping each slice alone reproduces exactly what escaping
@@ -210,18 +224,19 @@ def _spelled_string_pieces(text: str) -> Iterator[str]:
     """
 
     yield '"'
-    for start in range(0, len(text), _STRING_SLICE_CHARACTERS):
-        slice_ = text[start : start + _STRING_SLICE_CHARACTERS]
+    for start in range(0, len(text), slice_characters):
+        slice_ = text[start : start + slice_characters]
         yield json.dumps(slice_, ensure_ascii=True)[1:-1]
     yield '"'
 
 
-def _spelled_pieces(value: JsonValue) -> Iterator[str]:
+def _spelled_pieces(value: JsonValue, slice_characters: int) -> Iterator[str]:
     """This value's own JSON spelling, one bounded piece at a time.
 
     Byte-identical to `json.dumps(value, separators=(",", ":"),
-    ensure_ascii=True)`, but no piece here can grow past the escaping bound of
-    one string slice: a bounded reader never has to hold an unbounded write.
+    ensure_ascii=True)`, but no piece here can grow past `slice_characters`
+    code points before escaping: a bounded reader never has to hold an
+    unbounded write.
     """
 
     match value:
@@ -232,22 +247,22 @@ def _spelled_pieces(value: JsonValue) -> Iterator[str]:
         case int() | float():
             yield json.dumps(value)
         case str():
-            yield from _spelled_string_pieces(value)
+            yield from _spelled_string_pieces(value, slice_characters)
         case Mapping():
             yield "{"
             for index, (key, item) in enumerate(value.items()):
                 if index:
                     yield ","
-                yield from _spelled_string_pieces(key)
+                yield from _spelled_string_pieces(key, slice_characters)
                 yield ":"
-                yield from _spelled_pieces(item)
+                yield from _spelled_pieces(item, slice_characters)
             yield "}"
         case Sequence():
             yield "["
             for index, item in enumerate(value):
                 if index:
                     yield ","
-                yield from _spelled_pieces(item)
+                yield from _spelled_pieces(item, slice_characters)
             yield "]"
         case _ as unreachable:
             assert_never(unreachable)
@@ -261,12 +276,16 @@ def _spelled_within(payload: JsonObject, maximum_bytes: int) -> bytes | None:
     spelled is not measured at all -- and spelling it whole to find out is
     exactly the buffer the bound exists to refuse. A piece with more
     characters than there are bytes left cannot fit however it encodes, so it
-    is refused unencoded.
+    is refused unencoded. Each string leaf is sliced to `maximum_bytes //
+    _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES` code points first, so even a string this
+    payload never gets to spell in full is never held past that same constant
+    factor of `maximum_bytes`.
     """
 
     remaining = maximum_bytes - len(_FRAME_SEPARATOR)
+    slice_characters = _string_slice_characters(maximum_bytes)
     spelled: list[bytes] = []
-    for piece in _spelled_pieces(payload):
+    for piece in _spelled_pieces(payload, slice_characters):
         if len(piece) > remaining:
             return None
         encoded = piece.encode()
@@ -334,8 +353,9 @@ class NewlineJsonRpc:
         knows which of them it is spelling. What is measured is the finished
         line: the escaping and the envelope are part of what has to be written.
         A caller carrying a payload of unknown width refuses it against the
-        same bound before it composes the message, because the encoder spells
-        one string in one piece however long that string is.
+        same bound before it composes the message, because the encoder never
+        holds more of one string leaf, escaped, than a constant factor of
+        this same bound however long that string is.
         """
 
         data = _spelled_within(_payload(message), maximum_bytes)

@@ -14,6 +14,7 @@ import tracemalloc
 import pytest
 
 from atelier2.adapters.newline_json_rpc import (
+    _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES,
     JSON_RPC_VERSION,
     EncodedFrame,
     JsonObject,
@@ -32,6 +33,10 @@ from atelier2.adapters.newline_json_rpc import (
 )
 
 ROOM_FOR_ANY_FRAME_HERE = 4_096
+_SLICE_BOUNDARY_BOUND_BYTES = 2_000
+_SLICE_BOUNDARY_CHARACTERS = (
+    _SLICE_BOUNDARY_BOUND_BYTES // _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES
+)
 
 
 def _codec(maximum_frame_bytes: int = ROOM_FOR_ANY_FRAME_HERE) -> NewlineJsonRpc:
@@ -274,11 +279,11 @@ def test_a_message_whose_escaping_passes_the_bound_is_refused_before_it_is_held(
     escaped form before this bound can see it."""
     raw_characters = 100_000
     written = "\x00" * raw_characters
-    room_for_the_raw_text_twice_over = 2 * raw_characters
+    bound_far_smaller_than_the_escaped_string = ROOM_FOR_ANY_FRAME_HERE
 
     tracemalloc.start()
     refused = _codec().encode(
-        JsonRpcResponse(7, {"line": written}), room_for_the_raw_text_twice_over
+        JsonRpcResponse(7, {"line": written}), bound_far_smaller_than_the_escaped_string
     )
     _current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
@@ -316,6 +321,67 @@ def test_a_message_is_spelled_byte_identically_to_the_whole_document_encoder() -
             + b"\n"
         )
         assert encoded.data == expected
+
+
+@pytest.mark.parametrize(
+    "special_character",
+    [
+        pytest.param("\x00", id="control-character"),
+        pytest.param("\U0001f600", id="non-bmp-character"),
+        pytest.param("\ud800", id="lone-surrogate"),
+    ],
+)
+@pytest.mark.parametrize(
+    "length",
+    [
+        _SLICE_BOUNDARY_CHARACTERS - 1,
+        _SLICE_BOUNDARY_CHARACTERS,
+        _SLICE_BOUNDARY_CHARACTERS + 1,
+    ],
+    ids=["one-under-the-slice", "exactly-one-slice", "one-over-the-slice"],
+)
+def test_a_string_crossing_the_derived_slice_boundary_still_matches_json_dumps(
+    length: int, special_character: str
+) -> None:
+    """The escaping slice length is derived from the frame's own bound, so a
+    string whose length lands one under, exactly on, or one over that derived
+    boundary must still spell exactly what `json.dumps` would have written,
+    whichever slice its last character falls into."""
+    text = "a" * (length - 1) + special_character
+    result: JsonObject = {"line": text}
+
+    encoded = _codec().encode(JsonRpcResponse(1, result), _SLICE_BOUNDARY_BOUND_BYTES)
+
+    assert isinstance(encoded, EncodedFrame)
+    expected_payload: JsonObject = {
+        "jsonrpc": JSON_RPC_VERSION,
+        "id": 1,
+        "result": result,
+    }
+    expected = (
+        json.dumps(expected_payload, separators=(",", ":"), ensure_ascii=True).encode()
+        + b"\n"
+    )
+    assert encoded.data == expected
+
+
+def test_a_tiny_bound_refuses_a_large_non_bmp_string_without_holding_it() -> None:
+    """A non-BMP character is the widest single-code-point escape this codec
+    ever writes, so it is the adversarial case for the slice a tiny bound
+    derives: an encoder that still escaped a whole slice before measuring it
+    would allocate far past a bound this small."""
+    raw_characters = 100_000
+    written = "\U0001f600" * raw_characters
+    tiny_bound = 16
+
+    tracemalloc.start()
+    refused = _codec().encode(JsonRpcResponse(7, {"line": written}), tiny_bound)
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert refused == UnsendableFrame()
+    escaped_size = raw_characters * _MAXIMUM_JSON_ESCAPE_WIDTH_BYTES
+    assert peak < escaped_size // 2
 
 
 def test_the_unfinished_tail_is_kept_exactly_as_it_arrived() -> None:
