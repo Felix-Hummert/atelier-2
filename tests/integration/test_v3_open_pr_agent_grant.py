@@ -45,6 +45,8 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.references import encode_public_run_reference
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agents import (
     AgentBindingSet,
@@ -97,12 +99,14 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequestV2,
 )
 from atelier2.ports.effects import EffectAdapter
+from atelier2.ports.run_queries import NodeDetailFound
 from tests.integration.test_v3_open_pr_action import CountingGitHubEffectAdapterFactory
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
     agent_scratch_root,
 )
+from tests.scenarios.api import durable_api_client, durable_queries
 from tests.scenarios.open_pr_agent import (
     OPEN_PR_GRANT,
     OPERATIONAL_IDENTITY,
@@ -472,6 +476,23 @@ def test_forked_agent_open_pr_references_the_confirmed_effect_without_replay(
     assert successor_receipt["fork_source_run_id"] == RUN.value
     assert successor_receipt["fork_source_logical_key"] is not None
     assert successor_receipt["fork_source_result_hash"] is not None
+
+    # #1234: the successor's own "implement" execution carries both its
+    # AGENT_COMPLETED completion and this ACTION_COMPLETED confirmation under
+    # the same node-execution id -- `get_node_detail` must read the node's own
+    # kind rather than any answer-bearing kind, or it finds both rows and
+    # refuses with `MultipleResultsFound`.
+    queries = durable_queries(started_runtime.engine)
+    detail = queries.get_node_detail(successor, "implement")
+    assert isinstance(detail, NodeDetailFound), detail
+    assert detail.detail.answer is not None
+    assert detail.detail.answer.value == PR_SPEC
+
+    api = durable_api_client(started_runtime)
+    node_response = api.get(
+        f"{API_PREFIX}/runs/{encode_public_run_reference(successor)}/nodes/implement"
+    )
+    assert node_response.status_code == 200, node_response.text
 
 
 def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation(
