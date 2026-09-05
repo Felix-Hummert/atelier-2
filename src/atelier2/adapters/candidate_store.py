@@ -74,14 +74,16 @@ PINNED_TREE_REF_PREFIX = "refs/atelier/pinned-trees/"
 """What roots a seeded pin, so the store keeps the material a candidate builds on."""
 
 _LOCK_HANDOVER_LOOKS = 5
-_LOCK_HANDOVER_PAUSE_SECONDS = 0.05
+LOCK_HANDOVER_PAUSE_SECONDS = 0.05
 """How long a refused writer waits for the one holding the ref lock to finish.
 
 git writes a ref by taking a `.lock`, writing into it, then renaming it into
 place: a writer refused inside that window sees no value where the winner is
 about to put one, a few milliseconds away. Four short pauses are a fifth of a
 second in all -- long enough for a local rename, short enough that a ref nobody
-is writing fails promptly instead of holding a capture open.
+is writing fails promptly instead of holding a capture open. Exported rather
+than private: the test that stages a genuine handover derives its own timing
+from this one retry contract instead of guessing an independent duration.
 """
 
 _CAPTURE_INDEX_NAME = "capture.index"
@@ -461,7 +463,7 @@ class GitCandidateTreeStore:
 
         for look in range(_LOCK_HANDOVER_LOOKS):
             if look:
-                time.sleep(_LOCK_HANDOVER_PAUSE_SECONDS)
+                time.sleep(LOCK_HANDOVER_PAUSE_SECONDS)
             standing = self._standing(reference)
             if standing is not None:
                 return standing

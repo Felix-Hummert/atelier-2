@@ -30,6 +30,7 @@ import pytest
 from atelier2.adapters.candidate_store import (
     CANDIDATE_REF_PREFIX,
     CANDIDATE_STORE_DIRECTORY_NAME,
+    LOCK_HANDOVER_PAUSE_SECONDS,
     PINNED_TREE_REF_PREFIX,
     GitCandidateTreeStore,
 )
@@ -76,14 +77,17 @@ BINARY_BODY = bytes(range(256)) * 4096
 
 WATCHING_FOR_THE_SEED_SECONDS = 0.005
 WATCHING_GIVES_UP_AFTER_SECONDS = 10.0
-HELD_PAST_THE_SEED_SECONDS = 0.12
+HELD_PAST_THE_SEED_SECONDS = LOCK_HANDOVER_PAUSE_SECONDS
 """How the one test about a lost ref lock times its handover.
 
 The lock is released relative to an event rather than to the clock: a new pack in
 the store is the capture having just seeded its material, which is the breath
-before it writes the ref and is refused. Holding on past that keeps the lock
-there for the refusal itself, which is the window under test. A capture that
-never seeds at all ends the watch rather than hanging the suite."""
+before it writes the ref and is refused. Holding on past that for one of the
+store's own handover pauses keeps the lock there for the refusal itself, which
+is the window under test, while leaving the rest of the store's own retry
+budget as margin -- an independent guessed duration ate most of that budget and
+flaked under coverage load (#747). A capture that never seeds at all ends the
+watch rather than hanging the suite."""
 
 
 class Project:
