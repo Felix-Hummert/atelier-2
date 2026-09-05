@@ -3,8 +3,8 @@
 The store owns the engine, the transaction and every query; this module owns
 nothing but the translation between one `queue_project_policy_revisions` or
 `queue_proposal_revisions` row and the contract it stands for. Both directions
-live together, so a column that is written but never read again -- or read
-under a name the writer never used -- is one screen apart rather than one file.
+live in one module, so a column the writer spells one way and the reader
+another cannot hide in the distance between two files.
 """
 
 from __future__ import annotations

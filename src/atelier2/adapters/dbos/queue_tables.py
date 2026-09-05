@@ -1,10 +1,10 @@
 """The five durable tables one project's queue keeps its lifecycle in.
 
 An item is observed, proposed, and admitted in `queue_items`; the proposal it
-was admitted under, the prerequisites that proposal named, and the run one
-admission reserved each keep their own append-only table, and the project
-policy those proposals stand on keeps a fourth. They declare each other's
-foreign keys, so they are read and changed as one family.
+was admitted under, the prerequisites that proposal named, the run one
+admission reserved, and the project policy those proposals stand on each keep
+their own append-only table. They declare each other's foreign keys, so they
+are read and changed as one family.
 """
 
 from __future__ import annotations
