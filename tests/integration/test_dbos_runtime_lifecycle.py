@@ -23,8 +23,15 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeLeaseClosed,
     DbosRuntimeSettings,
 )
-from atelier2.adapters.dbos.schema import runs
-from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
+from atelier2.adapters.dbos.schema import (
+    effect_intents,
+    reconcile_commands,
+    runs,
+)
+from atelier2.adapters.dbos.workflow_ids import (
+    bootstrap_workflow_id_for,
+    effect_workflow_id_for,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
@@ -33,18 +40,30 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import (
+    EFFECT_INTENT_VERSION_CONFIRMED_INITIAL,
+    EFFECT_INTENT_VERSION_RECONCILING,
+    EFFECT_INTENT_VERSION_WAITING,
     AdapterOperationalIdentity,
     AdapterRevision,
     EffectAdapterBinding,
     EffectDestination,
     EffectIntent,
+    EffectIntentState,
     EffectReadback,
     EffectUnknownOutcome,
+    LogicalEffectKey,
     PerformedEffect,
     ReadbackPhase,
+    ReconcileCommandState,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import AnyRun
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    TERMINAL_RUN_STATES,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
     AgentExecutorKey,
@@ -57,6 +76,8 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.runs import (
     NO_AGENT_EXECUTORS,
+    complete_v3_agent_node,
+    prepare_and_launch_graph_action,
     publish_pinned_revisions,
     start_published_v3_run,
 )
@@ -64,6 +85,8 @@ from tests.scenarios.runtime import recording_exact_runtime
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
     OPEN_PR_OPERATION,
+    V3_EFFECT_LINE_AGENT_JOB,
+    V3_EFFECT_LINE_AGENT_NODE_ID,
     V3_EFFECT_LINE_DOCUMENT,
     V3_WAIT_LINE_DOCUMENT,
 )
@@ -476,20 +499,10 @@ def test_initialization_failure_closes_the_opened_adapter_and_releases_binding(
     recovered.close()
 
 
-def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
-    tmp_path: Path,
-) -> None:
-    settings = DbosRuntimeSettings(
-        canonical_database(tmp_path),
-        "executor-A",
-        agent_scratch_root=agent_scratch_root(tmp_path),
-    )
-    original_factory = LoopbackEffectAdapterFactory(
-        tmp_path / "external.sqlite",
-        AdapterRevision("loopback-v1"),
-        EffectDestination("loopback-test"),
-    )
-    runtime = recording_exact_runtime(settings, original_factory, b'"draft-17"')
+def _boot_runtime_to_a_confirmed_open_pr_intent(
+    settings: DbosRuntimeSettings, factory: LoopbackEffectAdapterFactory
+) -> DbosRuntime:
+    runtime = recording_exact_runtime(settings, factory, b'"draft-17"')
     runtime.initialize_storage()
     publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
     started = start_published_v3_run(
@@ -504,10 +517,319 @@ def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
         wait_until_run_state(runtime.engine, started.run_id, RunState.WAITING_INPUT)
         is RunState.WAITING_INPUT
     )
+    return runtime
+
+
+def _prepared_open_pr_intent(
+    settings: DbosRuntimeSettings, factory: LoopbackEffectAdapterFactory
+) -> tuple[DbosRuntime, EffectIntent]:
+    """Boot a runtime to a genuinely PREPARED, never-resolved open-pr intent.
+
+    Drives the same production doors `test_reconcile_effect.py`'s own
+    fixtures do: the agent node completes for real through the attempt
+    store, and the action's intent is prepared and its `durable_effect`
+    workflow enqueued -- but `runtime.launch()` is never called, so nothing
+    ever resolves it. A never-confirmed intent needs no forcing to be
+    honestly PREPARED: it holds no receipt, and its `durable_effect` row is
+    exactly `ENQUEUED`, because `effect_receipts` and `effect_intents` are
+    both schema-immutable once a receipt is written -- a PREPARED row cannot
+    be forged backward from a confirmed one at all.
+    """
+    runtime = recording_exact_runtime(settings, factory, b'"draft-17"')
+    runtime.initialize_storage()
+    publish_pinned_revisions(runtime.engine, ANY_JSON_SCHEMA, OPEN_PR_OPERATION)
+    revision = WorkflowRevision(V3_EFFECT_LINE_DOCUMENT)
+    started = start_published_v3_run(
+        runtime.engine,
+        runtime.settings,
+        RunId("run-1"),
+        revision,
+        runtime.agent_executor_registry,
+    )
+    complete_v3_agent_node(
+        runtime,
+        started.run_id,
+        V3_EFFECT_LINE_AGENT_NODE_ID,
+        V3_EFFECT_LINE_AGENT_JOB,
+        b'"draft-17"',
+    )
+    intent = prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        started.run_id,
+        revision.revision_hash,
+        runtime.effect_adapter_binding,
+    )
+    return runtime, intent
+
+
+def _abandon_prepared_intent(engine: Engine, logical_key: str) -> None:
+    """Write the one CAS the schema allows out of a genuinely fresh PREPARED row."""
+
+    with engine.begin() as connection:
+        connection.execute(
+            effect_intents.update()
+            .where(effect_intents.c.logical_key == logical_key)
+            .values(state=EffectIntentState.ABANDONED.value, state_version=1)
+        )
+
+
+_FORCED_INTENT_STATE_VERSION = {
+    EffectIntentState.WAITING_RECONCILIATION: EFFECT_INTENT_VERSION_WAITING.value,
+    EffectIntentState.RECONCILING: EFFECT_INTENT_VERSION_RECONCILING.value,
+    EffectIntentState.CONFIRMED: EFFECT_INTENT_VERSION_CONFIRMED_INITIAL.value,
+}
+"""The exact `state_version` the real production door leaves at each state
+(`atelier2.contracts.effects`), so a forced row cannot masquerade as one no
+transition could have written. `PREPARED` and `ABANDONED` are not named here:
+neither can be forged from an already-confirmed intent at all, because
+`effect_receipts` and the confirmed `effect_intents` row are both
+schema-immutable -- see `_prepared_open_pr_intent`."""
+
+
+def _force_effect_intent_state(engine: Engine, state: EffectIntentState) -> str:
+    """Rewrite the sole recorded (already-confirmed) intent's state.
+
+    Only `WAITING_RECONCILIATION`, `RECONCILING`, and `CONFIRMED` are valid
+    here (`_FORCED_INTENT_STATE_VERSION` names exactly those); `PREPARED` and
+    `ABANDONED` have no honest path back from an already-confirmed row and
+    use `_prepared_open_pr_intent` instead. These runtime-boundary tests only
+    need a durable row sitting at a given standing; driving the real
+    reconciliation store to get there would test machinery this file does
+    not own. The version written is the exact one the matching production
+    transition leaves (`_FORCED_INTENT_STATE_VERSION`), not whatever this
+    fixture's real confirmation happened to leave behind. `RECONCILING` also
+    needs its owning command row.
+    """
+    with engine.begin() as connection:
+        logical_key = str(connection.scalar(sa.select(effect_intents.c.logical_key)))
+        reconciliation_owner_command_id = None
+        if state is EffectIntentState.RECONCILING:
+            reconciliation_owner_command_id = f"forced-reconcile-{logical_key}"
+            connection.execute(
+                reconcile_commands.insert().values(
+                    command_id=reconciliation_owner_command_id,
+                    logical_key=logical_key,
+                    expected_intent_version=0,
+                    determination="AUTHORITATIVE_NOT_FOUND",
+                    actor="test",
+                    evidence="forced for a runtime-boundary test",
+                    state=ReconcileCommandState.PENDING.value,
+                )
+            )
+        connection.execute(
+            effect_intents.update().values(
+                state=state.value,
+                state_version=_FORCED_INTENT_STATE_VERSION[state],
+                reconciliation_owner_command_id=reconciliation_owner_command_id,
+            )
+        )
+    return logical_key
+
+
+def _force_run_state(engine: Engine, run_id: RunId, state: RunState) -> None:
+    """Rewrite the run's own recorded state, bypassing the workflow that earns it.
+
+    These runtime-boundary tests only need a durable row sitting at a given
+    standing; driving the real workflow to get there would test machinery
+    this file does not own.
+    """
+    terminal_hash = (
+        Sha256Hash.of(f"test-terminal-{run_id.value}".encode()).value
+        if state in TERMINAL_RUN_STATES
+        else None
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(state=state.value, terminal_hash=terminal_hash)
+        )
+
+
+def _force_workflow_status(engine: Engine, workflow_id: str, status: str) -> None:
+    """Rewrite one DBOS workflow's own bookkeeping row to a chosen status.
+
+    A process crash between a workflow's last commit and its own `SUCCESS`
+    has no production door a test can walk through -- proving that boundary
+    means reaching into the table DBOS itself owns, exactly like the
+    production check this proves (`dbos_runtime._TERMINAL_WORKFLOW_STATUSES`)
+    does.
+    """
+    with engine.begin() as connection:
+        updated = connection.execute(
+            sa.text(
+                "UPDATE workflow_status SET status = :status "
+                "WHERE workflow_uuid = :workflow_id"
+            ),
+            {"status": status, "workflow_id": workflow_id},
+        )
+        assert updated.rowcount == 1
+
+
+@pytest.mark.parametrize(
+    ("intent_state", "run_completes", "confirmed_workflow_status", "expect_refusal"),
+    [
+        (EffectIntentState.WAITING_RECONCILIATION, False, None, True),
+        (EffectIntentState.RECONCILING, False, None, True),
+        (EffectIntentState.CONFIRMED, True, "PENDING", True),
+        (EffectIntentState.CONFIRMED, True, None, False),
+    ],
+    ids=[
+        "waiting-reconciliation-always-refuses",
+        "reconciling-refuses-while-its-command-workflow-is-unresolved",
+        "confirmed-refuses-in-the-crash-window-before-its-workflow-succeeds",
+        "confirmed-of-a-succeeded-workflow-permits",
+    ],
+)
+def test_restart_binding_conflict_follows_the_owning_workflows_terminal_status(
+    tmp_path: Path,
+    intent_state: EffectIntentState,
+    run_completes: bool,
+    confirmed_workflow_status: str | None,
+    expect_refusal: bool,
+) -> None:
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    original_factory = LoopbackEffectAdapterFactory(
+        tmp_path / "external.sqlite",
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+    runtime = _boot_runtime_to_a_confirmed_open_pr_intent(settings, original_factory)
+    logical_key = _force_effect_intent_state(runtime.engine, intent_state)
+    if run_completes:
+        _force_run_state(runtime.engine, RunId("run-1"), RunState.COMPLETED)
+    if confirmed_workflow_status is not None:
+        _force_workflow_status(
+            runtime.engine,
+            effect_workflow_id_for(LogicalEffectKey(logical_key)),
+            confirmed_workflow_status,
+        )
+    runtime.close()
+    changed_path = tmp_path / "changed" / "external.sqlite"
+    changed_factory = LoopbackEffectAdapterFactory(
+        changed_path,
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+
+    if expect_refusal:
+        with pytest.raises(DbosRuntimeBindingConflict) as failure:
+            recording_exact_runtime(settings, changed_factory, b'"draft-17"')
+
+        message = str(failure.value)
+        assert "open-pr" in message
+        assert intent_state.value in message
+        assert logical_key[:16] in message
+        assert not changed_path.parent.exists()
+    else:
+        recording_exact_runtime(settings, changed_factory, b'"draft-17"').close()
+
+
+def test_restart_refuses_a_prepared_intent_whose_workflow_never_finished(
+    tmp_path: Path,
+) -> None:
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    original_factory = LoopbackEffectAdapterFactory(
+        tmp_path / "external.sqlite",
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+    runtime, intent = _prepared_open_pr_intent(settings, original_factory)
+    runtime.close()
+    changed_path = tmp_path / "changed" / "external.sqlite"
+    changed_factory = LoopbackEffectAdapterFactory(
+        changed_path,
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+
+    with pytest.raises(DbosRuntimeBindingConflict) as failure:
+        recording_exact_runtime(settings, changed_factory, b'"draft-17"')
+
+    message = str(failure.value)
+    assert "open-pr" in message
+    assert EffectIntentState.PREPARED.value in message
+    assert intent.binding.logical_key.value[:16] in message
+    assert not changed_path.parent.exists()
+
+
+def test_restart_permits_an_abandoned_intent_of_a_completed_run(
+    tmp_path: Path,
+) -> None:
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    original_factory = LoopbackEffectAdapterFactory(
+        tmp_path / "external.sqlite",
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+    runtime, intent = _prepared_open_pr_intent(settings, original_factory)
+    _abandon_prepared_intent(runtime.engine, intent.binding.logical_key.value)
+    _force_run_state(runtime.engine, intent.binding.run_id, RunState.COMPLETED)
+    runtime.close()
+    changed_path = tmp_path / "changed" / "external.sqlite"
+    changed_factory = LoopbackEffectAdapterFactory(
+        changed_path,
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+
+    recording_exact_runtime(settings, changed_factory, b'"draft-17"').close()
+
+
+def _duplicate_effect_intent(engine: Engine, copies: int) -> None:
+    """Copy the sole recorded intent under distinct logical keys.
+
+    The refusal message's preview bound is a property of how many offending
+    rows exist, not of any one row's shape; N differently-keyed copies of an
+    already-offending row are the cheapest way to make more than the preview
+    limit offend at once. Each copy's own `durable_effect` workflow was never
+    minted under its new logical key, so every copy counts on its own --
+    unlike the original, whose workflow genuinely succeeded and is exempt.
+    """
+    with engine.begin() as connection:
+        original = connection.execute(sa.select(effect_intents)).mappings().one()
+        for index in range(copies):
+            copy = dict(original)
+            copy["logical_key"] = f"{original['logical_key']}-duplicate-{index}"
+            connection.execute(effect_intents.insert().values(**copy))
+
+
+def test_restart_refusal_message_bounds_the_offending_intent_preview(
+    tmp_path: Path,
+) -> None:
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    original_factory = LoopbackEffectAdapterFactory(
+        tmp_path / "external.sqlite",
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+    runtime = _boot_runtime_to_a_confirmed_open_pr_intent(settings, original_factory)
+    preview_limit = dbos_runtime._BINDING_CONFLICT_INTENT_PREVIEW_LIMIT
+    omitted_count = 2
+    # The original intent's own workflow genuinely succeeded, so only its
+    # copies offend; the count is the full total rather than one short of it.
+    _duplicate_effect_intent(runtime.engine, preview_limit + omitted_count)
     runtime.close()
     changed_path = tmp_path / "changed" / "external.sqlite"
 
-    with pytest.raises(DbosRuntimeBindingConflict, match="durable effect intents"):
+    with pytest.raises(DbosRuntimeBindingConflict) as failure:
         recording_exact_runtime(
             settings,
             LoopbackEffectAdapterFactory(
@@ -518,7 +840,31 @@ def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
             b'"draft-17"',
         )
 
-    assert not changed_path.parent.exists()
+    message = str(failure.value)
+    assert message.count("open-pr intent") == preview_limit
+    assert f"and {omitted_count} more" in message
+
+
+def test_restart_with_the_same_identity_opens_regardless_of_open_intent_state(
+    tmp_path: Path,
+) -> None:
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    original_factory = LoopbackEffectAdapterFactory(
+        tmp_path / "external.sqlite",
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+    runtime = _boot_runtime_to_a_confirmed_open_pr_intent(settings, original_factory)
+    _force_effect_intent_state(runtime.engine, EffectIntentState.WAITING_RECONCILIATION)
+    runtime.close()
+
+    recovered = recording_exact_runtime(settings, original_factory, b'"draft-17"')
+
+    recovered.close()
 
 
 def test_canonical_and_external_store_must_be_distinct(tmp_path: Path) -> None:
