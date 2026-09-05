@@ -1336,6 +1336,16 @@ the harness observes them.
 
 ## Land a pull request
 
+Every pull request against `main` carries exactly one typed classification
+line in its body: `Work-Item: #n` together with a closing reference for that
+same item (for example `Work-Item: #1267` plus `Closes #1267`), or `No-Item:
+docs` / `No-Item: fix` for a lane that owns no issue. The required `Landing
+classification` check runs `agent-claim pr-check --pr <n>` and refuses the
+merge when the line is missing, malformed, or does not match the pull
+request's active claim; the agent-claim README's "Landing classification"
+section owns the full semantics (what counts as a valid line, parentage
+through GitHub's sub-issue relation, and every refusal case).
+
 **`gh pr merge --auto --merge` queues a pull request; it does not merge it on
 the spot.** GitHub's merge queue builds a merge candidate from one or more
 armed pull requests, runs `ci.yml` once against that candidate on the
