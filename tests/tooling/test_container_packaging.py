@@ -15,7 +15,11 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.tooling.container_test_support import wait_for_exit, wait_until_exists
+from tests.tooling.container_test_support import (
+    started_process,
+    wait_for_exit,
+    wait_until_exists,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = PROJECT_ROOT / "Dockerfile"
@@ -1098,27 +1102,30 @@ def _signals_preserve_first_status_and_teardown_exact_project(
     repository = packaging_repository(tmp_path)
     wait_phases = (phase, "down") if second_signal is not None else (phase,)
     environment = container_environment(repository, tmp_path, wait_phases=wait_phases)
-    process = subprocess.Popen(
+    with started_process(
         _with_default_interruption_signals(
             ["bash", str(repository / "scripts" / "container_up.sh")]
         ),
         cwd=repository,
         env=environment,
-        start_new_session=True,
-    )
-    ready = tmp_path / f"{phase}-ready"
-    wait_until_exists(ready, process, "Docker stub did not reach the launch boundary")
-    os.killpg(process.pid, first_signal)
-    if second_signal is not None:
+    ) as process:
+        ready = tmp_path / f"{phase}-ready"
         wait_until_exists(
-            tmp_path / "down-ready", process, "Docker stub did not reach cleanup"
+            ready, process, "Docker stub did not reach the launch boundary"
         )
-        os.killpg(process.pid, second_signal)
-        (tmp_path / "docker-down-release").touch()
-    assert (
-        wait_for_exit(process, tmp_path, "container up did not exit after the signal")
-        == status
-    )
+        os.killpg(process.pid, first_signal)
+        if second_signal is not None:
+            wait_until_exists(
+                tmp_path / "down-ready", process, "Docker stub did not reach cleanup"
+            )
+            os.killpg(process.pid, second_signal)
+            (tmp_path / "docker-down-release").touch()
+        assert (
+            wait_for_exit(
+                process, tmp_path, "container up did not exit after the signal"
+            )
+            == status
+        )
     assert_exact_candidate_teardown(tmp_path)
 
 

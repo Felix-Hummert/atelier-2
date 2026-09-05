@@ -1,11 +1,72 @@
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import time
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 _SUBPROCESS_STALL_SECONDS = 5.0
 _SUBPROCESS_DEADLOCK_SECONDS = 60.0
+_PROCESS_GROUP_TERMINATION_SECONDS = 1.0
+
+
+@contextmanager
+def started_process(
+    arguments: Sequence[str], *, cwd: Path, env: Mapping[str, str]
+) -> Iterator[subprocess.Popen[bytes]]:
+    process = subprocess.Popen(
+        arguments,
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        yield process
+    finally:
+        _terminate_process_group(process)
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    process_group_id = process.pid
+    _signal_process_group(process_group_id, signal.SIGTERM)
+    if not _wait_for_process_exit(process) or not _wait_for_process_group_exit(
+        process_group_id
+    ):
+        _signal_process_group(process_group_id, signal.SIGKILL)
+        if not _wait_for_process_exit(process) or not _wait_for_process_group_exit(
+            process_group_id
+        ):
+            raise RuntimeError(f"process group {process_group_id} did not terminate")
+
+
+def _signal_process_group(process_group_id: int, interruption: signal.Signals) -> None:
+    try:
+        os.killpg(process_group_id, interruption)
+    except ProcessLookupError:
+        return
+
+
+def _wait_for_process_group_exit(process_group_id: int) -> bool:
+    deadline = time.monotonic() + _PROCESS_GROUP_TERMINATION_SECONDS
+    while True:
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
+def _wait_for_process_exit(process: subprocess.Popen[bytes]) -> bool:
+    try:
+        process.wait(timeout=_PROCESS_GROUP_TERMINATION_SECONDS)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
 
 
 def _process_tree_progress(pid: int) -> tuple[int, int]:

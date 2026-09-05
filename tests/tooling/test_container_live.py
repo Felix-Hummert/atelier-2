@@ -12,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.tooling.container_test_support import wait_for_exit, wait_until_exists
+from tests.tooling.container_test_support import (
+    started_process,
+    wait_for_exit,
+    wait_until_exists,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_LIVE = PROJECT_ROOT / "scripts" / "container_live.sh"
@@ -878,32 +882,31 @@ def _lifecycle_signal_cleans_only_the_exact_owned_runtime(
         repository, before_record = stopped_repository(tmp_path)
     wait_phases = f"{phase},start-cleanup" if repeated else phase
     environment = lifecycle_environment(tmp_path, ATELIER2_TEST_WAIT_PHASE=wait_phases)
-    process = subprocess.Popen(
+    with started_process(
         _with_default_interruption_signals(
             ["bash", str(repository / "scripts/container_live.sh"), command]
         ),
         cwd=repository,
         env=environment,
-        start_new_session=True,
-    )
-    ready = tmp_path / f"{phase}-ready"
-    wait_until_exists(ready, process, f"stub did not reach {ready.name}")
-    os.killpg(process.pid, interruption)
-    if repeated:
-        wait_until_exists(
-            tmp_path / "start-cleanup-ready",
-            process,
-            "stub did not reach start-cleanup-ready",
-        )
-        os.killpg(process.pid, signal.SIGTERM)
-        (tmp_path / "start-cleanup-release").touch()
+    ) as process:
+        ready = tmp_path / f"{phase}-ready"
+        wait_until_exists(ready, process, f"stub did not reach {ready.name}")
+        os.killpg(process.pid, interruption)
+        if repeated:
+            wait_until_exists(
+                tmp_path / "start-cleanup-ready",
+                process,
+                "stub did not reach start-cleanup-ready",
+            )
+            os.killpg(process.pid, signal.SIGTERM)
+            (tmp_path / "start-cleanup-release").touch()
 
-    assert (
-        wait_for_exit(
-            process, tmp_path, "lifecycle process did not exit after the signal"
+        assert (
+            wait_for_exit(
+                process, tmp_path, "lifecycle process did not exit after the signal"
+            )
+            == status
         )
-        == status
-    )
     mutations = docker_mutations(docker_invocations(tmp_path))
     if command == "start":
         assert mutations == RECORDED_START_STOP
@@ -942,6 +945,39 @@ def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
     _lifecycle_signal_cleans_only_the_exact_owned_runtime(
         tmp_path, command, phase, interruption, status, repeated
     )
+
+
+def test_started_process_terminates_its_group_when_its_body_aborts(
+    tmp_path: Path,
+) -> None:
+    ready = tmp_path / "child-ready"
+    process_group_id: int | None = None
+
+    with (
+        pytest.raises(RuntimeError, match="fixture aborted"),
+        started_process(
+            [
+                "bash",
+                "-c",
+                (
+                    '"$1" -c "from pathlib import Path; import sys, time; '
+                    'Path(sys.argv[1]).touch(); time.sleep(60)" "$2"'
+                ),
+                "bash",
+                sys.executable,
+                str(ready),
+            ],
+            cwd=tmp_path,
+            env=os.environ.copy(),
+        ) as process,
+    ):
+        process_group_id = process.pid
+        wait_until_exists(ready, process, "child process did not start")
+        raise RuntimeError("fixture aborted")
+
+    assert process_group_id is not None
+    with pytest.raises(ProcessLookupError):
+        os.killpg(process_group_id, 0)
 
 
 @pytest.mark.parametrize(
