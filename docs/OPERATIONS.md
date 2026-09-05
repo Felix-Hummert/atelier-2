@@ -1415,6 +1415,19 @@ gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
 two one owner *and* deleting its entry.
 
+## The size and complexity ratchet
+
+`uv run --locked python scripts/check_size_ratchet.py` holds three more debt
+shapes in `src/atelier2` from growing: files at 800 lines or more, functions
+and methods at 60 lines or more (measured with `ast`), and functions ruff's
+`C901` McCabe check reports over a complexity of 15. `size_ratchet_baseline.toml`
+names every path or qualified symbol this tree already carries at its current
+value. An offender missing from the baseline, or one that grew past its listed
+value, turns the gate red; a listed entry that no longer offends is an orphan
+and is red too. Shrinking a listed offender, or leaving it exactly at its
+baseline value, is quiet and rewrites nothing. This runs as a step of the
+`quality` job.
+
 ## SonarCloud and CodeQL
 
 `sonar-project.properties` at the repository root configures SonarCloud's
@@ -1444,21 +1457,26 @@ live list of what actually runs.
 
 Machine-checkable rules are gates there. Running today: the architecture check
 (`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
-above, the dead-code gates above, and `ruff check --select ANN401` over
-`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The size,
-complexity and narrative checks are ruled but unbuilt, and the core-test-import
-ratchet starts only once the first adapter-bound test module has moved.
+above, the size and complexity ratchet above, the dead-code gates above, the
+frozen OpenAPI document check below, and `ruff check --select ANN401` over
+`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The
+narrative check is ruled but unbuilt, and the core-test-import ratchet starts
+only once the first adapter-bound test module has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become
-gates, because a check cannot judge a cut. Everything a machine cannot judge is
-ruled to run as a scheduled agent audit on the self-hosted runner, producing one
-distributor issue per run (operator ruling 04.09.2026); that workflow does not
-exist yet.
+gates, because a check cannot judge a cut. `scripts/report_corridor.py` proves
+the slice-size sentence this way: it runs as a step of the `quality` job,
+prints the change's production file and line counts on every run, and only
+over the corridor does it write the job summary and update its one pull
+request comment (marker `<!-- corridor-report -->`) -- it always exits 0.
+Everything else a machine cannot judge is ruled to run as a scheduled agent
+audit on the self-hosted runner, producing one distributor issue per run
+(operator ruling 04.09.2026); that workflow does not exist yet.
 
 After a route change, regenerate the frozen OpenAPI document with `uv run
 python scripts/write_openapi_frozen.py` before committing; its `--check` twin
-becomes a CI gate once #917 wires it into `ci.yml`.
+runs as a step of the `quality` job.
 
 ## Verification
 
