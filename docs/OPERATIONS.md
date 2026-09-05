@@ -984,6 +984,17 @@ and is red too. Shrinking a listed offender, or leaving it exactly at its
 baseline value, is quiet and rewrites nothing. This runs as a step of the
 `quality` job.
 
+## The core test import ratchet
+
+`uv run --locked python scripts/check_core_test_imports.py` holds
+`tests/domain`, `tests/application`, and `tests/api` to the count of test
+modules each already imports `atelier2.adapters` from (AGENTS.md "Tests": a
+core unit test imports no adapter). `core_test_import_baseline.toml` names
+each directory's count; a directory that grew past its listed count turns the
+gate red. A directory that shrank stays quiet -- lowering the recorded count
+happens only by running the script with `--write-baseline`, never by hand-
+editing the file. This runs as a step of the `quality` job.
+
 ## SonarCloud and CodeQL
 
 `sonar-project.properties` at the repository root configures SonarCloud's

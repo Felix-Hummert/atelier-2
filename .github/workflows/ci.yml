@@ -337,6 +337,9 @@ jobs:
       - name: Check the size and complexity ratchet
         run: uv run --locked python scripts/check_size_ratchet.py
 
+      - name: Check the core test import ratchet
+        run: uv run --locked python scripts/check_core_test_imports.py
+
       - name: Check for dead production code
         run: uv run --locked python scripts/check_dead_code.py
 
