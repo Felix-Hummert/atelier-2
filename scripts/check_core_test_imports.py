@@ -17,6 +17,7 @@ import argparse
 import ast
 import sys
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 
 CORE_TEST_DIRECTORIES: tuple[str, ...] = (
@@ -25,6 +26,7 @@ CORE_TEST_DIRECTORIES: tuple[str, ...] = (
     "tests/api",
 )
 ADAPTER_PACKAGE = "atelier2.adapters"
+_ADAPTER_PACKAGE_PARENT, _, _ADAPTER_PACKAGE_LEAF = ADAPTER_PACKAGE.rpartition(".")
 
 CORE_TEST_IMPORT_BASELINE_FILE = "core_test_import_baseline.toml"
 BASELINE_TABLE_NAME = "directory"
@@ -42,6 +44,14 @@ def _is_adapter_import(module_name: str) -> bool:
     )
 
 
+def _imports_adapter_package_by_name(node: ast.ImportFrom) -> bool:
+    """`from atelier2 import adapters` names the package through its parent,
+    not through `node.module`, so the imported names need their own check."""
+    return node.module == _ADAPTER_PACKAGE_PARENT and any(
+        alias.name == _ADAPTER_PACKAGE_LEAF for alias in node.names
+    )
+
+
 def _imports_adapter_package(module: ast.Module) -> bool:
     for node in ast.walk(module):
         if isinstance(node, ast.Import):
@@ -50,7 +60,10 @@ def _imports_adapter_package(module: ast.Module) -> bool:
         elif (
             isinstance(node, ast.ImportFrom)
             and node.module is not None
-            and _is_adapter_import(node.module)
+            and (
+                _is_adapter_import(node.module)
+                or _imports_adapter_package_by_name(node)
+            )
         ):
             return True
     return False
@@ -148,8 +161,33 @@ def core_test_import_problems(project_root: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def _write_baseline_refusal(raised_counts: Sequence[tuple[str, int, int]]) -> str:
+    raised = "; ".join(
+        f"{directory} from {old_count} to {new_count}"
+        for directory, old_count, new_count in raised_counts
+    )
+    return (
+        f"--write-baseline would raise {raised}; the baseline only ever lowers "
+        "through this script, so remove the adapter import first"
+    )
+
+
 def write_baseline(project_root: Path) -> None:
+    """Record today's counts, refusing to raise any of them.
+
+    The baseline only ever lowers through this script (never by hand-editing
+    the file), so a directory whose count would go up here is a mistake --
+    growth belongs to the check path's refusal, not to this one.
+    """
+    baseline = read_baseline(project_root)
     counts = current_counts(project_root)
+    raised_counts = [
+        (directory, baseline[directory], counts[directory])
+        for directory in CORE_TEST_DIRECTORIES
+        if counts[directory] > baseline[directory]
+    ]
+    if raised_counts:
+        raise CoreTestImportError(_write_baseline_refusal(raised_counts))
     entries = "\n".join(
         f"[[{BASELINE_TABLE_NAME}]]\n"
         f'{BASELINE_PATH_FIELD} = "{directory}"\n'
@@ -183,7 +221,11 @@ def main(argv: list[str] | None = None) -> int:
     arguments = _arguments(sys.argv[1:] if argv is None else argv)
     project_root = Path.cwd()
     if arguments.write_baseline:
-        write_baseline(project_root)
+        try:
+            write_baseline(project_root)
+        except (CoreTestImportError, FileNotFoundError) as error:
+            print(f"Core test import ratchet refused: {error}", file=sys.stderr)
+            return 1
         print(f"Wrote {CORE_TEST_IMPORT_BASELINE_FILE}.", flush=True)
         return 0
     try:

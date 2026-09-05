@@ -30,6 +30,9 @@ IMPORT_INSIDE_FUNCTION_MODULE = (
     "    from atelier2.adapters.yaml_workflows import parse_workflow_document\n"
     "\n    parse_workflow_document\n"
 )
+IMPORT_ADAPTERS_VIA_PARENT_PACKAGE_MODULE = (
+    "from atelier2 import adapters\n\n\ndef test_something() -> None:\n    adapters\n"
+)
 
 
 def a_baseline(counts: dict[str, int]) -> str:
@@ -83,6 +86,21 @@ def test_an_import_inside_a_function_body_counts_too(tmp_path: Path) -> None:
     project = scratch_project(
         tmp_path,
         {"tests/application/test_one.py": IMPORT_INSIDE_FUNCTION_MODULE},
+        baseline=a_baseline({"tests/application": 0}),
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "grew from 0 to 1" in result.stderr
+
+
+def test_importing_the_adapters_package_via_its_parent_module_counts_too(
+    tmp_path: Path,
+) -> None:
+    project = scratch_project(
+        tmp_path,
+        {"tests/application/test_one.py": IMPORT_ADAPTERS_VIA_PARENT_PACKAGE_MODULE},
         baseline=a_baseline({"tests/application": 0}),
     )
 
@@ -158,9 +176,24 @@ def test_a_malformed_baseline_is_refused_by_name(tmp_path: Path) -> None:
     assert str(BASELINE) in result.stderr
 
 
-def test_write_baseline_records_todays_counts_and_the_gate_is_then_quiet(
-    tmp_path: Path,
-) -> None:
+def test_write_baseline_records_a_lowered_count(tmp_path: Path) -> None:
+    project = scratch_project(
+        tmp_path,
+        {"tests/application/test_one.py": ADAPTER_FREE_MODULE},
+        baseline=a_baseline({"tests/application": 1}),
+    )
+
+    write_result = run_gate(project, "--write-baseline")
+    check_result = run_gate(project)
+
+    assert write_result.returncode == 0, write_result.stdout + write_result.stderr
+    assert "adapter_importing_test_modules = 0" in (project / BASELINE).read_text(
+        encoding="utf-8"
+    )
+    assert check_result.returncode == 0, check_result.stdout + check_result.stderr
+
+
+def test_write_baseline_refuses_to_raise_a_count(tmp_path: Path) -> None:
     project = scratch_project(
         tmp_path,
         {"tests/application/test_one.py": ADAPTER_IMPORTING_MODULE},
@@ -168,13 +201,12 @@ def test_write_baseline_records_todays_counts_and_the_gate_is_then_quiet(
     )
 
     write_result = run_gate(project, "--write-baseline")
-    check_result = run_gate(project)
 
-    assert write_result.returncode == 0, write_result.stdout + write_result.stderr
-    assert "adapter_importing_test_modules = 1" in (project / BASELINE).read_text(
+    assert write_result.returncode == 1, write_result.stdout + write_result.stderr
+    assert "tests/application from 0 to 1" in write_result.stderr
+    assert "adapter_importing_test_modules = 0" in (project / BASELINE).read_text(
         encoding="utf-8"
     )
-    assert check_result.returncode == 0, check_result.stdout + check_result.stderr
 
 
 def test_domain_and_api_directories_are_measured_independently(
