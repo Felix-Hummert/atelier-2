@@ -31,6 +31,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.workflow_ids import (
     bootstrap_workflow_id_for,
     effect_workflow_id_for,
+    node_workflow_id_for,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agents import (
@@ -56,6 +57,7 @@ from atelier2.contracts.effects import (
     ReadbackPhase,
     ReconcileCommandState,
 )
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import (
@@ -63,6 +65,7 @@ from atelier2.contracts.runs import (
     RunId,
     RunState,
     WorkflowRevision,
+    WorkflowRevisionHash,
 )
 from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
@@ -73,6 +76,13 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     failing_agent_executor_factory,
+)
+from tests.scenarios.open_pr_agent import (
+    AGENT_NODE_ID,
+    PR_SPEC,
+    create_open_pr_agent_run,
+    open_pr_agent_executor_factory,
+    publish_open_pr_agent_run,
 )
 from tests.scenarios.runs import (
     NO_AGENT_EXECUTORS,
@@ -797,7 +807,8 @@ def _duplicate_effect_intent(engine: Engine, copies: int) -> None:
     already-offending row are the cheapest way to make more than the preview
     limit offend at once. Each copy's own `durable_effect` workflow was never
     minted under its new logical key, so every copy counts on its own --
-    unlike the original, whose workflow genuinely succeeded and is exempt.
+    unlike the original, whose own owning workflow genuinely succeeded and
+    is exempt.
     """
     with engine.begin() as connection:
         original = connection.execute(sa.select(effect_intents)).mappings().one()
@@ -843,6 +854,184 @@ def test_restart_refusal_message_bounds_the_offending_intent_preview(
     message = str(failure.value)
     assert message.count("open-pr intent") == preview_limit
     assert f"and {omitted_count} more" in message
+
+
+def _boot_runtime_to_agent_redeemed_intents(
+    settings: DbosRuntimeSettings,
+    factory: LoopbackEffectAdapterFactory,
+    completed_runs: tuple[RunId, ...],
+) -> tuple[DbosRuntime, WorkflowRevisionHash]:
+    """Boot a runtime until every named run redeemed its agent node's own grant.
+
+    Drives the production path the live store's own push intents came from: an
+    Agent node prepares and redeems what its pinned grant earned as two steps
+    of its own node workflow (`workflow.py::redeem_agent_node_effect`), so the
+    intent left behind never has a `durable_effect` workflow at all. The grant
+    driven here is the `open-pr` one, which this boundary completes without a
+    project checkout and its captured candidate; both grant shapes mint the
+    key from the same node execution (`logical_effect_key_for_node`), and that
+    derivation is the whole of what the ownership question asks.
+    """
+
+    runtime = DbosRuntime(settings, factory, (open_pr_agent_executor_factory(PR_SPEC),))
+    runtime.initialize_storage()
+    workflow, bindings = publish_open_pr_agent_run(runtime, granted=True)
+    for run_id in completed_runs:
+        create_open_pr_agent_run(runtime, run_id, workflow, bindings)
+    runtime.launch()
+    for run_id in completed_runs:
+        assert (
+            wait_until_run_state(runtime.engine, run_id, RunState.COMPLETED)
+            is RunState.COMPLETED
+        )
+    return runtime, workflow.revision_hash
+
+
+def _agent_redeemed_intent_keys(engine: Engine) -> list[str]:
+    """The confirmed intents no `durable_effect` workflow was ever minted for.
+
+    This is what makes an intent the shape #1218 is about, so the arrangement
+    is read back rather than assumed: a fixture that quietly produced an
+    Action-driven intent would prove nothing about the node-workflow owner.
+    """
+
+    with engine.connect() as connection:
+        confirmed = [
+            str(logical_key)
+            for logical_key in connection.scalars(
+                sa.select(effect_intents.c.logical_key).where(
+                    effect_intents.c.state == EffectIntentState.CONFIRMED.value
+                )
+            )
+        ]
+        minted = set(
+            connection.scalars(sa.text("SELECT workflow_uuid FROM workflow_status"))
+        )
+    return [
+        logical_key
+        for logical_key in confirmed
+        if effect_workflow_id_for(LogicalEffectKey(logical_key)) not in minted
+    ]
+
+
+def _restart_under_a_changed_identity(
+    settings: DbosRuntimeSettings, changed_path: Path
+) -> DbosRuntime:
+    return DbosRuntime(
+        settings,
+        LoopbackEffectAdapterFactory(
+            changed_path,
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        (open_pr_agent_executor_factory(PR_SPEC),),
+    )
+
+
+@pytest.mark.parametrize(
+    "completed_runs",
+    [1, 5],
+    ids=["one-agent-redeemed-intent", "the-live-stores-five-redeemed-intents"],
+)
+def test_restart_permits_agent_redeemed_intents_of_succeeded_node_workflows(
+    tmp_path: Path, completed_runs: int
+) -> None:
+    """A finished agent-redeemed effect is history, whichever identity opens next.
+
+    Five of them across five completed runs is the live store's own shape on
+    05.09.2026, which the first fix read as five forever-open intents and
+    refused the moved identity for (#1218).
+    """
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    runtime, _ = _boot_runtime_to_agent_redeemed_intents(
+        settings,
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        tuple(RunId(f"run-{index}") for index in range(completed_runs)),
+    )
+    assert len(_agent_redeemed_intent_keys(runtime.engine)) == completed_runs
+    runtime.close()
+
+    _restart_under_a_changed_identity(
+        settings, tmp_path / "changed" / "external.sqlite"
+    ).close()
+
+
+def test_restart_refuses_an_agent_redeemed_intent_whose_node_workflow_is_unfinished(
+    tmp_path: Path,
+) -> None:
+    """The node workflow that owns the redemption decides, and it has not ended."""
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    run_id = RunId("run-0")
+    runtime, revision_hash = _boot_runtime_to_agent_redeemed_intents(
+        settings,
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        (run_id,),
+    )
+    logical_key = _agent_redeemed_intent_keys(runtime.engine)[0]
+    _force_workflow_status(
+        runtime.engine,
+        node_workflow_id_for(
+            NodeExecutionId.for_node(run_id, revision_hash, AGENT_NODE_ID)
+        ),
+        "PENDING",
+    )
+    runtime.close()
+    changed_path = tmp_path / "changed" / "external.sqlite"
+
+    with pytest.raises(DbosRuntimeBindingConflict) as failure:
+        _restart_under_a_changed_identity(settings, changed_path)
+
+    message = str(failure.value)
+    assert "open-pr" in message
+    assert EffectIntentState.CONFIRMED.value in message
+    assert logical_key[:16] in message
+    assert not changed_path.parent.exists()
+
+
+def test_restart_refuses_an_intent_whose_key_no_node_execution_accounts_for(
+    tmp_path: Path,
+) -> None:
+    """Without an owner the intent counts: a store missing its rows fails closed."""
+    settings = DbosRuntimeSettings(
+        canonical_database(tmp_path),
+        "executor-A",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+    )
+    runtime, _ = _boot_runtime_to_agent_redeemed_intents(
+        settings,
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        (RunId("run-0"),),
+    )
+    _duplicate_effect_intent(runtime.engine, 1)
+    runtime.close()
+    changed_path = tmp_path / "changed" / "external.sqlite"
+
+    with pytest.raises(DbosRuntimeBindingConflict) as failure:
+        _restart_under_a_changed_identity(settings, changed_path)
+
+    message = str(failure.value)
+    assert message.count("open-pr intent") == 1
+    assert not changed_path.parent.exists()
 
 
 def test_restart_with_the_same_identity_opens_regardless_of_open_intent_state(
