@@ -65,6 +65,23 @@ describe("MutationJournal exact transport truth", () => {
     await expect(new MutationJournal(sessionStorage).entries()).rejects.toThrow(/duplicate/);
   });
 
+  it("treats stored field names as a set independent of JSON key order", async () => {
+    const entry = { ...start(), delivery: "prepared" };
+    sessionStorage.setItem(
+      "atelier2.mutation-journal.v1",
+      JSON.stringify([Object.fromEntries(Object.entries(entry).reverse())])
+    );
+    await expect(new MutationJournal(sessionStorage).entries()).resolves.toEqual([entry]);
+
+    sessionStorage.setItem(
+      "atelier2.mutation-journal.v1",
+      JSON.stringify([{ ...entry, content_type: undefined }])
+    );
+    await expect(new MutationJournal(sessionStorage).entries()).rejects.toThrow(
+      /unknown fields or missing fields/
+    );
+  });
+
   it("rejects stored byte/hash identity corruption", async () => {
     for (const corrupt of [
       { ...publish(), revision_hash: "d".repeat(64), mutation_id: `publish:${"d".repeat(64)}` },
